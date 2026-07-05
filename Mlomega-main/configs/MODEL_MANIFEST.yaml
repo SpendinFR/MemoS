@@ -1,0 +1,116 @@
+# MLOmega V19 model manifest.
+#
+# Weights live under models/ (git-ignored). Fetch + verify with:
+#   python scripts/fetch_models_v19.py
+# Each fetchable entry carries url + sha256 + license so the download is
+# reproducible and auditable (handoff §4.1 / E27 ADR).
+models:
+  live_llm:
+    provider: ollama
+    default: qwen2.5:3b-instruct-q4_K_M
+    license: model-card-required
+    max_vram_mb: 3072
+  deep_llm:
+    provider: ollama
+    default: qwen3.5:9b-q4_K_M
+    license: model-card-required
+    phase: nocturne
+  vlm:
+    provider: ollama
+    # Targeted VLM crop, one job at a time (handoff §3.6 / §4.1). Pulled via
+    # `ollama pull`, not this fetch script. Env override: MLOMEGA_VLM_MODEL.
+    default: moondream
+    license: model-card-required
+    max_vram_mb: 5632
+
+  # --- Fetchable ONNX / CTranslate2 weights (scripts/fetch_models_v19.py) ---
+  detector:
+    provider: onnx_local
+    default: yolox_nano.onnx
+    # Megvii YOLOX-Nano, official ONNX release asset. Apache-2.0 (permissive):
+    # chosen over an Ultralytics-exported YOLO-nano to avoid the AGPL-3.0 weight
+    # taint that an ultralytics export carries (ADR §E27).
+    license: Apache-2.0
+    path: models/yolox_nano.onnx
+    url: https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_nano.onnx
+    sha256: c789161ed43c8269fcd4e67c67eeeb4e80c622da2eb296a20bc6007bd18a0b7d
+    input_size: 416
+    max_vram_mb: 512
+
+  asr:
+    provider: faster_whisper
+    # faster-whisper `small`, int8, GPU if CUDA present else CPU. Downloaded on
+    # first use into the HuggingFace cache by faster-whisper itself (CTranslate2
+    # conversion of openai/whisper-small). MIT (faster-whisper) / Whisper weights.
+    default: small
+    compute_type: int8
+    license: MIT
+    max_vram_mb: 1024
+
+  face_detector:
+    provider: onnx_local
+    # OpenCV Zoo YuNet (FaceDetectorYN). Tiny (~230 KB) ONNX face detector run
+    # through cv2.FaceDetectorYN — CPU-friendly, GPU optional. MIT license
+    # (permissive, no copyleft taint). Used by services/live-pc/face_identity.py
+    # to crop+align faces before the SFace embedder (ADR §E32).
+    license: MIT
+    path: models/face_detection_yunet_2023mar.onnx
+    url: https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
+    sha256: 8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4
+    max_vram_mb: 64
+
+  face_embedder:
+    provider: onnx_local
+    # OpenCV Zoo SFace (FaceRecognizerSF), a MobileFaceNet trained with the SFace
+    # loss. Run through cv2.FaceRecognizerSF -> 128-D L2 embedding, matched by
+    # cosine against the local face gallery. Apache-2.0 (permissive). CPU is
+    # sufficient (tiny model); GpuArbiter "ocr"-class job used when a GPU is free.
+    license: Apache-2.0
+    path: models/face_recognition_sface_2021dec.onnx
+    url: https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx
+    sha256: 0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79
+    embedding_dim: 128
+    max_vram_mb: 128
+
+  translate:
+    provider: argos_translate
+    # Argos Translate (CTranslate2, MIT). Offline NMT, no LLM. Language packs
+    # installed via `argostranslate.package` into the Argos data dir on first use
+    # (fetch_models_v19.py --argos installs en<->fr). zh->fr installed if a pack
+    # is available in the index.
+    license: MIT
+    pairs: [en-fr, fr-en]
+
+  # --- Local TTS voices (sherpa-onnx OfflineTts, E35) ----------------------
+  # Piper/VITS voices from the sherpa-onnx TTS model zoo. Distributed as
+  # .tar.bz2 archives (model.onnx + tokens.txt + espeak-ng-data). The Piper
+  # voices are released under the MIT license (Piper); the bundled espeak-ng
+  # data is GPL-3.0 (kept as runtime data, never linked into our code). Chosen
+  # from the two authoritative sources consulted (ADR §E35):
+  #   1. sherpa-onnx TTS model releases (k2-fsa) — the canonical index of vetted
+  #      offline voices, each with a direct archive URL;
+  #   2. the Piper voices catalogue (rhasspy) — voice quality + per-voice license.
+  # ``archive`` is fetched + sha256-verified then extracted so ``path`` exists.
+  # sha256 is pinned on first successful fetch (fetch_models_v19.py records it).
+  tts_fr:
+    provider: sherpa_onnx
+    # French voice (Piper/VITS siwis, MIT). Extract yields the .onnx + tokens.
+    license: MIT
+    path: models/vits-piper-fr_FR-siwis-medium/fr_FR-siwis-medium.onnx
+    archive: https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-fr_FR-siwis-medium.tar.bz2
+    archive_sha256: PENDING_FETCH
+    extract_to: models
+    max_vram_mb: 128
+
+  tts_en:
+    provider: sherpa_onnx
+    # English voice (Piper/VITS amy, MIT). Extract yields the .onnx + tokens.
+    license: MIT
+    path: models/vits-piper-en_US-amy-low/en_US-amy-low.onnx
+    archive: https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-amy-low.tar.bz2
+    archive_sha256: PENDING_FETCH
+    extract_to: models
+    max_vram_mb: 128
+install_profile:
+  cpu_only: false
+  installed_at: 2026-07-05T20:37:17.4730426+02:00

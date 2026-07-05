@@ -1,0 +1,22 @@
+# INSTALL_STATE — MLOmega V19 production (Windows 11, RTX 3070 8GB)
+
+Foyer: `C:\Users\wabad\Downloads\ProjetMemobyFABLE\Mlomega-main`
+Repo: https://github.com/SpendinFR/Mlomega (branche main)
+Machine: RTX 3070 8GB, driver 595.79, Python 3.11.1 système, Ollama 0.15.2, PAS de Docker.
+
+Règle: une ligne par étape, mise à jour APRÈS chaque étape réussie. Reprendre où c'était.
+
+- [x] 0. Prérequis vérifiés — git 2.51.0, Python 3.11.1, Ollama client 0.15.2, RTX 3070 driver 595.79, ffmpeg 8.1.2 sous WinGet/Gyan.FFmpeg.
+- [x] 1. Git en place — git init + remote origin + fetch + `git checkout -f -B main origin/main`. HEAD=4fb4ee4 (Merge PR #29 e38). Working tree clean. .gitignore durci (.env/.venv/.venv-live/storage/tools/qdrant/*.log).
+- [x] 2. Venv cœur .venv — pip -r requirements-v18_8-windows.lock.txt OK (exit 0). torch 2.4.1+cu121, cuda=True, RTX 3070. whisperx/pyannote/speechbrain/faster_whisper/ctranslate2 4.4.0 importent OK.
+- [x] 3. Venv live .venv-live — scripts\INSTALL_MLOMEGA_V19_WINDOWS.ps1 -SkipDoctor OK (bascule atomique, MODEL_MANIFEST install_profile ajouté). Deps core live: fastapi/uvicorn/pydantic/websockets/pynvml/numpy/opencv-python-headless/aiortc/av/pytest/pyyaml. Extras ajoutés (handoff §3): requests onnxruntime faster-whisper argostranslate webrtcvad sherpa-onnx scikit-image rapidocr_onnxruntime — tous importent ensemble (numpy 2.4.6, cv2 5.0.0, onnxruntime 1.27.0). Note: torch CPU 2.12.1 tiré comme dép transitive de faster-whisper/argos dans .venv-live (GPU torch reste dans .venv cœur; live utilise onnxruntime/faster-whisper CUDA).
+- [x] 4. Qdrant natif Windows v1.12.6 — tools\qdrant\qdrant.exe + config.yaml (storage_path storage\qdrant) + scripts\START_QDRANT.ps1. Démarré, /healthz 200 sur 6333, collections OK, version 1.12.6.
+- [x] 5. Modèles Ollama — moondream:latest (1.7GB), qwen3-vl:8b (6.1GB), qwen2.5:3b-instruct-q4_K_M (1.9GB, live_llm). Déjà présents: qwen2.5:7b-instruct-q4_K_M (4.7GB), qwen3-vl:4b/latest, qwen2.5vl. Ollama serve lancé en arrière-plan (port 11434).
+      ADR modèle deep LLM: `qwen3.5:9b`/`qwen3.5:9b-q4_K_M` (env template + manifest) N'EXISTENT PAS dans le registre Ollama (Qwen3.5 n'est pas une release réelle — le handoff docs le note explicitement comme placeholder de design "un vrai ~9B deep"). Le nom est 100% pilotable par env (MLOMEGA_OLLAMA_MODEL), aucun code ne le fige (les tests l'utilisent seulement comme string mockée). SUBSTITUTION: `MLOMEGA_OLLAMA_MODEL=qwen2.5:7b-instruct-q4_K_M` (déjà présent, même famille Qwen2.5 que le cœur V18.8, q4 ~4.7GB tient la nuit GPU libre). Live=qwen2.5:3b-instruct-q4_K_M.
+- [x] 6. Modèles projet — fetch_models_v19.py --argos --tts OK: detector yolox_nano, face YuNet+SFace (sha256 vérifiés), TTS fr(siwis)+en(amy) extraits (archive_sha256 épinglés dans manifest), Argos en<->fr déjà installés (zh->fr absent de l'index, skip). faster-whisper small téléchargé + transcription fixture OK (.venv-live). WhisperX large-v3 (Systran/faster-whisper-large-v3) téléchargé dans cache HF (.venv). pyannote/wespeaker-voxceleb-resnet34-LM OK.
+      ATTENTION INTERACTIF: pyannote/segmentation-3.0 et pyannote/speaker-diarization-3.1 = 403 GatedRepoError. Token HF valide (user BALLSoHigh712, fineGrained) mais les conditions du model-card ne sont PAS acceptées. Le gate est `auto` -> l'utilisateur doit visiter https://huggingface.co/pyannote/segmentation-3.0 ET https://huggingface.co/pyannote/speaker-diarization-3.1 (connecté au compte du token) et cliquer « Accept » une fois, puis re-run le snapshot_download. WhisperX ASR fonctionne sans; c'est la diarisation nuit qui reste dégradée -> WARN attendu, pas FAIL.
+- [x] 7. Configuration .env — généré depuis .env.core-v18_8.template: chemins absolus foyer, MLOMEGA_PERSON_ID=me, MLOMEGA_HF_TOKEN + HF_TOKEN, MLOMEGA_PHONE_TOKEN généré, MLOMEGA_OLLAMA_MODEL=qwen2.5:7b-instruct-q4_K_M (substitution deep), overrides XR MIN_INTERVAL_S=6 / AUDIO_WINDOW_S=15 (remplacés en place + bloc install-local). .env gitignoré (git check-ignore OK). setup_profile.ps1 -Defaults OK: user_profile.yaml (phone_only/phone_camera/ollama_local qwen2.5:3b/onnx_local/local/local_only) + degraded.yaml + sim.yaml. yaml.safe_load valide (0 clé manquante).
+- [ ] 8. Certification — DOCTOR -Full (0 FAIL) + pytest tests\v19 (.venv-live) + pytest V18 (.venv cœur).
+- [ ] 9. Runner E30-A — E30A_RUN.ps1 + e30a_runner.py.
+- [ ] 10. Unity Hub (préparation E30-B, non bloquant).
+- [ ] 11. Commit branche feat/v19-e30a-install poussée.

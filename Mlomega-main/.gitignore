@@ -1,0 +1,29 @@
+
+__pycache__/
+*.py[cod]
+
+codex-*.patch
+
+# Install-local (V19 production install on this machine)
+.env
+.env.*
+!.env.*.template
+!.env.example
+!.env.windows.example
+.venv/
+.venv-live/
+venv/
+storage/
+tools/qdrant/
+*.log
+E30A_REPORT.md
+
+# V19 model weights (fetched via scripts/fetch_models_v19.py, see MODEL_MANIFEST.yaml)
+models/
+!models/.gitkeep
+.scenario_runs/
+simulators/scenarios/assets/
+configs/user_profile.yaml
+
+# Test-created core memory DB (E31/E32 core imports)
+.mlomega_audio_elite/
