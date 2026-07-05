@@ -77,7 +77,13 @@ def ensure_close_day_schema() -> None:
     # Install that schema before resolving the last run; this is additive and
     # keeps the command safe on a newly initialized V18 database.
     from .brainlive_service_v15_5 import ensure_service_schema
+    from .brainlive_poststop_deep_flow_v15_15 import ensure_post_stop_deep_flow_schema
+
     ensure_service_schema()
+    # close-day reads/resumes post-stop state before it invokes the flow.
+    # Initialise that additive schema first so a fresh database cannot fail
+    # merely because no prior service run happened to create the table.
+    ensure_post_stop_deep_flow_schema()
     ensure_v18_schema()
     with connect() as con, write_transaction(con):
         con.executescript(SCHEMA)

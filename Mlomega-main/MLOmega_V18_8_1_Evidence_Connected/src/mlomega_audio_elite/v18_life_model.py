@@ -15,7 +15,7 @@ from .governance_v18 import (
     strict_one, verify_same_owner,
 )
 from .integrity_v176 import parse_iso_utc, iso_utc, quarantine_in_transaction
-from .utils import json_dumps, json_loads, now_iso, stable_id
+from .utils import iso_add_seconds, json_dumps, json_loads, now_iso, stable_id
 
 
 def _safe_ref_list(value: Any) -> list[dict[str, Any]]:
@@ -69,7 +69,7 @@ _DIRECT_EVIDENCE_SOURCES: dict[str, tuple[str, str, tuple[str, ...]]] = {
 }
 _CONVERSATION_EVIDENCE_SOURCES: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "conversations": ("conversation_id", "conversation_id", ("started_at", "created_at")),
-    "turns": ("turn_id", "conversation_id", ("absolute_start", "created_at")),
+    "turns": ("turn_id", "conversation_id", ("turn_occurred_at",)),
     "episodes": ("episode_id", "source_conversation_id", ("start_time", "created_at")),
     "situation_episodes": ("situation_id", "episode_id", ("created_at",)),
     "interaction_episodes": ("interaction_id", "episode_id", ("created_at",)),
@@ -87,10 +87,43 @@ _SESSION_EVIDENCE_SOURCES: dict[str, tuple[str, str, tuple[str, ...]]] = {
 
 
 def _source_time_from_row(row: Mapping[str, Any], fields: tuple[str, ...]) -> str | None:
-    # ``absolute_start`` is carried by some normalized turn metadata but not as
-    # a table column. Prefer concrete stored event times and return no time when
-    # none exists; general-stratum promotion then fails safely.
     return canonical_time(row, *fields)
+
+
+def _turn_occurred_at(
+    row: Mapping[str, Any],
+    *,
+    conversation_started_at: str | None = None,
+    conversation_created_at: str | None = None,
+) -> str | None:
+    """Return a turn event time without inventing ``turns.created_at``.
+
+    Turns are immutable child events. Their absolute time is the persisted
+    metadata anchor when present; otherwise it is derived from the conversation
+    anchor and the stored relative audio offset. A missing/invalid timestamp is
+    intentionally left unknown so bounded replay cannot treat it as fresh data.
+    """
+    metadata = json_loads(row.get("metadata_json"), {})
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    absolute = canonical_time(metadata, "absolute_start")
+    if absolute:
+        return absolute
+    anchor = (
+        metadata.get("conversation_started_at")
+        or conversation_started_at
+        or conversation_created_at
+    )
+    derived = iso_add_seconds(str(anchor) if anchor else None, row.get("start_s"))
+    return canonical_time({"turn_occurred_at": derived}, "turn_occurred_at")
+
+
+def _order_expression(columns: set[str], *, alias: str = "") -> str:
+    """Build a safe newest-first order from columns a table really has."""
+    prefix = f"{alias}." if alias else ""
+    fields = [f"{prefix}{name}" for name in ("updated_at", "created_at") if name in columns]
+    if fields:
+        return f"COALESCE({', '.join(fields)}) DESC"
+    return f"{prefix}rowid DESC"
 
 
 def _owned_evidence_ref(con, *, person_id: str, table: str, source_id: str) -> dict[str, Any]:
@@ -113,6 +146,19 @@ def _owned_evidence_ref(con, *, person_id: str, table: str, source_id: str) -> d
             raise ScopeError(f"evidence source missing: {table}/{source_id}")
         raw = dict(row)
         conversation_id = str(raw.get(conv_col) or "")
+        if table == "turns":
+            conversation = con.execute(
+                "SELECT started_at,created_at FROM conversations WHERE conversation_id=?",
+                (conversation_id,),
+            ).fetchone()
+            if not conversation:
+                raise ScopeError(f"turn has no conversation anchor: {source_id}")
+            conversation_raw = dict(conversation)
+            raw["turn_occurred_at"] = _turn_occurred_at(
+                raw,
+                conversation_started_at=conversation_raw.get("started_at"),
+                conversation_created_at=conversation_raw.get("created_at"),
+            )
         # Episode-derived rows carry episode_id rather than conversation_id.
         if table in {"situation_episodes", "interaction_episodes", "speech_acts"}:
             episode = con.execute(
@@ -248,12 +294,51 @@ def install_canonical(module: Any) -> dict[str, Any]:
         return out
 
     def _owner_conversation_rows(con, table: str, conv_col: str, person_id: str, *, start:str|None,end:str|None,as_of:str|None,limit:int)->list[dict[str,Any]]:
-        rows=strict_many(con,f"""SELECT x.* FROM {table} x
-            JOIN v18_conversation_scopes cs ON cs.conversation_id=x.{conv_col}
-            WHERE cs.person_id=? AND cs.active=1 ORDER BY COALESCE(x.created_at,'') DESC LIMIT ?""",(person_id,limit*4),purpose=f"{table} owner scoped")
+        spec = _CONVERSATION_EVIDENCE_SOURCES.get(table)
+        if spec is None or spec[1] != conv_col:
+            raise ScopeError(f"unsupported conversation evidence source: {table}/{conv_col}")
+
+        if table == "turns":
+            rows = strict_many(
+                con,
+                """SELECT x.*, c.started_at AS conversation_started_at,
+                          c.created_at AS conversation_created_at
+                     FROM turns x
+                     JOIN v18_conversation_scopes cs
+                       ON cs.conversation_id=x.conversation_id
+                     JOIN conversations c ON c.conversation_id=x.conversation_id
+                    WHERE cs.person_id=? AND cs.active=1
+                    ORDER BY COALESCE(c.started_at,c.created_at) DESC, x.idx DESC
+                    LIMIT ?""",
+                (person_id, limit * 4),
+                purpose="turns owner scoped",
+            )
+            for row in rows:
+                row["occurred_at"] = _turn_occurred_at(
+                    row,
+                    conversation_started_at=row.get("conversation_started_at"),
+                    conversation_created_at=row.get("conversation_created_at"),
+                )
+            time_fields = ("occurred_at",)
+        else:
+            columns = {str(r["name"]) for r in con.execute(f"PRAGMA table_info({table})").fetchall()}
+            if not columns:
+                return []
+            order = _order_expression(columns, alias="x")
+            rows = strict_many(
+                con,
+                f"""SELECT x.* FROM {table} x
+                     JOIN v18_conversation_scopes cs ON cs.conversation_id=x.{conv_col}
+                    WHERE cs.person_id=? AND cs.active=1
+                    ORDER BY {order} LIMIT ?""",
+                (person_id, limit * 4),
+                purpose=f"{table} owner scoped",
+            )
+            time_fields = ("occurred_at", "start_time", "updated_at", "created_at")
+
         filtered=[]
         for r in rows:
-            t=canonical_time(r,"occurred_at","start_time","created_at","updated_at")
+            t=canonical_time(r,*time_fields)
             if t and _in_window(t,start,end,as_of): filtered.append(r)
             elif not start and not end and not as_of: filtered.append(r)
         return filtered[:limit]
@@ -266,7 +351,8 @@ def install_canonical(module: Any) -> dict[str, Any]:
                 cols={str(r["name"]) for r in con.execute(f"PRAGMA table_info({table})").fetchall()}
                 if not cols: return []
                 if "person_id" not in cols and where=="person_id=?": return []
-                rows=strict_many(con,f"SELECT * FROM {table} WHERE {where} ORDER BY COALESCE(updated_at,created_at) DESC LIMIT ?",((*params,limit*4) if params else (person_id,limit*4)),purpose=f"evidence:{table}")
+                order = _order_expression(cols)
+                rows=strict_many(con,f"SELECT * FROM {table} WHERE {where} ORDER BY {order} LIMIT ?",((*params,limit*4) if params else (person_id,limit*4)),purpose=f"evidence:{table}")
                 out=[]
                 for r in rows:
                     t=canonical_time(r,*time_cols)
