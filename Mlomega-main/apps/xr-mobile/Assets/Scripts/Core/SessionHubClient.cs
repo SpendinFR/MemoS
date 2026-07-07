@@ -1,4 +1,4 @@
-// MLOmega V19 — E23
+﻿// MLOmega V19 â€” E23
 // HTTP client for the PC SessionHub (services/live-pc/sessionhub.py).
 //
 // sessionhub.py is a plain in-process class today (SessionHub); the live-pc HTTP
@@ -14,10 +14,11 @@
 //
 // The offset/RTT arithmetic stays on the client (ClockSync.ComputeSample) and is
 // byte-identical to SessionHub.complete_clock_sync, so no server round-trip is
-// needed to obtain the offset — only the two server monotonic stamps.
+// needed to obtain the offset â€” only the two server monotonic stamps.
 using System;
 using System.Collections;
 using System.Text;
+using MLOmega.Contracts.V19;
 using Newtonsoft.Json;
 using UnityEngine;
 using UnityEngine.Networking;
@@ -58,11 +59,11 @@ namespace MLOmega.XR.Core
         public IEnumerator CreateSession(string deviceId,
             Action<SessionCredentials> onOk, Action<string> onError)
         {
-            string body = JsonConvert.SerializeObject(new { device_id = deviceId });
+            string body = ContractJson.Serialize(new { device_id = deviceId });
             yield return Post("/session/create", body,
                 json =>
                 {
-                    var r = JsonConvert.DeserializeObject<CredentialsDto>(json);
+                    var r = ContractJson.Deserialize<CredentialsDto>(json);
                     if (r == null || string.IsNullOrEmpty(r.session_id) || string.IsNullOrEmpty(r.token))
                     {
                         onError?.Invoke("malformed create response");
@@ -76,11 +77,11 @@ namespace MLOmega.XR.Core
         public IEnumerator RenewToken(string sessionId, string token,
             Action<SessionCredentials> onOk, Action<string> onError)
         {
-            string body = JsonConvert.SerializeObject(new { session_id = sessionId, token });
+            string body = ContractJson.Serialize(new { session_id = sessionId, token });
             yield return Post("/session/renew", body,
                 json =>
                 {
-                    var r = JsonConvert.DeserializeObject<CredentialsDto>(json);
+                    var r = ContractJson.Deserialize<CredentialsDto>(json);
                     if (r == null || string.IsNullOrEmpty(r.token))
                     {
                         onError?.Invoke("malformed renew response");
@@ -95,7 +96,7 @@ namespace MLOmega.XR.Core
         public IEnumerator ClockSync(string sessionId, string token, long clientSendNs,
             Action<ClockExchangeReply> onOk, Action<string> onError)
         {
-            string body = JsonConvert.SerializeObject(new
+            string body = ContractJson.Serialize(new
             {
                 session_id = sessionId,
                 token,
@@ -104,7 +105,7 @@ namespace MLOmega.XR.Core
             yield return Post("/session/clock-sync", body,
                 json =>
                 {
-                    var r = JsonConvert.DeserializeObject<ClockDto>(json);
+                    var r = ContractJson.Deserialize<ClockDto>(json);
                     if (r == null)
                     {
                         onError?.Invoke("malformed clock-sync response");

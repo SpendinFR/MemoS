@@ -1,13 +1,13 @@
-// MLOmega V19 — E24
+﻿// MLOmega V19 â€” E24
 // Unity-side bridge to the native Android live transport (LiveTransportPlugin,
 // GetStream webrtc-android). Owns the AndroidJavaObject, feeds the eye/phone
 // texture from EyeCaptureSource.OnFrame (E23) up the WebRTC video track, relays
 // contract messages (UIIntent down / UIReceipt up) over the reliable DataChannel,
 // and re-emits the native connection state as C# events for the StatusBar (E25).
 //
-// Platform matrix (documented decision, DECISIONS.md §E24):
-//   - Android device build: DIRECT_ANDROID — the real Kotlin plugin runs.
-//   - Editor / Windows dev: DIRECT_PYTHON — there is no Android plugin, so the
+// Platform matrix (documented decision, DECISIONS.md Â§E24):
+//   - Android device build: DIRECT_ANDROID â€” the real Kotlin plugin runs.
+//   - Editor / Windows dev: DIRECT_PYTHON â€” there is no Android plugin, so the
 //     transport is a no-op here; the PC side is exercised by fake_xr_device
 //     (SimulatedDeviceAdapter path) talking to the same /webrtc/offer endpoint.
 //     This bridge still parses/echoes contract messages so UI wiring can be
@@ -60,7 +60,7 @@ namespace MLOmega.XR.Transport
         public event Action<UIIntent> UiIntentReceived;
 
         /// <summary>Raised on the main thread with the raw downlink JSON before typed
-        /// parsing — lets the DeviceCommandHandler (E33 §4) claim `device_command`
+        /// parsing â€” lets the DeviceCommandHandler (E33 Â§4) claim `device_command`
         /// messages, which are NOT UIIntents.</summary>
         public event Action<string> MessageReceived;
 
@@ -159,7 +159,7 @@ namespace MLOmega.XR.Transport
         /// </summary>
         public bool SendReceipt(UIReceipt receipt)
         {
-            string json = JsonConvert.SerializeObject(receipt);
+            string json = ContractJson.Serialize(receipt);
 #if UNITY_ANDROID && !UNITY_EDITOR
             return _plugin != null && _plugin.Call<bool>("sendContractMessage", json);
 #else
@@ -175,7 +175,7 @@ namespace MLOmega.XR.Transport
 #if UNITY_ANDROID && !UNITY_EDITOR
             if (_feeder == null || texture == null) return;
             if (_plugin != null && envelope != null)
-                _plugin.Call<bool>("sendContractMessage", JsonConvert.SerializeObject(envelope));
+                _plugin.Call<bool>("sendContractMessage", ContractJson.Serialize(envelope));
             long tsNs = envelope != null ? envelope.CaptureMonotonicNs : 0L;
             long rotation = envelope != null ? envelope.Rotation : 0L;
             if (_textureBacked)
@@ -189,7 +189,7 @@ namespace MLOmega.XR.Transport
             }
             // I420 readback path is wired by the capture pipeline when
             // _textureBacked is false; omitted here to avoid a per-frame GPU sync
-            // on the hot path (see DECISIONS §E24).
+            // on the hot path (see DECISIONS Â§E24).
             if (!_textureBacked) PushCpuI420(texture, (int)rotation, tsNs);
 #endif
         }
@@ -281,7 +281,7 @@ namespace MLOmega.XR.Transport
             // secondary path by constructing the nested defaults explicitly is
             // verbose, so we rely on the primary constructor with the required
             // args and Kotlin defaults filled by a small companion factory added
-            // for JNI (LiveTransportConfig.forUnity). See DECISIONS §E24.
+            // for JNI (LiveTransportConfig.forUnity). See DECISIONS Â§E24.
             return new AndroidJavaClass("com.mlomega.xr.livetransport.LiveTransportConfigFactory")
                 .CallStatic<AndroidJavaObject>("forUnity",
                     offerUrl, _pairing.SessionId, _pairing.Token, _width, _height, _fps);
@@ -310,7 +310,7 @@ namespace MLOmega.XR.Transport
         {
             Enqueue(() =>
             {
-                // Raw hook first: device_command messages (E33 §4) are claimed here
+                // Raw hook first: device_command messages (E33 Â§4) are claimed here
                 // and must NOT be parsed as UIIntents.
                 MessageReceived?.Invoke(json);
                 if (json == null || json.IndexOf("\"ui_intent_id\"", StringComparison.Ordinal) < 0)
@@ -319,7 +319,7 @@ namespace MLOmega.XR.Transport
                 }
                 try
                 {
-                    var intent = JsonConvert.DeserializeObject<UIIntent>(json);
+                    var intent = ContractJson.Deserialize<UIIntent>(json);
                     if (intent != null) UiIntentReceived?.Invoke(intent);
                 }
                 catch (Exception ex)

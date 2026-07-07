@@ -1,14 +1,14 @@
-// MLOmega V19 — E25
+﻿// MLOmega V19 â€” E25
 // UIIntentBroker: arbitrates EVERY UIIntent source (IUIIntentSource) into the set
-// of intents the UIRuntime renders, applying GUIDE_V19_REFERENCE §13.2 exactly:
+// of intents the UIRuntime renders, applying GUIDE_V19_REFERENCE Â§13.2 exactly:
 //   * the 7-rung priority ladder (UIIntentPriority);
 //   * ttl_ms expiry (contract field);
-//   * track loss — an intent whose target_track_id has left SceneCache.tracks
+//   * track loss â€” an intent whose target_track_id has left SceneCache.tracks
 //     fades then disappears, never re-attached to another object;
 //   * a configurable density cap (N simultaneous non-status intents);
 //   * dedup by ui_intent_id;
 //   * every decision (admitted / refused / expired / evicted) journaled with a
-//     `ui_intent_drop_reason` (§15.3).
+//     `ui_intent_drop_reason` (Â§15.3).
 //
 // The broker is pure-ish MonoBehaviour glue: sources push intents in (main
 // thread), Tick() ages/evicts, and it raises IntentAdmitted / IntentDropped for
@@ -49,15 +49,15 @@ namespace MLOmega.XR.UI
     }
 
     /// <summary>
-    /// Named UI density modes (§13.2, E33 voice/menu toggles). The mode gates which
+    /// Named UI density modes (Â§13.2, E33 voice/menu toggles). The mode gates which
     /// non-status intents the broker admits/keeps:
-    ///   * <see cref="Normal"/> — everything, capped by the config density cap.
-    ///   * <see cref="Minimal"/> — only high-priority rungs (Privacy..Reflex),
+    ///   * <see cref="Normal"/> â€” everything, capped by the config density cap.
+    ///   * <see cref="Minimal"/> â€” only high-priority rungs (Privacy..Reflex),
     ///     conversational/ambient cards suppressed.
-    ///   * <see cref="HideAll"/> — nothing except StatusBar/Privacy (§13.2-1): the
+    ///   * <see cref="HideAll"/> â€” nothing except StatusBar/Privacy (Â§13.2-1): the
     ///     head-locked StatusBar is a standalone surface and privacy intents are the
     ///     only admitted rung.
-    ///   * <see cref="FreeGuy"/> — playful/normal density; alias of Normal for the
+    ///   * <see cref="FreeGuy"/> â€” playful/normal density; alias of Normal for the
     ///     broker (the visual theme differs, handled by the renderer).
     /// </summary>
     public enum UIDensityMode
@@ -73,7 +73,18 @@ namespace MLOmega.XR.UI
         [SerializeField] private SceneCache _sceneCache;
         [SerializeField] private SceneCacheConfig _config;
 
-        /// <summary>Current density mode (voice/menu "cache tout" / "mode Free Guy" / …).</summary>
+        // Lazy fallback: Awake is not called in EditMode and call order at boot
+        // can reach the broker before Awake. Never null-ref on config reads.
+        private SceneCacheConfig Cfg
+        {
+            get
+            {
+                if (_config == null) _config = _sceneCache != null && _sceneCache.Config != null ? _sceneCache.Config : SceneCacheConfig.CreateDefault();
+                return _config;
+            }
+        }
+
+        /// <summary>Current density mode (voice/menu "cache tout" / "mode Free Guy" / â€¦).</summary>
         public UIDensityMode Density { get; private set; } = UIDensityMode.Normal;
 
         /// <summary>Raised when the density mode changes (for the StatusBar / receipts).</summary>
@@ -82,7 +93,7 @@ namespace MLOmega.XR.UI
         /// <summary>
         /// Set the named density mode. In <see cref="UIDensityMode.HideAll"/> every
         /// currently-admitted non-status intent is dropped immediately (only the
-        /// standalone StatusBar and any privacy intent survive, §13.2-1); switching
+        /// standalone StatusBar and any privacy intent survive, Â§13.2-1); switching
         /// to a looser mode simply lets future intents back in.
         /// </summary>
         public void SetDensity(UIDensityMode mode)
@@ -152,7 +163,7 @@ namespace MLOmega.XR.UI
         /// <summary>Raised when an intent is fully removed. Carries its drop reason.</summary>
         public event Action<UIIntent, UIIntentDropReason> IntentDropped;
 
-        /// <summary>Raised for every drop-reason decision, for the `ui_intent_drop_reason` metric (§15.3).</summary>
+        /// <summary>Raised for every drop-reason decision, for the `ui_intent_drop_reason` metric (Â§15.3).</summary>
         public event Action<string, UIIntentDropReason, string> DropReasonJournaled;
 
         /// <summary>Current admitted intents, highest priority first. Read-only snapshot for the UIRuntime.</summary>
@@ -270,7 +281,7 @@ namespace MLOmega.XR.UI
 
             // Named density mode (voice/menu "cache tout"/"minimal"): refuse intents
             // whose rung the current mode suppresses. StatusBar is standalone (not
-            // admitted here) so "hide_all" leaves only StatusBar + privacy (§13.2-1).
+            // admitted here) so "hide_all" leaves only StatusBar + privacy (Â§13.2-1).
             if (!AllowedUnderDensity(prio))
             {
                 Journal(id, UIIntentDropReason.DensityCap, intent.Producer);
@@ -280,7 +291,7 @@ namespace MLOmega.XR.UI
             var candidate = new ActiveIntent(intent, prio, nowMs, ResolveSource(intent));
 
             // Density cap: status/privacy is never counted nor capped.
-            if (!candidate.IsStatus && NonStatusCount() >= _config.MaxSimultaneousIntents)
+            if (!candidate.IsStatus && NonStatusCount() >= Cfg.MaxSimultaneousIntents)
             {
                 // Try to evict the weakest currently-active non-status intent that is
                 // strictly lower priority than the candidate.
@@ -315,7 +326,7 @@ namespace MLOmega.XR.UI
                 // Already fading: remove once the fade completes.
                 if (ai.Fading)
                 {
-                    if (nowMs - ai.FadeStartedMs >= _config.FadeOutMs)
+                    if (nowMs - ai.FadeStartedMs >= Cfg.FadeOutMs)
                     {
                         (toRemove ??= new List<ActiveIntent>()).Add(ai);
                     }
@@ -340,13 +351,13 @@ namespace MLOmega.XR.UI
             UIIntent intent = ai.Intent;
 
             // TTL: contract ttl_ms since admission (0 / negative => use ui_state default).
-            long ttl = intent.TtlMs > 0 ? intent.TtlMs : _config.UiStateDefaultTtlMs;
+            long ttl = intent.TtlMs > 0 ? intent.TtlMs : Cfg.UiStateDefaultTtlMs;
             if (nowMs - ai.AdmittedMs > ttl)
             {
                 return UIIntentDropReason.TtlExpired;
             }
 
-            // Track loss: never re-attach; the intent fades then disappears (§13.2).
+            // Track loss: never re-attach; the intent fades then disappears (Â§13.2).
             if (!string.IsNullOrEmpty(intent.TargetTrackId) &&
                 _sceneCache != null && !_sceneCache.Tracks.Contains(intent.TargetTrackId))
             {
@@ -365,7 +376,7 @@ namespace MLOmega.XR.UI
             ai.PendingDrop = reason;
             Journal(ai.Intent.UiIntentId, reason, ai.SourceName);
             IntentFading?.Invoke(ai, reason);
-            if (_config.FadeOutMs <= 0)
+            if (Cfg.FadeOutMs <= 0)
             {
                 FinishRemove(ai);
             }

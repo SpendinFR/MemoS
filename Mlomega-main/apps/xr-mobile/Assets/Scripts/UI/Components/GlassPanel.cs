@@ -34,7 +34,10 @@ namespace MLOmega.XR.UI.Components
         public TMP_Text TruthChip { get; }
 
         private readonly UITheme _theme;
-        private readonly MaterialPropertyBlock _mpb = new MaterialPropertyBlock();
+        // UGUI Graphics have no MaterialPropertyBlock API (Renderer-only): the
+        // panel owns a per-instance material clone instead. Instances are
+        // bounded by the UIRuntime pool, so this does not grow unbounded.
+        private Material _mat;
         private Color _accent;
 
         /// <summary>
@@ -65,7 +68,8 @@ namespace MLOmega.XR.UI.Components
             bgRt.anchorMin = Vector2.zero; bgRt.anchorMax = Vector2.one;
             bgRt.offsetMin = Vector2.zero; bgRt.offsetMax = Vector2.zero;
             Background = bgGo.GetComponent<Image>();
-            Background.material = glassMaterial;
+            _mat = glassMaterial != null ? new Material(glassMaterial) : null;
+            Background.material = _mat;
             Background.raycastTarget = false;
             Background.color = Color.white;
 
@@ -155,23 +159,21 @@ namespace MLOmega.XR.UI.Components
         // Push the non-animated shader params from the theme + accent.
         private void PushStatic()
         {
-            if (Background == null) return;
-            Background.GetPropertyBlock(_mpb);
+            if (Background == null || _mat == null) return;
             if (_theme != null)
             {
-                _mpb.SetColor(PanelTintId, _theme.PanelTint);
-                _mpb.SetColor(RimColorId, _theme.RimColor);
-                _mpb.SetColor(AccentColorId, _accent);
-                _mpb.SetFloat(BlurStrengthId, _theme.BlurStrength);
-                _mpb.SetFloat(GrainId, _theme.Grain);
-                _mpb.SetFloat(RimWidthId, _theme.RimWidth);
-                _mpb.SetFloat(AccentMixId, 0.5f);
+                _mat.SetColor(PanelTintId, _theme.PanelTint);
+                _mat.SetColor(RimColorId, _theme.RimColor);
+                _mat.SetColor(AccentColorId, _accent);
+                _mat.SetFloat(BlurStrengthId, _theme.BlurStrength);
+                _mat.SetFloat(GrainId, _theme.Grain);
+                _mat.SetFloat(RimWidthId, _theme.RimWidth);
+                _mat.SetFloat(AccentMixId, 0.5f);
             }
             else
             {
-                _mpb.SetColor(AccentColorId, _accent);
+                _mat.SetColor(AccentColorId, _accent);
             }
-            Background.SetPropertyBlock(_mpb);
         }
     }
 }

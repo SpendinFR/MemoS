@@ -1,12 +1,12 @@
-// MLOmega V19 — E25
+﻿// MLOmega V19 â€” E25
 // SceneCache: the live, short-lived scene state the UI runtime renders against.
-// Six sub-caches with the exact TTL rules of GUIDE_V19_REFERENCE §9.1:
-//   tracks           — very short; disappears with the anchor
-//   entities_hot     — reconciled via SceneDelta; no name below identity confidence (§17.2)
-//   spatial_hot      — no precise arrow below map_quality threshold
-//   task_hot         — a single active task in UI at a time
-//   translation_hot  — expires on turn change or excessive delay
-//   ui_state         — mandatory TTL; reset on session
+// Six sub-caches with the exact TTL rules of GUIDE_V19_REFERENCE Â§9.1:
+//   tracks           â€” very short; disappears with the anchor
+//   entities_hot     â€” reconciled via SceneDelta; no name below identity confidence (Â§17.2)
+//   spatial_hot      â€” no precise arrow below map_quality threshold
+//   task_hot         â€” a single active task in UI at a time
+//   translation_hot  â€” expires on turn change or excessive delay
+//   ui_state         â€” mandatory TTL; reset on session
 //
 // Threading model: writers (DataChannel SceneDelta from E24, local tracks, live
 // UIIntents) may arrive on any thread, so they enqueue onto a lock-free-ish
@@ -102,7 +102,7 @@ namespace MLOmega.XR.Scene
         }
 
         /// <summary>
-        /// Apply an <c>entity_hot_update</c> (E34 §5): a prefetched relation pack
+        /// Apply an <c>entity_hot_update</c> (E34 Â§5): a prefetched relation pack
         /// for a just-identified person, pushed by the PC scene adapter the moment
         /// identity_fusion names someone. The device folds it into entities_hot so
         /// the ContextCard renders from the local cache with zero round-trip.
@@ -115,10 +115,10 @@ namespace MLOmega.XR.Scene
         }
 
         /// <summary>
-        /// Apply a <c>spatial_hot_update</c> (E35 §4a): a recognised session zone +
+        /// Apply a <c>spatial_hot_update</c> (E35 Â§4a): a recognised session zone +
         /// map_quality + matching daily routines pushed by the PC scene adapter.
         /// Additive to the SceneDelta-driven spatial_hot; folds the zone/routines so
-        /// a "ici, d'habitude tu…" card can render from the local cache. Any thread.
+        /// a "ici, d'habitude tuâ€¦" card can render from the local cache. Any thread.
         /// </summary>
         public void SubmitSpatialHotUpdate(SpatialHotUpdate update)
         {
@@ -127,8 +127,8 @@ namespace MLOmega.XR.Scene
         }
 
         /// <summary>
-        /// Apply a <c>task_hot_update</c> (E35 §4c): the active task/situation the PC
-        /// scene adapter reports (goal/step/tools) → the single task_hot slot. Any
+        /// Apply a <c>task_hot_update</c> (E35 Â§4c): the active task/situation the PC
+        /// scene adapter reports (goal/step/tools) â†’ the single task_hot slot. Any
         /// thread.
         /// </summary>
         public void SubmitTaskHotUpdate(TaskHotUpdate update)
@@ -151,7 +151,7 @@ namespace MLOmega.XR.Scene
                 self._translationHot.Set(speakerTrackId, text, isFinal, language, self.NowMs));
         }
 
-        /// <summary>Set the single active UI task (§9.1: one task_hot at a time). Any thread.</summary>
+        /// <summary>Set the single active UI task (Â§9.1: one task_hot at a time). Any thread.</summary>
         public void SubmitActiveTask(string taskId, string goal, string step)
         {
             _ingress.Enqueue(self => self._taskHot.SetActive(taskId, goal, step, self.NowMs));
@@ -175,7 +175,7 @@ namespace MLOmega.XR.Scene
             _ingress.Enqueue(self => self._uiState.MarkSuppressed(uiIntentId, self.NowMs));
         }
 
-        /// <summary>Clear everything (session reset — §9.1 ui_state "reset session possible").</summary>
+        /// <summary>Clear everything (session reset â€” Â§9.1 ui_state "reset session possible").</summary>
         public void ResetSession()
         {
             _ingress.Enqueue(self =>
@@ -213,7 +213,7 @@ namespace MLOmega.XR.Scene
         //  Sub-caches
         // ======================================================================
 
-        /// <summary>tracks — bbox/masks, velocities, visibility, age. Very short TTL.</summary>
+        /// <summary>tracks â€” bbox/masks, velocities, visibility, age. Very short TTL.</summary>
         public sealed class TrackSubCache
         {
             private readonly Dictionary<string, TrackEntry> _byId = new Dictionary<string, TrackEntry>();
@@ -264,11 +264,11 @@ namespace MLOmega.XR.Scene
             }
         }
 
-        /// <summary>entities_hot — reconciled via SceneDelta; no name below identity confidence.</summary>
+        /// <summary>entities_hot â€” reconciled via SceneDelta; no name below identity confidence.</summary>
         public sealed class EntitiesHotSubCache
         {
             private readonly Dictionary<string, EntityHot> _byId = new Dictionary<string, EntityHot>();
-            // E34 §5: prefetched relation pack (name + last topics / promises) per
+            // E34 Â§5: prefetched relation pack (name + last topics / promises) per
             // entity, delivered ahead of the ContextCard so it renders locally.
             private readonly Dictionary<string, EntityHotUpdate> _relationPacks =
                 new Dictionary<string, EntityHotUpdate>();
@@ -296,14 +296,14 @@ namespace MLOmega.XR.Scene
             }
 
             /// <summary>
-            /// Fold a prefetched relation pack into entities_hot (E34 §5). Additive:
+            /// Fold a prefetched relation pack into entities_hot (E34 Â§5). Additive:
             /// it seeds/refreshes the entity's name + person id and stores the pack.
             /// </summary>
             public void ApplyHotUpdate(EntityHotUpdate update, long nowMs)
             {
                 if (update == null || string.IsNullOrEmpty(update.EntityId)) return;
                 _relationPacks[update.EntityId] = update;
-                // E35 §4b: a durable object carries a Label (+ kind=object); a person
+                // E35 Â§4b: a durable object carries a Label (+ kind=object); a person
                 // carries a Name. Use whichever is present so both fold into the same
                 // entities_hot store additively.
                 bool isObject = update.IsObject;
@@ -374,29 +374,29 @@ namespace MLOmega.XR.Scene
             }
 
             /// <summary>
-            /// §17.2 / §9.1: a name/person-tag is only allowed when identity
+            /// Â§17.2 / Â§9.1: a name/person-tag is only allowed when identity
             /// confidence clears the configured threshold. Otherwise the entity is
             /// shown without a name.
             /// </summary>
             public bool NameAllowed(float identityThreshold) => Confidence >= identityThreshold;
         }
 
-        /// <summary>spatial_hot — bearing/last_seen (session), map quality. No arrow below threshold.</summary>
+        /// <summary>spatial_hot â€” bearing/last_seen (session), map quality. No arrow below threshold.</summary>
         public sealed class SpatialHotSubCache
         {
-            private readonly Dictionary<string, SpatialHot> _byEntity = new Dictionary<string, SpatialHot>();
+            private readonly Dictionary<string, SpatialHotEntry> _byEntity = new Dictionary<string, SpatialHotEntry>();
             private double _lastMapQuality;
             private long _lastMapQualityMs;
-            // E35 §4a: the recognised session zone + its matching daily routines,
+            // E35 Â§4a: the recognised session zone + its matching daily routines,
             // pushed by the PC scene adapter (additive to the delta-driven bearings).
             private SpatialHotUpdate _zonePack;
             private long _zonePackMs;
 
             public double MapQuality => _lastMapQuality;
             public int Count => _byEntity.Count;
-            public IReadOnlyCollection<SpatialHot> All => _byEntity.Values;
+            public IReadOnlyCollection<SpatialHotEntry> All => _byEntity.Values;
 
-            /// <summary>The active zone pack (zone id + routines), if one arrived (E35 §4a).</summary>
+            /// <summary>The active zone pack (zone id + routines), if one arrived (E35 Â§4a).</summary>
             public SpatialHotUpdate ZonePack => _zonePack;
             public string ActiveZone => _zonePack?.Zone;
 
@@ -406,7 +406,7 @@ namespace MLOmega.XR.Scene
                 _lastMapQualityMs = nowMs;
             }
 
-            /// <summary>Fold a PC-pushed zone pack (E35 §4a). Refreshes map_quality
+            /// <summary>Fold a PC-pushed zone pack (E35 Â§4a). Refreshes map_quality
             /// from the measured value carried by the update.</summary>
             public void ApplyHotUpdate(SpatialHotUpdate update, long nowMs)
             {
@@ -426,13 +426,13 @@ namespace MLOmega.XR.Scene
                 string entityId = AsString(change, "entity_id");
                 if (string.IsNullOrEmpty(entityId)) return;
                 double bearing = AsDouble(change, "bearing_deg", double.NaN);
-                _byEntity[entityId] = new SpatialHot(entityId, bearing, mapQuality, nowMs);
+                _byEntity[entityId] = new SpatialHotEntry(entityId, bearing, mapQuality, nowMs);
             }
 
-            public bool TryGet(string entityId, out SpatialHot spatial) =>
+            public bool TryGet(string entityId, out SpatialHotEntry spatial) =>
                 _byEntity.TryGetValue(entityId ?? string.Empty, out spatial);
 
-            /// <summary>§13/§17.2: precise arrows only when map_quality clears the threshold.</summary>
+            /// <summary>Â§13/Â§17.2: precise arrows only when map_quality clears the threshold.</summary>
             public bool ArrowAllowed(float mapQualityThreshold) => _lastMapQuality >= mapQualityThreshold;
 
             public void AgeOut(long nowMs, long ttlMs)
@@ -440,7 +440,7 @@ namespace MLOmega.XR.Scene
                 if (_byEntity.Count > 0)
                 {
                     List<string> dead = null;
-                    foreach (KeyValuePair<string, SpatialHot> kv in _byEntity)
+                    foreach (KeyValuePair<string, SpatialHotEntry> kv in _byEntity)
                     {
                         if (nowMs - kv.Value.LastSeenMs > ttlMs)
                         {
@@ -472,14 +472,14 @@ namespace MLOmega.XR.Scene
             }
         }
 
-        public readonly struct SpatialHot
+        public readonly struct SpatialHotEntry
         {
             public readonly string EntityId;
             public readonly double BearingDeg;
             public readonly double MapQuality;
             public readonly long LastSeenMs;
 
-            public SpatialHot(string entityId, double bearingDeg, double mapQuality, long lastSeenMs)
+            public SpatialHotEntry(string entityId, double bearingDeg, double mapQuality, long lastSeenMs)
             {
                 EntityId = entityId;
                 BearingDeg = bearingDeg;
@@ -490,13 +490,13 @@ namespace MLOmega.XR.Scene
             public bool HasBearing => !double.IsNaN(BearingDeg);
         }
 
-        /// <summary>task_hot — one active task in UI at a time (§9.1).</summary>
+        /// <summary>task_hot â€” one active task in UI at a time (Â§9.1).</summary>
         public sealed class TaskHotSubCache
         {
-            private TaskHot? _active;
+            private TaskHotEntry? _active;
 
             public bool HasActive => _active.HasValue;
-            public TaskHot? Active => _active;
+            public TaskHotEntry? Active => _active;
 
             /// <summary>
             /// Setting a task replaces any previous one: the reference is explicit
@@ -509,15 +509,15 @@ namespace MLOmega.XR.Scene
                     _active = null;
                     return;
                 }
-                _active = new TaskHot(taskId, goal, step, nowMs);
+                _active = new TaskHotEntry(taskId, goal, step, nowMs);
             }
 
-            /// <summary>Fold a PC-pushed task hot update (E35 §4c) into the single
-            /// active task slot (task_key → id, goal/step carried through).</summary>
+            /// <summary>Fold a PC-pushed task hot update (E35 Â§4c) into the single
+            /// active task slot (task_key â†’ id, goal/step carried through).</summary>
             public void ApplyHotUpdate(TaskHotUpdate update, long nowMs)
             {
                 if (update == null || string.IsNullOrEmpty(update.TaskKey)) return;
-                _active = new TaskHot(update.TaskKey, update.Goal, update.Step, nowMs);
+                _active = new TaskHotEntry(update.TaskKey, update.Goal, update.Step, nowMs);
             }
 
             public void AgeOut(long nowMs, long ttlMs)
@@ -531,13 +531,13 @@ namespace MLOmega.XR.Scene
             public void Clear() => _active = null;
         }
 
-        public readonly struct TaskHot
+        public readonly struct TaskHotEntry
         {
             public readonly string TaskId;
             public readonly string Goal;
             public readonly string Step;
             public readonly long UpdatedMs;
-            public TaskHot(string taskId, string goal, string step, long updatedMs)
+            public TaskHotEntry(string taskId, string goal, string step, long updatedMs)
             {
                 TaskId = taskId;
                 Goal = goal;
@@ -546,18 +546,18 @@ namespace MLOmega.XR.Scene
             }
         }
 
-        /// <summary>translation_hot — one live line; expires on turn change / delay (§9.1).</summary>
+        /// <summary>translation_hot â€” one live line; expires on turn change / delay (Â§9.1).</summary>
         public sealed class TranslationHotSubCache
         {
-            private TranslationHot? _current;
+            private TranslationHotEntry? _current;
 
             public bool HasLine => _current.HasValue;
-            public TranslationHot? Current => _current;
+            public TranslationHotEntry? Current => _current;
 
             public void Set(string speakerTrackId, string text, bool isFinal, string language, long nowMs)
             {
                 // A speaker change is a turn change: the previous line is replaced.
-                _current = new TranslationHot(speakerTrackId, text, isFinal, language, nowMs);
+                _current = new TranslationHotEntry(speakerTrackId, text, isFinal, language, nowMs);
             }
 
             public void AgeOut(long nowMs, long ttlMs)
@@ -571,7 +571,7 @@ namespace MLOmega.XR.Scene
             public void Clear() => _current = null;
         }
 
-        public readonly struct TranslationHot
+        public readonly struct TranslationHotEntry
         {
             public readonly string SpeakerTrackId;
             public readonly string Text;
@@ -579,7 +579,7 @@ namespace MLOmega.XR.Scene
             public readonly string Language;
             public readonly long UpdatedMs;
 
-            public TranslationHot(string speakerTrackId, string text, bool isFinal, string language, long updatedMs)
+            public TranslationHotEntry(string speakerTrackId, string text, bool isFinal, string language, long updatedMs)
             {
                 SpeakerTrackId = speakerTrackId;
                 Text = text;
@@ -589,7 +589,7 @@ namespace MLOmega.XR.Scene
             }
         }
 
-        /// <summary>ui_state — visible intents, suppression, density prefs. Mandatory TTL (§9.1).</summary>
+        /// <summary>ui_state â€” visible intents, suppression, density prefs. Mandatory TTL (Â§9.1).</summary>
         public sealed class UiStateSubCache
         {
             private readonly Dictionary<string, VisibleRecord> _visible = new Dictionary<string, VisibleRecord>();

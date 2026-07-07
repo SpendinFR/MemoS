@@ -1,4 +1,4 @@
-// MLOmega V19 — E23 EditMode tests
+﻿// MLOmega V19 â€” E23 EditMode tests
 // Round-trips UIIntent / UIReceipt / FrameEnvelope through Newtonsoft.Json and
 // asserts the wire keys stay snake_case (the JSON the PC services consume). This
 // is the Unity-side proof that the [JsonProperty] rewrite in the synced contracts
@@ -31,7 +31,7 @@ namespace MLOmega.XR.Tests
                 Content = new Dictionary<string, object> { { "text", "hello" } }
             };
 
-            string json = JsonConvert.SerializeObject(intent);
+            string json = ContractJson.Serialize(intent);
             JObject o = JObject.Parse(json);
 
             // Wire keys must be snake_case (what delivery_adapter / companion-web read).
@@ -43,7 +43,7 @@ namespace MLOmega.XR.Tests
             Assert.AreEqual(4000, (long)o["ttl_ms"]);
             Assert.AreEqual("del-9", (string)o["delivery_id"]);
 
-            var back = JsonConvert.DeserializeObject<UIIntent>(json);
+            var back = ContractJson.Deserialize<UIIntent>(json);
             Assert.AreEqual(intent.UiIntentId, back.UiIntentId);
             Assert.AreEqual(intent.Producer, back.Producer);
             Assert.AreEqual(intent.Priority, back.Priority, 1e-9);
@@ -64,7 +64,7 @@ namespace MLOmega.XR.Tests
                 Source = "unity-xr"
             };
 
-            string json = JsonConvert.SerializeObject(receipt);
+            string json = ContractJson.Serialize(receipt);
             JObject o = JObject.Parse(json);
 
             Assert.AreEqual("ui-1", (string)o["ui_intent_id"]);
@@ -72,7 +72,7 @@ namespace MLOmega.XR.Tests
             Assert.AreEqual("displayed", (string)o["event"]);
             Assert.AreEqual("2026-07-04T12:00:00Z", (string)o["observed_at"]);
 
-            var back = JsonConvert.DeserializeObject<UIReceipt>(json);
+            var back = ContractJson.Deserialize<UIReceipt>(json);
             Assert.AreEqual(receipt.UiIntentId, back.UiIntentId);
             Assert.AreEqual(receipt.Event, back.Event);
             Assert.AreEqual(receipt.DeliveryId, back.DeliveryId);
@@ -98,7 +98,7 @@ namespace MLOmega.XR.Tests
                 }
             };
 
-            string json = JsonConvert.SerializeObject(env);
+            string json = ContractJson.Serialize(env);
             JObject o = JObject.Parse(json);
 
             Assert.AreEqual("xrs-1", (string)o["session_id"]);
@@ -108,7 +108,7 @@ namespace MLOmega.XR.Tests
             Assert.AreEqual("phone_camera", (string)o["source"]);
             Assert.AreEqual(3, ((JArray)o["pose"]["position"]).Count);
 
-            var back = JsonConvert.DeserializeObject<FrameEnvelope>(json);
+            var back = ContractJson.Deserialize<FrameEnvelope>(json);
             Assert.AreEqual("f_5", back.FrameId);
             Assert.AreEqual(90, back.Rotation);
             CollectionAssert.AreEqual(env.Pose.Position, back.Pose.Position);

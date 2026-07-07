@@ -1,4 +1,4 @@
-// MLOmega V19 — E23
+﻿// MLOmega V19 â€” E23
 // Turns raw frames from the IXRDeviceAdapter into FrameEnvelopes that conform to
 // the V19 contract, and raises OnFrame(Texture, FrameEnvelope) for the future
 // transport (E24) to consume. It is the single point where a captured texture is
@@ -13,6 +13,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using MLOmega.Contracts.V19;
+using Pose = MLOmega.Contracts.V19.Pose;
 using UnityEngine;
 
 namespace MLOmega.XR.Core
@@ -50,10 +51,10 @@ namespace MLOmega.XR.Core
 
         /// <summary>
         /// Set the frame rotation stamped on subsequent envelopes. Driven by
-        /// <c>OrientationGuard</c> (E29 §3b) from the gravity vector so a phone hung
+        /// <c>OrientationGuard</c> (E29 Â§3b) from the gravity vector so a phone hung
         /// vertically (capture-only) reports its true sensor orientation; the PC
         /// un-rotates before vision (see live_pipeline.deorient_frame). Rounds to the
-        /// nearest 90° bucket. Returns true when the value changed.
+        /// nearest 90Â° bucket. Returns true when the value changed.
         /// </summary>
         public bool SetRotation(int degrees)
         {
@@ -73,7 +74,7 @@ namespace MLOmega.XR.Core
         /// <summary>
         /// Raised for each published frame. The Texture is owned by the adapter and
         /// reused; consumers must not dispose it. The FrameEnvelope is reused across
-        /// frames — read/serialize it synchronously in the handler, do not retain it.
+        /// frames â€” read/serialize it synchronously in the handler, do not retain it.
         /// </summary>
         public event Action<Texture, FrameEnvelope> OnFrame;
 

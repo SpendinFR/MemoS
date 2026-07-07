@@ -1,4 +1,4 @@
-// MLOmega V19 — E46-D
+﻿// MLOmega V19 â€” E46-D
 // Reproducible batchmode Android APK build for the PhoneOnly profile.
 //
 // Runs headless:
@@ -12,17 +12,18 @@
 // PhoneOnly scene exists, and (4) writes the APK to build/android/.
 //
 // Overridable by environment variable:
-//   MLOMEGA_ANDROID_SDK   — Android SDK root      (default %LOCALAPPDATA%\Android\Sdk)
-//   MLOMEGA_ANDROID_NDK   — NDK root              (default <sdk>\ndk\23.1.7779620)
-//   MLOMEGA_ANDROID_JDK   — JDK 17 home           (default Microsoft OpenJDK 17.0.19)
-//   MLOMEGA_GRADLE_HOME   — Gradle 8.7 home       (default <repo>\.tools\gradle-8.7)
-//   MLOMEGA_APK_OUT       — APK output path       (default build/android/mlomega-phoneonly.apk)
-//   MLOMEGA_PC_HOST       — LAN/Tailscale host injected into MLOmegaConfig
-//   MLOMEGA_PC_PORT       — SessionHub port
+//   MLOMEGA_ANDROID_SDK   â€” Android SDK root      (default %LOCALAPPDATA%\Android\Sdk)
+//   MLOMEGA_ANDROID_NDK   â€” NDK root              (default <sdk>\ndk\23.1.7779620)
+//   MLOMEGA_ANDROID_JDK   â€” JDK 17 home           (default Microsoft OpenJDK 17.0.19)
+//   MLOMEGA_GRADLE_HOME   â€” Gradle 8.7 home       (default <repo>\.tools\gradle-8.7)
+//   MLOMEGA_APK_OUT       â€” APK output path       (default build/android/mlomega-phoneonly.apk)
+//   MLOMEGA_PC_HOST       â€” LAN/Tailscale host injected into MLOmegaConfig
+//   MLOMEGA_PC_PORT       â€” SessionHub port
 using System;
 using System.IO;
 using MLOmega.XR.Core;
 using UnityEditor;
+using UnityEditor.Android;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
 

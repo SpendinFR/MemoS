@@ -1,10 +1,10 @@
-// MLOmega V19 — E26
-// FocusSearchSkill (§9.2/§14.6): resolve a spoken "where is X" against the
+﻿// MLOmega V19 â€” E26
+// FocusSearchSkill (Â§9.2/Â§14.6): resolve a spoken "where is X" against the
 // SceneCache FIRST (local-first), then the PC only on a miss:
-//   * entity visible now (in entities_hot / tracks) → object_outline;
-//   * known but not visible (spatial_hot last-seen) → context_card with age + a
-//     prudent arrow only if map_quality clears the threshold (§17.2);
-//   * otherwise → if transport connected, send a DataChannel VisionRT request and
+//   * entity visible now (in entities_hot / tracks) â†’ object_outline;
+//   * known but not visible (spatial_hot last-seen) â†’ context_card with age + a
+//     prudent arrow only if map_quality clears the threshold (Â§17.2);
+//   * otherwise â†’ if transport connected, send a DataChannel VisionRT request and
 //     show a discreet spinner; if not connected, show an HONEST last-seen/miss
 //     message (never a fake arrow).
 // The DataChannel request is a UIReceipt-like control message sent through an
@@ -64,7 +64,7 @@ namespace MLOmega.XR.Reflex.Skills
                 }
             }
 
-            // 1) Visible now → outline.
+            // 1) Visible now â†’ outline.
             if (visibleTrack != null && cache.Tracks.Contains(visibleTrack))
             {
                 var intent = NewIntent("object_outline", "focus_" + Norm(query));
@@ -76,9 +76,9 @@ namespace MLOmega.XR.Reflex.Skills
                 return SearchOutcome.VisibleOutline;
             }
 
-            // 2) Known but not visible → last-seen card (+ prudent arrow if map qualifies).
+            // 2) Known but not visible â†’ last-seen card (+ prudent arrow if map qualifies).
             if (resolvedEntity != null && cache != null &&
-                cache.SpatialHot.TryGet(resolvedEntity, out SceneCache.SpatialHot sp))
+                cache.SpatialHot.TryGet(resolvedEntity, out SceneCache.SpatialHotEntry sp))
             {
                 var card = NewIntent("context_card", "focus_" + Norm(query));
                 card.EntityId = resolvedEntity;
@@ -96,13 +96,13 @@ namespace MLOmega.XR.Reflex.Skills
                 return SearchOutcome.LastSeenCard;
             }
 
-            // 3) Miss → VisionRT if connected (spinner), else honest message.
+            // 3) Miss â†’ VisionRT if connected (spinner), else honest message.
             if (TransportConnected && VisionRtRequestSender != null && VisionRtRequestSender(query))
             {
                 var spinner = NewIntent("context_card", "focus_" + Norm(query));
                 spinner.TruthLevel = "probable";
                 spinner.Content["title"] = query;
-                spinner.Content["text"] = "searching…";
+                spinner.Content["text"] = "searchingâ€¦";
                 spinner.UiHint["spinner"] = true;
                 spinner.TtlMs = (long)((_config != null ? _config.FocusSearchTimeoutSeconds : 3f) * 1000f);
                 EmitIntent(spinner);

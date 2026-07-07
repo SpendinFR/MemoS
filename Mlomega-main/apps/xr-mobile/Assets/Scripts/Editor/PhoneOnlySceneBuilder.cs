@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using MLOmega.XR.Core;
@@ -23,7 +23,7 @@ namespace MLOmega.XR.Editor
         [MenuItem("MLOmega/Build PhoneOnly Scene")]
         public static void BuildScene()
         {
-            Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            UnityEngine.SceneManagement.Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
             var config = LoadOrCreateConfig();
 
             var cameraGo = new GameObject("Phone Camera");

@@ -105,6 +105,13 @@ namespace MLOmega.XR.Reflex
                 prediction, horizonMs, confidence, severity, evidenceRefs, nowMs);
         }
 
+        /// <summary>Force-flush one aggregate at a natural boundary (e.g. a
+        /// finalised segment): exactly one aggregated event per closed turn.</summary>
+        protected void FlushReflex(string aggregateKey, long nowMs, long horizonMs = 0)
+        {
+            Aggregator?.FlushNow(SessionId, SkillName(SkillId), aggregateKey, horizonMs, nowMs);
+        }
+
         protected static long NowMs() => (long)(Time.unscaledTimeAsDouble * 1000.0);
 
         internal static string SkillName(ReflexSkillId id) => id switch
