@@ -168,6 +168,66 @@ namespace MLOmega.XR.Transport
 #endif
         }
 
+        // --- E47-A: single-microphone fan-out + command-tagged transcripts -------
+
+        /// <summary>
+        /// E47-A. Attach the on-device speech pipeline's PCM sink (a Kotlin
+        /// <c>com.mlomega.xr.livetransport.PcmFeed</c>) so sherpa consumes the SAME
+        /// microphone PCM WebRTC captures — no second AudioRecord. The
+        /// AndroidJavaObject is the sink returned by
+        /// <c>AsrKwsService.asPcmSink()</c>. No-op in editor / before StartTransport.
+        /// </summary>
+#if UNITY_ANDROID && !UNITY_EDITOR
+        public void AttachPcmFeed(AndroidJavaObject feed)
+        {
+            if (_plugin == null || feed == null)
+            {
+                Debug.LogWarning("[LiveTransport] AttachPcmFeed: transport not started; feed dropped.");
+                return;
+            }
+            _plugin.Call("attachPcmFeed", feed);
+        }
+
+        /// <summary>Detach a previously attached PCM feed.</summary>
+        public void DetachPcmFeed(AndroidJavaObject feed)
+        {
+            if (_plugin == null || feed == null) return;
+            _plugin.Call("detachPcmFeed", feed);
+        }
+#else
+        public void AttachPcmFeed(object feed) =>
+            Debug.Log("[LiveTransport] (editor) AttachPcmFeed no-op (DIRECT_PYTHON).");
+
+        public void DetachPcmFeed(object feed) { }
+#endif
+
+        /// <summary>
+        /// E47-A. Send a final device ASR segment up the reliable DataChannel with
+        /// the additive <c>is_command</c> flag. Capture already reached the PC over
+        /// WebRTC (life memory / hot context); this metadata tells the PC whether to
+        /// ROUTE the segment as a command (wake word was active) or keep it as plain
+        /// memory. Only finals are sent; partials render locally via SubtitleSkill.
+        /// </summary>
+        public bool SendTranscriptSegment(string text, string language, long startMs, long endMs, bool isCommand)
+        {
+            // Flat JSON matching the DataChannel convention; keyed distinctly from
+            // ui_intent_id so OnNativeMessage's UIIntent path never claims it.
+            string json =
+                "{\"type\":\"device_transcript\"," +
+                "\"text\":" + JsonConvert.ToString(text ?? string.Empty) + "," +
+                "\"language\":" + JsonConvert.ToString(language ?? string.Empty) + "," +
+                "\"start_ms\":" + startMs + "," +
+                "\"end_ms\":" + endMs + "," +
+                "\"is_final\":true," +
+                "\"is_command\":" + (isCommand ? "true" : "false") + "}";
+#if UNITY_ANDROID && !UNITY_EDITOR
+            return _plugin != null && _plugin.Call<bool>("sendContractMessage", json);
+#else
+            Debug.Log($"[LiveTransport] (editor) would send transcript: {json}");
+            return false;
+#endif
+        }
+
         // --- frame feeding --------------------------------------------------------
 
         private void HandleFrame(Texture texture, FrameEnvelope envelope)

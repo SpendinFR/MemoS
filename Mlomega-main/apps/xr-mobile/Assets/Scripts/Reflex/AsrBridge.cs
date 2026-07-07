@@ -27,13 +27,22 @@ namespace MLOmega.XR.Reflex
         public readonly long StartMs;
         public readonly long EndMs;
 
-        public TranscriptEvent(string text, bool isFinal, string language, long startMs, long endMs)
+        /// <summary>
+        /// E47-A: true only for a final segment that ended inside the wake-word
+        /// command window. Capture always continues to the PC (life memory); this
+        /// flag tells the PC to ROUTE the segment as a command. Always false for
+        /// partials.
+        /// </summary>
+        public readonly bool IsCommand;
+
+        public TranscriptEvent(string text, bool isFinal, string language, long startMs, long endMs, bool isCommand)
         {
             Text = text;
             IsFinal = isFinal;
             Language = language;
             StartMs = startMs;
             EndMs = endMs;
+            IsCommand = isCommand;
         }
     }
 
@@ -49,6 +58,11 @@ namespace MLOmega.XR.Reflex
 
         [Tooltip("Relative dir of the KeywordSpotter model.")]
         [SerializeField] private string _kwsModelRelativeDir = "reflex/kws";
+
+        [Tooltip("E47-A: the live transport that owns the single microphone. On " +
+                 "device, AsrKwsService consumes its PCM fan-out instead of opening " +
+                 "a second AudioRecord. Auto-found if left null.")]
+        [SerializeField] private MLOmega.XR.Transport.LiveTransportBridge _transport;
 
         /// <summary>Raised on the main thread for each partial/final transcript.</summary>
         public event Action<TranscriptEvent> Transcript;
@@ -69,6 +83,7 @@ namespace MLOmega.XR.Reflex
         private void Awake()
         {
             if (_config == null) _config = FindAnyObjectByType<SessionPairing>()?.Config;
+            if (_transport == null) _transport = FindAnyObjectByType<MLOmega.XR.Transport.LiveTransportBridge>();
         }
 
         private void Update()
@@ -126,31 +141,46 @@ namespace MLOmega.XR.Reflex
             string filesDir = ctx.Call<AndroidJavaObject>("getFilesDir").Call<string>("getAbsolutePath");
 
             string lang = (_config != null && _config.AsrLanguage == ReflexAsrLanguage.Fr) ? "FR" : "EN";
-            string wake = _config != null ? _config.WakeWord : "hey mlomega";
+            string wake = _config != null ? _config.WakeWord : "omega";
+            long commandWindowMs = (long)((_config != null ? _config.CommandWindowSeconds : 6f) * 1000f);
             using var langEnum = new AndroidJavaClass("com.mlomega.xr.reflexvision.AsrLanguage")
                 .CallStatic<AndroidJavaObject>("valueOf", lang);
 
-            // Build the wake-word list (single phrase) as a java.util.ArrayList<String>.
-            using var wakeList = new AndroidJavaObject("java.util.ArrayList");
-            wakeList.Call<bool>("add", wake);
-
-            var cfg = new AndroidJavaObject(
-                "com.mlomega.xr.reflexvision.AsrKwsConfig",
-                langEnum,
-                filesDir + "/" + _asrModelRelativeDir,
-                filesDir + "/" + _vadRelativePath,
-                filesDir + "/" + _kwsModelRelativeDir,
-                wakeList);
+            // E47-A: build the config via the JNI factory (Kotlin default args are
+            // not reachable through the JNI bridge). ownMicrophone=false → the
+            // service consumes the transport's PCM fan-out, no second AudioRecord.
+            using var cfg = new AndroidJavaClass("com.mlomega.xr.reflexvision.AsrKwsConfigFactory")
+                .CallStatic<AndroidJavaObject>("forUnity",
+                    langEnum,
+                    filesDir + "/" + _asrModelRelativeDir,
+                    filesDir + "/" + _vadRelativePath,
+                    filesDir + "/" + _kwsModelRelativeDir,
+                    wake,
+                    commandWindowMs);
 
             _proxy = new AsrProxy(this);
             _service = new AndroidJavaObject(
                 "com.mlomega.xr.reflexvision.AsrKwsService", ctx, cfg, _proxy);
             _service.Call("start");
+
+            // E47-A single-mic arbitration: hand the transport's WebRTC-captured
+            // PCM to sherpa. asPcmSink() returns a livetransport-shaped PcmFeed the
+            // plugin's JavaAudioDeviceModule fan-out pushes into.
+            using var sink = _service.Call<AndroidJavaObject>("asPcmSink");
+            if (_transport != null) _transport.AttachPcmFeed(sink);
+            else Debug.LogWarning("[AsrBridge] no LiveTransportBridge — sherpa has no mic feed (E47-A).");
         }
 #endif
 
-        internal void OnNativeTranscript(string text, bool isFinal, string lang, long startMs, long endMs) =>
-            Enqueue(() => Transcript?.Invoke(new TranscriptEvent(text, isFinal, lang, startMs, endMs)));
+        internal void OnNativeTranscript(string text, bool isFinal, string lang, long startMs, long endMs, bool isCommand) =>
+            Enqueue(() =>
+            {
+                Transcript?.Invoke(new TranscriptEvent(text, isFinal, lang, startMs, endMs, isCommand));
+                // E47-A: forward the FINAL segment to the PC with the is_command
+                // flag (capture already streamed as audio; this is the routing hint).
+                if (isFinal && _transport != null)
+                    _transport.SendTranscriptSegment(text, lang, startMs, endMs, isCommand);
+            });
 
         internal void OnNativeWakeWord(string keyword, long tsMs) =>
             Enqueue(() => WakeWordSpotted?.Invoke(keyword, tsMs));
@@ -191,6 +221,9 @@ namespace MLOmega.XR.Reflex
         private float[] _micBuffer;
         private const int EditorSampleRate = 16000;
         private const float VadEnergyThreshold = 0.0025f;
+        // E47-A: editor mirror of the native command window so IsCommand can be
+        // exercised without a device (the K key opens it for CommandWindowSeconds).
+        private double _editorCommandUntil;
 
         private void StartEditorMic()
         {
@@ -217,7 +250,9 @@ namespace MLOmega.XR.Reflex
             if (Input.GetKeyDown(KeyCode.K) && _editorKwsArmed)
             {
                 long now = (long)(Time.unscaledTimeAsDouble * 1000.0);
-                WakeWordSpotted?.Invoke(_config != null ? _config.WakeWord : "hey mlomega", now);
+                float windowSec = _config != null ? _config.CommandWindowSeconds : 6f;
+                _editorCommandUntil = Time.unscaledTimeAsDouble + windowSec;
+                WakeWordSpotted?.Invoke(_config != null ? _config.WakeWord : "omega", now);
                 return;
             }
             if (_micClip == null) return;
@@ -243,14 +278,15 @@ namespace MLOmega.XR.Reflex
                 _editorSpeaking = true;
                 Transcript?.Invoke(new TranscriptEvent("…", false,
                     _config != null && _config.AsrLanguage == ReflexAsrLanguage.Fr ? "fr" : "en",
-                    nowMs, nowMs));
+                    nowMs, nowMs, false));
             }
             else if (!speaking && _editorSpeaking)
             {
                 _editorSpeaking = false;
+                bool isCommand = Time.unscaledTimeAsDouble <= _editorCommandUntil;
                 Transcript?.Invoke(new TranscriptEvent("(speech segment)", true,
                     _config != null && _config.AsrLanguage == ReflexAsrLanguage.Fr ? "fr" : "en",
-                    nowMs, nowMs));
+                    nowMs, nowMs, isCommand));
             }
         }
 #endif
@@ -262,8 +298,8 @@ namespace MLOmega.XR.Reflex
             public AsrProxy(AsrBridge b)
                 : base("com.mlomega.xr.reflexvision.AsrKwsCallbacks") { _bridge = b; }
 
-            void onTranscript(string text, bool isFinal, string language, long startMs, long endMs) =>
-                _bridge.OnNativeTranscript(text, isFinal, language, startMs, endMs);
+            void onTranscript(string text, bool isFinal, string language, long startMs, long endMs, bool isCommand) =>
+                _bridge.OnNativeTranscript(text, isFinal, language, startMs, endMs, isCommand);
             void onWakeWord(string keyword, long tsMs) => _bridge.OnNativeWakeWord(keyword, tsMs);
             void onError(string message) => _bridge.OnNativeError(message);
         }

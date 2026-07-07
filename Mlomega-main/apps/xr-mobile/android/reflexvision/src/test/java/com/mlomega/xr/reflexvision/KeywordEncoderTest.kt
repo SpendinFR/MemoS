@@ -41,4 +41,20 @@ class KeywordEncoderTest {
         val out = KeywordEncoder.encode(listOf("", "  "))
         assertEquals("", out)
     }
+
+    // --- E47-A: the wake word is a user-chosen word (default "omega") ---------
+
+    @Test
+    fun default_wake_word_omega_encodes_to_a_single_token_line() {
+        // Spec: wake word is user-chosen (MLOmegaConfig), default "omega".
+        val out = KeywordEncoder.encode(listOf("omega"))
+        assertEquals("▁omega\n", out)
+    }
+
+    @Test
+    fun arbitrary_user_chosen_word_is_encoded_lowercased() {
+        // Any word the user types in config must encode deterministically.
+        val out = KeywordEncoder.encode(listOf("Jarvis"), boost = 1.5f, threshold = 0.25f)
+        assertEquals("▁jarvis :1.5 #0.25\n", out)
+    }
 }

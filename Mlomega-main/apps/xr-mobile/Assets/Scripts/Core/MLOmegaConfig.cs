@@ -130,13 +130,21 @@ namespace MLOmega.XR.Core
         [SerializeField] private float _httpTimeoutSeconds = 5f;
 
         [Header("Ultra-Live reflex (E26)")]
-        [Tooltip("Spoken wake word that arms command listening. Configurable; " +
-                 "encoded to the sherpa keywords format by the reflexvision module.")]
-        [SerializeField] private string _wakeWord = "hey mlomega";
+        [Tooltip("Spoken wake word that arms command listening. User-chosen and " +
+                 "encoded to the sherpa keywords format by the reflexvision module. " +
+                 "Default 'omega' (E47-A).")]
+        [SerializeField] private string _wakeWord = "omega";
 
         [Tooltip("Language of the on-device streaming ASR/subtitles (fr or en). " +
                  "Selects the sherpa-onnx model loaded by AsrKwsService.")]
         [SerializeField] private ReflexAsrLanguage _asrLanguage = ReflexAsrLanguage.En;
+
+        [Tooltip("E47-A: how long the wake word keeps command routing armed. " +
+                 "Final transcripts ending inside this window are flagged as " +
+                 "commands (is_command). Capture never stops — this only gates " +
+                 "routing, not the audio uplink.")]
+        [Min(1f)]
+        [SerializeField] private float _commandWindowSeconds = 6f;
 
         public string PcHost => _pcHost;
         public int SessionHubPort => _sessionHubPort;
@@ -153,6 +161,9 @@ namespace MLOmega.XR.Core
         public float HttpTimeoutSeconds => _httpTimeoutSeconds;
         public string WakeWord => _wakeWord;
         public ReflexAsrLanguage AsrLanguage => _asrLanguage;
+
+        /// <summary>E47-A: wake-word command window length in seconds.</summary>
+        public float CommandWindowSeconds => _commandWindowSeconds;
 
         /// <summary>The configured endpoint list (may be empty).</summary>
         public PcEndpoint[] Endpoints => _endpoints;

@@ -26,6 +26,15 @@ enum class AsrLanguage { FR, EN }
  * @property numThreads onnxruntime intra-op threads (2 keeps latency low on S25).
  * @property provider onnxruntime execution provider ("cpu" is the safe default;
  *   "nnapi" can be enabled once validated on device).
+ * @property ownMicrophone E47-A. false (default) → the service consumes PCM
+ *   pushed through [AsrKwsService.asPcmSink] by the WebRTC transport fan-out (the
+ *   single-microphone arbitration path; no `AudioRecord` here). true → legacy
+ *   E26 path where the service opens its own `AudioRecord` (device-standalone, no
+ *   WebRTC). Two concurrent microphones are forbidden, so this is only ever true
+ *   when the transport is NOT capturing.
+ * @property commandWindowMs E47-A. How long (ms) the wake word keeps the command
+ *   window open: final transcripts ending inside it are flagged `isCommand=true`
+ *   for PC-side routing. Capture never stops — this only gates routing.
  */
 data class AsrKwsConfig(
     val language: AsrLanguage,
@@ -36,6 +45,8 @@ data class AsrKwsConfig(
     val sampleRate: Int = 16_000,
     val numThreads: Int = 2,
     val provider: String = "cpu",
+    val ownMicrophone: Boolean = false,
+    val commandWindowMs: Long = 6_000L,
     val vad: VadConfig = VadConfig(),
     val kws: KwsConfig = KwsConfig(),
 )

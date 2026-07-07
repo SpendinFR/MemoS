@@ -29,6 +29,7 @@ import org.webrtc.SessionDescription
 import org.webrtc.SurfaceTextureHelper
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
+import org.webrtc.audio.JavaAudioDeviceModule
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -65,6 +66,15 @@ class LiveTransportPlugin(
 
     private val eglBase: EglBase = EglBase.create()
     private lateinit var factory: PeerConnectionFactory
+
+    /**
+     * E47-A: the single microphone. The [JavaAudioDeviceModule] is the ONE audio
+     * input; its samples-ready callback fans the captured PCM out to any attached
+     * [PcmFeed] (the on-device sherpa pipeline) via [fanout]. No second
+     * `AudioRecord` exists anywhere in the app.
+     */
+    private val fanout = MicAudioFanout()
+    private var audioDeviceModule: JavaAudioDeviceModule? = null
 
     private var peer: PeerConnection? = null
     private var dataChannel: DataChannel? = null
@@ -133,6 +143,11 @@ class LiveTransportPlugin(
             if (this::factory.isInitialized) factory.dispose()
         } catch (_: Throwable) {
         }
+        try {
+            audioDeviceModule?.release()
+        } catch (_: Throwable) {
+        }
+        audioDeviceModule = null
         eglBase.release()
     }
 
@@ -152,11 +167,50 @@ class LiveTransportPlugin(
             /* enableH264HighProfile = */ false,
         )
         val decoderFactory = DefaultVideoDecoderFactory(eglBase.eglBaseContext)
+
+        // E47-A: build the ONE audio input explicitly so we can fan its captured
+        // PCM out to the on-device speech pipeline. The samples-ready callback
+        // receives the SAME buffer WebRTC encodes for the uplink (before any
+        // encode), so sherpa gets byte-identical audio without a second mic.
+        // Capture is unaffected — the callback only observes.
+        val adm = JavaAudioDeviceModule.builder(appContext)
+            .setAudioSource(android.media.MediaRecorder.AudioSource.VOICE_RECOGNITION)
+            .setUseHardwareAcousticEchoCanceler(config.audio.enableEchoCancellation)
+            .setUseHardwareNoiseSuppressor(config.audio.enableNoiseSuppression)
+            .setSamplesReadyCallback { samples ->
+                if (fanout.hasFeeds()) {
+                    // WebRTC delivers PCM16; 2 bytes per sample per channel.
+                    fanout.dispatch(
+                        audioBytes = samples.data,
+                        bytesPerSample = BYTES_PER_PCM16_SAMPLE,
+                        sampleRate = samples.sampleRate,
+                        channels = samples.channelCount,
+                        timestampMs = System.currentTimeMillis(),
+                    )
+                }
+            }
+            .createAudioDeviceModule()
+        audioDeviceModule = adm
+
         factory = PeerConnectionFactory.builder()
+            .setAudioDeviceModule(adm)
             .setVideoEncoderFactory(encoderFactory)
             .setVideoDecoderFactory(decoderFactory)
             .createPeerConnectionFactory()
     }
+
+    // --- E47-A: microphone fan-out (single-mic arbitration) -------------------
+
+    /**
+     * Attach a [PcmFeed] that will receive the same microphone PCM WebRTC
+     * captures. Used by the on-device sherpa pipeline (reflexvision) so it never
+     * opens its own `AudioRecord`. Safe to call before or after [start]; the feed
+     * begins receiving samples as soon as capture is live. Idempotent.
+     */
+    fun attachPcmFeed(feed: PcmFeed) = fanout.attach(feed)
+
+    /** Detach a previously attached [PcmFeed]. Safe if it was never attached. */
+    fun detachPcmFeed(feed: PcmFeed) = fanout.detach(feed)
 
     private fun rtcConfig(): PeerConnection.RTCConfiguration {
         val ice = config.iceServers.map { s ->
@@ -511,6 +565,11 @@ class LiveTransportPlugin(
             }
         }, sdp)
         d.await()
+    }
+
+    private companion object {
+        /** WebRTC captures 16-bit signed PCM: 2 bytes per sample per channel. */
+        const val BYTES_PER_PCM16_SAMPLE = 2
     }
 }
 

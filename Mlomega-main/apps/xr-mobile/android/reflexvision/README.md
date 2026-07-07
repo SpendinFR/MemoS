@@ -14,6 +14,36 @@ driven from C# via `GestureBridge.cs` / `AsrBridge.cs`. It is only activated on
 demand by the Unity `ReflexScheduler` (GUIDE_V19 §9.4 — never all detectors in
 parallel; battery). Same conventions as the E24 `livetransport` module.
 
+## Single-microphone arbitration + wake-word command window (E47-A)
+
+There is exactly **one** microphone in the whole app. It lives in the
+`livetransport` module: a `JavaAudioDeviceModule` with a samples-ready callback
+whose captured PCM is (a) encoded to Opus for the WebRTC uplink and (b) fanned
+out unchanged to a `PcmFeed`. `AsrKwsService` **does not own an `AudioRecord`** on
+this path — it consumes those same samples via `asPcmSink()`, which the transport
+attaches with `LiveTransportPlugin.attachPcmFeed(...)`. Two concurrent microphones
+are forbidden. (A legacy self-owned `AudioRecord` path remains, gated by
+`AsrKwsConfig.ownMicrophone=true`, for device-standalone bring-up with no WebRTC.)
+
+The wake word only gates **routing**, never capture:
+
+- The wake word is a **user-chosen word** (`MLOmegaConfig.WakeWord`, default
+  `omega`), encoded by `KeywordEncoder` — no rebuild to change it.
+- A KWS hit opens a **command window** of `AsrKwsConfig.commandWindowMs`
+  (`MLOmegaConfig.CommandWindowSeconds`, default 6 s). Final ASR segments that end
+  inside the window are flagged `isCommand=true` (`onTranscript(...)`), forwarded
+  to the PC as the additive `is_command` field of the `device_transcript`
+  DataChannel message (`LiveTransportBridge.SendTranscriptSegment`).
+- **Capture is never stopped** — all audio keeps flowing to the PC (life memory /
+  hot context); the wake word only tells the PC which segments to route as
+  commands. Offline subtitles still render locally from the ASR results
+  (SubtitleSkill, E26). The Silero VAD gates *ASR decoding* (battery) but not the
+  uplink.
+
+Both the fan-out (`MicAudioFanout`, livetransport) and the window timing
+(`CommandWindow`, here) are pure and JVM-tested (`MicAudioFanoutTest`,
+`CommandWindowTest`).
+
 > **Build status:** this module cannot be compiled in the authoring environment
 > (no Android SDK). It is written against the pinned APIs below; the real compile
 > + on-device validation is the S25 gate (ADR `docs/DECISIONS.md` §E26). The pure
