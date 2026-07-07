@@ -96,6 +96,81 @@ except ImportError:  # pragma: no cover - only without API deps
 
 DEFAULT_PORT = 8710  # MLOmegaConfig.cs SessionHubPort
 
+# E47-C: the manifest key describing Android device-local models the phone fetches
+# from the PC at first launch (offline ASR/KWS + gesture). Served by the
+# /models/device provisioning endpoints below.
+_MANIFEST_PATH = _ROOT / "configs" / "MODEL_MANIFEST.yaml"
+
+
+def _sha256_file(path: Path) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def load_device_manifest() -> dict[str, dict[str, Any]]:
+    """Read the ``device:`` section of MODEL_MANIFEST.yaml (E47-C). {} if absent."""
+    try:
+        import yaml
+
+        data = yaml.safe_load(_MANIFEST_PATH.read_text(encoding="utf-8")) or {}
+        device = data.get("device", {}) if isinstance(data, dict) else {}
+        return {str(k): v for k, v in device.items() if isinstance(v, dict)}
+    except Exception:
+        return {}
+
+
+def _device_artifact_path(spec: dict[str, Any]) -> Path | None:
+    """The on-disk file the device downloads for a manifest entry.
+
+    For a single-file entry (MediaPipe .task) it is ``path`` directly. For an
+    archive entry (sherpa .tar.bz2) the phone receives the pre-fetched archive, so
+    the served artefact is the archive next to the extracted directory (fetched by
+    ``fetch_models_v19.py --device``). Returns None when nothing is on disk yet."""
+    path = spec.get("path")
+    if not path:
+        return None
+    resolved = _ROOT / str(path)
+    if spec.get("archive"):
+        extract_to = _ROOT / str(spec.get("extract_to") or "models/device")
+        archive_file = extract_to / Path(str(spec["archive"])).name
+        if archive_file.exists():
+            return archive_file
+        return None
+    return resolved if resolved.exists() else None
+
+
+def build_device_manifest_payload() -> dict[str, Any]:
+    """Provisioning manifest served to the phone: one entry per device model with
+    its name/kind/license/sha256 and a stable download ``endpoint``. Only entries
+    whose artefact is present on the PC (already fetched) are marked available."""
+    device = load_device_manifest()
+    models = []
+    for name, spec in device.items():
+        artefact = _device_artifact_path(spec)
+        is_archive = bool(spec.get("archive"))
+        sha_key = "archive_sha256" if is_archive else "sha256"
+        sha = str(spec.get(sha_key) or "")
+        if sha == "PENDING_FETCH":
+            # Prefer the real on-disk hash once fetched, so the phone can verify.
+            sha = _sha256_file(artefact) if artefact is not None else ""
+        models.append({
+            "name": name,
+            "kind": spec.get("kind"),
+            "platform": spec.get("platform", "android"),
+            "license": spec.get("license"),
+            "format": "archive_tar_bz2" if is_archive else "file",
+            "filename": Path(str(artefact)).name if artefact is not None else None,
+            "sha256": sha or None,
+            "available": artefact is not None,
+            "endpoint": f"/models/device/{name}",
+        })
+    return {"models": models, "count": len(models)}
+
 
 def create_app(
     hub: "SessionHub | None" = None,
@@ -164,6 +239,51 @@ def create_app(
             return manager.metrics()
         active = app.state.ingress
         return {"mode": "signaling_only", "active": active.stats() if hasattr(active, "stats") else None}
+
+    def _authenticate_query(session_id: str | None, token: str | None) -> "Session":
+        """Token check for GET provisioning routes (token via query params)."""
+        if not session_id or not token:
+            raise HTTPException(status_code=422, detail="session_id and token are required")
+        return _authenticate(session_id, token)
+
+    @app.get("/models/device/manifest")
+    async def device_manifest(request: Request) -> dict[str, Any]:
+        """E47-C: the device-local model manifest (offline ASR/KWS + gesture).
+
+        Session token required (query params). Returns one entry per device model
+        with its sha256 + a download endpoint so the phone provisions itself at
+        first launch and verifies each artefact before use (guide E47 §2)."""
+        q = request.query_params
+        _authenticate_query(q.get("session_id"), q.get("token"))
+        return build_device_manifest_payload()
+
+    @app.get("/models/device/{name}")
+    async def device_model(name: str, request: Request):
+        """E47-C: stream one device-local model artefact (sha256 in the manifest).
+
+        Session token required (query params). 404 if the model name is unknown or
+        the artefact has not been fetched on the PC yet (run
+        ``fetch_models_v19.py --device``)."""
+        from fastapi.responses import FileResponse
+
+        q = request.query_params
+        _authenticate_query(q.get("session_id"), q.get("token"))
+        device = load_device_manifest()
+        spec = device.get(name)
+        if spec is None:
+            raise HTTPException(status_code=404, detail=f"unknown device model: {name}")
+        artefact = _device_artifact_path(spec)
+        if artefact is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"device model {name} not provisioned on PC (run fetch_models_v19.py --device)",
+            )
+        return FileResponse(
+            path=str(artefact),
+            filename=artefact.name,
+            media_type="application/octet-stream",
+            headers={"X-Model-Sha256": _sha256_file(artefact)},
+        )
 
     @app.post("/session/create")
     async def create_session(request: Request) -> dict[str, Any]:

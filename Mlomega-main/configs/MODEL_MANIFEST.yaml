@@ -111,6 +111,74 @@ models:
     archive_sha256: PENDING_FETCH
     extract_to: models
     max_vram_mb: 128
+# --- Android device-local models (E47-C) ---------------------------------
+# Weights the phone runs ON DEVICE when the PC is absent (offline ASR/KWS +
+# gesture recognition). They are NOT shipped in the APK (size); the phone fetches
+# them from the PC at first launch through the SessionHub provisioning endpoints
+# (GET /models/device/manifest, GET /models/device/{name}) — sha256-verified,
+# stored in the app's private files dir (E47-C livrable 2 / guide E47 §2).
+#
+# Each entry lives under models/device/ (git-ignored, fetched by
+# scripts/fetch_models_v19.py --device). sha256 is pinned on first successful
+# fetch (the PENDING_FETCH pattern already used for the E35 TTS archives), so the
+# provisioning endpoint always serves a hash-matched artefact. Licences below are
+# the upstream licences of the two authoritative sources (max-3-web-check ADR
+# §E47C): k2-fsa/sherpa-onnx model releases and Google's MediaPipe model bucket.
+device:
+  # --- Streaming ASR (sherpa-onnx online zipformer transducer) --------------
+  # English streaming zipformer (LibriSpeech+GigaSpeech). Apache-2.0 (k2-fsa).
+  asr_stream_en:
+    provider: sherpa_onnx_device
+    platform: android
+    kind: asr_streaming
+    license: Apache-2.0
+    path: models/device/sherpa-onnx-streaming-zipformer-en-2023-06-26
+    archive: https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-en-2023-06-26.tar.bz2
+    archive_sha256: PENDING_FETCH
+    extract_to: models/device
+  # French streaming zipformer (Common Voice FR). Apache-2.0 (k2-fsa).
+  asr_stream_fr:
+    provider: sherpa_onnx_device
+    platform: android
+    kind: asr_streaming
+    license: Apache-2.0
+    path: models/device/sherpa-onnx-streaming-zipformer-fr-2023-04-14
+    archive: https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-fr-2023-04-14.tar.bz2
+    archive_sha256: PENDING_FETCH
+    extract_to: models/device
+  # --- Wake word / keyword spotting (sherpa-onnx KWS zipformer) --------------
+  # English KWS (GigaSpeech). Apache-2.0 (k2-fsa). Gates intent routing (E47 §4).
+  kws_en:
+    provider: sherpa_onnx_device
+    platform: android
+    kind: keyword_spotting
+    license: Apache-2.0
+    path: models/device/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01
+    archive: https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2
+    archive_sha256: PENDING_FETCH
+    extract_to: models/device
+  # --- MediaPipe hand tracking + gesture (tasks-vision, LIVE_STREAM) --------
+  # hand_landmarker.task bundle. Apache-2.0 (Google MediaPipe). Feeds the E47 §3
+  # GesturePipeline (palm/swipe/pinch → MenuGestureController).
+  hand_landmarker:
+    provider: mediapipe_device
+    platform: android
+    kind: hand_landmarker
+    license: Apache-2.0
+    path: models/device/hand_landmarker.task
+    url: https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
+    sha256: PENDING_FETCH
+  # gesture_recognizer.task bundle (embeds a hand_landmarker + gesture head).
+  # Apache-2.0 (Google MediaPipe).
+  gesture_recognizer:
+    provider: mediapipe_device
+    platform: android
+    kind: gesture_recognizer
+    license: Apache-2.0
+    path: models/device/gesture_recognizer.task
+    url: https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/latest/gesture_recognizer.task
+    sha256: PENDING_FETCH
+
 install_profile:
   cpu_only: false
   installed_at: 2026-07-05T20:37:17.4730426+02:00
