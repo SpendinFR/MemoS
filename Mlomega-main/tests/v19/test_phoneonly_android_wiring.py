@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 import json
 
 
@@ -12,7 +12,7 @@ def read(relative: str) -> str:
 
 def test_unity_exports_contract_metadata_and_has_cpu_i420_fallback():
     bridge = read("Assets/Scripts/Transport/LiveTransportBridge.cs")
-    assert 'sendContractMessage", JsonConvert.SerializeObject(envelope)' in bridge
+    assert 'sendContractMessage", ContractJson.Serialize(envelope)' in bridge
     assert "PushCpuI420(texture" in bridge
     assert "pushI420Frame" in bridge
     assert "private bool _textureBacked = false" in bridge
