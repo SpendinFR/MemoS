@@ -54,9 +54,16 @@ class PhoneOnlyRuntime:
         ingress_factory: Callable[..., Any] | None = None,
         pipeline_factory: Callable[..., Any] | None = None,
         close_day: Callable[..., Any] | None = None,
+        allow_rerun: bool = False,
     ) -> None:
         self.session_id = session_id
         self.person_id = person_id
+        # E47-C livrable 6: when this is a SECOND (or later) live session on the
+        # same day, its close-day must REOPEN the day's already-completed close-day
+        # run so this session's data is consolidated too (multi-session/day). The
+        # manager sets this on any session created after a same-day close-day
+        # already completed.
+        self.allow_rerun = bool(allow_rerun)
         ingress_ctor = ingress_factory or gateway.AiortcIngress
         try:
             self.ingress = ingress_ctor(session_id=session_id, standalone_signaling=False)
@@ -251,6 +258,9 @@ class PhoneOnlyRuntime:
             "--person-id", str(kwargs["person_id"]),
             "--live-session-id", str(kwargs["live_session_id"]),
         ]
+        # E47-C livrable 6: a second same-day session reopens the completed day.
+        if self.allow_rerun:
+            command.append("--allow-rerun")
         proc = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
         lines = [line for line in proc.stdout.splitlines() if line.strip()]
         if lines:
@@ -308,16 +318,27 @@ class SinglePhoneRuntimeManager:
         self.active: PhoneOnlyRuntime | None = None
         self._lock = asyncio.Lock()
         self._close_tasks: dict[str, asyncio.Task[Any]] = {}
+        # E47-C livrable 6: how many close-days have completed in this process
+        # lifetime. The (n+1)-th session's close-day must reopen the day (multi
+        # session/day). Persisted-across-restart safety is provided anyway by the
+        # script's own reopen check (a no-op if the day is not completed).
+        self._completed_close_days = 0
 
     async def get_or_create(self, session_id: str) -> PhoneOnlyRuntime:
         async with self._lock:
             if self.active is not None and self.active.session_id != session_id:
                 if self.active.ended and self.active.close_day_status == "completed":
+                    self._completed_close_days += 1
                     self.active = None
                 else:
                     raise RuntimeError(f"phone already active: {self.active.session_id}")
             if self.active is None or self.active.session_id != session_id:
-                self.active = self.runtime_factory(session_id=session_id, **self.runtime_kwargs)
+                kwargs = dict(self.runtime_kwargs)
+                # A session created after a same-day close-day already completed
+                # must reopen it so its own data is consolidated.
+                if self._completed_close_days > 0:
+                    kwargs.setdefault("allow_rerun", True)
+                self.active = self.runtime_factory(session_id=session_id, **kwargs)
                 await self.active.start()
             return self.active
 
