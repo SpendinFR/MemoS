@@ -23,7 +23,7 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.usb.host" android:required="false" />
 
-    <application android:allowBackup="false">
+    <application android:allowBackup="false" android:usesCleartextTraffic="true">
         <activity android:name="com.unity3d.player.UnityPlayerActivity"
                   android:screenOrientation="landscape"
                   android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|orientation|screenLayout|uiMode|screenSize|smallestScreenSize|fontScale|layoutDirection|density"

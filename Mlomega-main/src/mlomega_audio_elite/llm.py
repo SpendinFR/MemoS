@@ -72,6 +72,10 @@ def ollama_generate(
     url = (base_url or settings.ollama_base_url).rstrip("/") + "/api/generate"
     effective_timeout_s = effective_ollama_timeout(timeout, poststop_min_timeout_s=poststop_min_timeout_s)
     body = dict(payload)
+    # Structured project calls consume ``response``. Qwen3.5 otherwise spends
+    # the output budget in its separate ``thinking`` field and may return an
+    # empty response, which is not a valid JSON contract result.
+    body.setdefault("think", False)
     body.setdefault(
         "keep_alive",
         settings.ollama_keep_alive_poststop if _is_post_stop_phase() else settings.ollama_keep_alive_live,
@@ -122,6 +126,104 @@ def ollama_unload(*, model: str | None = None, base_url: str | None = None) -> N
         record_phase_event("ollama_unload_failed", model=model, error=str(exc)[:200])
 
 
+def _schema_hint_to_json_schema(hint: Any) -> dict[str, Any]:
+    """Translate the project's executable schema templates for Ollama.
+
+    The same template remains validated after generation by
+    ``_validate_schema_hint``.  Sending the equivalent JSON Schema to Ollama
+    prevents the model from omitting required keys or changing their types in
+    the first place instead of spending a repair pass on avoidable syntax.
+    """
+    if hint is None:
+        return {}
+    if isinstance(hint, dict):
+        properties = {key: _schema_hint_to_json_schema(value) for key, value in hint.items()}
+        required = [key for key, value in hint.items() if value is not None]
+        schema: dict[str, Any] = {
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": False,
+        }
+        if required:
+            schema["required"] = required
+        return schema
+    if isinstance(hint, list):
+        return {
+            "type": "array",
+            "items": _schema_hint_to_json_schema(hint[0]) if hint else {},
+        }
+    if isinstance(hint, bool):
+        return {"type": "boolean"}
+    if isinstance(hint, (int, float)):
+        return {"type": "number"}
+    if isinstance(hint, str):
+        choices = [part.strip() for part in hint.split("|")]
+        if len(choices) > 1 and all(choices):
+            return {"type": "string", "enum": choices}
+        return {"type": "string"}
+    return {}
+
+
+def _tighten_hot_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Add the semantic bounds already enforced by the BrainLive hot gate."""
+    props = schema.get("properties") or {}
+
+    def obj(node: dict[str, Any], key: str) -> dict[str, Any]:
+        return ((node.get("properties") or {}).get(key) or {})
+
+    def bounded_array(node: dict[str, Any], key: str, maximum: int) -> None:
+        target = obj(node, key)
+        if target.get("type") == "array":
+            target["maxItems"] = maximum
+
+    def probability(node: dict[str, Any], key: str) -> None:
+        target = obj(node, key)
+        if target.get("type") == "number":
+            target.update({"minimum": 0.0, "maximum": 1.0})
+
+    world = props.get("world_state") or {}
+    for key in ("who_is_active", "probable_activity"):
+        bounded_array(world, key, 6)
+    for key in ("evidence", "counter_evidence", "missing_evidence"):
+        bounded_array(world, key, 4)
+    probability(world, "confidence")
+
+    horizons = props.get("horizons") or {}
+    for name in ("H0", "H1", "H2"):
+        horizon = obj(horizons, name)
+        for key in ("needs", "risks_or_opportunities", "intervention_candidates", "watch_next"):
+            bounded_array(horizon, key, 4)
+        for key in ("evidence", "counter_evidence"):
+            bounded_array(horizon, key, 4)
+        probability(horizon, "confidence")
+
+    predictions = props.get("active_predictions") or {}
+    predictions["maxItems"] = 3
+    prediction = predictions.get("items") or {}
+    for key in ("evidence", "counter_evidence", "what_would_confirm", "what_would_refute"):
+        bounded_array(prediction, key, 4)
+    probability(prediction, "probability")
+    probability(prediction, "confidence")
+
+    proactive = props.get("proactive_decision") or {}
+    for key in ("evidence", "counter_evidence"):
+        bounded_array(proactive, key, 4)
+    for key in ("expected_gain", "intrusion_cost", "confidence"):
+        probability(proactive, key)
+
+    for key in ("notes_for_brain2", "uncertainties", "needs_evidence"):
+        bounded_array(schema, key, 4)
+    return schema
+
+
+def json_schema_for_hint(hint: dict[str, Any]) -> dict[str, Any]:
+    """Build the provider schema corresponding to an executable hint."""
+    schema = _schema_hint_to_json_schema(hint)
+    if {"world_state", "horizons", "proactive_decision"} <= set(hint):
+        schema = _tighten_hot_json_schema(schema)
+    return schema
+
+
 class OllamaJsonClient:
     """Strict local LLM JSON client with explicit output-budget/truncation state.
 
@@ -136,7 +238,9 @@ class OllamaJsonClient:
         if not settings.enable_ollama:
             raise EliteLLMError("MLOMEGA_ENABLE_OLLAMA=false refusé: l'analyse élite exige Ollama/Qwen.")
         self.base_url = (base_url or settings.ollama_base_url).rstrip("/")
-        self.model = model or settings.ollama_model
+        self.model = model or (
+            settings.ollama_model if _is_post_stop_phase() else settings.ollama_live_model
+        )
 
     def generate_json(
         self,
@@ -146,21 +250,37 @@ class OllamaJsonClient:
         timeout: float = 60,
         *,
         max_output_tokens: int | None = None,
+        format_schema: dict[str, Any] | None = None,
     ) -> LLMResult:
         try:
-            configured = int(os.environ.get("MLOMEGA_V18_LLM_MAX_OUTPUT_TOKENS", "900"))
+            if _is_post_stop_phase():
+                configured = int(os.environ.get("MLOMEGA_POSTSTOP_LLM_MAX_OUTPUT_TOKENS", "4096"))
+            else:
+                configured = int(os.environ.get("MLOMEGA_V18_LLM_MAX_OUTPUT_TOKENS", "900"))
         except ValueError:
-            configured = 900
+            configured = 4096 if _is_post_stop_phase() else 900
         budget = max(32, int(max_output_tokens if max_output_tokens is not None else configured))
+        json_schema = format_schema or (json_schema_for_hint(schema_hint) if schema_hint else None)
         payload = {
             "model": self.model,
-            "prompt": f"SYSTEM:\n{system}\n\nUSER:\n{prompt}\n\nReturn strict JSON only.",
+            "prompt": f"SYSTEM:\n{system}\n\nUSER:\n{prompt}\n\nReturn one compact JSON object only.",
             "stream": False,
-            "format": "json",
-            "options": {"temperature": 0.0, "num_predict": budget},
+            "format": json_schema or "json",
+            # num_ctx is the total prompt + response window.  Ollama otherwise
+            # defaults to 4096 on this workstation, which made a 4096-token
+            # post-stop response budget physically impossible once a prompt was
+            # present.  Keep live latency small; give per-bundle CloseDay work a
+            # measured 16k window (Qwen3.5:9b remains fully GPU-resident on 8GB).
+            "options": {
+                "temperature": 0.0,
+                "num_predict": budget,
+                "num_ctx": (
+                    get_settings().ollama_context_poststop
+                    if _is_post_stop_phase()
+                    else get_settings().ollama_context_live
+                ),
+            },
         }
-        if schema_hint:
-            payload["prompt"] += "\n\nExpected shape:\n" + json.dumps(schema_hint, ensure_ascii=False)
         raw_outer = ""
         response_text = ""
         finish_reason: str | None = None
@@ -218,8 +338,12 @@ class OllamaJsonClient:
         timeout: float = 60,
         *,
         max_output_tokens: int | None = None,
+        format_schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        res = self.generate_json(system, prompt, schema_hint=schema_hint, timeout=timeout, max_output_tokens=max_output_tokens)
+        res = self.generate_json(
+            system, prompt, schema_hint=schema_hint, timeout=timeout,
+            max_output_tokens=max_output_tokens, format_schema=format_schema,
+        )
         if not res.ok:
             if res.error_kind == "truncated_output":
                 raise LLMTruncatedOutputError(f"Ollama/Qwen output truncated or incomplete: {res.error}", raw=res.raw, finish_reason=res.finish_reason)
@@ -311,8 +435,12 @@ def _v18_require_json(
     timeout: float = 60,
     *,
     max_output_tokens: int | None = None,
+    format_schema: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    data = _v17_require_json(self, system, prompt, schema_hint=schema_hint, timeout=timeout, max_output_tokens=max_output_tokens)
+    data = _v17_require_json(
+        self, system, prompt, schema_hint=schema_hint, timeout=timeout,
+        max_output_tokens=max_output_tokens, format_schema=format_schema,
+    )
     strict = os.environ.get("MLOMEGA_V18_STRICT_LLM_CONTRACTS", "true").strip().lower() not in {"0", "false", "no", "off"}
     if strict and schema_hint is not None:
         _validate_schema_hint(data, schema_hint, forbid_extra=True)

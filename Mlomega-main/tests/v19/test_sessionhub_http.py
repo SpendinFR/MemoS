@@ -64,10 +64,14 @@ def client():
 
 def test_health_ok(client):
     r = client.get("/health")
-    assert r.status_code == 200
+    assert r.status_code == 503
     body = r.json()
-    assert body["status"] == "ok"
+    assert body["status"] == "unavailable"
+    assert body["ready"] is False
     assert body["sessions"] == 0
+    live = client.get("/live")
+    assert live.status_code == 200
+    assert live.json()["status"] == "alive"
 
 
 def test_create_returns_session_token_and_stamp(client):
@@ -77,6 +81,8 @@ def test_create_returns_session_token_and_stamp(client):
     assert body["session_id"].startswith("xr-")
     assert body["token"]
     assert body["created_at_utc"]
+    assert body["expires_at_utc"]
+    assert body["expires_in_seconds"] == 600.0
     # Session is now authenticable on the hub.
     hub = client.app.state.hub
     assert hub.authenticate(body["token"]).device_id == "s25-a"
@@ -196,3 +202,29 @@ def test_renew_requires_valid_token(client):
         json={"session_id": created["session_id"], "token": "wrong"},
     )
     assert r.status_code == 401
+
+
+def test_expired_token_and_session_are_purged():
+    now = [100.0]
+    hub = sessionhub.SessionHub(
+        token_ttl_seconds=10, renew_grace_seconds=20, monotonic=lambda: now[0]
+    )
+    app = sessionhub_http.create_app(hub, enable_signaling=False)
+    with TestClient(app) as client:
+        created = client.post("/session/create", json={"device_id": "a"}).json()
+        now[0] = 111.0
+        expired = client.post(
+            "/session/clock-sync",
+            json={"session_id": created["session_id"], "token": created["token"], "client_send_ns": 1},
+        )
+        assert expired.status_code == 401
+        renewed = client.post(
+            "/session/renew",
+            json={"session_id": created["session_id"], "token": created["token"]},
+        )
+        assert renewed.status_code == 200
+        assert renewed.json()["token"] != created["token"]
+
+        # The rotated token also expires and is retired after its renew grace.
+        now[0] = 142.0
+        assert hub.session_count == 0

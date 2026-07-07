@@ -30,7 +30,7 @@ from .brainlive_sensor_fusion_v15_4 import build_fused_situation, resolve_place_
 from .brainlive_v15 import build_active_context, ensure_brainlive_schema, ingest_live_turn
 from .config import get_settings
 from .db import connect, init_db, upsert, write_transaction
-from .llm import OllamaJsonClient
+from .llm import OllamaJsonClient, json_schema_for_hint
 from .integrity_v176 import ContractValidationError, create_forecast, quarantine_in_transaction
 from .v18_delivery import enqueue_delivery, ensure_delivery_schema
 from .v18_hot_capsule import build_hot_capsule_payload
@@ -121,22 +121,22 @@ CREATE INDEX IF NOT EXISTS idx_blhot_budget_session ON brainlive_hot_budget_runs
 HOT_UNIFIED_SCHEMA: dict[str, Any] = {
     "world_state": {
         "where_am_i": "",
-        "who_is_active": [],
+        "who_is_active": [""],
         "what_is_happening": "",
-        "probable_activity": [],
+        "probable_activity": [""],
         "active_mode": "",
         "confidence": 0.0,
-        "evidence": [],
-        "counter_evidence": [],
+        "evidence": [{"source_table": "", "source_id": ""}],
+        "counter_evidence": [{"source_table": "", "source_id": ""}],
         "missing_evidence": [{"source_table": "", "source_id": ""}],
     },
     "horizons": {
-        "H0": {"summary": "", "needs": [], "risks_or_opportunities": [], "intervention_candidates": [], "watch_next": [], "confidence": 0.0, "evidence": [{"source_table": "", "source_id": ""}], "counter_evidence": [{"source_table": "", "source_id": ""}]},
-        "H1": {"summary": "", "needs": [], "risks_or_opportunities": [], "intervention_candidates": [], "watch_next": [], "confidence": 0.0, "evidence": [{"source_table": "", "source_id": ""}], "counter_evidence": [{"source_table": "", "source_id": ""}]},
-        "H2": {"summary": "", "needs": [], "risks_or_opportunities": [], "intervention_candidates": [], "watch_next": [], "confidence": 0.0, "evidence": [{"source_table": "", "source_id": ""}], "counter_evidence": [{"source_table": "", "source_id": ""}]},
+        "H0": {"summary": "", "needs": [""], "risks_or_opportunities": [""], "intervention_candidates": [""], "watch_next": [""], "confidence": 0.0, "evidence": [{"source_table": "", "source_id": ""}], "counter_evidence": [{"source_table": "", "source_id": ""}]},
+        "H1": {"summary": "", "needs": [""], "risks_or_opportunities": [""], "intervention_candidates": [""], "watch_next": [""], "confidence": 0.0, "evidence": [{"source_table": "", "source_id": ""}], "counter_evidence": [{"source_table": "", "source_id": ""}]},
+        "H2": {"summary": "", "needs": [""], "risks_or_opportunities": [""], "intervention_candidates": [""], "watch_next": [""], "confidence": 0.0, "evidence": [{"source_table": "", "source_id": ""}], "counter_evidence": [{"source_table": "", "source_id": ""}]},
     },
     "active_predictions": [
-        {"prediction": "", "horizon": "H0|H1|H2", "probability": 0.0, "confidence": 0.0, "evidence": [{"source_table": "", "source_id": ""}], "counter_evidence": [{"source_table": "", "source_id": ""}], "what_would_confirm": [], "what_would_refute": []}
+        {"prediction": "", "horizon": "H0|H1|H2", "probability": 0.0, "confidence": 0.0, "evidence": [{"source_table": "", "source_id": ""}], "counter_evidence": [{"source_table": "", "source_id": ""}], "what_would_confirm": [""], "what_would_refute": [""]}
     ],
     "proactive_decision": {
         "decision": "observe|speak_now|queue|wait",
@@ -150,10 +150,38 @@ HOT_UNIFIED_SCHEMA: dict[str, Any] = {
         "evidence": [{"source_table": "", "source_id": ""}],
         "counter_evidence": [{"source_table": "", "source_id": ""}],
     },
-    "notes_for_brain2": [],
-    "uncertainties": [],
-    # Optional: a bounded second pass is permitted only when the model names
-    # already-announced manifest references. It is never free-form retrieval.
+    "notes_for_brain2": [""],
+    "uncertainties": [""],
+    # Always present (usually empty): at most four announced manifest refs.
+    "needs_evidence": [{"source_table": "", "source_id": ""}],
+}
+
+# Generation requires only fields that the semantic gate cannot safely infer.
+# The full shape above still supplies precise provider types; omitted optional
+# fields are normalised locally before persistence.
+HOT_GENERATION_SCHEMA: dict[str, Any] = {
+    "world_state": {
+        "where_am_i": None, "who_is_active": None, "what_is_happening": None,
+        "probable_activity": None, "active_mode": None, "confidence": 0.0,
+        "evidence": None, "counter_evidence": None, "missing_evidence": None,
+    },
+    "horizons": {
+        name: {
+            "summary": None, "needs": None, "risks_or_opportunities": None,
+            "intervention_candidates": None, "watch_next": None,
+            "confidence": 0.0, "evidence": None, "counter_evidence": None,
+        }
+        for name in ("H0", "H1", "H2")
+    },
+    "active_predictions": HOT_UNIFIED_SCHEMA["active_predictions"],
+    "proactive_decision": {
+        "decision": "observe|speak_now|queue|wait", "message": None,
+        "horizon": None, "expected_gain": 0.0, "intrusion_cost": 0.0,
+        "confidence": 0.0, "why_now": None, "risk_if_wrong": None,
+        "evidence": None, "counter_evidence": None,
+    },
+    "notes_for_brain2": None,
+    "uncertainties": None,
     "needs_evidence": None,
 }
 
@@ -168,6 +196,88 @@ ROUTER_SCHEMA: dict[str, Any] = {
     "evidence": [],
     "missing_evidence": [],
 }
+
+
+def _hot_format_schema(requested_horizons: list[str]) -> dict[str, Any]:
+    """Constrain unrequested horizons at generation time, not after it."""
+    schema = json_schema_for_hint(HOT_UNIFIED_SCHEMA)
+    root = schema.get("properties") or {}
+    schema["required"] = ["world_state", "horizons", "active_predictions", "proactive_decision"]
+    world = root.get("world_state") or {}
+    world["required"] = ["confidence"]
+    horizons = ((schema.get("properties") or {}).get("horizons") or {}).get("properties") or {}
+    requested = {str(value) for value in requested_horizons}
+    for name, horizon in horizons.items():
+        horizon["required"] = ["confidence"]
+        if name in requested:
+            continue
+        fields = horizon.get("properties") or {}
+        for key in ("summary",):
+            fields.get(key, {}).update({"const": ""})
+        for key in (
+            "needs", "risks_or_opportunities", "intervention_candidates",
+            "watch_next", "evidence", "counter_evidence",
+        ):
+            fields.get(key, {}).update({"maxItems": 0})
+        fields.get("confidence", {}).update({"const": 0.0})
+    predictions = ((schema.get("properties") or {}).get("active_predictions") or {}).get("items") or {}
+    prediction_horizon = (predictions.get("properties") or {}).get("horizon") or {}
+    if requested:
+        prediction_horizon["enum"] = sorted(requested)
+    proactive = (schema.get("properties") or {}).get("proactive_decision") or {}
+    proactive["required"] = ["decision", "expected_gain", "intrusion_cost", "confidence"]
+    proactive_horizon = (proactive.get("properties") or {}).get("horizon") or {}
+    if requested:
+        proactive_horizon["enum"] = sorted(requested)
+    return schema
+
+
+def _normalise_hot_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Fill harmless omissions; never invent claims, evidence or decisions."""
+    out = dict(result or {})
+    world = dict(out.get("world_state") or {})
+    for key, default in {
+        "where_am_i": "", "who_is_active": [], "what_is_happening": "",
+        "probable_activity": [], "active_mode": "", "confidence": 0.0,
+        "evidence": [], "counter_evidence": [], "missing_evidence": [],
+    }.items():
+        world.setdefault(key, default)
+    world["confidence"] = _clamp(world.get("confidence"))
+    out["world_state"] = world
+    source_horizons = out.get("horizons") if isinstance(out.get("horizons"), dict) else {}
+    normalised_horizons: dict[str, Any] = {}
+    for name in ("H0", "H1", "H2"):
+        horizon = dict(source_horizons.get(name) or {})
+        for key, default in {
+            "summary": "", "needs": [], "risks_or_opportunities": [],
+            "intervention_candidates": [], "watch_next": [], "confidence": 0.0,
+            "evidence": [], "counter_evidence": [],
+        }.items():
+            horizon.setdefault(key, default)
+        horizon["confidence"] = _clamp(horizon.get("confidence"))
+        normalised_horizons[name] = horizon
+    out["horizons"] = normalised_horizons
+    proactive = dict(out.get("proactive_decision") or {})
+    for key, default in {
+        "decision": "observe", "message": "", "horizon": "",
+        "expected_gain": 0.0, "intrusion_cost": 0.0, "confidence": 0.0,
+        "why_now": "", "risk_if_wrong": "", "evidence": [],
+        "counter_evidence": [],
+    }.items():
+        proactive.setdefault(key, default)
+    for key in ("expected_gain", "intrusion_cost", "confidence"):
+        proactive[key] = _clamp(proactive.get(key))
+    out["proactive_decision"] = proactive
+    out.setdefault("active_predictions", [])
+    if isinstance(out["active_predictions"], list):
+        for prediction in out["active_predictions"]:
+            if isinstance(prediction, dict):
+                prediction["probability"] = _clamp(prediction.get("probability"))
+                prediction["confidence"] = _clamp(prediction.get("confidence"))
+    out["notes_for_brain2"] = out.get("notes_for_brain2") if isinstance(out.get("notes_for_brain2"), list) else []
+    out["uncertainties"] = out.get("uncertainties") if isinstance(out.get("uncertainties"), list) else []
+    out["needs_evidence"] = out.get("needs_evidence") if isinstance(out.get("needs_evidence"), list) else []
+    return out
 
 
 def _one(con, sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
@@ -980,7 +1090,8 @@ def _execute_hot_decision(
         }
     raw_output = ""
     try:
-        system = "You are BrainLive Hot Prediction V18.5. Return strict JSON only. Every non-empty claim must cite evidence as {source_table,source_id} from the supplied capsule manifest. Do not cite unannounced history. If a named manifest reference needs its full content, return only up to four needs_evidence references and do not fabricate a claim."
+        requested = ",".join(horizons) or "none"
+        system = f"You are BrainLive Hot Prediction V18.5. Return strict compact JSON only. Requested horizons: {requested}. Omit optional fields when empty. Every unrequested horizon must have confidence 0 and no claims. Keep strings terse. Every non-empty claim must cite evidence exactly as {{source_table,source_id}} from the supplied capsule manifest; never copy evidence text, hashes or extra fields. Do not cite unannounced history. If a named manifest reference needs its full content, return only up to four needs_evidence references and do not fabricate a claim."
         # The bounded capsule is the exact user payload.  Do not wrap it in a
         # second duplicated context object: that was the subtle path by which a
         # nominal capsule budget could still yield an oversized live prompt.
@@ -990,7 +1101,15 @@ def _execute_hot_decision(
         if phase == "repair":
             system += " Previous output violated the contract. Rebuild from the same capsule without adding facts or sources; this is the one permitted repair."
         client = OllamaJsonClient()
-        result = client.require_json(system, json_dumps(prompt), schema_hint=HOT_UNIFIED_SCHEMA, timeout=timeout, max_output_tokens=int((capsule_payload.get("output_budget_tokens") or 900)))
+        result = client.require_json(
+            system,
+            json_dumps(prompt),
+            schema_hint=HOT_GENERATION_SCHEMA,
+            timeout=timeout,
+            max_output_tokens=int((capsule_payload.get("output_budget_tokens") or 900)),
+            format_schema=_hot_format_schema(horizons),
+        )
+        result = _normalise_hot_result(result)
         # `require_json` returns a valid object; retain a canonical raw copy for
         # audit even though provider raw is not surfaced on success.
         raw_output = json_dumps(result)

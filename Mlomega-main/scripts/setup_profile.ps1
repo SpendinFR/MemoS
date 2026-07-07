@@ -61,7 +61,7 @@ if (-not $Capture) {
 # --- LLM (local default) ---
 if (-not $Llm) { $Llm = Ask "LLM local ou cloud ?" "ollama_local" @("ollama_local", "openai", "gemini", "anthropic") }
 if (-not $LlmModel) {
-  $defModel = "qwen2.5:3b-instruct-q4_K_M"
+  $defModel = "qwen3.5:4b"
   if ($Llm -ne "ollama_local") { $defModel = "" }
   $LlmModel = Ask "Modele LLM (live)" $defModel @()
 }

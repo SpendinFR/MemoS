@@ -1,0 +1,12 @@
+{
+  "person_id": "e46-phoneonly-validation",
+  "package_date": "2026-06-01",
+  "run_id": "run_v18_bbb49c10275b436580dd2fdbb91b9138",
+  "status": "completed",
+  "cleanup_eligible": true,
+  "post_stop_run_id": "run_v18_d862f04d04c745d7b6ad43987c79ee2b",
+  "stages_expected": 10,
+  "stages_observed": 10,
+  "completed_at_local_validation_date": "2026-07-06",
+  "note": "Same durable run resumed with force; no checkpoints or evidence were purged."
+}

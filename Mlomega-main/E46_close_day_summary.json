@@ -1,0 +1,298 @@
+{
+  "started_at": "2026-07-06T14:33:21.602008+00:00",
+  "person_id": "e46-phoneonly-validation",
+  "days": 1,
+  "db_path": null,
+  "python": "3.11.1",
+  "executable": "C:\\Users\\wabad\\Downloads\\ProjetMemobyFABLE\\Mlomega-main\\.venv\\Scripts\\python.exe",
+  "counters_before": {
+    "visual_events_total": 5,
+    "visual_events_object_moved": 0,
+    "predictions_total": 2,
+    "predictions_verified": 2,
+    "predictions_refuted": 0,
+    "self_schema_entries": 4,
+    "self_schema_conditional": 2,
+    "spatial_routines": 0,
+    "life_model_entries": 2
+  },
+  "seed": {
+    "ok": true,
+    "skipped": true
+  },
+  "close_days": [
+    {
+      "package_date": "2026-06-01",
+      "ok": false,
+      "seconds": 1.86,
+      "error": "StageGateError: run run_v18_bbb49c10275b436580dd2fdbb91b9138 is blocked at close_day: life_model_blocked; repair the cause then use explicit RESUME --force",
+      "traceback": "Traceback (most recent call last):\n  File \"C:\\Users\\wabad\\Downloads\\ProjetMemobyFABLE\\Mlomega-main\\scripts\\e30a_runner.py\", line 133, in phase_close_day\n    res = close_brainlive_day(person_id=person_id, package_date=day, use_llm=True)\n          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\wabad\\Downloads\\ProjetMemobyFABLE\\Mlomega-main\\src\\mlomega_audio_elite\\v18_close_day.py\", line 359, in close_brainlive_day\n    run_id, resumed = begin_or_resume_run(\n                      ^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\wabad\\Downloads\\ProjetMemobyFABLE\\Mlomega-main\\src\\mlomega_audio_elite\\governance_v18.py\", line 769, in begin_or_resume_run\n    assert_run_resumable(run_id=run_id_existing, force=force_resume, con=con)\n  File \"C:\\Users\\wabad\\Downloads\\ProjetMemobyFABLE\\Mlomega-main\\src\\mlomega_audio_elite\\governance_v18.py\", line 683, in assert_run_resumable\n    raise StageGateError(\nmlomega_audio_elite.governance_v18.StageGateError: run run_v18_bbb49c10275b436580dd2fdbb91b9138 is blocked at close_day: life_model_blocked; repair the cause then use explicit RESUME --force\n",
+      "final_status": {
+        "version": "18.7.1-resumable-close-day",
+        "person_id": "e46-phoneonly-validation",
+        "package_date": "2026-06-01",
+        "close_day_id": "run_v18_bbb49c10275b436580dd2fdbb91b9138",
+        "status": "blocked",
+        "cleanup_eligible": false,
+        "live_session_id": null,
+        "service_run_id": null,
+        "post_stop_run_id": "run_v18_d862f04d04c745d7b6ad43987c79ee2b",
+        "error": "close-day life_model returned blocked",
+        "recovery": {
+          "run_id": "run_v18_bbb49c10275b436580dd2fdbb91b9138",
+          "state": "blocked",
+          "stage_name": "close_day",
+          "error_code": "life_model_blocked",
+          "error_text": "close-day life_model returned blocked",
+          "attempt_count": 0,
+          "next_retry_at": null,
+          "updated_at": "2026-07-06T14:32:15.437+00:00"
+        },
+        "result": {
+          "cleanup": {
+            "eligible": false,
+            "reason": "close_day_blocked"
+          },
+          "error": "close-day life_model returned blocked",
+          "live_session_id": null,
+          "package_date": "2026-06-01",
+          "person_id": "e46-phoneonly-validation",
+          "post_stop_cleanup_gate": {
+            "eligible": true,
+            "expected": [],
+            "observed": [],
+            "run_id": "run_v18_d862f04d04c745d7b6ad43987c79ee2b"
+          },
+          "resumed": false,
+          "run_id": "run_v18_bbb49c10275b436580dd2fdbb91b9138",
+          "service_run_id": null,
+          "stages": {
+            "coordination": {
+              "bindings": {
+                "binding_ids": [],
+                "bindings_created": 0,
+                "bindings_retired": 0,
+                "llm_output": {
+                  "error": "Ollama/Qwen n'a pas produit de JSON valide: <urlopen error [WinError 10061] Aucune connexion n’a pu être établie car l’ordinateur cible l’a expressément refusée>",
+                  "llm_required": true
+                },
+                "person_id": "e46-phoneonly-validation",
+                "source_counts": {
+                  "brain2_live_prediction_hooks": 0,
+                  "future_scenarios": 0,
+                  "life_model_affordances": 0,
+                  "life_model_needs": 0,
+                  "life_model_routines": 0,
+                  "life_model_trajectories": 0,
+                  "prediction_cases": 0,
+                  "predictions_short_and_next": 0,
+                  "trajectory_warnings": 0,
+                  "v14_forecast_watch_queue": 0,
+                  "v14_trajectory_forecasts": 0
+                },
+                "status": "raw_ready_llm_required",
+                "version": "15.12.0-brainlive-brain2-coordination"
+              },
+              "lifecycle": {
+                "lifecycle_rows_upserted": 0,
+                "live_projection_revoked": 0,
+                "person_id": "e46-phoneonly-validation",
+                "version": "15.12.0-brainlive-brain2-coordination"
+              },
+              "package": {
+                "llm_summary": {
+                  "error": "Ollama/Qwen n'a pas produit de JSON valide: <urlopen error [WinError 10061] Aucune connexion n’a pu être établie car l’ordinateur cible l’a expressément refusée>",
+                  "llm_required": true
+                },
+                "package_date": "2026-06-01",
+                "package_id": "bldaypkg_25fa9f9803e0209b",
+                "person_id": "e46-phoneonly-validation",
+                "source_counts": {
+                  "affordance_matches": 0,
+                  "brain2_event_exports": 0,
+                  "context_snapshots": 0,
+                  "disagreements": 0,
+                  "event_bundles": 0,
+                  "hot_budget_runs": 0,
+                  "hot_contexts": 0,
+                  "hot_interventions": 0,
+                  "intervention_candidates": 0,
+                  "live_sessions": 0,
+                  "missed_opportunities": 0,
+                  "outcome_evaluations": 0,
+                  "package_date": 1,
+                  "period_end": 1,
+                  "period_start": 1,
+                  "prediction_outcomes": 0,
+                  "sensor_events": 0,
+                  "short_horizon_forecasts": 0,
+                  "turns": 0,
+                  "vision_observations": 0
+                },
+                "status": "raw_ready_llm_required",
+                "version": "15.12.0-brainlive-brain2-coordination"
+              },
+              "reconciliation": {
+                "llm_output": {
+                  "error": "Ollama/Qwen n'a pas produit de JSON valide: <urlopen error [WinError 10061] Aucune connexion n’a pu être établie car l’ordinateur cible l’a expressément refusée>",
+                  "llm_required": true
+                },
+                "package_id": "bldaypkg_25fa9f9803e0209b",
+                "person_id": "e46-phoneonly-validation",
+                "reconciliation_ids": [],
+                "reconciliations_created": 0,
+                "revocations": 0,
+                "status": "raw_ready_llm_required",
+                "version": "15.12.0-brainlive-brain2-coordination"
+              },
+              "run_id": "b2blrun_920551da76778fea",
+              "status": "ok",
+              "version": "15.12.0-brainlive-brain2-coordination"
+            },
+            "longitudinal": {
+              "as_of": null,
+              "global_patterns": {
+                "as_of": null,
+                "cases_considered": 0,
+                "pattern_ids": [],
+                "patterns_upserted": 0,
+                "person_id": "e46-phoneonly-validation",
+                "status": "ok"
+              },
+              "observed_cases": {
+                "cases_built": 0,
+                "conversation_ids": [],
+                "conversations_processed": 0,
+                "person_id": "e46-phoneonly-validation",
+                "results": [],
+                "status": "ok"
+              },
+              "period": "day",
+              "period_end": "2026-06-01T22:00:00Z",
+              "period_label": "day:2026-06-01",
+              "period_start": "2026-05-31T22:00:00Z",
+              "person_id": "e46-phoneonly-validation",
+              "run_id": "longrun18_70cbdf2561b5fb7a",
+              "similarity": {
+                "anchors": 0,
+                "as_of": null,
+                "edges_upserted": 0,
+                "eligible_history": 0,
+                "history": 0,
+                "person_id": "e46-phoneonly-validation",
+                "quarantined_cases": [],
+                "reason": "no eligible versioned observed cases",
+                "similarity_mode": "predictive",
+                "status": "abstained"
+              },
+              "status": "completed",
+              "version": "18.0.0"
+            },
+            "post_stop": {
+              "assembly": {
+                "bundles": 0,
+                "exports": 0,
+                "live_session_id": null,
+                "package_date": "2026-06-01",
+                "period_end": "2026-06-01T22:00:00+00:00",
+                "period_start": "2026-05-31T22:00:00+00:00",
+                "person_id": "e46-phoneonly-validation",
+                "raw_rows": 0,
+                "run_id": "blassembly_v18_1c30de57b0ae035b",
+                "status": "ok",
+                "version": "15.14.1-v18.8.1-evidence-connected"
+              },
+              "brain2_processed": [],
+              "error": null,
+              "exported_conversations": 0,
+              "live_session_id": null,
+              "package_date": "2026-06-01",
+              "person_id": "e46-phoneonly-validation",
+              "recovery": {
+                "recovered": [],
+                "run_id": "run_v18_d862f04d04c745d7b6ad43987c79ee2b",
+                "terminal": false
+              },
+              "resumed": false,
+              "run_id": "run_v18_d862f04d04c745d7b6ad43987c79ee2b",
+              "service_run_id": null,
+              "status": "completed",
+              "v15": {
+                "status": "skipped"
+              },
+              "v16_deep_vision": {
+                "analyzed_keyframes": 0,
+                "context_addenda_created": 0,
+                "live_session_id": null,
+                "model": "qwen3-vl:8b",
+                "package_date": "2026-06-01",
+                "person_id": "e46-phoneonly-validation",
+                "quarantined_observations": 0,
+                "run_id": "v18deepvisionrun_c8ac8badccee0838",
+                "scanned_bundles": 0,
+                "selected_keyframes": 0,
+                "status": "ok",
+                "version": "18.8.1-deep-vision-evidence-connected",
+                "visual_evidence_failures": []
+              },
+              "v16_silent_life": {
+                "export_suppressed": false,
+                "exported_life_events": 0,
+                "live_session_id": null,
+                "package_date": "2026-06-01",
+                "person_id": "e46-phoneonly-validation",
+                "promotion_queue_created": 0,
+                "run_id": "v18silentrun_62cc200efe6a5d48",
+                "scanned_bundles": 0,
+                "silent_candidates": 0,
+                "status": "ok",
+                "version": "18.0.0-silent-life"
+              },
+              "v17_longitudinal": {
+                "status": "skipped"
+              },
+              "v18_deep_audio": {
+                "artifacts": [],
+                "bundles_refined": 0,
+                "bundles_total": 0,
+                "bundles_without_audio": 0,
+                "errors": [],
+                "live_session_id": null,
+                "package_date": "2026-06-01",
+                "person_id": "e46-phoneonly-validation",
+                "reason": "no_active_bundles",
+                "run_id": "deep_audio_run_v185_360da0074b906562",
+                "status": "ok",
+                "version": "18.7.1-poststop-deep-audio-reusable-runtime"
+              },
+              "version": "18.7.1-resumable-post-stop"
+            },
+            "visual_consolidation": {
+              "object_moved_count": 0,
+              "package_date": "2026-06-01",
+              "spatial_routine_count": 0,
+              "stage": "visual_consolidation",
+              "status": "completed",
+              "summary_id": "v19scene_3e6b00358bf12c96",
+              "visual_event_count": 5
+            }
+          },
+          "status": "blocked",
+          "version": "18.7.1-resumable-close-day"
+        }
+      }
+    }
+  ],
+  "counters_after": {
+    "visual_events_total": 5,
+    "visual_events_object_moved": 0,
+    "predictions_total": 2,
+    "predictions_verified": 2,
+    "predictions_refuted": 0,
+    "self_schema_entries": 4,
+    "self_schema_conditional": 2,
+    "spatial_routines": 0,
+    "life_model_entries": 2
+  },
+  "finished_at": "2026-07-06T14:33:25.703696+00:00"
+}

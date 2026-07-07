@@ -84,6 +84,7 @@ class Settings:
     graphiti_password: str
     ollama_base_url: str
     ollama_model: str
+    ollama_live_model: str
     enable_ollama: bool
     enable_llm_deep: bool
     enable_whisperx: bool
@@ -128,6 +129,8 @@ class Settings:
     cleanup_requires_zero_pending: bool
     ollama_keep_alive_live: str
     ollama_keep_alive_poststop: str
+    ollama_context_live: int
+    ollama_context_poststop: int
     phone_bridge_url: str | None
     phone_bridge_required: bool
 
@@ -167,6 +170,7 @@ def get_settings() -> Settings:
         graphiti_password=os.environ.get("MLOMEGA_GRAPHITI_PASSWORD", os.environ.get("NEO4J_PASSWORD", "mlomega-password")),
         ollama_base_url=os.environ.get("MLOMEGA_OLLAMA_BASE_URL", "http://localhost:11434"),
         ollama_model=os.environ.get("MLOMEGA_OLLAMA_MODEL", "qwen3.5:9b"),
+        ollama_live_model=os.environ.get("MLOMEGA_OLLAMA_LIVE_MODEL", "qwen3.5:4b"),
         enable_ollama=_bool("MLOMEGA_ENABLE_OLLAMA", "true"),
         enable_llm_deep=_bool("MLOMEGA_ENABLE_LLM_DEEP", "true"),
         enable_whisperx=_bool("MLOMEGA_ENABLE_WHISPERX", "true"),
@@ -208,6 +212,8 @@ def get_settings() -> Settings:
         cleanup_requires_zero_pending=_bool("MLOMEGA_CLEANUP_REQUIRES_ZERO_PENDING", "true"),
         ollama_keep_alive_live=os.environ.get("MLOMEGA_OLLAMA_KEEP_ALIVE_LIVE", "10m"),
         ollama_keep_alive_poststop=os.environ.get("MLOMEGA_OLLAMA_KEEP_ALIVE_POSTSTOP", "15m"),
+        ollama_context_live=_int("MLOMEGA_OLLAMA_CONTEXT_LIVE", 4096, minimum=2048),
+        ollama_context_poststop=_int("MLOMEGA_OLLAMA_CONTEXT_POSTSTOP", 16384, minimum=4096),
         phone_bridge_url=os.environ.get("MLOMEGA_PHONE_BRIDGE_URL", "http://127.0.0.1:8766") or None,
         phone_bridge_required=_bool("MLOMEGA_PHONE_BRIDGE_REQUIRED", "true"),
     )

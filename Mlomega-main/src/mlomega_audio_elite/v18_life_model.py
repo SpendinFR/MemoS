@@ -77,7 +77,9 @@ _DIRECT_EVIDENCE_SOURCES: dict[str, tuple[str, str, tuple[str, ...]]] = {
 }
 _CONVERSATION_EVIDENCE_SOURCES: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "conversations": ("conversation_id", "conversation_id", ("started_at", "created_at")),
-    "turns": ("turn_id", "conversation_id", ("absolute_start", "created_at")),
+    # ``turns`` deliberately has no created_at/absolute_start column. Its only
+    # stored event time is the conversation-relative ``start_s`` offset.
+    "turns": ("turn_id", "conversation_id", ("start_s",)),
     "episodes": ("episode_id", "source_conversation_id", ("start_time", "created_at")),
     "situation_episodes": ("situation_id", "episode_id", ("created_at",)),
     "interaction_episodes": ("interaction_id", "episode_id", ("created_at",)),
@@ -95,9 +97,8 @@ _SESSION_EVIDENCE_SOURCES: dict[str, tuple[str, str, tuple[str, ...]]] = {
 
 
 def _source_time_from_row(row: Mapping[str, Any], fields: tuple[str, ...]) -> str | None:
-    # ``absolute_start`` is carried by some normalized turn metadata but not as
-    # a table column. Prefer concrete stored event times and return no time when
-    # none exists; general-stratum promotion then fails safely.
+    # Prefer concrete stored event times and return no time when none exists;
+    # general-stratum promotion then fails safely.
     return canonical_time(row, *fields)
 
 
@@ -256,9 +257,25 @@ def install_canonical(module: Any) -> dict[str, Any]:
         return out
 
     def _owner_conversation_rows(con, table: str, conv_col: str, person_id: str, *, start:str|None,end:str|None,as_of:str|None,limit:int)->list[dict[str,Any]]:
-        rows=strict_many(con,f"""SELECT x.* FROM {table} x
-            JOIN v18_conversation_scopes cs ON cs.conversation_id=x.{conv_col}
-            WHERE cs.person_id=? AND cs.active=1 ORDER BY COALESCE(x.created_at,'') DESC LIMIT ?""",(person_id,limit*4),purpose=f"{table} owner scoped")
+        if table == "turns":
+            rows=strict_many(con,"""SELECT x.*, c.started_at AS conversation_started_at
+                FROM turns x
+                JOIN conversations c ON c.conversation_id=x.conversation_id
+                JOIN v18_conversation_scopes cs ON cs.conversation_id=x.conversation_id
+                WHERE cs.person_id=? AND cs.active=1
+                ORDER BY c.started_at DESC, COALESCE(x.start_s,0) DESC LIMIT ?""",
+                (person_id,limit*4),purpose="turns owner scoped")
+            for row in rows:
+                started = row.get("conversation_started_at")
+                if started:
+                    row["occurred_at"] = iso_utc(
+                        parse_iso_utc(str(started)) + timedelta(seconds=float(row.get("start_s") or 0.0))
+                    )
+        else:
+            rows=strict_many(con,f"""SELECT x.* FROM {table} x
+                JOIN v18_conversation_scopes cs ON cs.conversation_id=x.{conv_col}
+                WHERE cs.person_id=? AND cs.active=1 ORDER BY COALESCE(x.created_at,'') DESC LIMIT ?""",
+                (person_id,limit*4),purpose=f"{table} owner scoped")
         filtered=[]
         for r in rows:
             t=canonical_time(r,"occurred_at","start_time","created_at","updated_at")

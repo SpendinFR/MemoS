@@ -1,0 +1,192 @@
+{
+  "started_at": "2026-07-05T19:32:30.406055+00:00",
+  "person_id": "me",
+  "days": 30,
+  "db_path": "C:\\Users\\wabad\\Downloads\\ProjetMemobyFABLE\\Mlomega-main\\.mlomega_audio_elite\\memory.db",
+  "python": "3.11.1",
+  "executable": "C:\\Users\\wabad\\Downloads\\ProjetMemobyFABLE\\Mlomega-main\\.venv\\Scripts\\python.exe",
+  "counters_before": {
+    "visual_events_total": "n/a (OperationalError)",
+    "visual_events_object_moved": "n/a (OperationalError)",
+    "predictions_total": "n/a (OperationalError)",
+    "predictions_verified": "n/a (OperationalError)",
+    "predictions_refuted": "n/a (OperationalError)",
+    "self_schema_entries": "n/a (OperationalError)",
+    "self_schema_conditional": "n/a (OperationalError)",
+    "spatial_routines": "n/a (OperationalError)",
+    "life_model_entries": "n/a (OperationalError)"
+  },
+  "seed": {
+    "ok": true,
+    "seconds": 8.92,
+    "result": {
+      "status": "completed",
+      "days": 30,
+      "seed": 1337,
+      "routine_detected": false,
+      "verified": 49,
+      "refuted": 11,
+      "conditional_patterns": 60,
+      "spatial_routines": 0,
+      "object_moves": 18
+    }
+  },
+  "close_days": [
+    {
+      "package_date": "2026-06-15",
+      "ok": true,
+      "seconds": 7.42,
+      "status": "blocked",
+      "run_id": "run_v18_718718eff28c4c28af94c07a20568ce7",
+      "resumed": false,
+      "cleanup_eligible": false,
+      "stages": {},
+      "final_status": {
+        "version": "18.7.1-resumable-close-day",
+        "person_id": "me",
+        "package_date": "2026-06-15",
+        "close_day_id": "run_v18_718718eff28c4c28af94c07a20568ce7",
+        "status": "blocked",
+        "cleanup_eligible": false,
+        "live_session_id": null,
+        "service_run_id": null,
+        "post_stop_run_id": null,
+        "error": "close-day query failed: no such table: brainlive_post_stop_deep_flow_runs_v1515",
+        "recovery": {
+          "run_id": "run_v18_718718eff28c4c28af94c07a20568ce7",
+          "state": "blocked",
+          "stage_name": "close_day",
+          "error_code": "blocked_unknown",
+          "error_text": "close-day query failed: no such table: brainlive_post_stop_deep_flow_runs_v1515",
+          "attempt_count": 0,
+          "next_retry_at": null,
+          "updated_at": "2026-07-05T19:32:42.657+00:00"
+        },
+        "result": {
+          "cleanup": {
+            "eligible": false,
+            "reason": "close_day_blocked"
+          },
+          "error": "close-day query failed: no such table: brainlive_post_stop_deep_flow_runs_v1515",
+          "live_session_id": null,
+          "package_date": "2026-06-15",
+          "person_id": "me",
+          "resumed": false,
+          "run_id": "run_v18_718718eff28c4c28af94c07a20568ce7",
+          "service_run_id": null,
+          "stages": {},
+          "status": "blocked",
+          "version": "18.7.1-resumable-close-day"
+        }
+      }
+    },
+    {
+      "package_date": "2026-06-23",
+      "ok": true,
+      "seconds": 2.08,
+      "status": "blocked",
+      "run_id": "run_v18_eaf8c7cd83d946b896e38bbbe08232ab",
+      "resumed": false,
+      "cleanup_eligible": false,
+      "stages": {},
+      "final_status": {
+        "version": "18.7.1-resumable-close-day",
+        "person_id": "me",
+        "package_date": "2026-06-23",
+        "close_day_id": "run_v18_eaf8c7cd83d946b896e38bbbe08232ab",
+        "status": "blocked",
+        "cleanup_eligible": false,
+        "live_session_id": null,
+        "service_run_id": null,
+        "post_stop_run_id": null,
+        "error": "close-day query failed: no such table: brainlive_post_stop_deep_flow_runs_v1515",
+        "recovery": {
+          "run_id": "run_v18_eaf8c7cd83d946b896e38bbbe08232ab",
+          "state": "blocked",
+          "stage_name": "close_day",
+          "error_code": "blocked_unknown",
+          "error_text": "close-day query failed: no such table: brainlive_post_stop_deep_flow_runs_v1515",
+          "attempt_count": 0,
+          "next_retry_at": null,
+          "updated_at": "2026-07-05T19:32:51.022+00:00"
+        },
+        "result": {
+          "cleanup": {
+            "eligible": false,
+            "reason": "close_day_blocked"
+          },
+          "error": "close-day query failed: no such table: brainlive_post_stop_deep_flow_runs_v1515",
+          "live_session_id": null,
+          "package_date": "2026-06-23",
+          "person_id": "me",
+          "resumed": false,
+          "run_id": "run_v18_eaf8c7cd83d946b896e38bbbe08232ab",
+          "service_run_id": null,
+          "stages": {},
+          "status": "blocked",
+          "version": "18.7.1-resumable-close-day"
+        }
+      }
+    },
+    {
+      "package_date": "2026-06-30",
+      "ok": true,
+      "seconds": 2.14,
+      "status": "blocked",
+      "run_id": "run_v18_c1cb62a8e140451abcd244bd6b672b37",
+      "resumed": false,
+      "cleanup_eligible": false,
+      "stages": {},
+      "final_status": {
+        "version": "18.7.1-resumable-close-day",
+        "person_id": "me",
+        "package_date": "2026-06-30",
+        "close_day_id": "run_v18_c1cb62a8e140451abcd244bd6b672b37",
+        "status": "blocked",
+        "cleanup_eligible": false,
+        "live_session_id": null,
+        "service_run_id": null,
+        "post_stop_run_id": null,
+        "error": "close-day query failed: no such table: brainlive_post_stop_deep_flow_runs_v1515",
+        "recovery": {
+          "run_id": "run_v18_c1cb62a8e140451abcd244bd6b672b37",
+          "state": "blocked",
+          "stage_name": "close_day",
+          "error_code": "blocked_unknown",
+          "error_text": "close-day query failed: no such table: brainlive_post_stop_deep_flow_runs_v1515",
+          "attempt_count": 0,
+          "next_retry_at": null,
+          "updated_at": "2026-07-05T19:32:54.131+00:00"
+        },
+        "result": {
+          "cleanup": {
+            "eligible": false,
+            "reason": "close_day_blocked"
+          },
+          "error": "close-day query failed: no such table: brainlive_post_stop_deep_flow_runs_v1515",
+          "live_session_id": null,
+          "package_date": "2026-06-30",
+          "person_id": "me",
+          "resumed": false,
+          "run_id": "run_v18_c1cb62a8e140451abcd244bd6b672b37",
+          "service_run_id": null,
+          "stages": {},
+          "status": "blocked",
+          "version": "18.7.1-resumable-close-day"
+        }
+      }
+    }
+  ],
+  "counters_after": {
+    "visual_events_total": 172,
+    "visual_events_object_moved": 18,
+    "predictions_total": 60,
+    "predictions_verified": 49,
+    "predictions_refuted": 11,
+    "self_schema_entries": 62,
+    "self_schema_conditional": 60,
+    "spatial_routines": 0,
+    "life_model_entries": 2
+  },
+  "finished_at": "2026-07-05T19:32:55.103447+00:00"
+}

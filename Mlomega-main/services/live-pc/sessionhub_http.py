@@ -44,6 +44,7 @@ Port 8710 is the SessionHub HTTP port hard-wired in
 
 import sys
 import time
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -101,6 +102,8 @@ def create_app(
     ingress: Any | None = None,
     *,
     enable_signaling: bool = True,
+    runtime_manager: Any | None = None,
+    person_id: str = "me",
 ):
     """Build the FastAPI app fronting ``hub`` and (optionally) media signaling.
 
@@ -122,6 +125,10 @@ def create_app(
     app = FastAPI(title="MLOmega V19 SessionHub HTTP")
     app.state.hub = hub
     app.state.ingress = ingress
+    if runtime_manager is None and ingress is None and enable_signaling and _gateway.AIORTC_AVAILABLE:
+        runtime_mod = _load_sibling("phoneonly_runtime", "phoneonly_runtime.py")
+        runtime_manager = runtime_mod.SinglePhoneRuntimeManager(person_id=person_id)
+    app.state.runtime_manager = runtime_manager
 
     def _authenticate(session_id: str, token: str) -> "Session":
         session = hub.authenticate(token)
@@ -129,13 +136,34 @@ def create_app(
             raise HTTPException(status_code=401, detail="invalid session token")
         return session
 
+    @app.get("/live")
+    async def live() -> dict[str, Any]:
+        return {"status": "alive", "sessions": hub.session_count}
+
     @app.get("/health")
-    async def health() -> dict[str, Any]:
-        return {
-            "status": "ok",
-            "sessions": len(hub._sessions),
-            "signaling": bool(enable_signaling) and _gateway.AIORTC_AVAILABLE,
+    async def health():
+        signaling = bool(enable_signaling) and _gateway.AIORTC_AVAILABLE
+        runtime_ready = app.state.runtime_manager is not None or app.state.ingress is not None
+        ready = signaling and runtime_ready
+        payload = {
+            "status": "ready" if ready else "unavailable",
+            "ready": ready,
+            "sessions": hub.session_count,
+            "signaling": signaling,
+            "runtime": runtime_ready,
         }
+        if not ready:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=503, content=payload)
+        return payload
+
+    @app.get("/metrics")
+    async def metrics() -> dict[str, Any]:
+        manager = app.state.runtime_manager
+        if manager is not None:
+            return manager.metrics()
+        active = app.state.ingress
+        return {"mode": "signaling_only", "active": active.stats() if hasattr(active, "stats") else None}
 
     @app.post("/session/create")
     async def create_session(request: Request) -> dict[str, Any]:
@@ -148,6 +176,8 @@ def create_app(
             "session_id": session.session_id,
             "token": session.token,
             "created_at_utc": session.created_at_utc,
+            "expires_at_utc": session.token_expires_at_utc,
+            "expires_in_seconds": hub.token_ttl_seconds,
         }
 
     @app.post("/session/renew")
@@ -157,13 +187,17 @@ def create_app(
         token = body.get("token")
         if not session_id or not token:
             raise HTTPException(status_code=422, detail="session_id and token are required")
-        session = _authenticate(session_id, token)
-        new_token = _reissue_token(hub, session)
+        session = hub.renew_token(session_id, token)
+        if session is None:
+            raise HTTPException(status_code=401, detail="invalid session token")
+        new_token = session.token
         return {
             "token": new_token,
             # renew keeps the session id; refresh the timestamp so the client can
             # track token age. Matches SessionHubClient.RenewToken expectations.
             "created_at_utc": _now_iso(),
+            "expires_at_utc": session.token_expires_at_utc,
+            "expires_in_seconds": hub.token_ttl_seconds,
         }
 
     @app.post("/session/clock-sync")
@@ -222,13 +256,73 @@ def create_app(
                 )
             _authenticate(session_id, token)
 
-            active = app.state.ingress
-            if active is None:
-                active = _gateway.AiortcIngress(session_id=session_id)
-                await active.start()
+            manager = app.state.runtime_manager
+            if manager is not None:
+                try:
+                    runtime = await manager.get_or_create(session_id)
+                except RuntimeError as exc:
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
+                active = runtime.ingress
                 app.state.ingress = active
+            else:
+                active = app.state.ingress
+                if active is None:
+                    active = _gateway.AiortcIngress(session_id=session_id)
+                    await active.start()
+                    app.state.ingress = active
             answer_sdp, answer_type = await active.handle_offer_sdp(sdp, sdp_type)
             return {"sdp": answer_sdp, "type": answer_type}
+
+        @app.post("/session/end")
+        async def end_session(request: Request) -> dict[str, Any]:
+            body = await request.json()
+            session_id = body.get("session_id")
+            token = body.get("token")
+            if not session_id or not token:
+                raise HTTPException(status_code=422, detail="session_id and token are required")
+            _authenticate(session_id, token)
+            manager = app.state.runtime_manager
+            runtime = manager.get(session_id) if manager is not None else None
+            if runtime is None:
+                raise HTTPException(status_code=404, detail="session runtime not found")
+            # Explicit authenticated action only. Peer disconnect/track end never
+            # reaches this path and therefore never ends BrainLive or CloseDay.
+            status = await runtime.end_session_only()
+            if status.get("end_session") != "completed":
+                raise HTTPException(status_code=500, detail=status)
+            manager.start_close_day(session_id)
+            return runtime.status()
+
+        @app.post("/session/close-day")
+        async def close_day(request: Request) -> dict[str, Any]:
+            body = await request.json()
+            session_id = body.get("session_id")
+            token = body.get("token")
+            if not session_id or not token:
+                raise HTTPException(status_code=422, detail="session_id and token are required")
+            _authenticate(session_id, token)
+            manager = app.state.runtime_manager
+            runtime = manager.get(session_id) if manager is not None else None
+            if runtime is None:
+                raise HTTPException(status_code=404, detail="session runtime not found")
+            if not runtime.ended:
+                raise HTTPException(status_code=409, detail="session/end must complete first")
+            manager.start_close_day(session_id)
+            return runtime.status()
+
+        @app.post("/session/status")
+        async def session_status(request: Request) -> dict[str, Any]:
+            body = await request.json()
+            session_id = body.get("session_id")
+            token = body.get("token")
+            if not session_id or not token:
+                raise HTTPException(status_code=422, detail="session_id and token are required")
+            _authenticate(session_id, token)
+            manager = app.state.runtime_manager
+            runtime = manager.get(session_id) if manager is not None else None
+            if runtime is None:
+                raise HTTPException(status_code=404, detail="session runtime not found")
+            return runtime.status()
 
     return app
 
@@ -240,14 +334,7 @@ def _reissue_token(hub: "SessionHub", session: "Session") -> str:
     a renewed client must present the new token. We do not rewrite SessionHub —
     we operate on its exposed mappings the same way ``create_session`` does.
     """
-    import secrets
-
-    old_token = session.token
-    new_token = secrets.token_urlsafe(32)
-    session.token = new_token
-    hub._tokens.pop(old_token, None)
-    hub._tokens[new_token] = session.session_id
-    return new_token
+    return hub.rotate_token(session)
 
 
 def _now_iso() -> str:
@@ -269,6 +356,7 @@ def main(argv: list[str] | None = None) -> None:
         help="interface to bind (default: profile bind_host, else 0.0.0.0 — all interfaces)",
     )
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--person-id", default="me")
     parser.add_argument(
         "--no-signaling",
         action="store_true",
@@ -279,7 +367,7 @@ def main(argv: list[str] | None = None) -> None:
     import uvicorn
 
     host = args.host or _bind_host_from_profile() or "0.0.0.0"
-    app = create_app(enable_signaling=not args.no_signaling)
+    app = create_app(enable_signaling=not args.no_signaling, person_id=args.person_id)
     uvicorn.run(app, host=host, port=args.port)
 
 

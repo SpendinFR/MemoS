@@ -149,6 +149,7 @@ class LivePipeline:
         self,
         *,
         session_id: str = "live",
+        live_session_id: str | None = None,
         ingress: Any = None,
         arbiter: Any = None,
         profile_path: Path | str | None = None,
@@ -182,6 +183,9 @@ class LivePipeline:
         active_link: str = "lan",
     ) -> None:
         self.session_id = session_id
+        # Transport identity and BrainLive identity are deliberately distinct.
+        # Every durable semantic writer must use this one shared BrainLive id.
+        self.live_session_id = live_session_id or session_id
         self.ingress = ingress
         self.arbiter = arbiter
         self.profile = load_profile(profile_path)
@@ -190,6 +194,8 @@ class LivePipeline:
         self.display = str(self.user_profile.get("display", "companion_web") or "companion_web")
         self.apply_rotation = apply_rotation
         self.rotation_corrections = 0
+        self._latest_frame_bgr: np.ndarray | None = None
+        self._latest_envelope: Any = None
         vcfg = self.profile.get("vision", {}) if isinstance(self.profile, dict) else {}
         acfg = self.profile.get("audio", {}) if isinstance(self.profile, dict) else {}
 
@@ -260,6 +266,24 @@ class LivePipeline:
         wcfg = self.profile.get("worldbrain", {}) if isinstance(self.profile, dict) else {}
         self.person_id = person_id or "me"
         self.db_path = db_path
+        # Open/bind the conversation session before constructing WorldBrain or
+        # any other durable writer, so every subsystem shares one BrainLive id.
+        self.conversation: Any = conversation_bridge
+        if self.conversation is None and enable_conversation:
+            self.conversation = globals()["conversation_bridge"].ConversationBridge(
+                person_id=self.person_id,
+            )
+        if self.conversation is not None:
+            bound = getattr(self.conversation, "live_session_id", None)
+            if live_session_id is not None:
+                if bound and str(bound) != self.live_session_id:
+                    raise ValueError("ConversationBridge live_session_id does not match LivePipeline")
+                if not bound and hasattr(self.conversation, "bind_session"):
+                    self.conversation.bind_session(self.live_session_id)
+            elif bound:
+                self.live_session_id = str(bound)
+            elif hasattr(self.conversation, "ensure_session"):
+                self.live_session_id = str(self.conversation.ensure_session())
         self.spatial: Any = None
         self.worldbrain: Any = None
         self.scene_adapter: Any = None
@@ -283,7 +307,7 @@ class LivePipeline:
             )
             self.worldbrain = worldbrain.WorldBrain(
                 person_id=self.person_id,
-                live_session_id=session_id,
+                live_session_id=self.live_session_id,
                 config=worldbrain.WorldBrainConfig(
                     promote_min_observations=int(wcfg.get("promote_min_observations", 3)),
                     promote_min_confidence=float(wcfg.get("promote_min_confidence", 0.35)),
@@ -293,7 +317,7 @@ class LivePipeline:
             )
             self.scene_adapter = scene_adapter.BrainLiveSceneAdapter(
                 person_id=self.person_id,
-                live_session_id=session_id,
+                live_session_id=self.live_session_id,
                 worldbrain=self.worldbrain,
                 db_path=db_path,
                 known_people=known_people,
@@ -310,7 +334,7 @@ class LivePipeline:
             # E34 §6: the morning briefing is built on the first session of the day.
             if enable_proactivity:
                 self.morning_briefing = morning_briefing.MorningBriefing(
-                    person_id=self.person_id, live_session_id=session_id,
+                    person_id=self.person_id, live_session_id=self.live_session_id,
                     proactive=self.proactive, worldbrain=self.worldbrain, db_path=db_path,
                 )
 
@@ -320,11 +344,6 @@ class LivePipeline:
         # The bridge owns its OWN BrainLive live session (a real brainlive_sessions
         # row via start_live_session), distinct from the arbitrary transport
         # ``session_id`` used for scene deltas.
-        self.conversation: Any = conversation_bridge
-        if self.conversation is None and enable_conversation:
-            self.conversation = globals()["conversation_bridge"].ConversationBridge(
-                person_id=self.person_id,
-            )
         # ---- LiveDiscourse (E34 §4): fine discourse analysis of live turns off
         # the hot path — final turns are batched and analysed by the core
         # microscope/discourse pipeline in a background worker (never blocks).
@@ -395,6 +414,12 @@ class LivePipeline:
         self.routine_associations: Any = None
         # A generic text-LLM surface for the hypothesis/attribute extractions. The
         # caller may inject a mock/provider; otherwise the local LLM router is used.
+        self.llm_router: Any = None
+        if fine_intel_llm is None and enable_fine_intel:
+            self.llm_router = llm_providers.LLMRouter(
+                profile=self.user_profile, on_cloud_event=self._push_intent,
+            )
+            fine_intel_llm = self.llm_router
         self._fine_intel_llm = fine_intel_llm
         if enable_fine_intel and self.worldbrain is not None:
             hcfg = self.profile.get("fine_intel", {}) if isinstance(self.profile, dict) else {}
@@ -425,7 +450,6 @@ class LivePipeline:
         # router owns the local<->cloud switch (paid mode) and the parse fallback;
         # memory_query routes "interroge ma mémoire" to the rich Brain2 router.
         self.enable_intents = enable_intents
-        self.llm_router: Any = None
         self.memory_query: Any = None
         self.intents: Any = None
         self.vision_focus_handler = vision_focus_handler
@@ -442,7 +466,7 @@ class LivePipeline:
         self.replay: Any = None
         if enable_replay:
             self.replay = replay_service_mod.ReplayService(
-                person_id=self.person_id, live_session_id=self.session_id,
+                person_id=self.person_id, live_session_id=self.live_session_id,
                 db_path=self.db_path, emit_ui_intent=self._push_intent,
             )
 
@@ -460,10 +484,11 @@ class LivePipeline:
             )
 
         if enable_intents:
-            self.llm_router = llm_providers.LLMRouter(
-                profile=self.user_profile,
-                on_cloud_event=self._push_intent,
-            )
+            if self.llm_router is None:
+                self.llm_router = llm_providers.LLMRouter(
+                    profile=self.user_profile,
+                    on_cloud_event=self._push_intent,
+                )
             self.memory_query = memory_query.MemoryQuery(person_id=self.person_id)
             self.intents = intent_router.IntentRouter(
                 vision_focus=self._route_vision_focus,
@@ -504,7 +529,7 @@ class LivePipeline:
                 return self.conversation.ensure_session()
             except Exception:
                 pass
-        return self.session_id
+        return self.live_session_id
 
     # ------------------------------------------------------------- push helpers
     def set_status_sink(self, cb: Callable[[dict[str, Any]], Any]) -> None:
@@ -605,6 +630,8 @@ class LivePipeline:
         router still records the target for multi-turn deixis)."""
         if self.vision_focus_handler is not None:
             return self.vision_focus_handler(request)
+        if self._latest_frame_bgr is not None and self._latest_envelope is not None:
+            return self.on_focus_request(request, self._latest_frame_bgr, self._latest_envelope)
         return None
 
     def _on_scene_delta(self, delta: dict[str, Any]) -> None:
@@ -657,6 +684,10 @@ class LivePipeline:
             if rot:
                 frame_bgr = deorient_frame(frame_bgr, rot)
                 self.rotation_corrections += 1
+        # Exactly one current frame is retained for deictic voice requests such
+        # as "c'est quoi ca ?".  It is replaced, never queued.
+        self._latest_frame_bgr = frame_bgr
+        self._latest_envelope = envelope
         # Feed the spatial provider a pose keyframe (E28) before vision runs.
         # E37 §5: a placeholder envelope (gateway._placeholder_envelope) carries a
         # synthetic neutral pose (0,0,0) flagged pose_valid=False. Never feed it to
@@ -758,7 +789,7 @@ class LivePipeline:
                 try:
                     self.attribute_memory.observe_person_appearance(
                         entity_id=entity_id, descriptor=getattr(profile, "attributes", {}) or {},
-                        session=self._brainlive_session_id() or self.session_id,
+                        session=self._brainlive_session_id() or self.live_session_id,
                         evidence_ref=f"vlm:{track_id}",
                     )
                 except Exception:
@@ -793,7 +824,7 @@ class LivePipeline:
     def _note_fine_intel_turn(self, text: str, content: dict[str, Any]) -> None:
         if not self.enable_fine_intel:
             return
-        session = self._brainlive_session_id() or self.session_id
+        session = self._brainlive_session_id() or self.live_session_id
         speaker_entity = self._speaker_entity_for(content)
         if self.hypothesis_engine is not None:
             try:
@@ -917,7 +948,13 @@ class LivePipeline:
                 pass
 
     def on_audio_chunk(self, samples: np.ndarray, src_rate: int) -> list[dict[str, Any]]:
-        intents = self.audio.push_audio(samples, src_rate)
+        return self._handle_audio_intents(self.audio.push_audio(samples, src_rate))
+
+    def flush_audio(self) -> list[dict[str, Any]]:
+        """Finalize the pending VAD segment through the normal final-turn path."""
+        return self._handle_audio_intents(self.audio.flush())
+
+    def _handle_audio_intents(self, intents: list[dict[str, Any]]) -> list[dict[str, Any]]:
         # Feed final transcripts two ways: (1) as scene conversation context for
         # the E28 scene adapter, and (2) into the V18.8 conversational loop via
         # the E31 ConversationBridge (turn buffer -> policy -> H1 -> queue).
@@ -996,18 +1033,32 @@ class LivePipeline:
                     pass
         return intents
 
-    def end_session(self, *, place_hint: str | None = None) -> str | None:
+    def release_live_resources(self) -> None:
+        """Drop live model references before core post-stop/CloseDay phases."""
+        self.audio.close()
+        detector = getattr(self.vision, "detector", None)
+        for attr in ("session", "_session", "model", "_model"):
+            if detector is not None and hasattr(detector, attr):
+                try:
+                    setattr(detector, attr, None)
+                except Exception:
+                    pass
+
+    def end_session(self, *, place_hint: str | None = None, strict: bool = False) -> str | None:
         """Flush the WorldBrain end-of-session summary (E28) + discourse (E34)."""
         if self.live_discourse is not None:
             try:
                 self.live_discourse.close()
             except Exception:
-                pass
+                if strict:
+                    raise
         if self.worldbrain is None:
             return None
         try:
             return self.worldbrain.end_session(place_hint=place_hint)
         except Exception:
+            if strict:
+                raise
             return None
 
     def deliver_morning_briefing(self, *, force: bool = False) -> dict[str, Any] | None:
@@ -1036,7 +1087,7 @@ class LivePipeline:
                 if content.get("kind") == "ocr" and content.get("lines") and subject:
                     self.attribute_memory.observe_ocr(
                         subject=subject, readings=content.get("lines"),
-                        session=self._brainlive_session_id() or self.session_id,
+                        session=self._brainlive_session_id() or self.live_session_id,
                         evidence_ref=f"frame:{getattr(envelope, 'frame_id', '?')}",
                     )
             except Exception:
@@ -1058,6 +1109,7 @@ class LivePipeline:
     def metrics(self) -> dict[str, Any]:
         m: dict[str, Any] = {
             "session_id": self.session_id,
+            "live_session_id": self.live_session_id,
             "action_level": self._last_action,
             "display": self.display,
             "rotation_corrections": self.rotation_corrections,

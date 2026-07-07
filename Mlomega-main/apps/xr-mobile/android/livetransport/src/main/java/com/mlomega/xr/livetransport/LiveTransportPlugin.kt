@@ -10,6 +10,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
@@ -76,6 +77,9 @@ class LiveTransportPlugin(
 
     @Volatile private var state: TransportState = TransportState.DISCONNECTED
     @Volatile private var adaptiveJob: Job? = null
+    @Volatile private var signalingUrl: String = config.signalingUrl
+    @Volatile private var sessionId: String = config.sessionId
+    @Volatile private var token: String = config.token
 
     // Adaptive controller state.
     private var currentBitrateBps: Int = config.video.startBitrateBps
@@ -98,8 +102,15 @@ class LiveTransportPlugin(
     /** Tear down the peer and stop all capture. Safe to call repeatedly. */
     fun stop() {
         if (!started.compareAndSet(true, false)) return
-        scope.launch { teardownPeer("stopped") }
+        teardownPeer("stopped")
         setState(TransportState.DISCONNECTED, "stopped")
+    }
+
+    /** Update renewed auth/endpoint used by the next reconnect offer. */
+    fun updateCredentials(url: String, newSessionId: String, newToken: String) {
+        signalingUrl = url
+        sessionId = newSessionId
+        token = newToken
     }
 
     /**
@@ -201,6 +212,7 @@ class LiveTransportPlugin(
     /** Build the peer, negotiate, and suspend until it terminates. */
     private suspend fun establish() {
         val terminated = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val iceGatheringComplete = kotlinx.coroutines.CompletableDeferred<Unit>()
 
         val pc = factory.createPeerConnection(rtcConfig(), object : PcObserver() {
             override fun onIceConnectionChange(newState: PeerConnection.IceConnectionState) {
@@ -225,6 +237,12 @@ class LiveTransportPlugin(
                 // created one. Kept for symmetry/robustness.
                 bindDataChannel(dc)
             }
+
+            override fun onIceGatheringChange(newState: PeerConnection.IceGatheringState) {
+                if (newState == PeerConnection.IceGatheringState.COMPLETE && !iceGatheringComplete.isCompleted) {
+                    iceGatheringComplete.complete(Unit)
+                }
+            }
         }) ?: throw IllegalStateException("createPeerConnection returned null")
         peer = pc
 
@@ -248,11 +266,15 @@ class LiveTransportPlugin(
         munged = SdpCodecPreference.configureOpus(munged, config.audio.ptimeMs, config.audio.useDtx)
         val localDesc = SessionDescription(offer.type, munged)
         setLocalSuspending(pc, localDesc)
+        // Signaling is non-trickle: wait for host candidates to be embedded in
+        // pc.localDescription before posting the offer.
+        withTimeoutOrNull(3_000L) { iceGatheringComplete.await() }
+        val gathered = pc.localDescription ?: localDesc
 
         val answer = withContext(Dispatchers.IO) {
             SignalingClient(
-                config.signalingUrl, config.sessionId, config.token, config.signalingTimeoutMs,
-            ).exchangeOffer(localDesc.description, localDesc.type.canonicalForm())
+                signalingUrl, sessionId, token, config.signalingTimeoutMs,
+            ).exchangeOffer(gathered.description, gathered.type.canonicalForm())
         }
         setRemoteSuspending(
             pc,
@@ -265,6 +287,7 @@ class LiveTransportPlugin(
         terminated.await()
         adaptiveJob?.cancel()
         adaptiveJob = null
+        teardownPeer("peer terminated")
     }
 
     private fun bindDataChannel(dc: DataChannel) {
@@ -454,9 +477,12 @@ class LiveTransportPlugin(
         }
         val deferred = kotlinx.coroutines.CompletableDeferred<SessionDescription>()
         pc.createOffer(object : SimpleSdpObserver() {
-            override fun onCreateSuccess(sdp: SessionDescription) = run { deferred.complete(sdp) }
-            override fun onCreateFailure(error: String?) =
-                run { deferred.completeExceptionally(IllegalStateException("createOffer: $error")) }
+            override fun onCreateSuccess(sdp: SessionDescription) {
+                deferred.complete(sdp)
+            }
+            override fun onCreateFailure(error: String?) {
+                deferred.completeExceptionally(IllegalStateException("createOffer: $error"))
+            }
         }, constraints)
         return deferred.await()
     }
@@ -464,9 +490,12 @@ class LiveTransportPlugin(
     private suspend fun setLocalSuspending(pc: PeerConnection, sdp: SessionDescription) {
         val d = kotlinx.coroutines.CompletableDeferred<Unit>()
         pc.setLocalDescription(object : SimpleSdpObserver() {
-            override fun onSetSuccess() = run { d.complete(Unit) }
-            override fun onSetFailure(error: String?) =
-                run { d.completeExceptionally(IllegalStateException("setLocal: $error")) }
+            override fun onSetSuccess() {
+                d.complete(Unit)
+            }
+            override fun onSetFailure(error: String?) {
+                d.completeExceptionally(IllegalStateException("setLocal: $error"))
+            }
         }, sdp)
         d.await()
     }
@@ -474,9 +503,12 @@ class LiveTransportPlugin(
     private suspend fun setRemoteSuspending(pc: PeerConnection, sdp: SessionDescription) {
         val d = kotlinx.coroutines.CompletableDeferred<Unit>()
         pc.setRemoteDescription(object : SimpleSdpObserver() {
-            override fun onSetSuccess() = run { d.complete(Unit) }
-            override fun onSetFailure(error: String?) =
-                run { d.completeExceptionally(IllegalStateException("setRemote: $error")) }
+            override fun onSetSuccess() {
+                d.complete(Unit)
+            }
+            override fun onSetFailure(error: String?) {
+                d.completeExceptionally(IllegalStateException("setRemote: $error"))
+            }
         }, sdp)
         d.await()
     }

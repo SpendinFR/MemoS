@@ -32,6 +32,7 @@ namespace MLOmega.XR.Core
                  "simulated | phone_only | auto, mirroring configs/user_profile.yaml) " +
                  "selects the device adapter via AdapterSelector.")]
         [SerializeField] private MLOmegaConfig _config;
+        [SerializeField] private PermissionGate _permissions;
 
         [Tooltip("Seconds between resume attempts while suspended.")]
         [SerializeField] private float _resumeIntervalSeconds = 1.0f;
@@ -87,6 +88,23 @@ namespace MLOmega.XR.Core
 
         private void OnEnable()
         {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (Adapter is PhoneOnlyAdapter)
+            {
+                if (_permissions == null) _permissions = FindAnyObjectByType<PermissionGate>();
+                if (_permissions != null && !_permissions.AllPermissionsGranted)
+                {
+                    _permissions.AllGranted += OnPermissionsGranted;
+                    return;
+                }
+            }
+#endif
+            StartSession();
+        }
+
+        private void OnPermissionsGranted()
+        {
+            if (_permissions != null) _permissions.AllGranted -= OnPermissionsGranted;
             StartSession();
         }
 
@@ -189,6 +207,7 @@ namespace MLOmega.XR.Core
 
         private void OnDisable()
         {
+            if (_permissions != null) _permissions.AllGranted -= OnPermissionsGranted;
             StopSession();
         }
 

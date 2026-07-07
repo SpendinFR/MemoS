@@ -48,7 +48,10 @@ namespace MLOmega.XR.Transport
         [SerializeField] private int _fps = 30;
 
         [Tooltip("Feed frames as OES textures (zero-copy) vs I420 CPU readback.")]
-        [SerializeField] private bool _textureBacked = true;
+        [SerializeField] private bool _textureBacked = false;
+
+        private Texture2D _readback;
+        private byte[] _i420;
 
         /// <summary>Raised on the main thread when the transport state changes.</summary>
         public event Action<LiveTransportState, string> StateChanged;
@@ -86,11 +89,18 @@ namespace MLOmega.XR.Transport
         private void OnEnable()
         {
             if (_capture != null) _capture.OnFrame += HandleFrame;
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_pairing != null) _pairing.CredentialsChanged += RefreshCredentials;
+#endif
         }
 
         private void OnDisable()
         {
             if (_capture != null) _capture.OnFrame -= HandleFrame;
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_pairing != null) _pairing.CredentialsChanged -= RefreshCredentials;
+#endif
+            StopTransport();
         }
 
         private void Update()
@@ -133,7 +143,12 @@ namespace MLOmega.XR.Transport
         public void StopTransport()
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
-            _plugin?.Call("stop");
+            _plugin?.Call("dispose");
+            _plugin?.Dispose();
+            _feeder?.Dispose();
+            _plugin = null;
+            _feeder = null;
+            _proxy = null;
 #endif
             SetState(LiveTransportState.Disconnected, "stopped");
         }
@@ -159,6 +174,8 @@ namespace MLOmega.XR.Transport
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
             if (_feeder == null || texture == null) return;
+            if (_plugin != null && envelope != null)
+                _plugin.Call<bool>("sendContractMessage", JsonConvert.SerializeObject(envelope));
             long tsNs = envelope != null ? envelope.CaptureMonotonicNs : 0L;
             long rotation = envelope != null ? envelope.Rotation : 0L;
             if (_textureBacked)
@@ -173,6 +190,7 @@ namespace MLOmega.XR.Transport
             // I420 readback path is wired by the capture pipeline when
             // _textureBacked is false; omitted here to avoid a per-frame GPU sync
             // on the hot path (see DECISIONS §E24).
+            if (!_textureBacked) PushCpuI420(texture, (int)rotation, tsNs);
 #endif
         }
 
@@ -181,8 +199,11 @@ namespace MLOmega.XR.Transport
 #if UNITY_ANDROID && !UNITY_EDITOR
         private void StartAndroid()
         {
+            if (_plugin != null) return;
             var config = _pairing.Config;
-            string offerUrl = config != null ? config.WebrtcOfferUrl
+            string offerUrl = !string.IsNullOrEmpty(_pairing.ActiveBaseUrl)
+                ? _pairing.ActiveBaseUrl.TrimEnd('/') + "/webrtc/offer"
+                : config != null ? config.WebrtcOfferUrl
                 : "http://192.168.1.10:8710/webrtc/offer";
 
             using var context = new AndroidJavaClass("com.unity3d.player.UnityPlayer")
@@ -199,6 +220,59 @@ namespace MLOmega.XR.Transport
                 "com.mlomega.xr.livetransport.LiveTransportPlugin",
                 context, cfg, _feeder, _proxy);
             _plugin.Call("start");
+        }
+
+        private void RefreshCredentials()
+        {
+            if (_plugin == null || _pairing == null || string.IsNullOrEmpty(_pairing.ActiveBaseUrl)) return;
+            _plugin.Call("updateCredentials",
+                _pairing.ActiveBaseUrl.TrimEnd('/') + "/webrtc/offer",
+                _pairing.SessionId, _pairing.Token);
+        }
+
+        private void PushCpuI420(Texture source, int rotation, long timestampNs)
+        {
+            int width = source.width, height = source.height;
+            var rt = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32);
+            var previous = RenderTexture.active;
+            Graphics.Blit(source, rt);
+            RenderTexture.active = rt;
+            if (_readback == null || _readback.width != width || _readback.height != height)
+                _readback = new Texture2D(width, height, TextureFormat.RGBA32, false);
+            _readback.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
+            _readback.Apply(false, false);
+            RenderTexture.active = previous;
+            RenderTexture.ReleaseTemporary(rt);
+
+            Color32[] rgba = _readback.GetPixels32();
+            int cw = (width + 1) / 2, ch = (height + 1) / 2;
+            int ySize = width * height, uvSize = cw * ch;
+            if (_i420 == null || _i420.Length != ySize + uvSize * 2)
+                _i420 = new byte[ySize + uvSize * 2];
+            for (int y = 0; y < height; y++)
+            for (int x = 0; x < width; x++)
+            {
+                Color32 p = rgba[y * width + x];
+                _i420[y * width + x] = (byte)Mathf.Clamp(((66 * p.r + 129 * p.g + 25 * p.b + 128) >> 8) + 16, 0, 255);
+            }
+            for (int y = 0; y < height; y += 2)
+            for (int x = 0; x < width; x += 2)
+            {
+                int rs = 0, gs = 0, bs = 0, n = 0;
+                for (int dy = 0; dy < 2 && y + dy < height; dy++)
+                for (int dx = 0; dx < 2 && x + dx < width; dx++)
+                {
+                    Color32 p = rgba[(y + dy) * width + x + dx];
+                    rs += p.r; gs += p.g; bs += p.b; n++;
+                }
+                int r = rs / n, g = gs / n, b = bs / n;
+                int uv = (y / 2) * cw + x / 2;
+                _i420[ySize + uv] = (byte)Mathf.Clamp(((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128, 0, 255);
+                _i420[ySize + uvSize + uv] = (byte)Mathf.Clamp(((112 * r - 94 * g - 18 * b + 128) >> 8) + 128, 0, 255);
+            }
+            using var byteBufferClass = new AndroidJavaClass("java.nio.ByteBuffer");
+            using var byteBuffer = byteBufferClass.CallStatic<AndroidJavaObject>("wrap", _i420);
+            _feeder.Call("pushI420Frame", byteBuffer, width, height, rotation, timestampNs);
         }
 
         private AndroidJavaObject BuildConfig(string offerUrl)
@@ -239,7 +313,7 @@ namespace MLOmega.XR.Transport
                 // Raw hook first: device_command messages (E33 §4) are claimed here
                 // and must NOT be parsed as UIIntents.
                 MessageReceived?.Invoke(json);
-                if (json != null && json.IndexOf("\"device_command\"", StringComparison.Ordinal) >= 0)
+                if (json == null || json.IndexOf("\"ui_intent_id\"", StringComparison.Ordinal) < 0)
                 {
                     return;
                 }

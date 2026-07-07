@@ -13,9 +13,8 @@
 // library: no Activity, no UI. Same conventions as the E24 `livetransport`
 // module (pinned versions, KDoc, JNI-friendly public surface).
 //
-// This module cannot be compiled in the authoring environment (no Android SDK);
-// it is written against the pinned MediaPipe / sherpa-onnx APIs below and the
-// real compile/run belongs to the S25 validation gate (ADR docs/DECISIONS §E26).
+// Compiled in E46 against Android SDK 34/JDK 17. Hardware execution remains the
+// S25/PhoneOnly validation gate (ADR docs/DECISIONS §E26).
 
 plugins {
     id("com.android.library") version "8.5.2"
@@ -70,10 +69,13 @@ dependencies {
     implementation("com.google.mediapipe:tasks-vision:0.10.29")
 
     // sherpa-onnx Android AAR (JNI) — VAD + streaming zipformer ASR + KeywordSpotter.
-    // Apache-2.0. Consumed via JitPack at the pinned tag 1.12.10 (released
-    // 2025-08-25). The static-AAR from the GitHub release can be vendored instead
-    // (flatDir) if JitPack is unavailable on a LAN-only build — see README.
-    implementation("com.github.k2-fsa:sherpa-onnx-android:1.12.10")
+    // Apache-2.0. Official release AAR vendored because the old JitPack coordinate
+    // is not public (HTTP 401). SHA256:
+    // F51F59368674FAEE85B655129C52F9E87BEEF287BF22F35D023BAB83BECAD74C
+    // compileOnly is intentional: Android Gradle Plugin refuses to embed a local
+    // AAR inside another AAR. exportUnityRelease copies both sibling AARs, so
+    // Unity/Gradle packages the native sherpa library exactly once.
+    compileOnly(files("libs/sherpa-onnx-1.12.10.aar"))
 
     // Kotlin coroutines for the audio pump + reconnect-free streaming loop.
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
@@ -83,4 +85,16 @@ dependencies {
     // Pure-JVM unit tests for the gesture state machine / config encoding
     // (no device, no native models required).
     testImplementation("junit:junit:4.13.2")
+}
+
+tasks.register<Copy>("exportUnityRelease") {
+    dependsOn("assembleRelease")
+    into(layout.projectDirectory.dir("../../Assets/Plugins/Android"))
+    from(layout.buildDirectory.file("outputs/aar/reflexvision-release.aar")) {
+        rename { "mlomega-reflexvision.aar" }
+    }
+    from(layout.projectDirectory.file("libs/sherpa-onnx-1.12.10.aar"))
+    from(configurations.named("releaseRuntimeClasspath")) {
+        include("*.aar", "*.jar")
+    }
 }

@@ -174,6 +174,11 @@ def run_scenario_in_process(scn: dict[str, Any], *, seed: int, defaults: dict[st
         if wav.exists():
             if scn.get("audio_target"):
                 pipe.audio.target_language = str(scn["audio_target"])
+            # Explicit legacy compatibility scenario only. Production PhoneOnly
+            # leaves PC translation disabled because live translation belongs on
+            # the Android reflex path.
+            if scn.get("pc_translation_compat"):
+                pipe.audio.enable_translation = True
             samples, rate = _read_wav(wav)
             col.intents.extend(pipe.on_audio_chunk(samples, rate))
             col.intents.extend(pipe.audio.flush())

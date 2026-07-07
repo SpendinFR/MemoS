@@ -71,6 +71,37 @@ def test_parse_endpoints_list_and_legacy():
     assert len(legacy) == 1 and legacy[0].name == "lan" and legacy[0].host == "192.168.1.5"
 
 
+def test_default_probe_requires_phoneonly_readiness(monkeypatch):
+    class Response:
+        status = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode()
+
+    endpoint = _eps()[0]
+    monkeypatch.setattr(
+        endpoint_resolver.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: Response({"status": "unavailable", "ready": False}),
+    )
+    assert endpoint_resolver.default_health_probe(endpoint) is False
+    monkeypatch.setattr(
+        endpoint_resolver.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: Response({"status": "ready", "ready": True}),
+    )
+    assert endpoint_resolver.default_health_probe(endpoint) is True
+
+
 def test_lan_up_lan_chosen():
     eps = _eps()
     r = endpoint_resolver.EndpointResolver(eps, probe=lambda e: e.name == "lan")
@@ -161,7 +192,7 @@ def test_session_and_signaling_via_second_endpoint():
     def probe(ep: object) -> bool:
         if ep.name == "lan":
             return False
-        return client2.get("/health").json().get("status") == "ok"
+        return client2.get("/live").json().get("status") == "alive"
 
     resolver = endpoint_resolver.EndpointResolver(eps, probe=probe)
     result = resolver.resolve()

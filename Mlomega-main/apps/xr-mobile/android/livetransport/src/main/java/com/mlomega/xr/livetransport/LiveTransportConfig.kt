@@ -3,7 +3,7 @@ package com.mlomega.xr.livetransport
 /**
  * All tunables for [LiveTransportPlugin]. Nothing here is hard-coded in the
  * transport logic — the degraded-mode thresholds, backoff bounds and codec
- * targets live in this object so they can be driven from `configs/*` (the same
+ * targets live in this object so they can be driven from the `configs` tree (the same
  * policy source as the PC side, handoff §3.6 / GUIDE_V19_REFERENCE §8.4).
  *
  * @property signalingUrl Absolute URL of the unified signaling endpoint,

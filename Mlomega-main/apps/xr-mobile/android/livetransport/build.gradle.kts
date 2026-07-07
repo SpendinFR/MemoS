@@ -71,3 +71,14 @@ dependencies {
     // Pure-JVM unit tests for the SDP munging logic (no device required).
     testImplementation("junit:junit:4.13.2")
 }
+
+tasks.register<Copy>("exportUnityRelease") {
+    dependsOn("assembleRelease")
+    into(layout.projectDirectory.dir("../../Assets/Plugins/Android"))
+    from(layout.buildDirectory.file("outputs/aar/livetransport-release.aar")) {
+        rename { "mlomega-livetransport.aar" }
+    }
+    from(configurations.named("releaseRuntimeClasspath")) {
+        include("*.aar", "*.jar")
+    }
+}

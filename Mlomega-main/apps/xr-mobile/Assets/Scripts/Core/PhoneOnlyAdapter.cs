@@ -43,6 +43,9 @@ namespace MLOmega.XR.Core
         // Phone-only renders a flat 2D view, never a stereo rig.
         public bool IsStereo => false;
         public string FrameSource => ContractDefaults.FrameSource.PhoneCamera;
+        public Texture PreviewTexture => _webcam;
+        public int PreviewRotationAngle => _webcam != null ? _webcam.videoRotationAngle : 0;
+        public bool PreviewVerticallyMirrored => _webcam != null && _webcam.videoVerticallyMirrored;
 
         public event Action<DeviceConnectionState> ConnectionStateChanged;
 

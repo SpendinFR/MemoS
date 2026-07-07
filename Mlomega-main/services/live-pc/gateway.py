@@ -223,6 +223,36 @@ def _placeholder_envelope(session_id: str, frame_id: str, capture_ns: int, sourc
     )
 
 
+def _audio_frame_to_mono(frame: Any) -> tuple[Any, int]:
+    """Convert a PyAV AudioFrame (packed or planar) to mono, preserving scale."""
+    import numpy as np
+
+    raw = np.asarray(frame.to_ndarray())
+    channels = max(1, len(getattr(getattr(frame, "layout", None), "channels", ()) or ()))
+    planar = bool(getattr(getattr(frame, "format", None), "is_planar", False))
+    if channels == 1:
+        mono = raw.reshape(-1)
+    elif planar:
+        matrix = raw.reshape(channels, -1)
+        if np.issubdtype(raw.dtype, np.integer):
+            mono = np.rint(matrix.astype(np.float64).mean(axis=0))
+        else:
+            mono = matrix.astype(np.float32).mean(axis=0)
+    else:
+        # PyAV packed s16 stereo is shaped (1, samples * channels).
+        matrix = raw.reshape(-1, channels)
+        if np.issubdtype(raw.dtype, np.integer):
+            mono = np.rint(matrix.astype(np.float64).mean(axis=1))
+        else:
+            mono = matrix.astype(np.float32).mean(axis=1)
+    if np.issubdtype(raw.dtype, np.integer):
+        info = np.iinfo(raw.dtype)
+        mono = np.clip(mono, info.min, info.max).astype(raw.dtype)
+    else:
+        mono = mono.astype(np.float32, copy=False)
+    return np.ascontiguousarray(mono), int(frame.sample_rate or 48000)
+
+
 class AiortcIngress:
     """Real WebRTC ingress: aiortc server + aiohttp POST /offer signaling.
 
@@ -241,6 +271,7 @@ class AiortcIngress:
         session_id: str = "aiortc-ingress",
         source: str = "aiortc_ingress",
         max_frames: int | None = None,
+        standalone_signaling: bool = True,
     ) -> None:
         if not AIORTC_AVAILABLE:
             raise RuntimeError("aiortc is not installed; AiortcIngress is unavailable")
@@ -249,10 +280,15 @@ class AiortcIngress:
         self.session_id = session_id
         self.source = source
         self.max_frames = max_frames
+        self.standalone_signaling = standalone_signaling
         self.bench = DecodeBench()
         self.recv_bench = DecodeBench()
         self.matcher = _EnvelopeMatcher()
-        self._frames: asyncio.Queue[FramePacket | None] = asyncio.Queue()
+        # One decoded frame only: stale camera frames are dropped rather than
+        # building latency.  Audio has a small bounded queue and is drained by a
+        # dedicated worker so ASR never blocks aiortc's receive loop.
+        self._frames: asyncio.Queue[FramePacket | None] = asyncio.Queue(maxsize=1)
+        self._audio: asyncio.Queue[tuple[Any, int] | None] = asyncio.Queue(maxsize=32)
         self._pcs: set[Any] = set()
         self._runner: Any | None = None
         self._site: Any | None = None
@@ -264,7 +300,21 @@ class AiortcIngress:
         # to record_delivery_feedback (delivery_adapter.record_receipt).
         self._channels: set[Any] = set()
         self.on_receipt: Callable[[str], Any] | None = None
+        self.on_datachannel_open: Callable[[], Any] | None = None
         self.received_receipts = 0
+        self.on_audio_chunk: Callable[[Any, int], Any] | None = None
+        self.audio_chunks_received = 0
+        self.audio_chunks_dropped = 0
+        self.audio_errors = 0
+        self.video_frames_dropped = 0
+        self.peer_state = "new"
+        self._audio_worker: asyncio.Task[Any] | None = None
+        self._closed = False
+        self._accepting_media = True
+        self._audio_inflight = 0
+        self._audio_idle = asyncio.Event()
+        self._audio_idle.set()
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def send_ui_intent(self, intent_json: str) -> int:
         """Send a UIIntent (JSON string) to every open downlink DataChannel.
@@ -272,6 +322,19 @@ class AiortcIngress:
         Returns the number of channels the intent was written to. Non-blocking;
         aiortc buffers on the channel. Safe to call once frames/channel are up.
         """
+        loop = self._loop
+        if loop is not None:
+            try:
+                current = asyncio.get_running_loop()
+            except RuntimeError:
+                current = None
+            if current is not loop:
+                open_count = sum(1 for c in self._channels if getattr(c, "readyState", None) == "open")
+                loop.call_soon_threadsafe(self._send_ui_intent_now, intent_json)
+                return open_count
+        return self._send_ui_intent_now(intent_json)
+
+    def _send_ui_intent_now(self, intent_json: str) -> int:
         sent = 0
         for channel in list(self._channels):
             try:
@@ -288,6 +351,10 @@ class AiortcIngress:
 
     async def start(self) -> None:
         """Start the aiohttp signaling server. Idempotent."""
+        self._loop = asyncio.get_running_loop()
+        if not self.standalone_signaling:
+            self._started.set()
+            return
         if self._runner is not None:
             return
         from aiohttp import web
@@ -304,6 +371,9 @@ class AiortcIngress:
         await self._started.wait()
 
     async def close(self) -> None:
+        await self.stop_accepting_media()
+        await self.drain_audio(timeout_s=5.0)
+        self._closed = True
         coros = [pc.close() for pc in list(self._pcs)]
         self._pcs.clear()
         if coros:
@@ -312,7 +382,11 @@ class AiortcIngress:
             await self._runner.cleanup()
             self._runner = None
             self._site = None
-        await self._frames.put(None)
+        await self._replace_latest(self._frames, None)
+        await self._audio.put(None)
+        if self._audio_worker is not None:
+            await asyncio.gather(self._audio_worker, return_exceptions=True)
+            self._audio_worker = None
 
     async def _handle_offer(self, request: Any) -> Any:
         from aiohttp import web
@@ -329,14 +403,29 @@ class AiortcIngress:
         ``POST /webrtc/offer`` FastAPI route in ``sessionhub_http`` so
         ``fake_xr_device`` and the Android client share one signaling surface.
         """
+        self._loop = asyncio.get_running_loop()
+        if not self._accepting_media:
+            raise RuntimeError("media ingress is frozen")
         offer = RTCSessionDescription(sdp=sdp, type=sdp_type)
         pc = RTCPeerConnection()
         self._pcs.add(pc)
+        self.peer_state = "connecting"
 
         @pc.on("datachannel")
         def _on_datachannel(channel: Any) -> None:  # noqa: ANN401
             # Register as a downlink so the gateway can push UIIntent JSON back.
             self._channels.add(channel)
+
+            @channel.on("open")
+            def _on_open() -> None:
+                if self.on_datachannel_open is None:
+                    return
+                try:
+                    result = self.on_datachannel_open()
+                    if asyncio.iscoroutine(result):
+                        asyncio.create_task(result)
+                except Exception:
+                    pass
 
             @channel.on("close")
             def _on_close() -> None:
@@ -370,9 +459,14 @@ class AiortcIngress:
         def _on_track(track: Any) -> None:  # noqa: ANN401
             if track.kind == "video":
                 asyncio.ensure_future(self._consume_track(track, pc))
+            elif track.kind == "audio":
+                if self._audio_worker is None or self._audio_worker.done():
+                    self._audio_worker = asyncio.create_task(self._drain_audio())
+                asyncio.ensure_future(self._consume_audio_track(track))
 
         @pc.on("connectionstatechange")
         async def _on_state() -> None:
+            self.peer_state = str(pc.connectionState)
             if pc.connectionState in {"failed", "closed", "disconnected"}:
                 await self._teardown(pc)
 
@@ -385,6 +479,8 @@ class AiortcIngress:
         count = 0
         last_ready = time.perf_counter_ns()
         while True:
+            if not self._accepting_media:
+                break
             try:
                 frame = await track.recv()
             except MediaStreamError:
@@ -416,12 +512,99 @@ class AiortcIngress:
                     capture_ns if capture_ns is not None else time.monotonic_ns(),
                     self.source,
                 )
-            await self._frames.put((frame_bgr, envelope))
+            await self._replace_latest(self._frames, (frame_bgr, envelope), count_drop=True)
             count += 1
             if self.max_frames is not None and count >= self.max_frames:
                 break
-        await self._frames.put(None)
+        # A track ending is a temporary transport loss.  Do not terminate the
+        # ingress iterator: Android's reconnect loop may attach another peer.
         await self._teardown(pc)
+
+    async def _consume_audio_track(self, track: Any) -> None:
+        """Convert aiortc/PyAV AudioFrame to interleaved mono PCM + source rate."""
+        import numpy as np
+
+        while not self._closed:
+            if not self._accepting_media:
+                break
+            try:
+                frame = await track.recv()
+            except MediaStreamError:
+                break
+            try:
+                pcm, rate = _audio_frame_to_mono(frame)
+                self.audio_chunks_received += 1
+                try:
+                    self._audio.put_nowait((pcm, rate))
+                except asyncio.QueueFull:
+                    self.audio_chunks_dropped += 1
+                    try:
+                        self._audio.get_nowait()
+                        self._audio.task_done()
+                    except asyncio.QueueEmpty:
+                        pass
+                    self._audio.put_nowait((pcm, rate))
+            except Exception:
+                self.audio_errors += 1
+
+    async def _drain_audio(self) -> None:
+        while True:
+            item = await self._audio.get()
+            if item is None:
+                self._audio.task_done()
+                return
+            callback = self.on_audio_chunk
+            self._audio_inflight += 1
+            self._audio_idle.clear()
+            try:
+                if callback is not None:
+                    result = await asyncio.to_thread(callback, item[0], item[1])
+                    if asyncio.iscoroutine(result):
+                        await result
+            except Exception:
+                self.audio_errors += 1
+            finally:
+                self._audio_inflight -= 1
+                self._audio.task_done()
+                if self._audio_inflight == 0:
+                    self._audio_idle.set()
+
+    async def stop_accepting_media(self) -> None:
+        """Freeze this ingress and stop all current peer producers."""
+        self._accepting_media = False
+        self.peer_state = "ending"
+        peers = list(self._pcs)
+        if peers:
+            await asyncio.gather(*(self._teardown(pc) for pc in peers), return_exceptions=True)
+
+    async def drain_audio(self, *, timeout_s: float = 5.0) -> None:
+        """Wait for queued and currently executing audio callbacks."""
+        async def _wait() -> None:
+            await self._audio.join()
+            await self._audio_idle.wait()
+        await asyncio.wait_for(_wait(), timeout=timeout_s)
+
+    async def _replace_latest(self, queue: Any, item: Any, *, count_drop: bool = False) -> None:
+        if queue.full():
+            try:
+                queue.get_nowait()
+                if count_drop:
+                    self.video_frames_dropped += 1
+            except asyncio.QueueEmpty:
+                pass
+        queue.put_nowait(item)
+
+    def stats(self) -> dict[str, Any]:
+        return {
+            "peer_state": self.peer_state,
+            "frames_received": len(self.bench.samples_ms),
+            "frames_dropped": self.video_frames_dropped,
+            "audio_chunks_received": self.audio_chunks_received,
+            "audio_chunks_dropped": self.audio_chunks_dropped,
+            "audio_errors": self.audio_errors,
+            "audio_inflight": self._audio_inflight,
+            "accepting_media": self._accepting_media,
+        }
 
     async def _teardown(self, pc: Any) -> None:
         if pc in self._pcs:

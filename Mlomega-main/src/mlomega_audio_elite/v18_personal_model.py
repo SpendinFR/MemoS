@@ -75,6 +75,7 @@ def install(module: Any) -> dict[str, Any]:
 
     def build_brain2_live_personal_model(person_id: str, *, live_session_id: str | None = None, active_people: list[str] | None = None, place_hint: str | None = None, topic_hint: str | None = None, use_llm: bool = True, timeout: float = 90.0, limit: int = 50) -> dict[str,Any]:
         if not person_id: raise ValueError("V18 personal model requires explicit person_id")
+        module.ensure_personal_model_schema()
         module.collect_brain2_life_feed=collect_brain2_life_feed
         raw=collect_brain2_life_feed(person_id,live_session_id=live_session_id,active_people=active_people,place_hint=place_hint,topic_hint=topic_hint,limit=limit)
         live_ready:dict[str,Any]

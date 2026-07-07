@@ -18,12 +18,45 @@ Nothing here blocks: a missing whisper model or translation pack degrades to an
 honest ``status`` on the subtitle intent, never an exception into the transport.
 """
 
+import os
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import numpy as np
+
+
+_CUDA_DLL_HANDLES: list[Any] = []
+
+
+def _configure_windows_cuda_dlls() -> None:
+    """Expose CUDA 12/cuDNN DLLs installed by NVIDIA's Python wheels.
+
+    CTranslate2 detects the GPU through the driver, but Windows does not search
+    sibling Python packages for dependent DLLs.  Keep the directory handles
+    alive for the process lifetime; otherwise ``os.add_dll_directory`` removes
+    them when the handle is collected.
+    """
+    if sys.platform != "win32" or not hasattr(os, "add_dll_directory"):
+        return
+    site_packages = Path(sys.prefix) / "Lib" / "site-packages" / "nvidia"
+    discovered: list[str] = []
+    for component in ("cublas", "cudnn", "cuda_nvrtc"):
+        dll_dir = site_packages / component / "bin"
+        if dll_dir.is_dir():
+            _CUDA_DLL_HANDLES.append(os.add_dll_directory(str(dll_dir)))
+            discovered.append(str(dll_dir))
+    if discovered:
+        # CTranslate2 loads some libraries by name rather than as ordinary
+        # extension dependencies, so add_dll_directory alone is insufficient.
+        current = os.environ.get("PATH", "")
+        os.environ["PATH"] = os.pathsep.join(discovered + ([current] if current else []))
+
+
+_configure_windows_cuda_dlls()
 
 
 def _utc() -> str:
@@ -160,9 +193,23 @@ class WhisperTranscriber:
         if model is None:
             return {"status": "asr_unavailable", "text": "", "language": None}
         t0 = time.perf_counter()
-        segments, info = model.transcribe(
-            audio_16k.astype(np.float32), language=language, beam_size=1, vad_filter=False
-        )
+        try:
+            segments, info = model.transcribe(
+                audio_16k.astype(np.float32), language=language, beam_size=1, vad_filter=False
+            )
+        except RuntimeError as exc:
+            # CTranslate2 can report a CUDA device while the matching cuBLAS DLL
+            # is absent. Fall back once to CPU instead of killing live audio.
+            if self.device != "cuda" or "cublas" not in str(exc).lower():
+                raise
+            from faster_whisper import WhisperModel
+
+            self._model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
+            self.device = "cpu"
+            model = self._model
+            segments, info = model.transcribe(
+                audio_16k.astype(np.float32), language=language, beam_size=1, vad_filter=False
+            )
         text = " ".join(s.text.strip() for s in segments).strip()
         self.last_infer_ms = (time.perf_counter() - t0) * 1000.0
         return {
@@ -234,10 +281,9 @@ class AudioMetrics:
 class AudioRT:
     """Audio pipeline orchestrator. Emits UIIntent subtitle dicts via ``on_intent``.
 
-    ``target_language`` is the subtitle language; when the detected speech
-    language differs, the final subtitle carries both the source text and the
-    translated text. Partials are emitted from the source language (fast path);
-    finals include translation.
+    The PC path is source transcription for BrainLive/archive. On-device sherpa
+    owns immediate Android subtitles. Translation is compatibility-only and
+    must be explicitly enabled; it is not on the PhoneOnly critical path.
     """
 
     def __init__(
@@ -248,6 +294,7 @@ class AudioRT:
         vad: VadSegmenter | None = None,
         transcriber: WhisperTranscriber | None = None,
         translator: ArgosTranslator | None = None,
+        enable_translation: bool = False,
         arbiter: Any = None,
         on_intent: Callable[[dict[str, Any]], Any] | None = None,
         on_segment: Callable[[np.ndarray, dict[str, Any]], Any] | None = None,
@@ -257,6 +304,7 @@ class AudioRT:
         self.vad = vad or VadSegmenter()
         self.transcriber = transcriber or WhisperTranscriber()
         self.translator = translator or ArgosTranslator()
+        self.enable_translation = bool(enable_translation)
         self.arbiter = arbiter
         self.on_intent = on_intent
         # E37 §1: raw-segment hook. Fires with (segment float32 16 kHz mono, meta)
@@ -326,16 +374,25 @@ class AudioRT:
         if not self._admit_asr():
             intent = self._intent("", final=True, language=None, translated=None, status="asr_refused")
             self._emit(intent)
+            self._notify_segment(seg, ui_intent_id=intent.get("ui_intent_id"), asr_status="asr_refused")
             return [intent]
-        result = self.transcriber.transcribe(seg)
+        try:
+            result = self.transcriber.transcribe(seg)
+        except Exception:
+            self._notify_segment(seg, asr_status="asr_error")
+            raise
         if result["status"] != "ok":
             intent = self._intent("", final=True, language=None, translated=None, status=result["status"])
             self._emit(intent)
+            self._notify_segment(
+                seg, ui_intent_id=intent.get("ui_intent_id"), asr_status=str(result["status"])
+            )
             return [intent]
         self.metrics.asr_ms.append(self.transcriber.last_infer_ms)
         text = result["text"]
         language = result.get("language")
         if not text:
+            self._notify_segment(seg, asr_status="empty_transcript")
             return []
 
         # Partial (source language, fast) then final (with translation).
@@ -346,7 +403,7 @@ class AudioRT:
 
         translated = None
         translate_status = "noop"
-        if language and language != self.target_language:
+        if self.enable_translation and language and language != self.target_language:
             tr = self.translator.translate(text, language, self.target_language)
             translate_status = tr["status"]
             if tr["status"] == "ok":
@@ -371,6 +428,7 @@ class AudioRT:
                     "ui_intent_id": final.get("ui_intent_id"),
                     "text": text,
                     "language": language,
+                    "asr_status": "ok",
                     "absolute_start": start.isoformat(),
                     "absolute_end": end.isoformat(),
                     "duration_s": dur_s,
@@ -379,3 +437,41 @@ class AudioRT:
             except Exception:
                 pass
         return out
+
+    def _notify_segment(
+        self,
+        seg: np.ndarray,
+        *,
+        ui_intent_id: str | None = None,
+        text: str | None = None,
+        language: str | None = None,
+        asr_status: str,
+    ) -> None:
+        """Archive one VAD-final segment even when ASR cannot produce text."""
+        if self.on_segment is None:
+            return
+        try:
+            dur_s = float(len(seg)) / 16000.0
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(seconds=dur_s)
+            self.on_segment(seg, {
+                "ui_intent_id": ui_intent_id or f"audiort-segment-{self.session_id}-{self.metrics.segments}",
+                "text": text,
+                "language": language,
+                "asr_status": asr_status,
+                "absolute_start": start.isoformat(),
+                "absolute_end": end.isoformat(),
+                "duration_s": dur_s,
+                "sample_rate": 16000,
+            })
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        """Release live model references before the post-stop GPU phases."""
+        if hasattr(self.transcriber, "_model"):
+            self.transcriber._model = None
+            self.transcriber.available = False
+        cache = getattr(self.translator, "_cache", None)
+        if isinstance(cache, dict):
+            cache.clear()

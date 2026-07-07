@@ -136,13 +136,13 @@ def endpoints_from_profile(profile: Mapping[str, Any], *, default_port: int = DE
 
 # --------------------------------------------------------------------------- probe
 def default_health_probe(endpoint: Endpoint, *, timeout_s: float = 2.0) -> bool:
-    """Short ``GET /health`` reachability probe (returns True on HTTP 200 ``ok``)."""
+    """Return True only for the PhoneOnly readiness contract."""
     try:
         with urllib.request.urlopen(endpoint.health_url, timeout=timeout_s) as resp:  # noqa: S310
             if resp.status != 200:
                 return False
             body = json.loads(resp.read().decode("utf-8"))
-            return str(body.get("status")) == "ok"
+            return bool(body.get("ready")) and str(body.get("status")) == "ready"
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         return False
 

@@ -265,7 +265,7 @@ class ConversationBridge:
             out["hot"] = {"status": "error", "error": str(exc)[:500]}
         return out
 
-    def end_session(self, *, notes: str | None = None) -> dict[str, Any] | None:
+    def end_session(self, *, notes: str | None = None, strict: bool = False) -> dict[str, Any] | None:
         if not self.live_session_id:
             return None
         from mlomega_audio_elite.brainlive_v15 import end_live_session  # type: ignore
@@ -273,6 +273,8 @@ class ConversationBridge:
         try:
             return end_live_session(self.live_session_id, notes=notes)
         except Exception:
+            if strict:
+                raise
             return None
 
 

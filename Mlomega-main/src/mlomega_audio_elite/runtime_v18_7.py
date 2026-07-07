@@ -507,7 +507,7 @@ def release_live_model_caches() -> None:
     try:
         from .llm import ollama_unload
         settings = get_settings()
-        for model in {str(settings.ollama_model or "").strip(), str(os.environ.get("MLOMEGA_VLM_MODEL") or "").strip()} - {""}:
+        for model in {str(settings.ollama_live_model or "").strip(), str(os.environ.get("MLOMEGA_VLM_MODEL") or "").strip()} - {""}:
             ollama_unload(model=model)
             unloaded.append(model)
     except Exception:

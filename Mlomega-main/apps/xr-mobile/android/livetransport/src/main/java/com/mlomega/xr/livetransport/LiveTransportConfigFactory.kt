@@ -14,7 +14,7 @@ object LiveTransportConfigFactory {
     /**
      * Build a [LiveTransportConfig] with the video geometry Unity supplies and
      * all policy thresholds left at their config defaults (which the app can
-     * later override from `configs/*`).
+     * later override from the `configs` tree).
      */
     @JvmStatic
     fun forUnity(

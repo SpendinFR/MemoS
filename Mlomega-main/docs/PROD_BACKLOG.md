@@ -2,6 +2,96 @@
 
 Issu de l'audit d'alignement visionâ†”livrÃ© du 2026-07-04. Principe directeur : **brancher l'existant avant de construire du neuf** â€” le cÅ“ur V18.8 contient dÃ©jÃ  la rÃ©activitÃ© conversationnelle (hot capsule, relation packs, open loops, interventions proactives H1), les modÃ¨les relationnels et la correction mÃ©moire ; plusieurs Â« gaps Â» sont des tuyaux manquants, pas des capacitÃ©s manquantes. MÃªme discipline que E1â†’E29 : une Ã©tape = une branche = une PR, push au fil de l'eau, tests rÃ©els exÃ©cutÃ©s ici quand c'est du PC, ADR dans DECISIONS.md.
 
+## E39 - Invariant V18 `turns` (FAIT - 2026-07-06)
+
+- [x] Supprimer toute dependance declaree a `turns.created_at` et `turns.absolute_start`.
+- [x] Utiliser uniquement `turns.start_s`, present dans le schema reel.
+- [x] Ajouter un test source/schema de non-regression.
+- [x] Garder le changement post-stop preexistant separe du lot PhoneOnly.
+
+## E40 - Identifiant BrainLive unique (FAIT - 2026-07-06)
+
+- [x] Separer l'identifiant transport de l'identifiant BrainLive.
+- [x] Construire ConversationBridge avant les writers WorldBrain.
+- [x] Aligner WorldBrain, SceneAdapter, keyframes, audio, replay et briefing.
+- [x] Refuser une divergence d'identifiants au demarrage.
+- [x] Valider les writers durables par test d'integration.
+
+## E41 - Barriere de fin live (FAIT PC - 2026-07-06)
+
+- [x] Geler les nouveaux medias et fermer les peers avant le drain.
+- [x] Attendre la queue et le callback audio en vol.
+- [x] Flusher le dernier segment VAD par le chemin final normal.
+- [x] Archiver le VAD meme sans transcript ASR.
+- [x] Propager les erreurs de fermeture en mode strict.
+- [x] Fermer ingress/video et liberer les modeles/caches live avant CloseDay.
+- [ ] Valider l'ordre avec le microphone Android reel (E46).
+
+## E42 - PCM Opus et DataChannel thread-safe (FAIT PC - 2026-07-06)
+
+- [x] Gerer PyAV packed et planar a partir du format/layout reels.
+- [x] Downmixer `s16/stereo` packed vers mono sans changer l'echelle.
+- [x] Conserver une queue audio bornee avec comptage des drops.
+- [x] Marshaler les UIIntent du worker audio vers l'event loop aiortc.
+- [x] Tester avec une vraie `av.AudioFrame` et verifier le thread DataChannel.
+
+## E43 - Job CloseDay authentifie et reprise-safe (FAIT PC - 2026-07-06)
+
+- [x] Separer fin live et execution CloseDay.
+- [x] Ajouter `/session/status` et `/session/close-day`, authentifies.
+- [x] Rendre end/retry idempotents et limiter a un task par session.
+- [x] Executer le worker CloseDay avec `.venv`, pas `.venv-live`.
+- [x] Charger `.env` et transmettre le vrai `PersonId` au runtime.
+- [x] Conserver la reprise durable native des stages V18.
+- [x] Refuser une seconde session transport dans le meme processus operateur.
+- [ ] Rejouer un CloseDay complet non mocke en E46.
+
+## E44 - Android PhoneOnly transport (SOURCE FAITE - 2026-07-06)
+
+- [x] Envoyer FrameEnvelope sur le DataChannel avant la frame.
+- [x] Ajouter un fallback CPU I420 reel ; ne pas pretendre au zero-copy EGL.
+- [x] Attendre ICE gathering sans trickle ICE.
+- [x] Teardown avant reconnect et dispose synchrone.
+- [x] Propager token et endpoint renouveles vers Kotlin.
+- [x] Re-resoudre LAN/tunnel apres perte du PC.
+- [x] Autoriser explicitement le HTTP LAN du profil local.
+- [x] Ajouter build/test/export AAR et dependances Unity.
+- [x] Rendre XREAL optionnel pour ouvrir/build PhoneOnly.
+- [ ] Compiler Gradle et valider sur Android en E46.
+
+## E45 - Scene PhoneOnly separee (FAIT SOURCE - 2026-07-06)
+
+- [x] Retirer tout forçage PhoneOnly du builder G1 XREAL.
+- [x] Creer un builder `PhoneOnly.unity` distinct.
+- [x] Creer un asset config PhoneOnly distinct et editable.
+- [x] Brancher permissions, capture, pairing, transport et fin explicite.
+- [x] Tester statiquement la separation G1/PhoneOnly.
+- [ ] Ouvrir et compiler les deux scenes dans Unity en E46.
+
+## E46 - Validation/compilation finale (PC AVANCE, ANDROID A FAIRE - 2026-07-06)
+
+- [x] Suite V18 complete : 110 passed.
+- [x] Suite V19 deterministe large : 190 passed, 1 skipped, 1 deselected lourd.
+- [x] Corriger les dependances API manquantes dans installateur/live venv.
+- [x] Installer CUDA 12/cuBLAS/cuDNN dans `.venv-live` et valider AudioRT GPU.
+- [x] Conserver le fallback AudioRT CPU comme securite, pas comme chemin nominal.
+- [x] Mesurer les WAV (4,525 s/4,890 s) et le vrai faster-whisper GPU (0,34 s inference).
+- [x] Mettre Ollama a jour et installer Qwen3.5 4B live + 9B deep.
+- [x] Valider le contrat Ollama reel sous 12 s et separer tests deterministes/integration.
+- [x] Garder le modele resident par phase et le liberer une seule fois a la frontiere deep.
+- [x] Executer un CloseDay reel et conserver son verdict `blocked`.
+- [x] Reprendre le meme run durable avec `--force`, sans duplication.
+- [x] Corriger `life_model_blocked`, puis obtenir CloseDay `completed` et cleanup eligible.
+- [ ] Implementer/valider la traduction live Android ; `translation_hot` ne traduit rien actuellement.
+- [x] Verifier le failover offer : URL active LAN/Tailscale deja branchee dans le checkout.
+- [x] Separer `/live` liveness et `/health` readiness PhoneOnly avec 503 indisponible.
+- [x] Ajouter TTL/rotation/purge token et grace renew-only pour reprendre le meme session_id.
+- [ ] Terminer l'audit transversal Brain/nightly/config/routes/legacy avant compilation.
+- [ ] Installer JDK 17, Gradle 8.7, Android SDK/adb et Unity 6000.0.23f1.
+- [ ] Construire/tester/exporter les AAR Kotlin.
+- [ ] Ouvrir les scenes, lancer les tests Unity et construire l'APK.
+- [ ] Executer Android -> PC reel, puis Terminer -> CloseDay completed.
+
 ## E31 â€” Conversation live â†’ BrainLive V18.8 (LE branchement prioritaire)
 
 **Constat** : audiort produit les transcripts (sous-titres) mais la boucle BrainLive du cÅ“ur ne les reÃ§oit pas â€” le moteur d'interventions conversationnelles existe (v18_8_live_policy, hotloop, turn buffer) et n'entend pas la conversation V19.
@@ -61,3 +151,48 @@ Faille critique rÃ©parÃ©e : l'audio brut V19 n'Ã©tait pas archivÃ© â†
 - SubtilitÃ© assembleur : `audio_timeline_json` se remplit via les tours texte (`brainlive_turn_buffer`, modality audio_text) tandis que le dÃ©clencheur deep audio lit les events `speech_segment` â€” les deux coexistent dans le mÃªme bundle (bridge conversationnel E31 + archive E37), c'est le fonctionnement nominal V18.8 reproduit.
 - Conflit routeur corrigÃ© : patterns `owner_enroll` enregistrÃ©s AVANT `set_tts` (le `\bparle\b` du toggle TTS avalait Â« c'est moi qui parle Â»).
 - Quota audio : ligne ajoutÃ©e au doctor `-Quota` ; purge par le close-day comme le tampon-jour.
+
+## E46-C — Contexte/reprise/UI PhoneOnly (2026-07-07)
+
+- [x] Mesurer la fenêtre Ollama réelle : 4096 par défaut malgré 262144 natifs Qwen3.5.
+- [x] Fixer `num_ctx=16384` pour le post-stop et vérifier Qwen3.5:9b 100% GPU.
+- [x] Prouver le découpage CloseDay par bundles et conversations checkpointées.
+- [x] Rejeter atomiquement toute sortie `done_reason=length`.
+- [x] Persister session/token Android par AES-GCM + Android Keystore et reprendre par renew.
+- [x] Autoriser une nouvelle session mono-appareil uniquement après end + CloseDay completed.
+- [x] Afficher la caméra et les composants UI réels dans la scène PhoneOnly, sans demo driver.
+- [x] Consommer les `scene_delta` dans SceneCache/LocalTrackStore.
+- [x] Relier la queue H1 BrainLive au DataChannel et les UIReceipt au writer V18.8.
+- [x] Activer identity/replay/stranger/fine-intel dans le runtime PhoneOnly.
+- [x] Relier « c'est quoi ça ? » à la dernière frame réelle, bornée à une frame.
+- [ ] Embarquer et valider les modèles reflex Android, le partage micro et la traduction live locale.
+- [ ] Valider gestes, cartes personne, commandes vocales et receipts sur téléphone réel.
+
+## E46-D — POINT DE REPRISE OBLIGATOIRE (arrêt du 2026-07-07)
+
+Terminé factuellement :
+
+- [x] Installer JDK 17 et Gradle 8.7; détecter le SDK Android système.
+- [x] Corriger les erreurs de compilation Kotlin réellement rencontrées.
+- [x] Épingler l'AAR officiel sherpa-onnx v1.12.10 et retirer JitPack.
+- [x] Construire/tester `livetransport` et `reflexvision`, puis exporter les AAR/dépendances vers Unity.
+- [x] Installer et vérifier Unity Editor 6000.0.23f1.
+- [x] Arrêter les travaux et confirmer qu'aucun processus Unity/UnitySetup ne reste actif.
+
+Tâche interrompue : préflight Unity/Android du point 8, avant import Unity et génération APK.
+
+À reprendre dans cet ordre :
+
+- [ ] Compléter Android Build Support Unity : SDK, NDK et OpenJDK embarqués sont absents, ou configurer explicitement les outils externes.
+- [ ] Vérifier licence Unity et ouverture batchmode du projet.
+- [ ] Relancer le build AAR reproductible et enregistrer les hashes.
+- [ ] Lancer import Unity + tests EditMode; corriger UPM/XREAL, asmdefs, manifest et dépendances.
+- [ ] Générer et inspecter la scène PhoneOnly complète.
+- [ ] Revalider avant build les ponts critiques signalés par audit : audio aiortc, drain/flush, ID BrainLive, séparation `.venv-live`/`.venv`, token/reconnect/ICE/teardown Kotlin, texture vidéo et FrameEnvelope.
+- [ ] Ajouter/valider le build Android CLI IL2CPP ARM64 et produire l'APK.
+- [ ] Relancer toute la suite V19 après la correction du scénario traduction; traiter le contrôle V18 sans réintroduire `turns.created_at`.
+- [ ] Installer sur téléphone réel via `adb` et prouver caméra + micro Opus + PCM + AudioRT + transcript + BrainLive + archives + UI.
+- [ ] Prouver qu'une déconnexion seule ne clôture rien, puis tester la fin explicite, le drain et CloseDay avec le vrai `live_session_id`.
+- [ ] Valider séparément traduction Android, partage micro, modèles reflex/gestes, TTS et plusieurs sessions le même jour.
+
+Non validé à cet arrêt : compilation Unity, tests EditMode, APK, `adb`, téléphone réel, audio matériel, UI matérielle et CloseDay déclenché depuis Android.

@@ -661,7 +661,14 @@ def build_brain2_canonical_life_model(person_id: str, *, period_start: str | Non
     ensure_life_model_schema()
     raw = collect_canonical_evidence(person_id, period_start=period_start, period_end=period_end, limit=limit)
     error: str | None = None
-    if use_llm:
+    missing_owner_proof = bool((raw.get("completeness") or {}).get("missing_owner_proof"))
+    if missing_owner_proof:
+        # An empty day is a valid abstention, not permission for the model to
+        # manufacture a canonical identity. V18's evidence gate remains the
+        # authority and CloseDay may safely continue with an empty projection.
+        model = {"abstained": True, "reason": "missing_owner_proof"}
+        status = "abstained_no_owner_evidence"
+    elif use_llm:
         model, error = synthesize_canonical_life_model(raw, timeout=timeout)
         status = "llm_ready" if not error else "raw_ready_llm_required"
     else:
@@ -676,7 +683,7 @@ def build_brain2_canonical_life_model(person_id: str, *, period_start: str | Non
             "canonical_model_json": json_dumps(model), "llm_model": None, "error_text": error, "created_at": now,
         }, "export_id")
         con.commit()
-    if isinstance(model, dict) and not model.get("llm_required"):
+    if status == "llm_ready" and isinstance(model, dict) and not model.get("llm_required"):
         store_canonical_life_model(person_id, export_id, model)
     return {"version": VERSION, "export_id": export_id, "person_id": person_id, "status": status, "source_counts": _count(raw), "canonical_model": model}
 

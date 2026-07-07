@@ -21,6 +21,7 @@ Three real chains, all against the actual core (no pipeline stubs):
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -50,12 +51,14 @@ def _env(tmp_path, monkeypatch):
     ensure_brainlive_schema()
 
 
-def _ollama_has_model() -> bool:
-    """True only if Ollama is serving AND has at least one model available."""
+def _ollama_has_loaded_model() -> bool:
+    """Opt-in integration guard: installed tags are not resident models."""
+    if os.environ.get("MLOMEGA_TEST_REAL_OLLAMA", "").lower() not in {"1", "true", "yes"}:
+        return False
     try:
         import urllib.request
 
-        with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=2) as r:
+        with urllib.request.urlopen("http://127.0.0.1:11434/api/ps", timeout=2) as r:
             data = json.loads(r.read().decode("utf-8"))
         return bool(data.get("models"))
     except Exception:
@@ -140,7 +143,7 @@ def _hot_result_echoing_manifest(user_json: str) -> dict:
     }
 
 
-def _run_reactivity(tmp_path, monkeypatch):
+def _run_reactivity(tmp_path, monkeypatch, *, real_ollama: bool = False):
     """Seed memory + ingest a subject-bearing transcript, then run the real H1
     hot decision (Ollama if a model is loaded, else the LLM client border mocked).
     Returns (session_id, delivery_rows)."""
@@ -178,7 +181,8 @@ def _run_reactivity(tmp_path, monkeypatch):
     route = {"route_id": None, "route_status": "run_h0_h1", "triggered_horizons": ["H1"]}
     fused = {"fused_id": None, "person_id": "me", "confidence": {"overall": 0.5}}
 
-    if _ollama_has_model():
+    if real_ollama:
+        assert _ollama_has_loaded_model(), "preload Ollama and set MLOMEGA_TEST_REAL_OLLAMA=1"
         prediction = run_unified_hot_prediction(sid, fused=fused, hot_context=hot_ctx, route=route)
     else:
         from mlomega_audio_elite import llm as llm_mod
@@ -201,6 +205,16 @@ def _run_reactivity(tmp_path, monkeypatch):
             "SELECT * FROM brainlive_intervention_delivery_queue WHERE live_session_id=?", (sid,)
         ).fetchall()]
     return sid, prediction, rows
+
+
+@pytest.mark.skipif(
+    os.environ.get("MLOMEGA_TEST_REAL_OLLAMA", "").lower() not in {"1", "true", "yes"},
+    reason="real Ollama integration is explicit; deterministic tests mock only the provider boundary",
+)
+def test_real_ollama_hot_contract_is_valid_and_bounded(tmp_path, monkeypatch):
+    _sid, prediction, _rows = _run_reactivity(tmp_path, monkeypatch, real_ollama=True)
+    assert prediction.get("status") in {"ok", "needs_evidence"}, prediction
+    assert int(prediction.get("latency_ms") or 0) <= 12_000, prediction
 
 
 # --------------------------------------------------------------------------- 2

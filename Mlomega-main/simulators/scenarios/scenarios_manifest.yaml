@@ -74,13 +74,14 @@ scenarios:
         source_key_prefix: "scene:"
 
   - name: translation
-    title: "Traduction live"
+    title: "Traduction PC (compatibilité)"
     chain: "§14.4 audio → VAD → ASR + LID → traduction → SubtitleSkill UIIntent partiel/final"
     steps:
       - "WAV anglais → AudioRT (target=fr) → sous-titre final traduit"
-    proves: "subtitle final traduit émis sans LLM (fr→en, Argos, sinon dégradé honnête)"
+    proves: "chemin Argos PC explicitement activé pour compatibilité; ne valide pas la traduction Android locale"
     audio: true
     audio_target: en
+    pc_translation_compat: true
     asserts:
       - kind: subtitle_final
         translated: true

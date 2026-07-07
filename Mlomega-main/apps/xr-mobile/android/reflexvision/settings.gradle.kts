@@ -6,10 +6,8 @@
 // consumed inside a larger Unity/Gradle build, add ":reflexvision" via that
 // build's settings.
 //
-// JitPack is added for the sherpa-onnx Android AAR (com.github.k2-fsa:
-// sherpa-onnx-android). If a LAN-only build cannot reach JitPack, vendor the
-// static AAR from the GitHub release and swap the dependency to a flatDir entry
-// (see README + build.gradle.kts comments).
+// sherpa-onnx is the official release AAR vendored under libs/ with a pinned
+// checksum; no JitPack repository is needed.
 
 pluginManagement {
     repositories {
@@ -24,7 +22,6 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven { url = uri("https://jitpack.io") }
     }
 }
 

@@ -71,18 +71,23 @@ def test_vad_segments_speech_not_silence():
     assert len(got) >= 1, "VAD produced no speech segment on real speech"
 
 
-def _whisper_ok() -> bool:
+@pytest.fixture(scope="module")
+def whisper_transcriber():
     tr = audiort.WhisperTranscriber(model_size="small")
-    return tr._ensure() is not None
+    if tr._ensure() is None:
+        pytest.skip("faster-whisper model unavailable")
+    yield tr
+    tr._model = None
 
 
 @pytest.mark.skipif(not (FIX / "speech_en.wav").exists(), reason="speech fixture missing")
-def test_whisper_transcribes_and_emits_subtitle():
-    if not _whisper_ok():
-        pytest.skip("faster-whisper model unavailable")
+def test_whisper_transcribes_and_emits_subtitle(whisper_transcriber):
     samples, rate = _read_wav(FIX / "speech_en.wav")
     emitted: list[dict] = []
-    rt = audiort.AudioRT(session_id="t", target_language="fr", on_intent=emitted.append)
+    rt = audiort.AudioRT(
+        session_id="t", target_language="fr", on_intent=emitted.append,
+        transcriber=whisper_transcriber,
+    )
     out = rt.push_audio(samples, rate) + rt.flush()
     assert out, "no subtitle intents emitted"
     # Partial precedes final; both validate against the UIIntent contract.
@@ -98,28 +103,26 @@ def test_whisper_transcribes_and_emits_subtitle():
     assert any(w in text for w in ("fox", "dog", "brown", "river")), text
 
 
-@pytest.mark.skipif(not (FIX / "speech_fr.wav").exists(), reason="fr speech fixture missing")
-def test_translation_fr_to_en_without_llm():
-    if not _whisper_ok():
-        pytest.skip("faster-whisper model unavailable")
-    tr = audiort.ArgosTranslator()
-    tr._ensure()
-    if not tr.available:
-        pytest.skip("argostranslate unavailable")
-    samples, rate = _read_wav(FIX / "speech_fr.wav")
-    rt = audiort.AudioRT(session_id="t", target_language="en")
-    out = rt.push_audio(samples, rate) + rt.flush()
+def test_optional_translation_provider_is_not_on_phoneonly_critical_path():
+    class _FrenchTranscriber:
+        last_infer_ms = 1.0
+
+        def transcribe(self, _segment):
+            return {"status": "ok", "text": "bonjour", "language": "fr"}
+
+    class _Translator:
+        def translate(self, text, from_lang, to_lang):
+            assert (text, from_lang, to_lang) == ("bonjour", "fr", "en")
+            return {"status": "ok", "text": "hello"}
+
+    rt = audiort.AudioRT(
+        session_id="t", target_language="en", transcriber=_FrenchTranscriber(),
+        translator=_Translator(), enable_translation=True,
+    )
+    out = rt._handle_segment(np.zeros(16000, dtype=np.float32))
     finals = [i for i in out if i["content"]["final"]]
-    assert finals
-    fr_final = next((i for i in finals if i["content"].get("language") == "fr"), None)
-    if fr_final is None:
-        pytest.skip("whisper did not detect french on this fixture")
-    # Translation produced (no LLM): either translated_text present, or the
-    # honest degraded status if the pack is missing.
-    content = fr_final["content"]
-    if "translated_text" in content:
-        assert content["target_language"] == "en"
-        assert len(content["translated_text"]) > 0
+    assert finals[0]["content"]["translated_text"] == "hello"
+    assert finals[0]["content"]["target_language"] == "en"
 
 
 def test_degraded_asr_refused_by_arbiter():

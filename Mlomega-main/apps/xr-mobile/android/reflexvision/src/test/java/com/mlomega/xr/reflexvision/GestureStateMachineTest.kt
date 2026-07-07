@@ -73,7 +73,9 @@ class GestureStateMachineTest {
         val noUpdate = sm.onFrame(frame(pinch = 0.105f, t = 150))
         assertTrue(noUpdate.none { it.kind == GestureKind.PINCH_UPDATE })
         // Big change -> exactly one UPDATE.
-        val update = sm.onFrame(frame(pinch = 0.40f, t = 200))
+        // Stay strictly inside the exit threshold; exactly 0.40 is the defined
+        // hysteresis release boundary and must emit PINCH_END instead.
+        val update = sm.onFrame(frame(pinch = 0.30f, t = 200))
         assertEquals(1, update.count { it.kind == GestureKind.PINCH_UPDATE })
     }
 

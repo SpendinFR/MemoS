@@ -5,6 +5,7 @@
 // paired/unpaired/expired state plus the live clock offset for the capture path.
 using System;
 using System.Collections;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -57,16 +58,19 @@ namespace MLOmega.XR.Core
         public ClockSync Clock { get; private set; }
 
         public event Action<PairingState> StateChanged;
+        public event Action CredentialsChanged;
 
         private SessionHubClient _hub;
         private float _tokenIssuedAtRealtime;
         private Coroutine _lifecycle;
+        private bool _restoredCredentials;
 
         public MLOmegaConfig Config => _config;
 
         private void Awake()
         {
             MonotonicClock = new StopwatchMonotonicClock();
+            RestorePersistedCredentials();
         }
 
         private void OnEnable()
@@ -141,6 +145,8 @@ namespace MLOmega.XR.Core
                             _config.ClockSyncSamplesPerBurst,
                             _config.ClockSyncMaxRetries);
                         Debug.Log($"[SessionPairing] Active endpoint: '{ep.Name}' ({ep.BaseUrl}).");
+                        if (!string.IsNullOrEmpty(SessionId) && !string.IsNullOrEmpty(Token))
+                            CredentialsChanged?.Invoke();
                     }
                     yield break;
                 }
@@ -167,6 +173,37 @@ namespace MLOmega.XR.Core
                     continue;
                 }
                 SetState(PairingState.Pairing);
+                if (_restoredCredentials && !string.IsNullOrEmpty(SessionId) && !string.IsNullOrEmpty(Token))
+                {
+                    bool resumed = false;
+                    bool resumeDone = false;
+                    yield return _hub.RenewToken(SessionId, Token,
+                        creds =>
+                        {
+                            Token = creds.Token;
+                            _tokenIssuedAtRealtime = Time.realtimeSinceStartup;
+                            _restoredCredentials = false;
+                            PersistCredentials();
+                            CredentialsChanged?.Invoke();
+                            resumed = true;
+                            resumeDone = true;
+                        },
+                        err =>
+                        {
+                            LastError = err;
+                            resumeDone = true;
+                        });
+                    while (!resumeDone) yield return null;
+                    if (resumed)
+                    {
+                        SetState(PairingState.Paired);
+                        Debug.Log($"[SessionPairing] Resumed session '{SessionId}' after process/lifecycle loss.");
+                        break;
+                    }
+                    ClearPersistedSession();
+                    SessionId = null;
+                    Token = null;
+                }
                 bool done = false;
                 bool ok = false;
                 yield return _hub.CreateSession(_config.DeviceId,
@@ -175,6 +212,8 @@ namespace MLOmega.XR.Core
                         SessionId = creds.SessionId;
                         Token = creds.Token;
                         _tokenIssuedAtRealtime = Time.realtimeSinceStartup;
+                        PersistCredentials();
+                        CredentialsChanged?.Invoke();
                         ok = true;
                         done = true;
                     },
@@ -213,6 +252,12 @@ namespace MLOmega.XR.Core
                 if (Time.realtimeSinceStartup >= nextClockSync && State == PairingState.Paired)
                 {
                     yield return Clock.RunBurst(SessionId, Token);
+                    if (Clock.State == ClockSync.SyncState.Unsynced)
+                    {
+                        // Re-resolve LAN -> tunnel without ending the logical
+                        // session. CredentialsChanged updates Kotlin in place.
+                        yield return ResolveActiveEndpoint();
+                    }
                     nextClockSync = Time.realtimeSinceStartup + _config.ClockSyncIntervalSeconds;
                 }
 
@@ -229,6 +274,8 @@ namespace MLOmega.XR.Core
                 {
                     Token = creds.Token;
                     _tokenIssuedAtRealtime = Time.realtimeSinceStartup;
+                    PersistCredentials();
+                    CredentialsChanged?.Invoke();
                     ok = true;
                     done = true;
                 },
@@ -250,6 +297,7 @@ namespace MLOmega.XR.Core
                 SetState(PairingState.Expired);
                 SessionId = null;
                 Token = null;
+                ClearPersistedSession();
                 if (_lifecycle != null)
                 {
                     StopCoroutine(_lifecycle);
@@ -267,6 +315,65 @@ namespace MLOmega.XR.Core
             sessionId = SessionId;
             token = Token;
             return State == PairingState.Paired && !string.IsNullOrEmpty(sessionId);
+        }
+
+        public void ClearPersistedSession()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                using var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+                using var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+                using var store = new AndroidJavaClass("com.mlomega.xr.livetransport.SessionCredentialStore");
+                store.CallStatic("clear", activity);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("[SessionPairing] Could not clear encrypted credentials: " + ex.Message);
+            }
+#endif
+            _restoredCredentials = false;
+        }
+
+        private void PersistCredentials()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (string.IsNullOrEmpty(SessionId) || string.IsNullOrEmpty(Token)) return;
+            try
+            {
+                using var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+                using var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+                using var store = new AndroidJavaClass("com.mlomega.xr.livetransport.SessionCredentialStore");
+                store.CallStatic("save", activity, SessionId, Token);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("[SessionPairing] Could not persist encrypted credentials: " + ex.Message);
+            }
+#endif
+        }
+
+        private void RestorePersistedCredentials()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                using var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+                using var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+                using var store = new AndroidJavaClass("com.mlomega.xr.livetransport.SessionCredentialStore");
+                string json = store.CallStatic<string>("load", activity);
+                if (string.IsNullOrEmpty(json)) return;
+                var data = JObject.Parse(json);
+                SessionId = data.Value<string>("session_id");
+                Token = data.Value<string>("token");
+                _restoredCredentials = !string.IsNullOrEmpty(SessionId) && !string.IsNullOrEmpty(Token);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("[SessionPairing] Could not restore encrypted credentials: " + ex.Message);
+                ClearPersistedSession();
+            }
+#endif
         }
     }
 }

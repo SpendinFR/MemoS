@@ -77,7 +77,9 @@ def ensure_close_day_schema() -> None:
     # Install that schema before resolving the last run; this is additive and
     # keeps the command safe on a newly initialized V18 database.
     from .brainlive_service_v15_5 import ensure_service_schema
+    from .brainlive_poststop_deep_flow_v15_15 import ensure_post_stop_deep_flow_schema
     ensure_service_schema()
+    ensure_post_stop_deep_flow_schema()
     ensure_v18_schema()
     with connect() as con, write_transaction(con):
         con.executescript(SCHEMA)
@@ -107,7 +109,7 @@ def _status_ok(result: Any, *, stage_name: str) -> bool:
     }
     if stage_name == "life_model" and result.get("mode") == "bootstrap_v15_10":
         bootstrap = result.get("bootstrap") or {}
-        return isinstance(bootstrap, dict) and str(bootstrap.get("status") or "").lower() in {"llm_ready", "ok", "completed", "active"}
+        return isinstance(bootstrap, dict) and str(bootstrap.get("status") or "").lower() in {"llm_ready", "abstained_no_owner_evidence", "ok", "completed", "active"}
     return status in allowed.get(stage_name, {"ok", "completed"})
 
 
@@ -429,7 +431,9 @@ def close_brainlive_day(
 
         def do_coordination() -> dict[str, Any]:
             from .brainlive_brain2_coordination_v15_12 import run_brainlive_brain2_coordination
-            return run_brainlive_brain2_coordination(person_id=person_id, package_date=day, use_llm=use_llm, timeout=cfg.poststop_llm_timeout_s)
+            from .runtime_v18_7 import gpu_phase
+            with gpu_phase("post_stop_close_day", release_before=False, release_after=False):
+                return run_brainlive_brain2_coordination(person_id=person_id, package_date=day, use_llm=use_llm, timeout=cfg.poststop_llm_timeout_s)
         heartbeat_execution_lease(execution_lease)
         coordination = _run_stage(run_id=run_id, name="coordination", fn=do_coordination)
         result["stages"]["coordination"] = coordination
@@ -437,8 +441,10 @@ def close_brainlive_day(
         def do_life_model() -> dict[str, Any]:
             from .brain2_life_model_updater_v15_13 import run_brain2_life_model_update
             from .brain2_longitudinal_cases_v17 import period_bounds
+            from .runtime_v18_7 import gpu_phase
             start_at, end_at, _ = period_bounds("day", run_date=day)
-            return run_brain2_life_model_update(person_id, period_start=start_at, period_end=end_at, use_llm=use_llm, timeout=cfg.poststop_llm_timeout_s, limit=120)
+            with gpu_phase("post_stop_close_day", release_before=False, release_after=False):
+                return run_brain2_life_model_update(person_id, period_start=start_at, period_end=end_at, use_llm=use_llm, timeout=cfg.poststop_llm_timeout_s, limit=120)
         heartbeat_execution_lease(execution_lease)
         life = _run_stage(run_id=run_id, name="life_model", fn=do_life_model)
         result["stages"]["life_model"] = life
@@ -452,7 +458,9 @@ def close_brainlive_day(
 
         def do_life_model_v19() -> dict[str, Any]:
             from .v19_life_model_store import run_life_model_v19_stage
-            return run_life_model_v19_stage(person_id=person_id, package_date=day)
+            from .runtime_v18_7 import gpu_phase
+            with gpu_phase("post_stop_close_day", release_before=False, release_after=False):
+                return run_life_model_v19_stage(person_id=person_id, package_date=day)
         heartbeat_execution_lease(execution_lease)
         life_model_v19 = _run_stage(run_id=run_id, name="life_model_v19", fn=do_life_model_v19)
         result["stages"]["life_model_v19"] = life_model_v19
@@ -473,7 +481,9 @@ def close_brainlive_day(
 
         def do_live_ready() -> dict[str, Any]:
             from .brainlive_personal_model_v15_9 import build_brain2_live_personal_model
-            return build_brain2_live_personal_model(person_id=person_id, use_llm=use_llm, timeout=cfg.poststop_llm_timeout_s, limit=80)
+            from .runtime_v18_7 import gpu_phase
+            with gpu_phase("post_stop_close_day", release_before=False, release_after=False):
+                return build_brain2_live_personal_model(person_id=person_id, use_llm=use_llm, timeout=cfg.poststop_llm_timeout_s, limit=80)
         heartbeat_execution_lease(execution_lease)
         live_ready = _run_stage(run_id=run_id, name="live_ready", fn=do_live_ready)
         result["stages"]["live_ready"] = live_ready
@@ -506,6 +516,12 @@ def close_brainlive_day(
         _save_close_day(close_day_id=run_id, ctx=ctx, status=status, post_stop_run_id=post_stop_run_id, cleanup_eligible=False, result=result, error_text=error)
         record_phase_event("close_day_failed", run_id=run_id, error_code=failure.code, retryable=failure.retryable)
     finally:
+        # One release at the phase boundary, never between deep LLM stages.
+        try:
+            from .llm import ollama_unload
+            ollama_unload(model=cfg.ollama_model)
+        except Exception:
+            pass
         execution_lease.release()
     return result
 

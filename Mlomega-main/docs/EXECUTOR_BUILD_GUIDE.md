@@ -6,6 +6,48 @@ Conventions : `E<n>` = étape ; chaque étape a Objectif / Créer / Brancher / V
 
 ---
 
+## E39 - Invariant temporel V18 `turns` restaure (2026-07-06)
+
+**[x] Fait et teste.** Le schema reel est l'autorite : `turns` ne possede ni `created_at` ni `absolute_start`. Le registre conversationnel de `v18_life_model.py` utilise desormais uniquement `start_s`, le seul offset temporel stocke sur un tour. `tests/v19/test_v18_turn_schema_invariant.py` verrouille le schema et la declaration source. Le bootstrap post-stop deja present dans le diff de `v18_close_day.py` reste separe de E39 et n'est pas revendique comme changement PhoneOnly.
+
+## E40 - Identifiant BrainLive unique (2026-07-06)
+
+**[x] Fait et teste.** `LivePipeline` distingue maintenant `session_id` transport et `live_session_id` BrainLive. ConversationBridge est ouvert ou lie avant WorldBrain ; WorldBrain, SceneAdapter, MorningBriefing, ReplayService, AudioArchive et les keyframes PhoneOnly recoivent tous le meme identifiant BrainLive. Une divergence explicite entre bridge et pipeline echoue immediatement. Validation : 23 tests E27/E28/E31/PhoneOnly verts, dont un test qui inspecte chaque writer durable.
+
+## E41 - Arret atomique, drain et liberation live (2026-07-06)
+
+**[x] Fait et teste sur PC.** La fin explicite gele d'abord l'ingress et ferme les peers producteurs, attend `Queue.join()` et le callback audio en vol, execute `AudioRT.flush()` par le meme chemin de finals, ferme le transport/video task, puis termine WorldBrain et ConversationBridge en mode strict. Les references ASR/traduction/detecteur et les caches live du coeur sont liberees avant CloseDay. Chaque segment VAD appelle l'archive meme si ASR est refuse, indisponible, vide ou leve une erreur. Test d'ordre : `audio_done -> flush -> pipeline_end`; 8 tests PhoneOnly verts. La suite AudioRT modele reel reste une validation E46 car CUDA est incomplet sur cette machine.
+
+## E42 - PCM Opus et frontiere event-loop (2026-07-06)
+
+**[x] Fait et teste sur PC.** Le gateway convertit explicitement les `AudioFrame` PyAV packed ou planar selon `frame.format.is_planar` et le nombre de canaux. Le cas aiortc reel `s16/stereo` packed `(1, 960)` produit 480 echantillons mono `int16` correctement downmixes, sans promotion float non normalisee. Les envois DataChannel demandes depuis le worker ASR sont replanifies par `loop.call_soon_threadsafe` sur l'event loop aiortc et ne retirent plus le canal. Validation : 13 tests PhoneOnly/WebRTC verts avec frame PyAV reelle et assertion du thread d'envoi.
+
+## E43 - End-session et CloseDay asynchrone reprise-safe (2026-07-06)
+
+**[x] Fait et teste sur PC.** `POST /session/end` execute uniquement la barriere de fin, puis demarre un job CloseDay sans garder la requete Android ouverte pendant les phases lourdes. `POST /session/status` expose l'etat authentifie ; `POST /session/close-day` relance idempotemment un job echoue. Un seul task CloseDay existe par session. En production le job est lance par `.venv/Scripts/python.exe` via `run_phoneonly_close_day.py`; la reprise durable reste celle du coeur (`v18_pipeline_stages`, lease et idempotency close-day). `-PersonId` est transmis au serveur et `.env` est charge par le launcher. La politique mono-session refuse tout autre session_id jusqu'au redemarrage operateur, evitant un second CloseDay du meme jour. Validation HTTP/runtime : 17 tests verts.
+
+## E44 - Pont Android transport complet en source (2026-07-06)
+
+**[x] Source branchee, compilation reservee E46.** Unity envoie le `FrameEnvelope` JSON avant chaque frame. Le chemin PhoneOnly par defaut est un fallback CPU I420 fonctionnel et borne par la cadence, sans supposer un partage EGL avec Unity ; le chemin texture optionnel est poste sur le handler GL libwebrtc. Kotlin attend ICE gathering pour le signaling non-trickle, teardown le peer avant reconnexion, ferme synchronement avant dispose et accepte les credentials/endpoint renouveles. SessionPairing re-resout LAN/tunnel apres echec clock-sync. Le manifeste autorise explicitement le HTTP LAN de maintenance. `BUILD_ANDROID_PLUGINS.ps1` compile/teste/exporte les AAR et leurs dependances runtime vers Unity ; PhoneOnly ouvre sans tarball XREAL proprietaire. Validation statique + runtime PC : 13 tests verts. Aucun AAR n'est revendique construit avant E46.
+
+## E45 - Scene PhoneOnly distincte du gate G1 (2026-07-06)
+
+**[x] Fait en source.** `G1SceneBuilder` est revenu a la scene gate XREAL sans config ni coordinateur PhoneOnly forces. `PhoneOnlySceneBuilder` cree separement `Assets/Scenes/PhoneOnly.unity` et `MLOmegaPhoneOnly.asset`, avec PermissionGate, adapter PhoneOnly, pairing, pose/capture, transport et action de fin. Le profil PhoneOnly est place en tete des Build Settings uniquement par son propre menu. Validation statique : 5 tests, dont absence de `PhoneOnlySessionCoordinator` dans G1.
+
+## E46 - Validation finale et compilation (EN COURS - 2026-07-06)
+
+**PC valide.** Suite V18 complete contre `src/` racine : **110 passed**. Suite V19 large sans le test ASR CPU de plus de 5 minutes et sans le scenario LLM reel non deterministe : **190 passed, 1 skipped, 1 deselected**. Les 2 tests E31 concernes repassent en mode degrade Ollama-off. `python-multipart` et `python-dotenv` ont ete ajoutes a l'environnement et a l'installateur ; AudioRT bascule CUDA vers CPU si cuBLAS manque. Syntaxes Python/PowerShell/JSON et `git diff --check` sont valides.
+
+**E46-A GPU/ASR/Ollama/CloseDay valide sur PC.** Les DLL CUDA 12 et cuDNN 9 sont installees dans `.venv-live` et chargees explicitement par AudioRT. Les WAV de test durent 4,525 s et 4,890 s ; faster-whisper `small` reste sur `device=cuda`, inference mesuree 0,34 s apres chargement, suite AudioRT 5/5 en 7,30 s. Argos n'est plus sur le chemin PhoneOnly PC par defaut : le PC transcrit pour BrainLive/archive ; Android sherpa produit le sous-titre reflexe. Le moteur de traduction Android n'existe pas encore et reste un lien Unity/XR a construire.
+
+Ollama a ete mis a jour de 0.15.2 a 0.31.1. Les modeles officiels `qwen3.5:4b` (live) et `qwen3.5:9b` (deep) sont installes. Le 4B resident est 100 % GPU ; le contrat BrainLive reel passe en 8,66 s. Le 9B deep occupe 5,6 Go, 100 % GPU ; chargement froid 63,2 s, petite generation chaude 0,22 s. Ollama reste resident pendant une phase et n'est libere qu'a la frontiere CloseDay. Les sorties structurees utilisent `think:false`, un vrai JSON Schema, des champs facultatifs normalises localement et aucun fragment tronque n'est applique. Tests E31 : 3 deterministes en 7,16 s ; integration reelle explicite 1/1 en 8,99 s.
+
+Le CloseDay durable `run_v18_bbb49c10275b436580dd2fdbb91b9138` a ete repris sans purge. Les causes successives ont ete corrigees factuellement : budget deep distinct, phase 9B conservee entre stages, abstention sans preuve proprietaire, bootstrap de `brainlive_personal_model_exports`. Verdict final : `completed`, `cleanup.eligible=true`, dix stages observes/attendus identiques. Preuve concise : `E46_close_day_completed.json`. L'ancien `E46_close_day_summary.json` reste l'historique du premier verdict blocked, pas l'etat final.
+
+**Compilation Android non encore executee.** L'utilisateur a autorise l'installation de JDK 17, Gradle, Android SDK/adb et Unity. Aucun AAR/APK ni validation materielle n'est encore revendique ; la compilation vient apres les audits readiness/TTL/failover et dependances transversales.
+
+**E46-B readiness/failover/tokens valide sur PC.** L'ancien constat d'URL statique est obsolete : `LiveTransportBridge.StartAndroid` et `RefreshCredentials` construisent `/webrtc/offer` depuis `SessionPairing.ActiveBaseUrl`, donc un pairing Tailscale n'offre plus vers l'IP LAN. `/live` est maintenant la liveness simple ; `/health` est la readiness PhoneOnly et renvoie 503 si signaling aiortc ou runtime/ingress manque. Android ne selectionne donc plus un serveur incapable de negocier WebRTC. Les tokens ont un TTL serveur de 600 s, rotation atomique et `expires_at_utc`; apres expiration toutes les routes renvoient 401. Seul `/session/renew` accepte l'ancien token pendant une grace bornee de reprise reseau, puis session/token sont purges. Validation : 35 tests SessionHub/HTTP/failover/runtime verts.
+
 ## 1. Les deux chaînes existantes (à connaître par cœur avant de coder)
 
 ### 1.1 Chaîne live de delivery (existante, à réutiliser telle quelle)
@@ -324,3 +366,49 @@ Statut : terminé — branche `feat/v19-e38-fine-intel` — tests : `test_e38_fi
 10. `ollama_unload` peut échouer silencieusement → le GpuArbiter re-mesure la VRAM après chaque unload.
 11. Le nom réel est `brainlive_active_contexts`, pas `active_contexts` ; les sorties deep vision vont dans `brainlive_deep_vision_observations_v161`, pas `vision_scene_observations`.
 12. La table de queue delivery s'appelle `brainlive_intervention_delivery_queue` — ne pas en créer une seconde.
+
+## E46-C — Fenêtre LLM, reprise Android et UI PhoneOnly (SOURCE + TESTS PC — 2026-07-07)
+
+- Le post-stop est déjà découpé par `assemble_event_bundles` : bundles non chevauchants, coupure sur silence/scène/lieu et limite de 25 minutes. Le flow post-stop checkpoint chaque conversation séparément.
+- Qwen3.5:9b expose 262144 tokens natifs, mais Ollama le chargeait avec `CONTEXT=4096`. `OllamaJsonClient` transmet maintenant `num_ctx=4096` en live et `num_ctx=16384` en post-stop. Mesure RTX 3070 : Qwen3.5:9b reste 100% GPU à 16384.
+- La sortie post-stop reste plafonnée à 4096. `done_reason=length` rejette tout le résultat ; aucun JSON partiel n'est écrit et les preuves restent en base.
+- Session/token Android sont chiffrés AES-GCM par Android Keystore. Après crash, `SessionPairing` renouvelle le même `session_id`; les credentials sont effacés après CloseDay `completed` ou refus du renew.
+- Le mono-runtime accepte une nouvelle session seulement après fin explicite et CloseDay terminé. Une session concurrente reste refusée.
+- `segments_finals` lit désormais `AudioRT.finals_emitted`, indépendamment des tours BrainLive.
+- La scène PhoneOnly instancie maintenant la prévisualisation caméra, `SceneCache`, `LocalTrackStore`, `TransportIntentSource`, `UIIntentBroker`, `UIRuntime`, `StatusBar`, receipts, hot updates, `SceneDeltaTransportHandler` et commandes device. Aucun driver de démo n'est inclus.
+- Le runtime PC active désormais identité, replay, stranger profiles et intelligence fine. Il conserve exactement la dernière frame pour les commandes déictiques telles que « c'est quoi ça ? ».
+- La queue H1 BrainLive est maintenant consommée par un `DeliveryAdapter` DataChannel. Une absence de canal ne marque jamais une carte comme livrée; elle reste queued jusqu'à reconnexion. Les `UIReceipt` retournent au writer V18.8.
+- Tests ciblés : budget Ollama, runtime PhoneOnly, câblage Android, SessionHub/E36, queue H1→DataChannel et dernière frame voix→VisionRT sont verts.
+- Reste séparé : traduction locale Android, modèles reflex embarqués et gestes matériels. Leur code existe mais ils ne sont pas déclarés validés avant assets/build/téléphone.
+
+## E46-D — Point d'arrêt contrôlé Android/Unity (2026-07-07)
+
+Travail effectivement terminé avant l'arrêt demandé :
+
+- Microsoft OpenJDK 17.0.19 et Gradle 8.7 local ont été installés; le SDK Android système contient au moins la plateforme 34, build-tools 34.0.0 et `adb`.
+- `scripts/BUILD_ANDROID_PLUGINS.ps1` sélectionne JDK 17, SDK Android et Gradle local, puis nettoie les doublons Kotlin/annotations avant import Unity.
+- Les erreurs Kotlin réelles révélées par Gradle ont été corrigées : KDoc imbriqué, callbacks SDP retournant un booléen, et conversion YUV WebRTC indépendante dans `UnityFrameCapturer`.
+- La dépendance sherpa-onnx Android officielle v1.12.10 a été épinglée localement (SHA-256 `F51F59368674FAEE85B655129C52F9E87BEEF287BF22F35D023BAB83BECAD74C`) après l'échec JitPack 401.
+- Les tests/builds Gradle des modules `livetransport` et `reflexvision` ont réussi; leurs AAR et dépendances ont été exportés dans `apps/xr-mobile/Assets/Plugins/Android`.
+- Unity Editor 6000.0.23f1 est installé dans `C:\Program Files\Unity\Hub\Editor\6000.0.23f1`; version du binaire vérifiée : `6000.0.23.1853284`.
+- Le dossier Unity `AndroidPlayer` existe, mais son contrôle immédiat ne trouve ni `SDK`, ni `NDK`, ni `OpenJDK` embarqués. Android Build Support doit donc être considéré partiel tant que ces sous-modules ne sont pas installés ou qu'un SDK/JDK externe n'est pas configuré explicitement.
+- Aucun processus `Unity`/`UnitySetup` n'était encore actif au point d'arrêt. Aucune compilation Unity/APK n'a été lancée.
+
+Tests exécutés avant l'arrêt : suites ciblées PhoneOnly/SessionHub/UI/LLM vertes; build/test JVM des deux plugins vert. La suite V19 complète avait donné `206 passed, 2 skipped, 1 failed`; l'unique scénario de traduction PC obsolète a été corrigé mais la suite complète n'a pas été relancée. Le contrôle historique V18 a donné `110 passed, 1 failed`; l'échec exige exactement 5 étapes CloseDay alors que V19 en expose 10. L'invariant interdisant `turns.created_at` a passé, mais le rapport d'audit signale encore une référence de fallback dans `v18_life_model.py` à examiner avant toute certification.
+
+### Tâche interrompue et reprise exacte
+
+La tâche active était le préflight final du point 8 : obtenir un projet Unity importable, compiler la scène PhoneOnly, produire un APK, puis préparer le test matériel. À la prochaine session, reprendre dans cet ordre :
+
+1. Vérifier l'installation Unity et compléter Android Build Support (`SDK`, `NDK`, `OpenJDK`) ou configurer explicitement les outils externes déjà installés; vérifier la licence Unity en batchmode.
+2. Relancer `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\BUILD_ANDROID_PLUGINS.ps1` et conserver les hashes des AAR exportés.
+3. Importer le projet Unity en batchmode et lancer les tests EditMode; traiter toutes les erreurs UPM/XREAL, asmdef, manifest et dépendances Android avant de construire une scène.
+4. Rejouer `PhoneOnlySceneBuilder.BuildScene`; vérifier dans la scène générée `SessionPairing`, capture caméra, transport, renderer UI, receipts et action explicite de fin.
+5. Ajouter/valider une méthode Editor reproductible de build Android : target Android, IL2CPP, ARM64, min/target SDK, profil PhoneOnly et endpoint LAN/Tailscale; construire l'APK.
+6. Avant le test matériel, trier les constats d'audit encore ouverts : conversion audio aiortc réelle, gel/drain et `AudioRT.flush()`, callback audio en vol, arrêt ingress/video, ID BrainLive unique dans WorldBrain, exécution CloseDay dans l'environnement cœur, archivage VAD indépendant du succès ASR, `PersonId`, token renouvelé côté Kotlin, ICE/reconnexion/teardown, et chemin texture Unity↔WebRTC.
+7. Refaire les suites V19 complètes et le contrôle V18 ciblé après ces corrections; ne pas modifier le cœur V18.8 sans preuve, et supprimer toute dépendance réelle à `turns.created_at`.
+8. Connecter un téléphone Android par `adb`, installer l'APK, accorder caméra/micro, démarrer `-LivePhone`, puis vérifier vidéo, Opus→PCM→AudioRT, BrainLive, keyframes/WAV, UI/cartes/commandes et métriques.
+9. Tester perte réseau/reprise sans CloseDay, puis l'action explicite `Terminer la session et lancer CloseDay`; vérifier drain borné, `end_session` une fois, vrai `live_session_id`, CloseDay idempotent et progression Android.
+10. Résoudre séparément les gates produit non encore validés : traduction live locale Android, arbitrage d'un micro partagé avec WebRTC, modèles reflex/gestes, TTS et sémantique de plusieurs sessions le même jour.
+
+État honnête au point d'arrêt : AAR construits, Editor Unity installé, mais aucun import Unity, test EditMode, APK, installation `adb` ou test Android→PC n'a encore été réalisé.

@@ -34,7 +34,10 @@ $script:VenvSwapped = $false
 # Live-service dependencies (handoff §5 "Dépendances").
 $LiveDeps = @(
   "fastapi", "uvicorn", "pydantic", "websockets", "pynvml",
-  "numpy", "opencv-python-headless", "aiortc", "av", "pytest", "pyyaml"
+  "numpy", "opencv-python-headless", "aiortc", "aiohttp", "av", "pytest", "pyyaml",
+  "python-multipart", "python-dotenv", "faster-whisper", "webrtcvad-wheels",
+  "onnxruntime-gpu", "rapidocr-onnxruntime", "argostranslate",
+  "nvidia-cublas-cu12", "nvidia-cudnn-cu12"
 )
 
 function Write-Step([string]$Message) { Write-Host "`n==> $Message" -ForegroundColor Cyan }
@@ -138,12 +141,12 @@ try {
 models:
   live_llm:
     provider: ollama
-    default: qwen2.5:3b-instruct-q4_K_M
+    default: qwen3.5:4b
     license: model-card-required
     max_vram_mb: 3072
   deep_llm:
     provider: ollama
-    default: qwen3.5:9b-q4_K_M
+    default: qwen3.5:9b
     license: model-card-required
     phase: nocturne
   detector:

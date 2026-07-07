@@ -1,5 +1,45 @@
 # DECISIONS
 
+## 2026-07-06 - E39 : `turns` sans colonne temporelle fictive
+
+Decision : aucun code ne doit dependre de `turns.created_at` ou `turns.absolute_start`, colonnes absentes du schema. Une preuve directement issue d'un tour peut porter `start_s`, offset relatif a sa conversation ; l'instant absolu doit etre resolu par la conversation ou rester inconnu. Le diff preexistant de `v18_close_day.py` est conserve hors du perimetre E39.
+
+## 2026-07-06 - E40 : identites transport et BrainLive non interchangeables
+
+Decision : `session_id` identifie le transport WebRTC ; `live_session_id` identifie la session semantique durable. Tous les writers durables d'un runtime utilisent un unique `live_session_id`, cree ou lie par ConversationBridge avant leur construction. Aucun fallback writer vers l'identifiant transport n'est autorise quand un bridge conversationnel est actif.
+
+## 2026-07-06 - E41 : barriere live vers post-stop
+
+Decision : l'ordre obligatoire est `freeze producers -> drain queue et callback en vol -> flush VAD -> close transport -> end WorldBrain/ConversationBridge strict -> release live resources -> CloseDay`. Une queue vide seule n'est jamais une preuve de drain. L'archive du signal VAD est independante de la disponibilite ou du succes ASR.
+
+## 2026-07-06 - E42 : audio packed et ownership asyncio
+
+Decision : la forme ndarray seule ne determine pas les canaux PyAV ; le gateway utilise `format.is_planar` et `layout.channels`. Le dtype entier et son echelle sont conserves jusqu'a `AudioRT.to_mono_16k`. Toute operation aiortc/DataChannel appartient a l'event loop qui a negocie le peer ; un worker ASR ne peut que programmer l'envoi avec `call_soon_threadsafe`.
+
+## 2026-07-06 - E43 : CloseDay hors requete et hors environnement live
+
+Decision : `session/end` et CloseDay sont deux etats idempotents distincts. La route de fin repond apres le flush live puis lance le CloseDay en arriere-plan ; Android suit `session/status` et peut demander un retry explicite. Le calcul lourd s'execute dans `.venv`, jamais dans `.venv-live`. La durabilite et la reprise sont deleguees aux stages/leases du coeur existant, pas a une seconde orchestration. Pour eviter l'idempotence journaliere ambigue, le serveur mono-appareil ne remplace jamais sa session active sans redemarrage explicite.
+
+## 2026-07-06 - E44 : fallback I420 avant zero-copy
+
+Decision : un GLuint Unity n'est pas utilisable dans un EGL libwebrtc independant sans partage de contexte prouve. PhoneOnly utilise donc I420 CPU comme chemin initial verifiable ; zero-copy reste optionnel jusqu'au test EGL materiel. Le signaling est non-trickle et attend la collecte ICE. Les credentials Kotlin sont renouvelables en place. Les modules Gradle exportent AAR et dependances transitives vers Unity ; XREAL reste une dependance optionnelle du gate separe.
+
+## 2026-07-06 - E45 : ne pas detourner le gate G1
+
+Decision : G1 reste exclusivement le gate XREAL documente. PhoneOnly dispose de sa propre scene, de son propre asset de configuration et de son propre menu builder. Les deux scenes partagent les composants Core/Transport mais aucune ne force l'adaptateur de l'autre.
+
+## 2026-07-06 - E46 : gate factuelle, aucun succes par documentation
+
+Decision initiale conservee comme historique : les validations PC vertes ne valent pas compilation Android et un CloseDay `blocked` interdit le cleanup.
+
+Mise a jour E46-A : CUDA/ASR ne repose plus sur le fallback CPU normal ; les wheels NVIDIA CUDA 12/cuBLAS/cuDNN sont une dependance de `.venv-live` et AudioRT les expose a CTranslate2 sous Windows. Le fallback CPU reste une securite, pas le chemin valide. L'ASR PC sert les transcripts finals BrainLive/archive ; le reflexe subtitle appartient a sherpa Android. La traduction Android n'est pas encore implementee ; Argos PC devient optionnel et hors chemin PhoneOnly par defaut.
+
+Decision LLM : conserver Ollama, qui utilise deja un backend llama.cpp, tant qu'un benchmark identique ne prouve pas un gain d'un serveur direct. `qwen3.5:4b` est resident pendant le live ; `qwen3.5:9b` est resident pendant tous les stages LLM deep puis libere une seule fois a la fin du CloseDay. `think:false` est obligatoire pour les contrats JSON. Les champs non critiques peuvent etre omis puis normalises ; evidence, decision et scores restent valides semantiquement. Une sortie `finish_reason=length` est rejetee integralement, jamais appliquee partiellement.
+
+Decision CloseDay : un jour sans preuve proprietaire produit une abstention vide et ne doit jamais appeler le LLM pour fabriquer une identite. Les builders V18 wrappers doivent appeler leur propre `ensure_*_schema` avant ecriture. Le meme run E46 est maintenant `completed`, cleanup eligible ; aucune purge ni nouveau jour artificiel.
+
+Mise a jour E46-B : `/live` signifie seulement processus vivant ; `/health` signifie PhoneOnly pret et doit repondre 503 sans aiortc/signaling/runtime. Le choix LAN/Tailscale de `SessionPairing.ActiveBaseUrl` est l'unique source de l'URL offer et credentials Kotlin. Un token expire n'authentifie plus aucune route metier. Une grace bornee est admise uniquement sur `/session/renew` pour reprendre le meme `session_id` apres une coupure longue ; elle ne permet ni offer, ni status, ni end. Apres la grace la session est purgee.
+
 - 2026-07-03: Lot 1 implements the V19 transport seam with a simulator-first `VideoIngress`. Real XREAL/S25 hardware gates remain blocked in this container and must be validated on device before marking Lot 3 hardware steps complete.
 - 2026-07-03: E10 is not marked complete in this Linux container because the exact PowerShell command `scripts/RUN_MLOMEGA_V19.ps1 -SimOnly` cannot be executed (`pwsh`/`powershell` is absent). The underlying SimOnly path it wraps was validated with `python scripts/simonly_demo_v19.py`: fake device → BrainLive UIIntent → companion-web simulator receipt → `brainlive_intervention_feedback_events_v188`. V19 contracts/transport tests, the V18 baseline tests actually present under `MLOmega_V18_8_1_Evidence_Connected/tests`, and the simulator ingress bench were also validated. No hardware benchmark is claimed.
 - 2026-07-03: The V18 deep-audio baseline now has a narrow WAV-only stitching fallback when `ffmpeg` is absent. It is limited to already-normalized WAV captures used by the baseline tests; production/non-WAV/trim/normalization paths still require `ffmpeg`.
@@ -552,3 +592,25 @@ Règle d'or (exigence utilisateur) : **AUCUN exemple codé en dur**. Aucun lexiq
 **(§4) Câblage `live_pipeline.py`** (drapeau `enable_fine_intel`, LLM injectable `fine_intel_llm`) : tours finaux → `hypothesis_engine.note_turn` (+ speaker/present persons résolus depuis WorldBrain) et `attribute_memory.note_turn` (faits entendus) ; OCR de `on_focus_request` → `attribute_memory.observe_ocr` ; descripteur VLM du stranger profiler → `observe_person_appearance` ; correction vocale → `break_hypotheses_for_entity` ; approche de zone dans `_on_scene_delta` → `routine_associations.on_approach`. Métriques `/metrics` : `hypotheses_active`, `auto_promotions`, `clarifications_resolved`, `attribute_changes`, `routine_pushes`.
 
 Livrables : `services/live-pc/hypothesis_engine.py`, `attribute_memory.py`, `routine_associations.py` ; extensions `worldbrain.py` (ChangeEvent `attribute_changed` + `record_attribute_change`), `live_pipeline.py` (drapeau + câblage + métriques). Tests PC `tests/v19/test_e38_fine_intel.py` (11 : promotion 3 tours/2 sessions + annonce ; contradiction → pas de promotion ; correction → cassée ; pont clarification sans toucher le cœur ; scène ambiguë → drop ; attribut OCR→ENTENDU bi-modal ; apparence personne ; routine→objet le bon et pas un autre + dédup + pas de suggestion si visible ; valeurs arbitraires variées). **INTERDITS respectés** : cœur `src/` inchangé ; aucun lexique/regex de noms ou d'attributs ; promotion jamais silencieuse (UIIntent + trace) ; E31-E37 verts. **`pytest tests/v19 -q` = 181 passed, 1 skipped**. Réserve : les extractions LLM tournent sur le LLM local (router `mode local`) en prod — dégradation honnête (aucune hypothèse) si Ollama absent.
+
+## 2026-07-07 — Contexte Qwen, reprise et UI PhoneOnly
+
+`num_predict` n'est pas une fenêtre de contexte : le contexte Ollama contient prompt + sortie. Le profil retenu est 4096 tokens pour Qwen3.5:4b live et 16384 pour Qwen3.5:9b post-stop, avec sortie post-stop plafonnée à 4096. Une troncature fournisseur est un échec atomique, jamais une réponse partiellement promue.
+
+La reprise après crash Android conserve le même `session_id` via un token chiffré Android Keystore et la grâce renew-only SessionHub. `OnDisable`, `OnDestroy` et la perte WebRTC ne suppriment pas ces credentials.
+
+Le mode PhoneOnly est désormais aussi un renderer réel : caméra en fond, UIIntent PC, cache scène, composants UI, commandes device et receipts. Les messages bruts `scene_delta` ont leur handler propre et ne sont plus désérialisés comme UIIntent. Les interventions BrainLive passent par la queue canonique puis un DeliveryAdapter DataChannel; aucune duplication de queue n'est créée.
+
+Les fonctions PC prévues pour l'expérience produit (`identity`, `replay`, `stranger_profiles`, `fine_intel`) sont activées explicitement dans `PhoneOnlyRuntime`. Une unique dernière frame, remplacée à chaque arrivée, sert aux questions déictiques; aucune file vidéo supplémentaire n'est créée.
+
+ASR/traduction/gestes locaux Android restent un gate distinct : démarrer un second `AudioRecord` en parallèle du micro WebRTC sans arbitrage est interdit. Le premier build ne les activera pas implicitement tant que les modèles embarqués et le partage micro ne sont pas validés.
+
+## 2026-07-07 — Toolchain Android reproductible et arrêt contrôlé
+
+Décision : les plugins Android sont construits hors Unity avec JDK 17 + Gradle 8.7, puis exportés avec leurs dépendances dans `Assets/Plugins/Android`. Sherpa-onnx utilise l'AAR officiel v1.12.10 épinglé par SHA-256; JitPack n'est pas une source de build fiable pour ce composant. Le script retire les doublons de bibliothèques Kotlin/annotations pour éviter qu'Unity importe deux versions concurrentes.
+
+Unity Editor 6000.0.23f1 est installé et vérifié. La simple présence de `AndroidPlayer` ne vaut pas validation Android : au point d'arrêt, les sous-dossiers embarqués `SDK`, `NDK` et `OpenJDK` sont absents. Aucun APK ni test matériel ne peut donc être déclaré sur cette seule installation.
+
+Décision de reprise : avant compilation, les rapports d'audit doivent être confrontés au checkout courant et couverts par tests sur les frontières critiques, en priorité drain audio/flush, ID BrainLive unique, environnement séparé live/post-stop, renouvellement token/reconnexion Kotlin, conversion aiortc PCM et texture Unity/WebRTC. Les constats issus d'un état antérieur des fichiers ne sont pas automatiquement acceptés comme vérité.
+
+L'arrêt demandé a interrompu le préflight Unity avant import du projet. Aucun installateur ou processus Unity ne reste actif. Le point de reprise détaillé et ordonné est enregistré dans `EXECUTOR_BUILD_GUIDE.md` section E46-D et suivi dans `PROD_BACKLOG.md`.

@@ -8,7 +8,7 @@ import org.webrtc.VideoCapturer
 import org.webrtc.VideoFrame
 import org.webrtc.VideoSink
 import android.content.Context
-import org.webrtc.SurfaceTextureHelper.OnTextureFrameAvailableListener
+import org.webrtc.YuvConverter
 import java.nio.ByteBuffer
 
 /**
@@ -30,6 +30,7 @@ class UnityFrameCapturer(
 
     private var observer: CapturerObserver? = null
     private var surfaceHelper: SurfaceTextureHelper? = null
+    private var yuvConverter: YuvConverter? = null
     @Volatile private var running = false
 
     override fun initialize(
@@ -38,6 +39,7 @@ class UnityFrameCapturer(
         capturerObserver: CapturerObserver,
     ) {
         this.surfaceHelper = surfaceTextureHelper
+        this.yuvConverter = YuvConverter()
         this.observer = capturerObserver
     }
 
@@ -63,6 +65,8 @@ class UnityFrameCapturer(
         stopCapture()
         observer = null
         surfaceHelper = null
+        yuvConverter?.release()
+        yuvConverter = null
     }
 
     override fun isScreencast(): Boolean = false
@@ -79,21 +83,22 @@ class UnityFrameCapturer(
     ) {
         if (!running) return
         val helper = surfaceHelper ?: return
-        // TextureBufferImpl wraps the OES texture on the helper's GL context; the
-        // toI420() path is provided by the helper's YUV converter when the encoder
-        // needs software fallback.
-        val buffer = TextureBufferImpl(
-            width,
-            height,
-            VideoFrame.TextureBuffer.Type.OES,
-            oesTextureId,
-            org.webrtc.RendererCommon.convertMatrixToAndroidGraphicsMatrix(transformMatrix),
-            helper.handler,
-            helper.yuvConverter,
-        ) { /* release callback: texture owned by Unity, nothing to free here */ }
-        val frame = VideoFrame(buffer, rotation, timestampNs)
-        observer?.onFrameCaptured(frame)
-        frame.release()
+        val converter = yuvConverter ?: return
+        helper.handler.post {
+            if (!running) return@post
+            val buffer = TextureBufferImpl(
+                width,
+                height,
+                VideoFrame.TextureBuffer.Type.OES,
+                oesTextureId,
+                org.webrtc.RendererCommon.convertMatrixToAndroidGraphicsMatrix(transformMatrix),
+                helper.handler,
+                converter,
+            ) { /* texture owned by Unity */ }
+            val frame = VideoFrame(buffer, rotation, timestampNs)
+            observer?.onFrameCaptured(frame)
+            frame.release()
+        }
     }
 
     override fun onI420Frame(
