@@ -57,3 +57,9 @@ Le reste (plugins Android, triage audit, suites Python) n'en dépend pas et est 
 - Hub `install-modules` REFUSÉ: éditeur non installé via Hub → `No modules found for this editor`.
   Contournement: NDK installé via sdkmanager + config outils externes dans les prefs Unity.
 - NDK r23b (23.1.7779620) installé via sdkmanager (requis par Unity 6000.0). [voir étape 1]
+
+## 2026-07-07 — Étapes 3-5 TERMINÉES (licence activée par l'utilisateur)
+- [x] 3. Import Unity + EditMode : premier passage compilateur réel — 10 familles de fixes (manifest _comment_xreal, module Audio/WebCamTexture, alias Pose contrat, structs SceneCache renommés *Entry (collision CS0102), GlassPanel matériau par instance (UGUI sans PropertyBlock), Editor usings/Scene qualifié, broker Cfg lazy, FlushNow agrégat au tour finalisé, ContractJson (DateParseHandling.None — les timestamps ISO étaient corrompus par la culture) + ParseObject (JObject.Parse même piège)). **EditMode : 59/59 verts.**
+- [x] 4. Scène PhoneOnly générée (PhoneOnly.unity + MLOmegaPhoneOnly.asset + SceneCacheConfig + UITheme) — racines Session/Phone Camera/EventSystem, câblage vérifié.
+- [x] 5. APK : **build/android/mlomega-phoneonly.apk — 54,6 Mo — SHA-256 31762C5032947FFFACE94BC3F4F096366518B83D0BE7C86831C3D60AD9C53445** — IL2CPP/ARM64, minSdk29/target34, MLOMEGA_PHONE_ONLY, endpoint 192.168.1.199:8710 injecté. (CMake 3.22.1 installé via sdkmanager — manquait pour IL2CPP.)
+- Install : db install -r apps\xr-mobile\build\android\mlomega-phoneonly.apk (ou copie sur le S25).
