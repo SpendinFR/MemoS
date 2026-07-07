@@ -454,6 +454,31 @@ class LivePipeline:
         self.intents: Any = None
         self.vision_focus_handler = vision_focus_handler
 
+        # ---- Wake-word gating (E47-C §4): open | gated -----------------------
+        # Default "open": every final transcript is both remembered (memory) AND
+        # routed to intents — the build-1 "tout écouté" behaviour, unchanged.
+        # "gated": ALL turns still go to memory (conversation_bridge), but only a
+        # turn carrying the device's is_command flag (KWS wake word fired, agent A,
+        # additive DataChannel flag) is routed to the IntentRouter. A turn WITHOUT
+        # any flag stays open-compatible (routed), so a device that never sends the
+        # flag behaves exactly like open. The flag reaches a turn either inline on
+        # the segment content (content["is_command"]) or via a short-lived latch
+        # armed by a DataChannel control message (see arm_command_window()).
+        self.wake_word_policy = str(
+            (self.user_profile.get("wake_word_policy") if isinstance(self.user_profile, dict) else None)
+            or "open"
+        ).strip().lower()
+        if self.wake_word_policy not in ("open", "gated"):
+            self.wake_word_policy = "open"
+        self._command_window_until: float = 0.0
+        # How long a wake-word arm stays valid for the following command turn.
+        self._command_window_s = 8.0
+        self.wake_word_metrics: dict[str, int] = {
+            "turns_gated_out": 0,
+            "turns_routed": 0,
+            "command_windows_armed": 0,
+        }
+
         # ---- TTS (E35 §1): short spoken replies when the profile opts in --------
         self.enable_tts = enable_tts
         self.tts: Any = None
@@ -592,6 +617,60 @@ class LivePipeline:
                 self.ingress.send_ui_intent(json.dumps(cmd))
             except Exception:
                 pass
+
+    # ------------------------------------------------------ wake-word gating (E47-C §4)
+    def set_wake_word_policy(self, policy: str) -> None:
+        """Switch the intent-routing gate at runtime (open|gated).
+
+        Memory ingestion (conversation_bridge) is never affected — only whether a
+        non-command turn reaches the IntentRouter."""
+        p = str(policy or "open").strip().lower()
+        self.wake_word_policy = p if p in ("open", "gated") else "open"
+
+    def arm_command_window(self, *, ttl_s: float | None = None, now: float | None = None) -> None:
+        """Open a short command window (the device's KWS wake word just fired).
+
+        In ``gated`` mode the NEXT final transcript within this window is treated as
+        a command and routed to intents. Called by the runtime when a DataChannel
+        ``is_command`` control message arrives (agent A). No-op semantics in
+        ``open`` mode (everything routes anyway), but the window is still recorded
+        so a later switch to gated is coherent."""
+        import time as _time
+
+        base = _time.monotonic() if now is None else now
+        self._command_window_until = base + float(self._command_window_s if ttl_s is None else ttl_s)
+        self.wake_word_metrics["command_windows_armed"] += 1
+
+    def _should_route_intent(self, content: dict[str, Any], *, now: float | None = None) -> bool:
+        """Decide whether this final turn is routed to the IntentRouter (E47-C §4).
+
+        open  → always route.
+        gated → the device gate decides. An explicit ``content["is_command"]``:
+                  True  → route (wake word fired for this turn);
+                  False → gate out (background life speech — still remembered).
+                No inline flag: honour a live wake-word command window if one was
+                armed by a DataChannel control message. If NEITHER an is_command
+                key NOR a window is present, the turn is routed — a segment with no
+                flag is treated as open-compatible, so a device that never emits the
+                gate signal is never silenced (the guarantee in the E47-C brief)."""
+        if self.wake_word_policy != "gated":
+            return True
+        import time as _time
+
+        # A still-open wake-word window (armed by a DataChannel control message)
+        # routes the next turn and is consumed — it overrides an explicit False,
+        # covering the case where the wake word arrives as a separate signal.
+        base = _time.monotonic() if now is None else now
+        if self._command_window_until and base <= self._command_window_until:
+            self._command_window_until = 0.0
+            return True
+        flag = content.get("is_command")
+        if flag is not None:
+            # Explicit device decision (True routes, False gates out).
+            return bool(flag)
+        # Gated policy but the turn carries no gate signal at all → open-compat, so
+        # a device that never emits is_command is never silenced.
+        return True
 
     # ------------------------------------------------------------------ TTS (E35 §1)
     def set_tts(self, on: bool) -> None:
@@ -1003,12 +1082,22 @@ class LivePipeline:
             # ABSORBS the enrollment_watcher (identity commands are pre-routed
             # inside it). When intents are disabled, fall back to the standalone
             # enrollment watcher so E32 behaviour is preserved verbatim.
-            if self.intents is not None:
+            #
+            # E47-C §4: wake-word gating decides ROUTING only. In gated mode a
+            # background (non-command) turn is NOT routed to intents — but it was
+            # already fed to memory above (scene_adapter/fine_intel) and is still
+            # ingested into conversation_bridge below. open mode routes everything.
+            route_intent = self._should_route_intent(content)
+            if route_intent:
+                self.wake_word_metrics["turns_routed"] += 1
+            else:
+                self.wake_word_metrics["turns_gated_out"] += 1
+            if route_intent and self.intents is not None:
                 try:
                     self.intents.on_transcript(text)
                 except Exception:
                     pass
-            elif self.enrollment is not None:
+            elif route_intent and self.enrollment is not None:
                 try:
                     self.enrollment.on_transcript(text)
                 except Exception:
@@ -1153,6 +1242,11 @@ class LivePipeline:
             m["grammar_hits"] = im.get("grammar_hits", 0)
             m["multiturn_hits"] = im.get("multiturn_hits", 0)
             m["llm_fallbacks"] = im.get("llm_fallbacks", 0)
+        # E47-C §4: wake-word gating counters (independent of enable_intents so the
+        # gated/open decision is observable even when routing is disabled).
+        m["wake_word_policy"] = self.wake_word_policy
+        m["turns_routed"] = self.wake_word_metrics["turns_routed"]
+        m["turns_gated_out"] = self.wake_word_metrics["turns_gated_out"]
         if self.llm_router is not None:
             m["cloud_mode"] = self.llm_router.mode
             m["cloud_active"] = self.llm_router.cloud_active

@@ -143,6 +143,25 @@ class PhoneOnlyRuntime:
             return await self.delivery_adapter.dispatch_once()
 
     def _on_receipt(self, raw: str) -> None:
+        # E47-C §4: an additive DataChannel control message from the device (agent A)
+        # arms a wake-word command window. It is NOT a UIReceipt — route it first,
+        # then fall through to receipt handling for everything else. Shape:
+        #   {"type":"control","action":"wake_word"|"command", "is_command":true}
+        try:
+            import json as _json
+
+            payload = _json.loads(raw)
+        except Exception:
+            payload = None
+        if isinstance(payload, dict) and (
+            payload.get("type") == "control" or "is_command" in payload
+        ):
+            if payload.get("is_command") or payload.get("action") in ("wake_word", "command"):
+                try:
+                    self.pipeline.arm_command_window()
+                except Exception as exc:
+                    self.recent_errors.append(("control: " + str(exc))[:500])
+            return
         try:
             receipt = delivery_adapter.UIReceipt.model_validate_json(raw)
             self.delivery_adapter.record_receipt(receipt)
