@@ -32,7 +32,7 @@ namespace MLOmega.XR.Tests
             };
 
             string json = ContractJson.Serialize(intent);
-            JObject o = JObject.Parse(json);
+            JObject o = ContractJson.ParseObject(json);
 
             // Wire keys must be snake_case (what delivery_adapter / companion-web read).
             Assert.AreEqual("v19.0", (string)o["contracts_version"]);
@@ -65,7 +65,7 @@ namespace MLOmega.XR.Tests
             };
 
             string json = ContractJson.Serialize(receipt);
-            JObject o = JObject.Parse(json);
+            JObject o = ContractJson.ParseObject(json);
 
             Assert.AreEqual("ui-1", (string)o["ui_intent_id"]);
             Assert.AreEqual("del-9", (string)o["delivery_id"]);
@@ -99,7 +99,7 @@ namespace MLOmega.XR.Tests
             };
 
             string json = ContractJson.Serialize(env);
-            JObject o = JObject.Parse(json);
+            JObject o = ContractJson.ParseObject(json);
 
             Assert.AreEqual("xrs-1", (string)o["session_id"]);
             Assert.AreEqual("f_5", (string)o["frame_id"]);

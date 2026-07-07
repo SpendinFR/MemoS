@@ -37,5 +37,19 @@ namespace MLOmega.Contracts.V19
         public static string Serialize(object value) => JsonConvert.SerializeObject(value, Settings);
 
         public static T Deserialize<T>(string json) => JsonConvert.DeserializeObject<T>(json, Settings);
+
+        /// <summary>
+        /// Culture-safe replacement for <c>JObject.Parse</c>: that API uses its own
+        /// reader whose default DateParseHandling converts ISO timestamp strings to
+        /// DateTime tokens (then culture-formats them on string reads).
+        /// </summary>
+        public static Newtonsoft.Json.Linq.JObject ParseObject(string json)
+        {
+            using (var reader = new JsonTextReader(new System.IO.StringReader(json))
+                   { DateParseHandling = DateParseHandling.None })
+            {
+                return Newtonsoft.Json.Linq.JObject.Load(reader);
+            }
+        }
     }
 }

@@ -1,10 +1,11 @@
-// MLOmega V19 — E23
+﻿// MLOmega V19 â€” E23
 // Pairs the XR client with the PC SessionHub: creates a session, holds the
 // ephemeral token, renews it before expiry, and drives periodic clock-sync. The
 // PC address / device id come from an MLOmegaConfig asset. Exposes a simple
 // paired/unpaired/expired state plus the live clock offset for the capture path.
 using System;
 using System.Collections;
+using MLOmega.Contracts.V19;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.Networking;
@@ -44,7 +45,7 @@ namespace MLOmega.XR.Core
         public string Token { get; private set; }
         public string LastError { get; private set; }
 
-        /// <summary>E36 §1 — the endpoint the client is currently reaching the PC
+        /// <summary>E36 Â§1 â€” the endpoint the client is currently reaching the PC
         /// through (LAN or a VPN tunnel), or null when the PC is unreachable.</summary>
         public PcEndpoint ActiveEndpoint { get; private set; }
 
@@ -82,7 +83,7 @@ namespace MLOmega.XR.Core
                 Debug.LogError("[SessionPairing] No MLOmegaConfig assigned; cannot pair.");
                 return;
             }
-            // E36 §1: the SessionHubClient is (re)built against the resolved active
+            // E36 Â§1: the SessionHubClient is (re)built against the resolved active
             // endpoint inside Lifecycle, after the /health probe picks LAN-or-tunnel.
             _lifecycle = StartCoroutine(Lifecycle());
         }
@@ -108,7 +109,7 @@ namespace MLOmega.XR.Core
         }
 
         /// <summary>
-        /// E36 §1 — probe the ordered endpoints (LAN first, then tunnel) and set
+        /// E36 Â§1 â€” probe the ordered endpoints (LAN first, then tunnel) and set
         /// <see cref="ActiveEndpoint"/> to the first whose <c>/health</c> answers.
         /// Always starts from the top of the list so a return to the LAN reclaims the
         /// preferred endpoint. On success it (re)builds <see cref="_hub"/>/<see cref="Clock"/>
@@ -155,12 +156,12 @@ namespace MLOmega.XR.Core
             // No endpoint answered: PC unreachable. Reflex-only device mode stays live.
             ActiveEndpoint = null;
             LastError = "PC unreachable (no endpoint /health answered)";
-            Debug.LogWarning("[SessionPairing] " + LastError + " — reflex-only until an endpoint returns.");
+            Debug.LogWarning("[SessionPairing] " + LastError + " â€” reflex-only until an endpoint returns.");
         }
 
         private IEnumerator Lifecycle()
         {
-            // 0. Resolve which PC endpoint to use (LAN → tunnel), then create the
+            // 0. Resolve which PC endpoint to use (LAN â†’ tunnel), then create the
             //    session (retrying on failure). Re-resolve before each create attempt
             //    so a tunnel that comes up mid-retry is picked up automatically.
             while (State != PairingState.Paired)
@@ -168,7 +169,7 @@ namespace MLOmega.XR.Core
                 yield return ResolveActiveEndpoint();
                 if (ActiveEndpoint == null)
                 {
-                    // Nothing reachable yet — wait and retry the whole resolution.
+                    // Nothing reachable yet â€” wait and retry the whole resolution.
                     yield return new WaitForSeconds(_retryDelaySeconds);
                     continue;
                 }
@@ -363,7 +364,7 @@ namespace MLOmega.XR.Core
                 using var store = new AndroidJavaClass("com.mlomega.xr.livetransport.SessionCredentialStore");
                 string json = store.CallStatic<string>("load", activity);
                 if (string.IsNullOrEmpty(json)) return;
-                var data = JObject.Parse(json);
+                var data = ContractJson.ParseObject(json);
                 SessionId = data.Value<string>("session_id");
                 Token = data.Value<string>("token");
                 _restoredCredentials = !string.IsNullOrEmpty(SessionId) && !string.IsNullOrEmpty(Token);

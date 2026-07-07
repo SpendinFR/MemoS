@@ -134,7 +134,7 @@ namespace MLOmega.XR.Transport
                     continue;
                 }
                 EndStatus = req.downloadHandler.text;
-                var status = JObject.Parse(EndStatus).Value<string>("close_day");
+                var status = ContractJson.ParseObject(EndStatus).Value<string>("close_day");
                 if (status == "completed")
                 {
                     _pairing.ClearPersistedSession();
