@@ -59,6 +59,9 @@ namespace MLOmega.XR.Reflex.Skills
                 RecordReflex("subtitle",
                     new Dictionary<string, object> { { "language", language ?? "" }, { "chars", text.Length } },
                     0, 1.0, "info", now);
+                // A finalised segment closes the turn: flush exactly one
+                // aggregated event now instead of waiting for the window.
+                FlushReflex("subtitle", now);
                 // Close the line: the next partial opens a fresh id, so the current
                 // one ages out (expiration au tour suivant).
                 _currentIntentId = null;

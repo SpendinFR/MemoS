@@ -1,4 +1,4 @@
-// MLOmega V19 — E23
+﻿// MLOmega V19 â€” E23
 // Associates the 6DoF head pose with each captured frame (sampled AT capture, not
 // at render) and also emits a standalone pose stream at its own cadence for the
 // future DataChannel (E24). Shares the session's monotonic clock so pose and frame
@@ -6,6 +6,7 @@
 using System;
 using System.Collections.Generic;
 using MLOmega.Contracts.V19;
+using Pose = MLOmega.Contracts.V19.Pose;
 using UnityEngine;
 
 namespace MLOmega.XR.Core

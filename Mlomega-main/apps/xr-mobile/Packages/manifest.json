@@ -8,10 +8,11 @@
     "com.unity.textmeshpro": "3.0.9",
     "com.unity.ugui": "2.0.0",
     "com.unity.modules.androidjni": "1.0.0",
+    "com.unity.modules.audio": "1.0.0",
     "com.unity.modules.jsonserialize": "1.0.0",
     "com.unity.modules.unitywebrequest": "1.0.0",
     "com.unity.modules.imageconversion": "1.0.0",
-    "com.unity.modules.subsystems": "1.0.0",
-    "_comment_xreal": "PhoneOnly opens without XREAL. For the separate XREAL gate, download SDK 3.1.0 and add com.xreal.xr=file:xreal-sdk/com.xreal.xr.tar.gz plus XREAL_SDK_PRESENT."
-  }
+    "com.unity.modules.subsystems": "1.0.0"
+  },
+  "_comment_xreal": "PhoneOnly opens without XREAL. For the separate XREAL gate, download SDK 3.1.0 and add com.xreal.xr=file:xreal-sdk/com.xreal.xr.tar.gz to dependencies plus the XREAL_SDK_PRESENT define."
 }

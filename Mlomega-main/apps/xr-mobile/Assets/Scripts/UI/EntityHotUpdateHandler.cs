@@ -1,4 +1,4 @@
-// MLOmega V19 — E34 §5
+﻿// MLOmega V19 â€” E34 Â§5
 // EntityHotUpdateHandler: claims `entity_hot_update` DataChannel messages (the PC
 // scene adapter's relation-pack prefetch at identification) and folds them into
 // SceneCache.entities_hot, so the ContextCard renders from the local cache without
@@ -8,6 +8,7 @@
 using System;
 using MLOmega.XR.Scene;
 using MLOmega.XR.Transport;
+using MLOmega.Contracts.V19;
 using Newtonsoft.Json;
 using UnityEngine;
 
@@ -40,14 +41,14 @@ namespace MLOmega.XR.UI
         private void OnTransportMessage(string json) => TryHandleRaw(json);
 
         /// <summary>Parse and apply a raw hot-update message. Claims any of the four
-        /// generalised hot messages (E35 §4): entity (person or object), spatial
+        /// generalised hot messages (E35 Â§4): entity (person or object), spatial
         /// (zone), task. Returns true when it was one (claimed). Never throws.</summary>
         public bool TryHandleRaw(string json)
         {
             if (EntityHotUpdate.IsEntityHotUpdate(json))
             {
                 EntityHotUpdate update;
-                try { update = JsonConvert.DeserializeObject<EntityHotUpdate>(json); }
+                try { update = ContractJson.Deserialize<EntityHotUpdate>(json); }
                 catch (Exception ex) { Debug.LogWarning($"[EntityHotUpdate] bad json: {ex.Message}"); return true; }
                 if (update != null) Apply(update);
                 return true;
@@ -55,7 +56,7 @@ namespace MLOmega.XR.UI
             if (SpatialHotUpdate.IsSpatialHotUpdate(json))
             {
                 SpatialHotUpdate update;
-                try { update = JsonConvert.DeserializeObject<SpatialHotUpdate>(json); }
+                try { update = ContractJson.Deserialize<SpatialHotUpdate>(json); }
                 catch (Exception ex) { Debug.LogWarning($"[SpatialHotUpdate] bad json: {ex.Message}"); return true; }
                 if (update != null && _sceneCache != null) _sceneCache.SubmitSpatialHotUpdate(update);
                 if (update != null) HotUpdateApplied?.Invoke(update.Zone, "spatial");
@@ -64,7 +65,7 @@ namespace MLOmega.XR.UI
             if (TaskHotUpdate.IsTaskHotUpdate(json))
             {
                 TaskHotUpdate update;
-                try { update = JsonConvert.DeserializeObject<TaskHotUpdate>(json); }
+                try { update = ContractJson.Deserialize<TaskHotUpdate>(json); }
                 catch (Exception ex) { Debug.LogWarning($"[TaskHotUpdate] bad json: {ex.Message}"); return true; }
                 if (update != null && _sceneCache != null) _sceneCache.SubmitTaskHotUpdate(update);
                 if (update != null) HotUpdateApplied?.Invoke(update.TaskKey, "task");

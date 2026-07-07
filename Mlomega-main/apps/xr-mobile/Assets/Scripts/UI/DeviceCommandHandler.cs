@@ -1,12 +1,12 @@
-// MLOmega V19 — E33
+﻿// MLOmega V19 â€” E33
 // DeviceCommandHandler: executes `device_command` messages the PC IntentRouter
-// pushes over the same reliable DataChannel as UIIntents (§4). One execution path
+// pushes over the same reliable DataChannel as UIIntents (Â§4). One execution path
 // for BOTH voice (PC router) and the on-glasses menu (MenuPanel emits the same
-// command locally) — nothing here is voice- or menu-specific.
+// command locally) â€” nothing here is voice- or menu-specific.
 //
 // Actions:
 //   * set_ui_mode {hide_all|minimal|normal|freeguy} -> UIIntentBroker.SetDensity
-//     (hide_all leaves only the standalone StatusBar + privacy, §13.2-1);
+//     (hide_all leaves only the standalone StatusBar + privacy, Â§13.2-1);
 //   * privacy_pause                                  -> StatusBar.PrivacyPaused toggle;
 //   * open_app {maps|youtube|package,...}            -> Kotlin AppLauncher bridge;
 //   * open_menu                                      -> raises MenuRequested (MenuPanel);
@@ -14,7 +14,7 @@
 //
 // Each executed command raises CommandExecuted so the app can send a UIReceipt
 // (delivered) back to the PC. Lives in the UI assembly (which references Transport,
-// Scene and Contracts) — a Transport->UI dependency would be a cycle.
+// Scene and Contracts) â€” a Transport->UI dependency would be a cycle.
 using System;
 using MLOmega.Contracts.V19;
 using MLOmega.XR.Transport;
@@ -24,7 +24,7 @@ using UnityEngine;
 
 namespace MLOmega.XR.UI
 {
-    /// <summary>A parsed device_command message (contract-lite, PC->device §4).</summary>
+    /// <summary>A parsed device_command message (contract-lite, PC->device Â§4).</summary>
     public sealed class DeviceCommand
     {
         [JsonProperty("type")] public string Type { get; set; }
@@ -86,7 +86,7 @@ namespace MLOmega.XR.UI
         {
             if (!DeviceCommand.IsDeviceCommand(json)) return false;
             DeviceCommand cmd;
-            try { cmd = JsonConvert.DeserializeObject<DeviceCommand>(json); }
+            try { cmd = ContractJson.Deserialize<DeviceCommand>(json); }
             catch (Exception ex) { Debug.LogWarning($"[DeviceCommand] bad json: {ex.Message}"); return true; }
             if (cmd != null) Execute(cmd);
             return true;

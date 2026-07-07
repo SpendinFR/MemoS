@@ -1,7 +1,8 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Text;
 using MLOmega.XR.Core;
+using MLOmega.Contracts.V19;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
@@ -85,7 +86,7 @@ namespace MLOmega.XR.Transport
         {
             EndStatus = "requesting";
             string url = _pairing.ActiveBaseUrl.TrimEnd('/') + "/session/end";
-            byte[] body = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(new { session_id = sessionId, token }));
+            byte[] body = Encoding.UTF8.GetBytes(ContractJson.Serialize(new { session_id = sessionId, token }));
             using var req = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST);
             req.uploadHandler = new UploadHandlerRaw(body);
             req.downloadHandler = new DownloadHandlerBuffer();
@@ -117,7 +118,7 @@ namespace MLOmega.XR.Transport
                 yield return new WaitForSecondsRealtime(2f);
                 if (_pairing == null || string.IsNullOrEmpty(_pairing.Token)) yield break;
                 string url = _pairing.ActiveBaseUrl.TrimEnd('/') + "/session/status";
-                byte[] body = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(new
+                byte[] body = Encoding.UTF8.GetBytes(ContractJson.Serialize(new
                 {
                     session_id = sessionId,
                     token = _pairing.Token
@@ -133,7 +134,7 @@ namespace MLOmega.XR.Transport
                     continue;
                 }
                 EndStatus = req.downloadHandler.text;
-                var status = JObject.Parse(EndStatus).Value<string>("close_day");
+                var status = ContractJson.ParseObject(EndStatus).Value<string>("close_day");
                 if (status == "completed")
                 {
                     _pairing.ClearPersistedSession();

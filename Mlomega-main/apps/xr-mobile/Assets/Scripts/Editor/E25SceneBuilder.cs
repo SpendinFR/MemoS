@@ -1,4 +1,4 @@
-// MLOmega V19 — E25
+﻿// MLOmega V19 â€” E25
 // Builds the E25 UI demo scene in one click (menu: MLOmega > Build E25 UI Scene).
 // As with G1SceneBuilder, authoring a valid .unity by hand is error-prone without
 // Unity to validate GUIDs/fileIDs, so the scene is generated programmatically and
@@ -28,7 +28,7 @@ namespace MLOmega.XR.Editor
         [MenuItem("MLOmega/Build E25 UI Scene")]
         public static void BuildScene()
         {
-            Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            UnityEngine.SceneManagement.Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
             // --- Config assets (created once, reused) --------------------------
             UITheme theme = LoadOrCreate<UITheme>(ThemePath);

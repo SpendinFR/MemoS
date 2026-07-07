@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using MLOmega.Contracts.V19;
 using MLOmega.XR.Scene;
 using MLOmega.XR.Transport;
@@ -37,7 +37,7 @@ namespace MLOmega.XR.UI
                 return;
             try
             {
-                var delta = JsonConvert.DeserializeObject<SceneDelta>(json);
+                var delta = ContractJson.Deserialize<SceneDelta>(json);
                 if (delta == null) return;
                 _sceneCache?.SubmitSceneDelta(delta);
                 _tracks?.SubmitSceneDelta(delta);

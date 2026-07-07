@@ -1,8 +1,8 @@
-// MLOmega V19 — E25
-// OffscreenArrow (§13.1, §14.6): a head-edge arrow pointing toward an off-screen
-// object/place by bearing. CRITICAL truth rule (§17.2 / §14.6): a precise arrow is
-// only drawn when SceneCache.SpatialHot map_quality clears the configured
-// threshold — "Jamais de flèche sans qualité de carte". Below the threshold the
+﻿// MLOmega V19 â€” E25
+// OffscreenArrow (Â§13.1, Â§14.6): a head-edge arrow pointing toward an off-screen
+// object/place by bearing. CRITICAL truth rule (Â§17.2 / Â§14.6): a precise arrow is
+// only drawn when SceneCache.SpatialHotEntry map_quality clears the configured
+// threshold â€” "Jamais de flÃ¨che sans qualitÃ© de carte". Below the threshold the
 // component draws NOTHING (it stays invisible) rather than pointing confidently in
 // a possibly-wrong direction; the runtime/last-seen card carries the fallback. The
 // bearing is read from spatial_hot for the intent's entity, or from the intent's
@@ -64,7 +64,7 @@ namespace MLOmega.XR.UI.Components
             Camera cam = Context != null ? Context.Camera : Camera.main;
             if (cam == null || _arrow == null) return;
 
-            // §17.2: gate on map quality. No qualified map -> draw nothing.
+            // Â§17.2: gate on map quality. No qualified map -> draw nothing.
             _qualified = IsBearingQualified(out float bearingDeg);
             float alpha = _qualified ? CurrentAlpha : 0f;
             _arrow.enabled = _qualified;
@@ -112,7 +112,7 @@ namespace MLOmega.XR.UI.Components
             bool mapOk = sc.SpatialHot.ArrowAllowed(threshold);
 
             if (!string.IsNullOrEmpty(Intent?.EntityId) &&
-                sc.SpatialHot.TryGet(Intent.EntityId, out SceneCache.SpatialHot spatial) &&
+                sc.SpatialHot.TryGet(Intent.EntityId, out SceneCache.SpatialHotEntry spatial) &&
                 spatial.HasBearing)
             {
                 bearingDeg = (float)spatial.BearingDeg;

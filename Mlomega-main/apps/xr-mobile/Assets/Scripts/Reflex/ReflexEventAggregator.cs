@@ -70,6 +70,21 @@ namespace MLOmega.XR.Reflex
             return null;
         }
 
+        /// <summary>
+        /// Force-flush one aggregate bucket at a natural boundary (e.g. a finalised
+        /// subtitle segment closes its turn). Returns the emitted event, or null if
+        /// nothing was pending under <paramref name="aggregateKey"/>.
+        /// </summary>
+        public ReflexEvent FlushNow(string sessionId, string skill, string aggregateKey,
+            long horizonMs, long nowMs)
+        {
+            if (!_buckets.TryGetValue(aggregateKey, out Bucket b)) return null;
+            ReflexEvent evt = Flush(sessionId, skill, aggregateKey, horizonMs, b, nowMs);
+            _sink?.Send(evt);
+            _buckets.Remove(aggregateKey);
+            return evt;
+        }
+
         private static ReflexEvent Flush(string sessionId, string skill, string aggregateKey,
             long horizonMs, Bucket b, long nowMs)
         {

@@ -1,4 +1,4 @@
-// MLOmega V19 — E22 / Gate G1
+﻿// MLOmega V19 â€” E22 / Gate G1
 // Builds the G1Gate scene in one click. Authoring a valid .unity YAML by hand
 // (GUIDs, fileIDs, component wiring) is error-prone without Unity to validate it,
 // so the scene is generated programmatically instead (decision recorded in
@@ -20,7 +20,7 @@ namespace MLOmega.XR.Editor
         [MenuItem("MLOmega/Build G1 Gate Scene")]
         public static void BuildScene()
         {
-            Scene scene = EditorSceneManager.NewScene(
+            UnityEngine.SceneManagement.Scene scene = EditorSceneManager.NewScene(
                 NewSceneSetup.EmptyScene, NewSceneMode.Single);
 
             // --- XR camera rig -------------------------------------------------
@@ -84,7 +84,7 @@ namespace MLOmega.XR.Editor
             tmp.fontSize = 28f;
             tmp.color = new Color(0.85f, 0.95f, 1f, 1f);
             tmp.alignment = TextAlignmentOptions.TopLeft;
-            tmp.text = "MLOmega XR — G1 Gate\n(initializing...)";
+            tmp.text = "MLOmega XR â€” G1 Gate\n(initializing...)";
 
             var overlay = canvasGo.AddComponent<G1StatusOverlay>();
             AssignPrivate(overlay, "_label", tmp);
