@@ -181,18 +181,19 @@ Terminé factuellement :
 
 Tâche interrompue : préflight Unity/Android du point 8, avant import Unity et génération APK.
 
-À reprendre dans cet ordre :
+Reprise 2026-07-07 (session E46-D, branche `feat/v19-e46d-android`) :
 
-- [ ] Compléter Android Build Support Unity : SDK, NDK et OpenJDK embarqués sont absents, ou configurer explicitement les outils externes.
-- [ ] Vérifier licence Unity et ouverture batchmode du projet.
-- [ ] Relancer le build AAR reproductible et enregistrer les hashes.
-- [ ] Lancer import Unity + tests EditMode; corriger UPM/XREAL, asmdefs, manifest et dépendances.
-- [ ] Générer et inspecter la scène PhoneOnly complète.
-- [ ] Revalider avant build les ponts critiques signalés par audit : audio aiortc, drain/flush, ID BrainLive, séparation `.venv-live`/`.venv`, token/reconnect/ICE/teardown Kotlin, texture vidéo et FrameEnvelope.
-- [ ] Ajouter/valider le build Android CLI IL2CPP ARM64 et produire l'APK.
-- [ ] Relancer toute la suite V19 après la correction du scénario traduction; traiter le contrôle V18 sans réintroduire `turns.created_at`.
-- [ ] Installer sur téléphone réel via `adb` et prouver caméra + micro Opus + PCM + AudioRT + transcript + BrainLive + archives + UI.
-- [ ] Prouver qu'une déconnexion seule ne clôture rien, puis tester la fin explicite, le drain et CloseDay avec le vrai `live_session_id`.
-- [ ] Valider séparément traduction Android, partage micro, modèles reflex/gestes, TTS et plusieurs sessions le même jour.
+- [x] Android Build Support : Hub `install-modules` refusé (éditeur hors-Hub). Contourné — NDK r23b (23.1.7779620) installé via sdkmanager, SDK/JDK17/Gradle externes configurés (`AndroidBuild.cs` pose SDK/NDK/JDK dans les prefs au build).
+- [x] Licence Unity vérifiée batchmode → **BLOQUÉE** : `No valid Unity Editor license found` (activation login interactif requise). Documenté dans `E46D_STATE.md`.
+- [x] Build AAR reproductible relancé, hashes enregistrés (livetransport `19d04664…`, reflexvision `c1b128cd…`, sherpa `f51f5936…`). Dédup Kotlin OK.
+- [ ] Import Unity + tests EditMode — **bloqué licence**. Manifest PhoneOnly propre (aucune réf `file:` XREAL). Prêt à lancer post-activation.
+- [ ] Scène PhoneOnly — **bloqué licence**. Source vérifiée statiquement (tous composants câblés).
+- [x] Revalidation ponts audit : les 11 constats confrontés au checkout courant → **tous réfutés (déjà corrects)**. Détail dans `E46D_STATE.md`. Aucun fix code requis.
+- [x] Build Android IL2CPP ARM64 : méthode `Editor/AndroidBuild.cs` livrée (minSdk29/targetSdk34, define `MLOMEGA_PHONE_ONLY`, endpoint via env). APK **bloqué licence** ; commande d'exécution documentée.
+- [x] Suites : V19 **207 passed / 2 skipped / 0 failed** (scénario traduction obsolète corrigé). V18 ciblé **5 passed** (turns.created_at invariant vert). Aucune dép réelle `turns.created_at`. Cœur V18.8 non modifié.
+- [ ] Téléphone réel via `adb` — bloqué en amont par l'APK (licence).
+- [ ] Déconnexion seule vs fin explicite + CloseDay sur device — bloqué en amont.
+- [ ] Gates séparés (traduction Android, partage micro, reflex/gestes, TTS, multi-sessions) — non traités (hors périmètre point d'arrêt).
 
-Non validé à cet arrêt : compilation Unity, tests EditMode, APK, `adb`, téléphone réel, audio matériel, UI matérielle et CloseDay déclenché depuis Android.
+Non validé à cet arrêt (bloqué par la licence Unity, pas par le code) : compilation Unity, tests EditMode, APK, `adb`, téléphone réel, audio/UI matériels, CloseDay depuis Android.
+Action débloquante : activer une licence Unity Personal via Unity Hub (login Unity ID), puis relancer étapes 3→5.
