@@ -131,3 +131,42 @@ tu peux rouvrir et reprendre la même session). Seul le bouton clôt et consolid
 
 **Au réveil du close-day : ta mémoire aura ses premières routines candidates, entités, et
 peut-être sa première prédiction. C'est là que tout commence.**
+
+---
+
+# MISE À JOUR — APK v2 (E47 : wake word, gestes, offline)
+
+**Nouvel APK** : même fichier `mlomega-phoneonly.apk` (54,6 Mo, SHA-256 `BCC68997…5A0C`) — réinstalle par-dessus (`adb install -r ...`).
+
+## ⚠️ Avant la session : pousser les modèles device (une fois)
+```powershell
+python scripts\fetch_models_v19.py --device
+adb push models\device\. /sdcard/Android/data/com.mlomega.xr/files/models/
+```
+(Le nom exact du package est visible via `adb shell pm list packages | findstr mlomega`. Client de téléchargement automatique = prochain petit ajout.)
+
+## 🆕 Nouveautés à tester
+
+### Wake word (TON mot)
+- Par défaut la politique est **open** : tu parles naturellement comme avant, pas de mot requis.
+- Pour tester le mode gated : mets `wake_word_policy: gated` dans `configs\user_profile.yaml` (PC) → seules les phrases dites **après ton mot d'éveil** (défaut « omega », changeable dans MLOmegaConfig Unity) deviennent des commandes : « **omega… c'est quoi ça ?** ». Tout le reste continue d'alimenter ta mémoire — rien ne s'arrête jamais d'écouter.
+- Fenêtre de commande : ~quelques secondes après le mot (configurable), StatusBar « à l'écoute ».
+
+### Gestes (activés à la demande — lève la main devant la caméra)
+| Geste | Effet |
+|---|---|
+| **Paume ouverte** tenue | Ouvre/ferme le menu |
+| **Balayage latéral** | Cache toute l'UI |
+| **Pincement** (pouce-index) | Zoom continu dans la LensWindow (dis « zoom » d'abord) |
+
+### Sous-titres OFFLINE (le test d'autonomie)
+Coupe le PC (ou le Wi-Fi) en pleine session → **les sous-titres continuent** (ASR sherpa local). Reconnecte → tout reprend.
+
+### Multi-sessions le même jour
+Tu peux maintenant faire 2-3 sessions dans la journée : chaque « Terminer la session » relance un close-day qui **reconsolide tout le jour** (plus de skip silencieux).
+
+## Checklist ajoutée
+11. ☐ « omega » (mode gated) → StatusBar écoute → commande routée ; phrase sans le mot → PAS routée mais bien en mémoire
+12. ☐ Paume → menu ; balayage → UI cachée ; pinch → zoom
+13. ☐ PC coupé → sous-titres toujours là ; retour PC → reconnexion auto
+14. ☐ 2e session du jour → close-day relancé (`--allow-rerun` visible dans les logs PC)
