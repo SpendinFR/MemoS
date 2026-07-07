@@ -428,3 +428,21 @@ La tâche active était le préflight final du point 8 : obtenir un projet Unity
 - [x] 7. Suites finales : V19 complète **207 passed, 2 skipped, 0 failed** ; V18 ciblé **5 passed, 0 failed** (inclut `test_owner_scoped_turn_query_uses_conversation_time_not_turn_created_at` vert). Cœur V18.8 non modifié. Statut : terminé.
 
 Install device : `adb install -r apps\xr-mobile\build\android\mlomega-phoneonly.apk`. Reste ouvert (hors périmètre E46-D) : test S25 réel, gates produit Android-local (ASR/traduction/gestes/TTS locaux, arbitrage micro, sémantique multi-sessions/jour) non faits par décision explicite du 2026-07-07 (premier build livré sans), E30-A/close-day (à faire en session réelle, pas synthétique — décision utilisateur), E30-B.
+
+
+---
+
+## E47 — Gates Android-local : autonomie du téléphone (À FAIRE, après le premier test device)
+
+**Pourquoi c'est une étape séparée** (décision 2026-07-07) : le premier APK n'active pas l'ASR/gestes/TTS locaux — deux micros concurrents (AudioRecord sherpa + WebRTC) sans arbitrage sont interdits, et les modèles embarqués n'ont jamais tourné sur un vrai S25. Les AAR (sherpa-onnx 1.12.10, MediaPipe tasks-vision 0.10.29) sont DÉJÀ dans l'APK — E47 les active, il ne réinstalle rien.
+
+**Livrables :**
+1. **Arbitrage micro (le cœur de l'étape)** : UNE seule source audio — option A (préférée) : le flux micro WebRTC existant est dupliqué côté Kotlin (callback audio du track local AVANT envoi) et nourrit sherpa-onnx (VAD+ASR+KWS) en parallèle de l'envoi PC — zéro second AudioRecord ; option B (repli si l'API GetStream ne l'expose pas proprement) : un AudioRecord unique possédé par nous, fan-out vers (a) une source WebRTC custom et (b) sherpa. Choisir après lecture de l'API du track audio GetStream, ADR obligatoire.
+2. **Provisioning des modèles device** : zipformer streaming FR+EN + KWS (wake word) + tasks MediaPipe (hand_landmarker, gesture_recognizer) copiés au premier lancement depuis le PC (endpoint de download servi par sessionhub, sha vérifié, stockage app) — pas de poids dans l'APK (taille).
+3. **Activation gestes** : frames caméra (déjà capturées pour WebRTC) partagées vers GesturePipeline (LIVE_STREAM) sous budget scheduler E26 ; câbler les événements palm/swipe/pinch déjà attendus côté Unity (MenuGestureController existant).
+4. **Wake word** : KWS sherpa actif → WakeWordGate Unity (existant) passe du mode « tout écouté » (build 1, PC-side) au mode gated : hors session de commande, l'ASR PC continue (mémoire de vie) mais le ROUTAGE d'intents exige le mot d'éveil — politique configurable dans MLOmegaConfig.
+5. **TTS device (optionnel)** : voix sherpa locale pour le mode sans-PC ; le TTS PC (E35) reste le défaut connecté.
+6. **Multi-sessions/jour (PC, Python — pas de rebuild Android)** : close_brainlive_day est déjà keyé (person_id, package_date) avec stages repris — définir/tester : session 2 du même jour → le close-day du jour REJOUE les stages sur les données cumulées (resume) ou complète ; garantir idempotence assembler/bundles sur re-run ; test v19 dédié.
+7. **Rebuild + validation device** : `AndroidBuild.BuildApk` (incrémental, ~5-10 min toolchain chaud) ; tests device : wake word, un geste par type, sous-titres offline (PC coupé), pas de conflit micro (WebRTC + sherpa simultanés stables 10 min).
+
+**Estimation** : une étape standard (une session de travail), la moitié Kotlin/Unity, le point 6 en Python pur. Recompilation : APK uniquement, incrémentale ; rien côté PC sauf point 6.
