@@ -37,3 +37,4 @@ Library/
 apps/xr-mobile/Library/
 *.log
 editmode_results.xml
+apps/xr-mobile/.utmp/
