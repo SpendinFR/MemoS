@@ -76,6 +76,24 @@ namespace MLOmega.XR.Reflex
             Register(_subtitle);
         }
 
+        private void OnEnable()
+        {
+            // Pinch → LensWindow zoom (E47-B: the pinch handler existed on the skill
+            // but was never subscribed to the bridge). Palm/swipe/pinch-commit are
+            // wired separately by MenuGestureController.
+            if (_gestureBridge != null) _gestureBridge.GestureRecognized += OnGestureForLens;
+        }
+
+        private void OnDisable()
+        {
+            if (_gestureBridge != null) _gestureBridge.GestureRecognized -= OnGestureForLens;
+        }
+
+        private void OnGestureForLens(GestureEvent ev)
+        {
+            if (_lensWindow != null) _lensWindow.OnGesture(ev);
+        }
+
         private void Register(ReflexSkillBase skill)
         {
             if (skill != null) _skills[skill.SkillId] = skill;

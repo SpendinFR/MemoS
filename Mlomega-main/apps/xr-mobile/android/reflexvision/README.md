@@ -38,12 +38,33 @@ in `libs/`, and swap the dependency to
 Weights are never checked in. Install them under the app's files dir and pass the
 absolute directories in `AsrKwsConfig` / `GestureConfig`.
 
-### Gestures (MediaPipe `.task` bundle)
+### Gestures (MediaPipe `.task` bundles) — E47-B
 
-- `gesture_recognizer.task`
+Provisioned at first run into the app-private **external** files dir
+(`getExternalFilesDir(null)/models/`, no permission required), never shipped in
+the APK (E47 device provisioning, livrable 2). The Unity `GestureBridge`
+resolves `getExternalFilesDir(null)/models/gesture_recognizer.task` and passes it
+as `GestureConfig.modelAssetPath`.
+
+- `gesture_recognizer.task` (bundles the HandLandmarker — the pipeline runs a
+  single `GestureRecognizer` graph, so this one bundle already yields both the
+  hand landmarks and the discrete gesture category)
   <https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/latest/gesture_recognizer.task>
-  → install to `<filesDir>/reflex/gesture_recognizer.task`
+  → install to `getExternalFilesDir(null)/models/gesture_recognizer.task`
   → `GestureConfig.modelAssetPath`
+- `hand_landmarker.task` (landmarks-only; provisioned alongside for a future
+  landmarker-only path / diagnostics — not required by the current
+  `GestureRecognizer` graph)
+  <https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task>
+  → install to `getExternalFilesDir(null)/models/hand_landmarker.task`
+
+> **Cadence (E47-B):** the Unity capture texture (the same frame WebRTC sends)
+> is subscribed via `EyeCaptureSource.OnFrame`, downscaled to 256 px on its long
+> side, and pushed to `GesturePipeline.pushFrame` throttled to **10–15 fps**
+> (`FrameThrottle`, default 12 fps) — never at full capture resolution or 30 fps.
+> Frames are only fed while the `ReflexScheduler` has activated the pipeline
+> (GUIDE_V19 §9.4 — battery); `FrameThrottle` on the native side is the
+> authoritative drop policy and is JVM-tested (`FrameThrottleTest`).
 
 ### ASR — streaming zipformer (choose by language)
 

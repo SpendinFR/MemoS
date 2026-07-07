@@ -59,6 +59,15 @@ android {
             excludes += setOf("META-INF/*.kotlin_module")
         }
     }
+
+    testOptions {
+        unitTests {
+            // The pure GesturePipeline on-demand tests (E47-B) never touch a real
+            // recognizer; stub android.* calls to their type defaults so the pipeline
+            // can be exercised on the JVM without a device.
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 dependencies {
@@ -82,9 +91,12 @@ dependencies {
 
     implementation("androidx.annotation:annotation:1.8.0")
 
-    // Pure-JVM unit tests for the gesture state machine / config encoding
-    // (no device, no native models required).
+    // Pure-JVM unit tests for the gesture state machine / config encoding /
+    // frame throttle / on-demand pipeline lifecycle (no device, no native models).
     testImplementation("junit:junit:4.13.2")
+    // Mockito supplies a stub android.content.Context for the on-demand pipeline
+    // tests (E47-B); the tests never call start(), so the Context is never used.
+    testImplementation("org.mockito:mockito-core:5.11.0")
 }
 
 tasks.register<Copy>("exportUnityRelease") {

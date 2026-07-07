@@ -28,6 +28,13 @@ data class GestureConfig(
     val minHandDetectionConfidence: Float = 0.5f,
     val minHandPresenceConfidence: Float = 0.5f,
     val minTrackingConfidence: Float = 0.5f,
+    /**
+     * Target gesture cadence (fps). The Unity capture texture arrives at the WebRTC
+     * rate (up to 30 fps); [GesturePipeline] throttles frames down to this band via
+     * [FrameThrottle] so the MediaPipe graph never runs hotter than gestures need
+     * (E47-B, GUIDE_V19_REFERENCE §9.4). Clamped to 10–15 fps.
+     */
+    val targetFps: Float = 12f,
     val pinch: PinchConfig = PinchConfig(),
     val palm: PalmConfig = PalmConfig(),
     val swipe: SwipeConfig = SwipeConfig(),
@@ -92,6 +99,11 @@ data class SwipeConfig(
  */
 object GestureConfigFactory {
     @JvmStatic
-    fun forUnity(modelAssetPath: String, numHands: Int): GestureConfig =
-        GestureConfig(modelAssetPath = modelAssetPath, numHands = if (numHands < 1) 1 else numHands)
+    @JvmOverloads
+    fun forUnity(modelAssetPath: String, numHands: Int, targetFps: Float = 12f): GestureConfig =
+        GestureConfig(
+            modelAssetPath = modelAssetPath,
+            numHands = if (numHands < 1) 1 else numHands,
+            targetFps = targetFps,
+        )
 }

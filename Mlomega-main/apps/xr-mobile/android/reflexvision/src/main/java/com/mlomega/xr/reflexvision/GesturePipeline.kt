@@ -49,6 +49,12 @@ class GesturePipeline(
     private val running = AtomicBoolean(false)
     private val stateMachine = GestureStateMachine(config)
 
+    // Authoritative frame-rate gate (E47-B): the Unity capture texture arrives at
+    // the WebRTC cadence; gestures only need 10–15 fps (battery — §9.4). Dropping
+    // here rather than in the Unity bridge keeps the policy testable on the JVM and
+    // identical across capture sources.
+    private val throttle = FrameThrottle.forTargetFps(config.targetFps)
+
     @Volatile
     private var recognizer: GestureRecognizer? = null
 
@@ -59,6 +65,7 @@ class GesturePipeline(
      */
     fun start() {
         if (!running.compareAndSet(false, true)) return
+        throttle.reset()
         try {
             val base = BaseOptions.builder()
                 .setModelAssetPath(config.modelAssetPath)
@@ -107,6 +114,8 @@ class GesturePipeline(
      */
     fun pushFrame(bitmap: Bitmap, timestampMs: Long) {
         val r = recognizer ?: return
+        // Drop frames above the gesture cadence (10–15 fps) — battery, §9.4.
+        if (!throttle.accept(timestampMs)) return
         val mp: MPImage = BitmapImageBuilder(bitmap).build()
         try {
             r.recognizeAsync(mp, timestampMs)

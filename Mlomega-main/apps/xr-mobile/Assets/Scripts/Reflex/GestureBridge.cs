@@ -39,12 +39,26 @@ namespace MLOmega.XR.Reflex
     {
         [SerializeField] private EyeCaptureSource _capture;
 
-        [Tooltip("Relative path (under the app files dir) of the MediaPipe gesture .task bundle.")]
-        [SerializeField] private string _modelRelativePath = "reflex/gesture_recognizer.task";
+        [Tooltip("Relative path (under getExternalFilesDir()/models) of the MediaPipe " +
+                 "gesture .task bundle. Provisioned at first run (E47), not shipped in the APK.")]
+        [SerializeField] private string _modelRelativePath = "models/gesture_recognizer.task";
 
         [Tooltip("Max hands tracked (1 keeps latency lowest).")]
         [Min(1)]
         [SerializeField] private int _numHands = 1;
+
+        [Tooltip("Longest side (px) the capture texture is downscaled to before the " +
+                 "native gesture graph. 256 is plenty for hand landmarks and keeps the " +
+                 "GPU readback + JNI Bitmap copy cheap. Never full capture resolution.")]
+        [Min(64)]
+        [SerializeField] private int _maxDimension = 256;
+
+        [Tooltip("Target gesture cadence (fps), clamped 10-15 on the native side. The " +
+                 "capture texture arrives at up to 30 fps; we only sample this often " +
+                 "(battery, §9.4). The native FrameThrottle is authoritative; this gates " +
+                 "the GPU readback so we do not even pay for dropped frames.")]
+        [Range(10f, 15f)]
+        [SerializeField] private float _targetFps = 12f;
 
         /// <summary>Raised on the main thread for each recognised gesture.</summary>
         public event Action<GestureEvent> GestureRecognized;
@@ -55,14 +69,35 @@ namespace MLOmega.XR.Reflex
         private readonly Queue<Action> _mainThreadQueue = new Queue<Action>();
         private readonly object _queueLock = new object();
 
+        // Client-side readback gate: skip the GPU readback for frames the native
+        // throttle would drop anyway, so downscale + Bitmap copy only run 10-15x/s.
+        private float _readbackAccum;
+        private float _readbackPeriod;
+
 #if UNITY_ANDROID && !UNITY_EDITOR
         private AndroidJavaObject _pipeline;
         private GestureProxy _proxy;
+        private Texture2D _readback;      // reused downscaled ARGB readback target
+        private AndroidJavaObject _bitmap; // reused native ARGB_8888 Bitmap
+        private int[] _argbBuffer;         // reused packed-ARGB scratch for setPixels
+        private int _bitmapW, _bitmapH;
 #endif
 
         private void Awake()
         {
             if (_capture == null) _capture = FindAnyObjectByType<EyeCaptureSource>();
+            _readbackPeriod = _targetFps > 0f ? 1f / _targetFps : 0f;
+        }
+
+        private void OnEnable()
+        {
+            if (_capture != null) _capture.OnFrame += HandleFrame;
+        }
+
+        private void OnDisable()
+        {
+            if (_capture != null) _capture.OnFrame -= HandleFrame;
+            Deactivate();
         }
 
         private void Update()
@@ -74,6 +109,28 @@ namespace MLOmega.XR.Reflex
         }
 
         /// <summary>
+        /// Feed one capture frame to the native gesture graph. Only runs while the
+        /// recogniser is active (ReflexScheduler on-demand — §9.4); throttled to the
+        /// gesture cadence and downscaled so we never read back at full res/30 fps.
+        /// No-op in the editor (the simulator drives gestures from input instead).
+        /// </summary>
+        private void HandleFrame(Texture texture, FrameEnvelope envelope)
+        {
+            if (!IsRunning || texture == null) return;
+
+            // Client-side cadence gate: avoid the GPU readback for frames the native
+            // FrameThrottle would drop. period == 0 means feed every frame.
+            _readbackAccum += Time.unscaledDeltaTime;
+            if (_readbackPeriod > 0f && _readbackAccum < _readbackPeriod) return;
+            _readbackAccum = 0f;
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+            long tsMs = envelope != null ? envelope.CaptureMonotonicNs / 1_000_000L : 0L;
+            PushDownscaledFrame(texture, tsMs);
+#endif
+        }
+
+        /// <summary>
         /// Activate the recogniser. Called by the ReflexScheduler when a
         /// gesture-relevant signal is active. Idempotent.
         /// </summary>
@@ -81,6 +138,7 @@ namespace MLOmega.XR.Reflex
         {
             if (IsRunning) return;
             IsRunning = true;
+            _readbackAccum = _readbackPeriod; // feed the first frame immediately
 #if UNITY_ANDROID && !UNITY_EDITOR
             StartAndroid();
 #else
@@ -96,10 +154,9 @@ namespace MLOmega.XR.Reflex
             IsRunning = false;
 #if UNITY_ANDROID && !UNITY_EDITOR
             _pipeline?.Call("stop");
+            ReleaseBitmap();
 #endif
         }
-
-        private void OnDisable() => Deactivate();
 
         // --- native plumbing ------------------------------------------------------
 
@@ -110,15 +167,101 @@ namespace MLOmega.XR.Reflex
                 .GetStatic<AndroidJavaObject>("currentActivity");
             using var ctx = activity.Call<AndroidJavaObject>("getApplicationContext");
 
-            string filesDir = ctx.Call<AndroidJavaObject>("getFilesDir").Call<string>("getAbsolutePath");
+            // Models are provisioned to getExternalFilesDir()/models at first run
+            // (E47), never shipped in the APK. getExternalFilesDir(null) is the
+            // app-private external files dir (no permission required).
+            using var extDir = ctx.Call<AndroidJavaObject>("getExternalFilesDir", (object)null);
+            string filesDir = extDir != null
+                ? extDir.Call<string>("getAbsolutePath")
+                : ctx.Call<AndroidJavaObject>("getFilesDir").Call<string>("getAbsolutePath");
             string modelPath = filesDir + "/" + _modelRelativePath;
 
             var cfg = new AndroidJavaClass("com.mlomega.xr.reflexvision.GestureConfigFactory")
-                .CallStatic<AndroidJavaObject>("forUnity", modelPath, _numHands);
+                .CallStatic<AndroidJavaObject>("forUnity", modelPath, _numHands, _targetFps);
             _proxy = new GestureProxy(this);
             _pipeline = new AndroidJavaObject(
                 "com.mlomega.xr.reflexvision.GesturePipeline", ctx, cfg, _proxy);
             _pipeline.Call("start");
+        }
+
+        /// <summary>
+        /// Downscale the capture texture to at most <see cref="_maxDimension"/> on its
+        /// longest side, read it back to CPU, pack it into a reused ARGB_8888 Android
+        /// Bitmap over JNI, and hand it to the native <c>GesturePipeline.pushFrame</c>.
+        /// The native FrameThrottle drops anything above the gesture cadence, so this
+        /// pushes at most ~15 fps of small frames — never full res, never 30 fps.
+        /// </summary>
+        private void PushDownscaledFrame(Texture source, long timestampMs)
+        {
+            if (_pipeline == null) return;
+
+            int sw = source.width, sh = source.height;
+            if (sw <= 0 || sh <= 0) return;
+            int longSide = Mathf.Max(sw, sh);
+            float scale = longSide > _maxDimension ? (float)_maxDimension / longSide : 1f;
+            int w = Mathf.Max(1, Mathf.RoundToInt(sw * scale));
+            int h = Mathf.Max(1, Mathf.RoundToInt(sh * scale));
+
+            // Blit into a small temporary RT (GPU downscale), then read that back.
+            var rt = RenderTexture.GetTemporary(w, h, 0, RenderTextureFormat.ARGB32);
+            var previous = RenderTexture.active;
+            Graphics.Blit(source, rt);
+            RenderTexture.active = rt;
+            if (_readback == null || _readback.width != w || _readback.height != h)
+            {
+                if (_readback != null) Destroy(_readback);
+                _readback = new Texture2D(w, h, TextureFormat.RGBA32, false);
+            }
+            _readback.ReadPixels(new Rect(0, 0, w, h), 0, 0, false);
+            _readback.Apply(false, false);
+            RenderTexture.active = previous;
+            RenderTexture.ReleaseTemporary(rt);
+
+            EnsureBitmap(w, h);
+            if (_bitmap == null) return;
+
+            // Pack RGBA32 -> Android's packed-int ARGB_8888 (0xAARRGGBB), flipping
+            // vertically because ReadPixels is bottom-up but Bitmap rows are top-down.
+            Color32[] px = _readback.GetPixels32();
+            if (_argbBuffer == null || _argbBuffer.Length != w * h)
+                _argbBuffer = new int[w * h];
+            for (int y = 0; y < h; y++)
+            {
+                int srcRow = (h - 1 - y) * w;
+                int dstRow = y * w;
+                for (int x = 0; x < w; x++)
+                {
+                    Color32 c = px[srcRow + x];
+                    _argbBuffer[dstRow + x] =
+                        (c.a << 24) | (c.r << 16) | (c.g << 8) | c.b;
+                }
+            }
+
+            _bitmap.Call("setPixels", _argbBuffer, 0, w, 0, 0, w, h);
+            _pipeline.Call("pushFrame", _bitmap, timestampMs);
+        }
+
+        private void EnsureBitmap(int w, int h)
+        {
+            if (_bitmap != null && _bitmapW == w && _bitmapH == h) return;
+            ReleaseBitmap();
+            using var cfg = new AndroidJavaClass("android.graphics.Bitmap$Config")
+                .GetStatic<AndroidJavaObject>("ARGB_8888");
+            _bitmap = new AndroidJavaClass("android.graphics.Bitmap")
+                .CallStatic<AndroidJavaObject>("createBitmap", w, h, cfg);
+            _bitmapW = w;
+            _bitmapH = h;
+        }
+
+        private void ReleaseBitmap()
+        {
+            if (_bitmap != null)
+            {
+                try { _bitmap.Call("recycle"); } catch { /* best-effort */ }
+                _bitmap.Dispose();
+                _bitmap = null;
+            }
+            _bitmapW = _bitmapH = 0;
         }
 
         internal void EnqueueMainThread(Action a) { lock (_queueLock) { _mainThreadQueue.Enqueue(a); } }
