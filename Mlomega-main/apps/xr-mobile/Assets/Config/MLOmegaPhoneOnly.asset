@@ -28,3 +28,4 @@ MonoBehaviour:
   _httpTimeoutSeconds: 5
   _wakeWord: hey mlomega
   _asrLanguage: 0
+  _commandWindowSeconds: 6
