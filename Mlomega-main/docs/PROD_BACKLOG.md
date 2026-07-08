@@ -237,19 +237,15 @@ Même discipline que E31→E47 : une étape = petits changements testés, ADR da
    - [x] **GAP MAJEUR découvert et corrigé au passage** : la couche réflexe (AsrBridge, GestureBridge, WakeWordGate, ReflexScheduler, 5 skills, LocalIntentSource) n'était JAMAIS ajoutée à la scène PhoneOnly par `PhoneOnlySceneBuilder` — le wake word/gestes/sous-titres offline d'E47 (APK v2) n'avaient aucun hôte runtime. Builder corrigé ; la scène doit être RÉGÉNÉRÉE au prochain build APK.
    - Test (device réel, à faire) : PC coupé, segment final EN → traduction FR affichée offline ; toggle on/off ; pas de traduction sur partiels.
 
-## E48-B — Réflexes restants : aide universelle + attention au changement (À FAIRE)
+## E48-B — ChangeAttention live (RECADRÉ 2026-07-08 : HandAction déplacé en E53)
 
-1. **HandActionSkill → mode aide universel, version A** (cuisiner, meubles, code, n'importe quelle activité — checklist intelligente, PAS de magie de vision fine) :
-   - [ ] Moteur de tâche PC (`services/live-pc/`) : « aide-moi à faire X » (IntentRouter) → plan d'étapes généré par le LLM live (réutilise le chemin E33) → tâche active persistée (une seule à la fois — GUIDE §9.1 task_hot).
-   - [ ] Étape courante poussée au device via `task_hot` → TaskCard (composant existant) : étape, outils/objets attendus, progression.
-   - [ ] Surlignage : quand un objet de l'étape est un track visible (VisionRT/tracks existants), ObjectOutline ; quand la main s'en approche (landmarks MediaPipe 12 fps déjà actifs E47-B), le highlight se renforce — signal grossier, jamais présenté comme vérification.
-   - [ ] Avancement : à la voix (« étape suivante », « c'est fait », « répète ») + auto-suggestion douce si le VLM local confirme du GROSSIER à la demande (« la pâte est dans le bol » : oui ; « c'est la vis B4 » : hors périmètre A).
-   - [ ] Architecture prête pour la version B (vérification visuelle auto d'étape) et le mode payant cloud qui l'améliore — brancher sans réécrire : l'étape ne se valide que par un `StepValidator` interchangeable (A = voix/semi-auto, B = VLM).
-   - Test : plan simulé 3 étapes → TaskCard étape 1 → « c'est fait » → étape 2 ; objet de l'étape visible → outline ; une seule tâche active à la fois.
-2. **ChangeAttentionSkill live** (la brique détection existe — E28 WorldBrain + E38 attributs — mais nocturne ; il manque le cue instantané) :
-   - [ ] À la re-entrée d'une zone connue (zones E28) : comparer l'état courant (tracks/entités/OCR ROI) au dernier état mémorisé de la zone → si écart net, cue sobre « quelque chose a changé ici » (point d'intérêt, priorité basse, truth_level honnête) ou EvidenceRequest.
-   - [ ] Anti-bruit : seuil de confiance + cooldown par zone ; jamais de cue si map_quality faible.
-   - Test : état de zone mémorisé simulé, re-entrée avec objet déplacé → cue émis une fois ; re-entrée sans changement → silence.
+Décision utilisateur 2026-07-08 : le mode aide universel « soit on le fait bien, soit on ne le fait pas » — la version A (checklist voix) est jugée insuffisante, la version complète (ancrage spatial temps réel + validation auto) n'est pas viable aujourd'hui (voir E53). E48-B se réduit donc à ChangeAttention live.
+
+1. **ChangeAttentionSkill live** (la brique détection existe — E28 WorldBrain + E38 attributs — mais nocturne ; il manquait le cue instantané) — **[x] FAIT (e48b, 2026-07-08)** :
+   - [x] `services/live-pc/change_attention.py` branché dans `LivePipeline._on_scene_delta` (aux côtés de WorldBrain, config profil `change_attention:`) : sortie de zone → état figé ; ré-entrée → comparaison des entités mémorisées vs courantes → cue sobre via la queue H1 existante (scene_adapter → v18_delivery, AUCUNE nouvelle queue). Chemin cross-session best-effort par `place_hint` (lecture `scene_session_summaries_v19`).
+   - [x] Anti-bruit : seuil d'écart, cooldown par zone, UN cue max par ré-entrée, silence si map_quality faible, silence à la première visite. Métriques `/metrics`.
+   - [x] Tests : `test_change_attention.py` 6/6 + non-régression fichiers touchés = 50/50. ADR DECISIONS.md §E48-B.
+   - Limite documentée (ADR) : le cue est surtout INTRA-session (`zone-N` de la carte de pose, stable en session seulement) ; le cross-session s'activera quand un `place_hint` stable sera fourni en live — même limite que `ReflexSignal.ZoneChange` device.
    - (Réserve non décidée, notée pour plus tard : les 4 petits réflexes proposés — « on t'appelle » via KWS prénom, checklist de sortie porte/objets, obstacle tête baissée, minuteur contextuel.)
 
 ## E49 — Lunettes XREAL (gate G1 matériel) (À FAIRE)
@@ -290,6 +286,22 @@ Un assistant unique (`scripts/WELCOME_MLOMEGA.ps1`, réutilise `setup_profile.ps
 - [ ] 9. Comment quitter proprement (LE BOUTON Terminer → close-day) et pourquoi.
 - [ ] 10. Le lendemain : comment relancer le matin, changer de modèles, commandes utiles de contrôle (DOCTOR, `/metrics`, `/session/status`, dashboard E50, où vit memory.db + conseil backup manuel).
 - Test : dry-run complet sur machine « propre » simulée (ou VM) → zéro étape manuelle non guidée ; chaque échec d'étape donne une consigne claire, pas une stacktrace.
+
+## E53 — Mode aide universel, version complète (DIFFÉRÉ — décision 2026-07-08)
+
+« Aide-moi à faire X » (cuisiner, monter un meuble, réparer, coder…) fait BIEN, pas à moitié. Analyse coût/viabilité du 2026-07-08 :
+
+- **Coût cloud vision** : force brute (1 image haute résolution/0,5 s, modèle frontier) ≈ 20-40 $/h de tâche ; architecture événementielle (keyframes sur changement de scène/main active) ≈ 2-6 $/h. Le coût n'est PAS le bloqueur.
+- **Bloqueurs réels (état de l'art 2026-07)** : (1) latence cloud 1-3 s → coordonnées mortes sur caméra de tête, l'ancrage doit passer par keyframe cloud + tracker LOCAL qui colle l'ancre au présent ; (2) pointage spatial fin des VLM non fiable (« le trou B4 » → erreurs fréquentes ; flèche fausse = pire que rien, invariant de vérité) ; (3) validation auto d'étape fiable seulement sur le grossier (~85-90 % cuisine, non fiable assemblage fin).
+- **Ce qui marche déjà très bien** : scan de notice page par page (extraction d'étapes ~95 %), recherche de plan sur internet, plan typé.
+
+**Architecture cible actée** (à implémenter quand les VLM auront progressé sur le pointage spatial, ou en acceptant les limites) :
+- [ ] Acquisition du plan : « as-tu un plan/une notice ? » → scan page par page (VLM document) OU recherche internet → plan d'étapes TYPÉES (objets, minuteur, zoom utile, next_action/next_intent).
+- [ ] Banque d'UI par famille de tâche (cuisine : timer+ingrédients ; assemblage : pièce+zone ; réparation : outil+zone ; etc.) — choisie par le type du plan, pas codée en dur par tâche.
+- [ ] Ancrage live : keyframes cloud événementielles (changement de scène / main active / demande) → ancre sémantique → tracker local (StableTrack) la maintient entre keyframes.
+- [ ] Validation hybride : auto-suggérée avec confiance (« on dirait que c'est fait ? »), confirmée à la voix ; jamais d'auto-validation silencieuse sur du fin.
+- [ ] Mode payant obligatoire pour la vision (opt-in, coût affiché — mécanique E33 existante) ; tâche persistée dans les open loops (reprise au briefing).
+- Gate de viabilité avant de lancer : un banc d'essai pointage spatial (10 scènes réelles S25) où le VLM du moment atteint ≥ 90 % de localisation correcte d'objet désigné — sinon on attend.
 
 ## E52 — README complet du projet (À FAIRE)
 

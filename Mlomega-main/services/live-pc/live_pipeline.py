@@ -74,6 +74,7 @@ owner_setup = _load_sibling("v19_owner_setup", "owner_setup.py")
 hypothesis_engine = _load_sibling("v19_hypothesis_engine", "hypothesis_engine.py")
 attribute_memory = _load_sibling("v19_attribute_memory", "attribute_memory.py")
 routine_associations = _load_sibling("v19_routine_associations", "routine_associations.py")
+change_attention = _load_sibling("v19_change_attention", "change_attention.py")
 
 
 def load_profile(profile_path: Path | str | None = None) -> dict[str, Any]:
@@ -287,6 +288,7 @@ class LivePipeline:
         self.spatial: Any = None
         self.worldbrain: Any = None
         self.scene_adapter: Any = None
+        self.change_attention: Any = None
         # ---- Proactivity (E34): nightly engines → live + dense retrieval --------
         self.enable_proactivity = enable_proactivity
         self.proactive: Any = None
@@ -324,6 +326,21 @@ class LivePipeline:
                 proactive=self.proactive,
                 predictive_retrieval=self.predictive_retrieval,
                 on_entity_hot_update=self._push_intent,
+            )
+            # ---- ChangeAttention (E48-B §2): instant "something changed here" cue
+            # on zone re-entry. Reads WorldBrain's live snapshot only; delivers via
+            # the scene_adapter's existing enqueue path (no new queue).
+            cacfg = self.profile.get("change_attention", {}) if isinstance(self.profile, dict) else {}
+            self.change_attention = change_attention.ChangeAttention(
+                person_id=self.person_id,
+                live_session_id=self.live_session_id,
+                db_path=db_path,
+                scene_adapter=self.scene_adapter,
+                config=change_attention.ChangeAttentionConfig(
+                    min_change_score=float(cacfg.get("min_change_score", 0.34)),
+                    cooldown_seconds=float(cacfg.get("cooldown_seconds", 300.0)),
+                    min_map_quality=float(cacfg.get("min_map_quality", 0.35)),
+                ),
             )
             # E34 §2: load the day's open items so they are ready at session start.
             if self.proactive is not None:
@@ -723,6 +740,16 @@ class LivePipeline:
         if self.worldbrain is not None:
             try:
                 self.worldbrain.ingest_scene_delta(delta)
+            except Exception:
+                pass
+        # E48-B §2: zone re-entry → compare current vs memorized state, one sober
+        # cue if the difference is net (never on first visit, never below the
+        # confidence/map_quality floor, never twice within the cooldown).
+        if self.change_attention is not None:
+            try:
+                self.change_attention.on_scene_snapshot(
+                    self.worldbrain.snapshot(), place_hint=self._current_place_subject(),
+                )
             except Exception:
                 pass
         # E38 §3: approaching a zone/entity whose learned routine implies an object
@@ -1278,6 +1305,10 @@ class LivePipeline:
             m["attribute_changes"] = self.attribute_memory.metrics.get("attribute_changes", 0)
         if self.routine_associations is not None:
             m["routine_pushes"] = self.routine_associations.metrics.get("routine_pushes", 0)
+        if self.change_attention is not None:
+            cam = self.change_attention.metrics
+            m["change_attention_cues"] = cam.get("cues_emitted", 0)
+            m["change_attention_reentries"] = cam.get("zone_reentries", 0)
         if self.ingress is not None and hasattr(self.ingress, "matcher"):
             try:
                 m["envelope_match"] = self.ingress.matcher.stats()

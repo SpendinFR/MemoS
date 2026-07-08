@@ -468,3 +468,11 @@ Les étapes suivantes sont définies et suivies dans **`PROD_BACKLOG.md`** (sect
 **Tests (2026-07-08)** : JVM **77/77** (livetransport 27, reflexvision 50 — dont test d'intégration desktop qui traduit une vraie phrase sur les modèles réels) ; pytest ciblés intents/provisioning/gating **43/43** (1 skip clé OpenAI). AAR : livetransport `8092BF62…`, reflexvision `1B756886…`, onnxruntime `67704465…`.
 
 **Reste pour clore E48-A** : livrable 2 (login Tailscale + S25 + endpoints + checklist 4G) ; régénérer la scène + rebuild APK v3 (décision : APRÈS E48-B, un seul rebuild + mise à jour FIRST_TRY_ANDROID) ; validation device S25.
+
+---
+
+## E48-B — ChangeAttention live (FAIT — 2026-07-08 ; HandAction recadré en E53)
+
+Périmètre recadré (décision utilisateur 2026-07-08) : le mode aide universel version A est rejeté (« soit on le fait bien, soit on ne le fait pas ») — la version complète part en **E53** au backlog avec l'analyse coût/viabilité (2-6 $/h événementiel vs 20-40 $/h force brute ; bloqueurs : latence cloud sur caméra de tête, pointage spatial fin des VLM non fiable, validation auto fiable seulement sur le grossier) et un gate d'entrée mesurable (banc pointage spatial ≥ 90 % sur 10 scènes S25).
+
+**Livré (e48b)** : `services/live-pc/change_attention.py` — cue instantané « quelque chose a changé ici » à la ré-entrée d'une zone (PC-side, zéro coût téléphone). Sortie de zone → état d'entités figé ; ré-entrée → diff vs mémorisé → UIIntent point-d'intérêt priorité basse via la queue H1 existante. Anti-bruit strict : seuil, cooldown par zone, un cue max/ré-entrée, silence si map_quality faible ou première visite. Config profil `change_attention:` (défauts dataclass), métriques `/metrics`. Tests 6/6 + non-régression 50/50. Limite honnête (ADR §E48-B) : cue surtout intra-session tant qu'aucun `place_hint` stable n'existe en live ; chemin cross-session prêt (lecture `scene_session_summaries_v19`).
