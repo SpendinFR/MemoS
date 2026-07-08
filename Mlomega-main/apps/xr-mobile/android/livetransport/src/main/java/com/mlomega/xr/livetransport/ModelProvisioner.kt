@@ -175,8 +175,12 @@ class ModelProvisioner(
                 normalizeSherpaDir(File(modelsRoot, rel))
             }
         } else {
-            val fn = entry.filename ?: entry.name
-            val target = File(modelsRoot, fn)
+            // E48-A: honour targetSubdir so the OPUS-MT translation files (encoder /
+            // decoder / tokenizer) land together in one per-direction dir, mirroring
+            // the repo models/device/opus-mt-*/ layout. Pre-E48-A entries have no
+            // subdir → flat placement directly under modelsRoot (unchanged).
+            val rel = entry.installedRelativePath ?: (entry.filename ?: entry.name)
+            val target = File(modelsRoot, rel)
             atomicRename(tmp, target)
         }
     }
@@ -193,7 +197,10 @@ class ModelProvisioner(
 
     private fun tempName(entry: DeviceModelEntry): String {
         val fn = entry.filename ?: (entry.name + if (entry.isArchive) ".tar.bz2" else "")
-        return "$fn.part"
+        // E48-A: prefix the entry name so two entries sharing a basename (the FR->EN
+        // and EN->FR encoders are both `encoder_model_int8.onnx`) get distinct temp
+        // files under the flat models root and never clobber each other mid-download.
+        return "${entry.name}.$fn.part"
     }
 
     companion object {

@@ -87,6 +87,8 @@ namespace MLOmega.XR.UI.Components
             // Replay + virtual screen.
             _actions.Add(new MenuAction("Replay", new DeviceCommand { Type = "device_command", Action = "replay" }));
             _actions.Add(new MenuAction("Écran virtuel", new DeviceCommand { Type = "device_command", Action = "virtual_screen" }));
+            // E48-A: live on-device translation (On=null → the handler flips current state).
+            _actions.Add(new MenuAction("Traduire", new DeviceCommand { Type = "device_command", Action = "translate_live" }));
             // Paid mode on/off.
             _actions.Add(new MenuAction("Mode payant", new DeviceCommand { Type = "device_command", Action = "paid_mode" }));
             _actions.Add(new MenuAction("Mode local", new DeviceCommand { Type = "device_command", Action = "local_mode" }));

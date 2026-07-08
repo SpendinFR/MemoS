@@ -44,6 +44,9 @@ namespace MLOmega.XR.UI.Components
         [Tooltip("Capture-only: glasses hung vertically, frames rotated. Driven by OrientationGuard (E29 §3b).")]
         [SerializeField] private bool _captureOnly;
 
+        [Tooltip("E48-A: live on-device translation is on. Shows a discreet badge.")]
+        [SerializeField] private bool _translateLive;
+
         private GlassPanel _panel;
         private float _nextRefresh;
         private readonly StringBuilder _sb = new StringBuilder(128);
@@ -55,6 +58,8 @@ namespace MLOmega.XR.UI.Components
         public string UiMode { get => _uiMode; set => _uiMode = value; }
         /// <summary>Capture-only badge (glasses vertical, frames rotated). Set by OrientationGuard.</summary>
         public bool CaptureOnly { get => _captureOnly; set => _captureOnly = value; }
+        /// <summary>E48-A: live on-device translation on/off badge (set by DeviceCommandHandler).</summary>
+        public bool TranslateLive { get => _translateLive; set => _translateLive = value; }
 
         private void Awake()
         {
@@ -115,6 +120,10 @@ namespace MLOmega.XR.UI.Components
             if (_captureOnly)
             {
                 _sb.Append("<color=#FFD24A>capture-only</color>  ");
+            }
+            if (_translateLive)
+            {
+                _sb.Append("<color=#C8D6E5>translate</color>  ");
             }
             _sb.Append(Battery());
 

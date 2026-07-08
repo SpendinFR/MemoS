@@ -86,6 +86,11 @@ def _build_rules() -> list[tuple[re.Pattern[str], str, dict[str, Any]]]:
     add(r"\b(?:trouve|cherche|find|where\s+is|o[ùu]\s+est)\b\s+" + _TARGET, "find")
     add(r"\b(?:zoom|agrandis|agrandir)\b", "zoom")
 
+    # --- live translation toggle (E48-A) — BEFORE translate: the generic
+    # "traduis" rule would otherwise swallow "traduis en direct".
+    add(r"\b(?:traduis|traduction|traduire)\s+en\s+(?:direct|continu|live)\b|\blive\s+translat(?:e|ion)\b", "translate_live", on=True)
+    add(r"\b(?:stop|arr[êe]te(?:r)?|coupe|d[ée]sactive)\s+(?:la\s+)?traduction\b|\bstop\s+translat(?:ing|ion)s?\b", "translate_live", on=False)
+
     # --- translate ---
     add(r"\b(?:traduis|traduire|translate)\b(?:[- ](?:le|la|ça|ca|it|this))?\s*(?:en\s+([\w]+))?", "translate")
 
@@ -151,6 +156,10 @@ _HIGH_CONFIDENCE: list[tuple[re.Pattern[str], str]] = [
         (r"configure\s+ma\s+voix\b", "owner_enroll"),
         (r"c'?est\s+moi\s+qui\s+parle\b", "owner_enroll"),
         (r"set\s*up\s+my\s+voice\b", "owner_enroll"),
+        (r"traduis\s+en\s+(?:direct|continu|live)\b", "translate_live"),
+        (r"traduction\s+en\s+(?:direct|continu)\b", "translate_live"),
+        (r"stop\s+traduction\b", "translate_live"),
+        (r"arr[êe]te\s+la\s+traduction\b", "translate_live"),
     ]
 ]
 
@@ -415,8 +424,9 @@ class IntentRouter:
         if self.llm_router is None:
             return None
         schema = {
-            "intent": "one of: what_is|find|ocr|translate|zoom|set_ui_mode|privacy_pause|"
+            "intent": "one of: what_is|find|ocr|translate|translate_live|zoom|set_ui_mode|privacy_pause|"
                       "open_app|paid_mode|local_mode|menu|replay|ask_memory|owner_enroll|unknown",
+            "on": "bool (translate_live: true='traduis en direct', false='stop traduction')",
             "query": "string (target for find, or search text for open_app youtube)",
             "ui_mode": "hide_all|minimal|normal|freeguy",
             "app": "maps|youtube|package",
@@ -452,6 +462,10 @@ class IntentRouter:
         for k in ("query", "ui_mode", "app", "language", "provider", "question", "package", "destination", "time"):
             if data.get(k):
                 out[k] = data[k]
+        # E48-A: "on" is a real boolean — the falsy-skip above would drop on=False
+        # ("stop traduction"), so copy it explicitly.
+        if intent == "translate_live" and "on" in data:
+            out["on"] = bool(data["on"])
         if intent == "ask_memory" and "question" not in out:
             out["question"] = text
         return out
@@ -468,6 +482,11 @@ class IntentRouter:
             return self._do_device({"type": "device_command", "action": "set_ui_mode", "ui_mode": routed["ui_mode"]}, intent)
         if intent == "privacy_pause":
             return self._do_device({"type": "device_command", "action": "privacy_pause"}, intent)
+        if intent == "translate_live":
+            # E48-A: toggle the on-device live translation reflex. Explicit on/off from
+            # the grammar/LLM; a missing value defaults to ON (the natural ask).
+            return self._do_device({"type": "device_command", "action": "translate_live",
+                                    "on": bool(routed.get("on", True))}, intent)
         if intent == "open_app":
             return self._do_open_app(routed)
         if intent == "menu":

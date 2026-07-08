@@ -158,7 +158,7 @@ def build_device_manifest_payload() -> dict[str, Any]:
         if sha == "PENDING_FETCH":
             # Prefer the real on-disk hash once fetched, so the phone can verify.
             sha = _sha256_file(artefact) if artefact is not None else ""
-        models.append({
+        entry = {
             "name": name,
             "kind": spec.get("kind"),
             "platform": spec.get("platform", "android"),
@@ -168,7 +168,15 @@ def build_device_manifest_payload() -> dict[str, Any]:
             "sha256": sha or None,
             "available": artefact is not None,
             "endpoint": f"/models/device/{name}",
-        })
+        }
+        # E48-A: multi-file models (the OPUS-MT translation entries) land several
+        # single-file artefacts into one per-model dir on the phone. ``target_subdir``
+        # (additive, absent on every pre-E48-A entry) tells the client which
+        # subdirectory under models/ to place the file in, reproducing the repo
+        # layout. Pre-E48-A entries omit it → the phone keeps its flat placement.
+        if spec.get("target_subdir"):
+            entry["target_subdir"] = str(spec["target_subdir"])
+        models.append(entry)
     return {"models": models, "count": len(models)}
 
 

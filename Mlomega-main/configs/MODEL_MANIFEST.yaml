@@ -191,6 +191,85 @@ device:
     url: https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
     sha256: 9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6
 
+  # --- Live translation (E48-A) — offline NMT reflex, ONNX Runtime + OPUS-MT ---
+  # The phone translates its own final ASR segments FR<->EN on device (PC absent),
+  # so the subtitle line carries a translation under the original. Engine (ADR
+  # §E48-A): ONNX Runtime + Helsinki-NLP OPUS-MT (MarianMT), the int8 encoder +
+  # merged-decoder exports from Xenova (Apache-2.0), driven by a pure-Kotlin
+  # Unigram (Marian) tokenizer over the export's tokenizer.json (no SentencePiece
+  # JNI). Each direction is THREE single-file entries (encoder / merged decoder /
+  # tokenizer) so they reuse the existing single-file fetch + provisioning path
+  # unchanged; ``target_subdir`` reproduces one dir per direction on device
+  # (models/device/opus-mt-fr-en, .../opus-mt-en-fr). sha256 pinned on first fetch
+  # (same PENDING_FETCH pattern as the sherpa/TTS entries). ~108 MB/direction,
+  # downloaded once over LAN like the ASR streaming models — not shipped in the APK.
+  translate_fr_en_encoder:
+    provider: onnx_translate_device
+    platform: android
+    kind: translation
+    direction: fr-en
+    role: encoder
+    license: Apache-2.0
+    path: models/device/opus-mt-fr-en/encoder_model_int8.onnx
+    target_subdir: opus-mt-fr-en
+    url: https://huggingface.co/Xenova/opus-mt-fr-en/resolve/main/onnx/encoder_model_int8.onnx
+    sha256: efdbaf8dd1dd32b8c08c9492837783b7e13fce2c37d00a4330cf23d76b9416c4
+  translate_fr_en_decoder:
+    provider: onnx_translate_device
+    platform: android
+    kind: translation
+    direction: fr-en
+    role: decoder
+    license: Apache-2.0
+    path: models/device/opus-mt-fr-en/decoder_model_merged_int8.onnx
+    target_subdir: opus-mt-fr-en
+    url: https://huggingface.co/Xenova/opus-mt-fr-en/resolve/main/onnx/decoder_model_merged_int8.onnx
+    sha256: aae1cb516ce394943b589d297bb9b2c541e67cebd3fb34657fa8c0325123ef61
+  translate_fr_en_tokenizer:
+    provider: onnx_translate_device
+    platform: android
+    kind: translation
+    direction: fr-en
+    role: tokenizer
+    license: Apache-2.0
+    path: models/device/opus-mt-fr-en/tokenizer.json
+    target_subdir: opus-mt-fr-en
+    url: https://huggingface.co/Xenova/opus-mt-fr-en/resolve/main/tokenizer.json
+    sha256: 8391785c1a2139e7af4678571ccd8dc654ecbb72e4be186940f65d7c604f0246
+  translate_en_fr_encoder:
+    provider: onnx_translate_device
+    platform: android
+    kind: translation
+    direction: en-fr
+    role: encoder
+    license: Apache-2.0
+    path: models/device/opus-mt-en-fr/encoder_model_int8.onnx
+    target_subdir: opus-mt-en-fr
+    url: https://huggingface.co/Xenova/opus-mt-en-fr/resolve/main/onnx/encoder_model_int8.onnx
+    sha256: 2388a07757358d877d4ba258ce55e0ff58082e7c8598589cffcb1a31a7e2fbf3
+  translate_en_fr_decoder:
+    provider: onnx_translate_device
+    platform: android
+    kind: translation
+    direction: en-fr
+    role: decoder
+    license: Apache-2.0
+    path: models/device/opus-mt-en-fr/decoder_model_merged_int8.onnx
+    target_subdir: opus-mt-en-fr
+    url: https://huggingface.co/Xenova/opus-mt-en-fr/resolve/main/onnx/decoder_model_merged_int8.onnx
+    sha256: c3eef411baa5d59a2faf3997e20f0d1beac065586741718873c1164e0ac1b852
+  translate_en_fr_tokenizer:
+    provider: onnx_translate_device
+    platform: android
+    kind: translation
+    direction: en-fr
+    role: tokenizer
+    license: Apache-2.0
+    path: models/device/opus-mt-en-fr/tokenizer.json
+    target_subdir: opus-mt-en-fr
+    url: https://huggingface.co/Xenova/opus-mt-en-fr/resolve/main/tokenizer.json
+    sha256: 8391785c1a2139e7af4678571ccd8dc654ecbb72e4be186940f65d7c604f0246
+
 install_profile:
   cpu_only: false
   installed_at: 2026-07-05T20:37:17.4730426+02:00

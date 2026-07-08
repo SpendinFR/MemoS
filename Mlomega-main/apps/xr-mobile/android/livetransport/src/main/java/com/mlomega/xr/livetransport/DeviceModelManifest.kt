@@ -35,6 +35,13 @@ data class DeviceModelEntry(
     val available: Boolean,
     /** SessionHub route, e.g. `/models/device/gesture_recognizer`. */
     val endpoint: String,
+    /**
+     * E48-A: subdirectory (under the app models root) a single-file entry is placed
+     * in, so several files of one multi-file model (the OPUS-MT translation encoder
+     * / decoder / tokenizer) land in the same directory. Null on every pre-E48-A
+     * entry — those keep their flat placement directly under the models root.
+     */
+    val targetSubdir: String? = null,
 ) {
     val isArchive: Boolean get() = format == FORMAT_ARCHIVE
 
@@ -43,13 +50,18 @@ data class DeviceModelEntry(
      * considered provisioned. For a `.task` file it is the file itself; for an
      * archive it is the extracted directory named after the archive stem (the tar
      * top-level dir matches the archive basename, e.g.
-     * `sherpa-onnx-streaming-zipformer-en-2023-06-26`). Null when the PC did not
-     * report a filename (nothing to verify yet).
+     * `sherpa-onnx-streaming-zipformer-en-2023-06-26`). A single-file entry carrying
+     * a [targetSubdir] (E48-A translation files) is the file inside that subdir.
+     * Null when the PC did not report a filename (nothing to verify yet).
      */
     val installedRelativePath: String?
         get() {
             val fn = filename ?: return null
-            return if (isArchive) stripArchiveSuffix(fn) else fn
+            return when {
+                isArchive -> stripArchiveSuffix(fn)
+                targetSubdir != null -> "$targetSubdir/$fn"
+                else -> fn
+            }
         }
 
     companion object {
@@ -99,6 +111,7 @@ data class DeviceModelManifest(val models: List<DeviceModelEntry>) {
                             ?.takeIf { it != "null" },
                         available = o.optBoolean("available", false),
                         endpoint = o.optString("endpoint").ifEmpty { "/models/device/$name" },
+                        targetSubdir = o.optString("target_subdir").ifEmpty { null },
                     ),
                 )
             }

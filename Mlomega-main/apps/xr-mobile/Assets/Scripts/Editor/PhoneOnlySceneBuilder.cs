@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.IO;
 using MLOmega.XR.Core;
+using MLOmega.XR.Reflex;
+using MLOmega.XR.Reflex.Skills;
 using MLOmega.XR.Scene;
 using MLOmega.XR.Transport;
 using MLOmega.XR.UI;
@@ -65,6 +67,24 @@ namespace MLOmega.XR.Editor
             var appLauncher = root.AddComponent<AppLauncherBridge>();
             var commands = root.AddComponent<DeviceCommandHandler>();
 
+            // E48-A: the Ultra-Live reflex layer (E26/E47). GAP FIX — these components
+            // were never added to the PhoneOnly scene, so the E47 device gates (wake
+            // word, gestures, offline subtitles) had nothing to run them. The skills
+            // emit through their own LocalIntentSource (priority-2 UL seam), registered
+            // with the broker by a second E25SourceBootstrap.
+            var localIntents = root.AddComponent<LocalIntentSource>();
+            var localBootstrap = root.AddComponent<E25SourceBootstrap>();
+            var asrBridge = root.AddComponent<AsrBridge>();
+            var gestureBridge = root.AddComponent<GestureBridge>();
+            var wakeGate = root.AddComponent<WakeWordGate>();
+            var stableTrack = root.AddComponent<StableTrackSkill>();
+            var lensWindow = root.AddComponent<LensWindowSkill>();
+            var motionProximity = root.AddComponent<MotionProximitySkill>();
+            var focusSearch = root.AddComponent<FocusSearchSkill>();
+            var subtitle = root.AddComponent<SubtitleSkill>();
+            var translate = root.AddComponent<TranslateBridge>();
+            var reflex = root.AddComponent<ReflexScheduler>();
+
             Assign(session, "_config", config);
             Assign(session, "_permissions", permissions);
             Assign(pairing, "_config", config);
@@ -108,6 +128,21 @@ namespace MLOmega.XR.Editor
             Assign(commands, "_statusBar", statusBar);
             Assign(commands, "_appLauncher", appLauncher);
             Assign(commands, "_transport", transport);
+            Assign(commands, "_translate", translate);
+            // E48-A reflex wiring (the rest self-finds in Awake at scene load).
+            Assign(localBootstrap, "_broker", broker);
+            Assign(localBootstrap, "_source", localIntents);
+            Assign(reflex, "_gestureBridge", gestureBridge);
+            Assign(reflex, "_asrBridge", asrBridge);
+            Assign(reflex, "_stableTrack", stableTrack);
+            Assign(reflex, "_lensWindow", lensWindow);
+            Assign(reflex, "_motionProximity", motionProximity);
+            Assign(reflex, "_focusSearch", focusSearch);
+            Assign(reflex, "_subtitle", subtitle);
+            Assign(wakeGate, "_asr", asrBridge);
+            Assign(translate, "_asrBridge", asrBridge);
+            Assign(translate, "_subtitle", subtitle);
+            Assign(translate, "_config", config);
 
             new GameObject("EventSystem",
                 typeof(UnityEngine.EventSystems.EventSystem),

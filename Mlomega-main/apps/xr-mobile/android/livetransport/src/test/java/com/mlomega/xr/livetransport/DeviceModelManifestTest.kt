@@ -98,4 +98,55 @@ class DeviceModelManifestTest {
         assertEquals("foo", DeviceModelEntry.stripArchiveSuffix("foo.tar.bz2"))
         assertEquals("bar.task", DeviceModelEntry.stripArchiveSuffix("bar.task"))
     }
+
+    // --- E48-A: multi-file translation models placed under a target_subdir --------
+
+    /** Two directions' encoders share a basename; target_subdir keeps them apart. */
+    private val translateJson = """
+        {
+          "models": [
+            {"name":"translate_fr_en_encoder","kind":"translation","license":"Apache-2.0",
+             "format":"file","filename":"encoder_model_int8.onnx","sha256":"aa",
+             "available":true,"endpoint":"/models/device/translate_fr_en_encoder",
+             "target_subdir":"opus-mt-fr-en"},
+            {"name":"translate_fr_en_tokenizer","kind":"translation","license":"Apache-2.0",
+             "format":"file","filename":"tokenizer.json","sha256":"bb",
+             "available":true,"endpoint":"/models/device/translate_fr_en_tokenizer",
+             "target_subdir":"opus-mt-fr-en"},
+            {"name":"translate_en_fr_encoder","kind":"translation","license":"Apache-2.0",
+             "format":"file","filename":"encoder_model_int8.onnx","sha256":"cc",
+             "available":true,"endpoint":"/models/device/translate_en_fr_encoder",
+             "target_subdir":"opus-mt-en-fr"}
+          ],
+          "count": 3
+        }
+    """.trimIndent()
+
+    @Test
+    fun `translation file installs under its target subdir`() {
+        val m = DeviceModelManifest.parse(translateJson)
+        val enc = m.models.first { it.name == "translate_fr_en_encoder" }
+        assertEquals("opus-mt-fr-en", enc.targetSubdir)
+        assertEquals("opus-mt-fr-en/encoder_model_int8.onnx", enc.installedRelativePath)
+        val tok = m.models.first { it.name == "translate_fr_en_tokenizer" }
+        assertEquals("opus-mt-fr-en/tokenizer.json", tok.installedRelativePath)
+    }
+
+    @Test
+    fun `same-basename encoders in different directions map to distinct paths`() {
+        val m = DeviceModelManifest.parse(translateJson)
+        val fr = m.models.first { it.name == "translate_fr_en_encoder" }.installedRelativePath
+        val en = m.models.first { it.name == "translate_en_fr_encoder" }.installedRelativePath
+        assertEquals("opus-mt-fr-en/encoder_model_int8.onnx", fr)
+        assertEquals("opus-mt-en-fr/encoder_model_int8.onnx", en)
+        // A flat scheme would have collided; the subdir keeps them apart.
+        assertFalse(fr == en)
+    }
+
+    @Test
+    fun `pre-E48-A entries have no target subdir`() {
+        val m = DeviceModelManifest.parse(sampleJson)
+        assertEquals(null, m.models.first { it.name == "gesture_recognizer" }.targetSubdir)
+        assertEquals(null, m.models.first { it.name == "asr_stream_en" }.targetSubdir)
+    }
 }

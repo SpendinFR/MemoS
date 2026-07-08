@@ -146,6 +146,13 @@ namespace MLOmega.XR.Core
         [Min(1f)]
         [SerializeField] private float _commandWindowSeconds = 6f;
 
+        [Tooltip("E48-A: start with live translation ON. When on, FINAL ASR segments " +
+                 "whose language differs from the subtitle language are translated " +
+                 "on-device (offline OPUS-MT) and shown under the original subtitle. " +
+                 "Toggled at runtime by the menu entry / the « traduis en direct » " +
+                 "voice command. Off by default (opt-in).")]
+        [SerializeField] private bool _translateLiveDefault;
+
         public string PcHost => _pcHost;
         public int SessionHubPort => _sessionHubPort;
         public bool UseTls => _useTls;
@@ -164,6 +171,9 @@ namespace MLOmega.XR.Core
 
         /// <summary>E47-A: wake-word command window length in seconds.</summary>
         public float CommandWindowSeconds => _commandWindowSeconds;
+
+        /// <summary>E48-A: whether live on-device translation starts ON.</summary>
+        public bool TranslateLiveDefault => _translateLiveDefault;
 
         /// <summary>The configured endpoint list (may be empty).</summary>
         public PcEndpoint[] Endpoints => _endpoints;

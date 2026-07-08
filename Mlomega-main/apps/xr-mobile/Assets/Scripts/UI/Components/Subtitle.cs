@@ -36,14 +36,31 @@ namespace MLOmega.XR.UI.Components
             bool isFinal = IntentRead.Flag(intent.Content, "final",
                 IntentRead.Flag(intent.UiHint, "final", true));
             string lang = IntentRead.Content(intent, "language", null);
+            // E48-A: the on-device offline translation of a FINAL line, if any.
+            string translation = IntentRead.Content(intent, "translation", null);
+            string translationLang = IntentRead.Content(intent, "translation_language", null);
 
             if (_panel.Body != null)
             {
                 string prefix = string.IsNullOrEmpty(lang) ? "" : $"<size=70%><color=#9FB3C8>[{lang}] </color></size>";
                 // Partial lines render muted / italic to signal they may still change.
-                _panel.Body.text = isFinal
+                string original = isFinal
                     ? $"{prefix}{text}"
                     : $"{prefix}<i><color=#B0C4DE>{text}…</color></i>";
+                // E48-A: render the translation as a second, dimmer row UNDER the
+                // original subtitle (only on finals, only when the device translated).
+                if (!string.IsNullOrEmpty(translation))
+                {
+                    string tPrefix = string.IsNullOrEmpty(translationLang)
+                        ? ""
+                        : $"<size=70%><color=#9FB3C8>[{translationLang}] </color></size>";
+                    _panel.Body.text =
+                        $"{original}\n<size=90%><color=#C8D6E5>{tPrefix}{translation}</color></size>";
+                }
+                else
+                {
+                    _panel.Body.text = original;
+                }
             }
             PlaceBottom();
         }

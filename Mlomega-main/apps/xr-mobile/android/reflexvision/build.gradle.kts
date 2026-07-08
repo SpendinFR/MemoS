@@ -86,6 +86,16 @@ dependencies {
     // Unity/Gradle packages the native sherpa library exactly once.
     compileOnly(files("libs/sherpa-onnx-1.12.10.aar"))
 
+    // ONNX Runtime Java API for the E48-A offline translation reflex
+    // (OfflineTranslator / MarianTokenizer). Apache-2.0. Pinned to 1.17.1 — the
+    // SAME ORT version the sherpa AAR bundles as libonnxruntime.so — so the two
+    // coexist without a native-version clash (ADR docs/DECISIONS §E48-A risk 1).
+    // compileOnly: the AAR only provides the ai.onnxruntime classes at compile
+    // time here. exportUnityRelease vendors a STRIPPED copy of this AAR into Unity
+    // that keeps the Java API + the unique libonnxruntime4j_jni.so but DROPS its
+    // duplicate libonnxruntime.so, so Unity/Gradle packages sherpa's single copy.
+    compileOnly("com.microsoft.onnxruntime:onnxruntime-android:1.17.1")
+
     // Kotlin coroutines for the audio pump + reconnect-free streaming loop.
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
@@ -97,15 +107,48 @@ dependencies {
     // Mockito supplies a stub android.content.Context for the on-demand pipeline
     // tests (E47-B); the tests never call start(), so the Context is never used.
     testImplementation("org.mockito:mockito-core:5.11.0")
+    // The Android `org.json` on the unit-test classpath is an unmocked stub; the
+    // real implementation lets MarianTokenizer.fromJson run on the JVM (E48-A).
+    testImplementation("org.json:json:20240303")
+    // ONNX Runtime on the JVM classpath so the opt-in desktop integration test
+    // (OfflineTranslatorIntegrationTest) can load the real int8 models when they
+    // are present; skipped otherwise. Not shipped by this test dep.
+    testImplementation("com.microsoft.onnxruntime:onnxruntime:1.17.1")
+}
+
+// E48-A: resolve the onnxruntime-android AAR (compileOnly above is not in any
+// runtime classpath, so exportUnityRelease cannot pick it up). A dedicated
+// configuration pins exactly the AAR we vendor into Unity.
+val onnxruntimeAar: Configuration by configurations.creating {
+    isCanBeConsumed = false
+    isCanBeResolved = true
+}
+dependencies { onnxruntimeAar("com.microsoft.onnxruntime:onnxruntime-android:1.17.1@aar") }
+
+// E48-A: produce a STRIPPED onnxruntime AAR that keeps the ai.onnxruntime classes
+// + the unique libonnxruntime4j_jni.so but DROPS the duplicate libonnxruntime.so
+// (sherpa already ships an identical 1.17.1 copy). Vendoring this into Unity means
+// exactly one libonnxruntime.so is packaged — no native collision, no gradle
+// template (ADR §E48-A risk 1).
+val stripOnnxruntimeAar = tasks.register<Jar>("stripOnnxruntimeAar") {
+    archiveFileName.set("onnxruntime-android-1.17.1-noort.aar")
+    destinationDirectory.set(layout.buildDirectory.dir("e48a"))
+    from(provider { onnxruntimeAar.singleFile.let { zipTree(it) } })
+    // Drop every embedded full ORT lib; keep the JNI bridge the Java API needs.
+    exclude("jni/**/libonnxruntime.so")
 }
 
 tasks.register<Copy>("exportUnityRelease") {
-    dependsOn("assembleRelease")
+    dependsOn("assembleRelease", stripOnnxruntimeAar)
     into(layout.projectDirectory.dir("../../Assets/Plugins/Android"))
     from(layout.buildDirectory.file("outputs/aar/reflexvision-release.aar")) {
         rename { "mlomega-reflexvision.aar" }
     }
     from(layout.projectDirectory.file("libs/sherpa-onnx-1.12.10.aar"))
+    // The de-duplicated onnxruntime AAR (E48-A translation reflex).
+    from(stripOnnxruntimeAar.map { it.archiveFile }) {
+        rename { "mlomega-onnxruntime.aar" }
+    }
     from(configurations.named("releaseRuntimeClasspath")) {
         include("*.aar", "*.jar")
     }

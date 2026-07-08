@@ -32,8 +32,15 @@ namespace MLOmega.XR.Reflex.Skills
         /// Handle a transcript from the AsrBridge. Partial → refresh muted line;
         /// final → solidify + close. `speakerTrackId` (optional) offsets the subtitle
         /// under a stable speaker.
+        ///
+        /// E48-A: `translation`/`translationLanguage` carry the on-device offline
+        /// translation of a FINAL segment (from the sherpa ASR final → OfflineTranslator
+        /// reflex). When present the subtitle renders the translation UNDER the original
+        /// line; partials never carry a translation. Both null → the plain subtitle
+        /// behaviour, unchanged.
         /// </summary>
-        public void OnTranscript(string text, bool isFinal, string language, string speakerTrackId = null)
+        public void OnTranscript(string text, bool isFinal, string language, string speakerTrackId = null,
+            string translation = null, string translationLanguage = null)
         {
             if (!IsActive || string.IsNullOrEmpty(text)) return;
             long now = NowMs();
@@ -49,10 +56,19 @@ namespace MLOmega.XR.Reflex.Skills
             intent.Content["text"] = text;
             intent.Content["language"] = language ?? "";
             intent.Content["final"] = isFinal;
+            // E48-A: the translated line is rendered as a second row under the original
+            // (the renderer reads content["translation"]); absent when no translation.
+            if (!string.IsNullOrEmpty(translation))
+            {
+                intent.Content["translation"] = translation;
+                intent.Content["translation_language"] = translationLanguage ?? "";
+            }
             EmitIntent(intent);
 
-            // Mirror into translation_hot (turn/delay TTL lives there).
-            _trackStore?.SceneCache?.SubmitTranslation(speakerTrackId, text, isFinal, language);
+            // Mirror into translation_hot (turn/delay TTL lives there), carrying the
+            // on-device translation so the hot cache holds both original + translation.
+            _trackStore?.SceneCache?.SubmitTranslation(
+                speakerTrackId, text, isFinal, language, translation, translationLanguage);
 
             if (isFinal)
             {

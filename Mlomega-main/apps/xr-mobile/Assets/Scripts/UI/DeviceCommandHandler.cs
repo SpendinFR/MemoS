@@ -35,6 +35,8 @@ namespace MLOmega.XR.UI
         [JsonProperty("query")] public string Query { get; set; }
         [JsonProperty("package")] public string Package { get; set; }
         [JsonProperty("time")] public string Time { get; set; }
+        /// <summary>E48-A: on/off for toggle commands (translate_live). Null = flip current.</summary>
+        [JsonProperty("on")] public bool? On { get; set; }
 
         public static bool IsDeviceCommand(string json)
         {
@@ -49,6 +51,7 @@ namespace MLOmega.XR.UI
         [SerializeField] private StatusBar _statusBar;
         [SerializeField] private AppLauncherBridge _appLauncher;
         [SerializeField] private LiveTransportBridge _transport;
+        [SerializeField] private MLOmega.XR.Reflex.TranslateBridge _translate;
 
         /// <summary>Raised when a "menu" command arrives (MenuPanel opens the panel).</summary>
         public event Action MenuRequested;
@@ -65,6 +68,7 @@ namespace MLOmega.XR.UI
             if (_statusBar == null) _statusBar = FindAnyObjectByType<StatusBar>();
             if (_appLauncher == null) _appLauncher = FindAnyObjectByType<AppLauncherBridge>();
             if (_transport == null) _transport = FindAnyObjectByType<LiveTransportBridge>();
+            if (_translate == null) _translate = FindAnyObjectByType<MLOmega.XR.Reflex.TranslateBridge>();
         }
 
         private void OnEnable()
@@ -116,6 +120,9 @@ namespace MLOmega.XR.UI
                     ReplayRequested?.Invoke(cmd.Time);
                     ok = true;
                     break;
+                case "translate_live":
+                    ok = TranslateLive(cmd.On);
+                    break;
                 default:
                     Debug.LogWarning($"[DeviceCommand] unknown action: {cmd.Action}");
                     ok = false;
@@ -133,6 +140,19 @@ namespace MLOmega.XR.UI
             {
                 _statusBar.UiMode = mode == UIDensityMode.Normal ? "live" : uiMode;
             }
+            return true;
+        }
+
+        // E48-A: toggle the live on-device translation reflex (« traduis en direct » /
+        // « stop traduction » voice command, or the menu entry — same command path).
+        // `on` null (the menu toggle) flips the current state; an explicit value (the
+        // voice router's on/off intents) sets it.
+        private bool TranslateLive(bool? on)
+        {
+            if (_translate == null) return false;
+            bool target = on ?? !_translate.TranslateLive;
+            _translate.SetTranslateLive(target);
+            if (_statusBar != null) _statusBar.TranslateLive = target;
             return true;
         }
 

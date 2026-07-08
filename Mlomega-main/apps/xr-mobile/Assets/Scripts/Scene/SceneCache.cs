@@ -148,7 +148,21 @@ namespace MLOmega.XR.Scene
         public void SubmitTranslation(string speakerTrackId, string text, bool isFinal, string language)
         {
             _ingress.Enqueue(self =>
-                self._translationHot.Set(speakerTrackId, text, isFinal, language, self.NowMs));
+                self._translationHot.Set(speakerTrackId, text, isFinal, language, null, null, self.NowMs));
+        }
+
+        /// <summary>
+        /// E48-A: record a live translation line WITH its on-device translation
+        /// (the offline reflex translated a FINAL segment). <paramref name="translation"/>
+        /// is the translated text, <paramref name="translationLang"/> its language;
+        /// both null falls back to the original-only line above. Any thread.
+        /// </summary>
+        public void SubmitTranslation(string speakerTrackId, string text, bool isFinal,
+            string language, string translation, string translationLang)
+        {
+            _ingress.Enqueue(self =>
+                self._translationHot.Set(speakerTrackId, text, isFinal, language,
+                    translation, translationLang, self.NowMs));
         }
 
         /// <summary>Set the single active UI task (Â§9.1: one task_hot at a time). Any thread.</summary>
@@ -554,10 +568,12 @@ namespace MLOmega.XR.Scene
             public bool HasLine => _current.HasValue;
             public TranslationHotEntry? Current => _current;
 
-            public void Set(string speakerTrackId, string text, bool isFinal, string language, long nowMs)
+            public void Set(string speakerTrackId, string text, bool isFinal, string language,
+                string translation, string translationLang, long nowMs)
             {
                 // A speaker change is a turn change: the previous line is replaced.
-                _current = new TranslationHotEntry(speakerTrackId, text, isFinal, language, nowMs);
+                _current = new TranslationHotEntry(speakerTrackId, text, isFinal, language,
+                    translation, translationLang, nowMs);
             }
 
             public void AgeOut(long nowMs, long ttlMs)
@@ -577,16 +593,26 @@ namespace MLOmega.XR.Scene
             public readonly string Text;
             public readonly bool IsFinal;
             public readonly string Language;
+            /// <summary>E48-A: the on-device translation of <see cref="Text"/>, or null.</summary>
+            public readonly string Translation;
+            /// <summary>E48-A: language of <see cref="Translation"/>, or null.</summary>
+            public readonly string TranslationLanguage;
             public readonly long UpdatedMs;
 
-            public TranslationHotEntry(string speakerTrackId, string text, bool isFinal, string language, long updatedMs)
+            public TranslationHotEntry(string speakerTrackId, string text, bool isFinal, string language,
+                string translation, string translationLang, long updatedMs)
             {
                 SpeakerTrackId = speakerTrackId;
                 Text = text;
                 IsFinal = isFinal;
                 Language = language;
+                Translation = translation;
+                TranslationLanguage = translationLang;
                 UpdatedMs = updatedMs;
             }
+
+            /// <summary>True when a non-empty on-device translation is attached (E48-A).</summary>
+            public bool HasTranslation => !string.IsNullOrEmpty(Translation);
         }
 
         /// <summary>ui_state â€” visible intents, suppression, density prefs. Mandatory TTL (Â§9.1).</summary>
