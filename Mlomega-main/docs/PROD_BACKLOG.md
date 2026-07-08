@@ -210,3 +210,87 @@ Reste ouvert (hors périmètre E46-D, à ne pas confondre avec « fait ») :
 
 ## E47 — Gates Android-local (FAIT — 2026-07-07, validation device en attente)
 Arbitrage micro unique (JavaAudioDeviceModule fan-out, samples identiques prouvés), wake word configurable = fenêtre de commande (`is_command`, capture jamais coupée), gestes MediaPipe activés (12 fps throttle, palm/swipe/pinch câblés bout-en-bout — dont le gap E26 pinch→zoom jamais abonné), provisioning PC (`/models/device/*`), gating routeur `open|gated` (défaut open), multi-sessions/jour (`--allow-rerun`, ADR §E47C). APK v2 : SHA BCC68997…5A0C. **Restes** : client de téléchargement des modèles côté app (manuel via adb en attendant), TTS device (différé), validation S25.
+
+---
+
+# Plan d'actions E48→E52 (établi 2026-07-08, reprise post-passation)
+
+Même discipline que E31→E47 : une étape = petits changements testés, ADR dans DECISIONS.md, push au fil de l'eau sur `main`, cocher les cases APRÈS succès réel. La validation device S25 (première vraie session + close-day) reste le juge de paix transversal — elle peut s'intercaler à tout moment.
+
+## E48-A — Confort produit : modèles device, dehors, traduction live (À FAIRE)
+
+1. **Client de téléchargement des modèles dans l'app** (remplace l'`adb push` manuel) :
+   - [ ] Au premier lancement (ou si `getExternalFilesDir()/models/` incomplet) : `GET /models/device/manifest` (endpoints PC e47c déjà livrés, token session) → download de chaque modèle manquant, SHA-256 vérifié via `X-Model-Sha256`, écriture atomique (tmp+rename), reprise si coupure.
+   - [ ] UI : carte de progression (nom du modèle, % — les ASR font 300-380 Mo, ça se voit) ; les features qui dépendent d'un modèle absent restent en dégradé honnête, jamais un crash.
+   - [ ] **Décision poids (mesures réelles 2026-07-08)** : archives = ASR FR 380 Mo + ASR EN 296 Mo + KWS 16,8 Mo + MediaPipe 15,5 Mo ≈ **710 Mo** → tout embarquer ferait un APK ~750 Mo (vs 54,6 Mo) : REFUSÉ. Compromis retenu : **embarquer les petits** (KWS + 2 tasks MediaPipe, +33 Mo → APK ~88 Mo) pour wake word + gestes out-of-the-box ; les 2 ASR streaming restent téléchargés par le client ci-dessus (Wi-Fi LAN, une fois). Option futur : n'embarquer/télécharger que la langue active + variante int8 si dispo.
+   - Test : device vierge → premier lancement → manifest lu, modèles téléchargés sha-OK, sous-titres offline actifs sans adb.
+2. **Tailscale opérationnel (mode dehors)** — le code failover existe (E36/E44), c'est de la CONFIG + VALIDATION (guide `docs/OUTSIDE_ACCESS.md`) :
+   - [ ] Installer Tailscale PC + S25, même compte (§2-3) ; relever l'IP `100.x` du PC.
+   - [ ] Renseigner la liste ordonnée d'endpoints LAN d'abord, Tailscale ensuite : `configs/user_profile.yaml` (§4.1) + asset `MLOmegaConfig` Unity (§4.2) → rebuild APK avec la liste (ou champ éditable).
+   - [ ] Valider la détection automatique déjà codée : même Wi-Fi → `active_link=lan` (rapide, 720p) ; 4G/5G → bascule tunnel `active_endpoint=tailscale`, `active_link=wan` (540p) ; retour maison → re-bascule LAN. Checklist complète §8 sur vraie 4G.
+   - Test : les 6 cases de la checklist §8 d'OUTSIDE_ACCESS.md cochées sur 4G réelle.
+3. **Traduction live continue = RÉFLEXE DEVICE** (décision utilisateur 2026-07-08 : sur le téléphone, PAS de PC — doit marcher offline comme les sous-titres ; reste E46 : `translation_hot` ne traduit rien ; le « traduis-le » à la demande E33 côté PC existe et reste inchangé) :
+   - [ ] Choisir le moteur de traduction on-device (ADR obligatoire) : candidats — ML Kit Translate (offline après download des packs, gratuit, mais dépendance Google Play Services) vs Marian/bergamot via ONNX (vrai local-first, intégration plus lourde). Critères : offline, FR↔EN d'abord, budget batterie réflexe, licence.
+   - [ ] Brancher sur les finals ASR sherpa locaux (déjà sur device, E47-A) → traduction on-device → `translation_hot` du SceneCache (speaker track, final, langue, âge — GUIDE §9.1, expire au changement de tour) → `SubtitleSkill` affiche la traduction sous le sous-titre original.
+   - [ ] Toggle vocal (« traduis en direct » / « stop traduction ») + entrée menu ; traduction sur finals uniquement (jamais les partiels).
+   - Test : PC coupé, segment final EN → traduction FR affichée offline ; toggle on/off ; pas de traduction sur partiels.
+
+## E48-B — Réflexes restants : aide universelle + attention au changement (À FAIRE)
+
+1. **HandActionSkill → mode aide universel, version A** (cuisiner, meubles, code, n'importe quelle activité — checklist intelligente, PAS de magie de vision fine) :
+   - [ ] Moteur de tâche PC (`services/live-pc/`) : « aide-moi à faire X » (IntentRouter) → plan d'étapes généré par le LLM live (réutilise le chemin E33) → tâche active persistée (une seule à la fois — GUIDE §9.1 task_hot).
+   - [ ] Étape courante poussée au device via `task_hot` → TaskCard (composant existant) : étape, outils/objets attendus, progression.
+   - [ ] Surlignage : quand un objet de l'étape est un track visible (VisionRT/tracks existants), ObjectOutline ; quand la main s'en approche (landmarks MediaPipe 12 fps déjà actifs E47-B), le highlight se renforce — signal grossier, jamais présenté comme vérification.
+   - [ ] Avancement : à la voix (« étape suivante », « c'est fait », « répète ») + auto-suggestion douce si le VLM local confirme du GROSSIER à la demande (« la pâte est dans le bol » : oui ; « c'est la vis B4 » : hors périmètre A).
+   - [ ] Architecture prête pour la version B (vérification visuelle auto d'étape) et le mode payant cloud qui l'améliore — brancher sans réécrire : l'étape ne se valide que par un `StepValidator` interchangeable (A = voix/semi-auto, B = VLM).
+   - Test : plan simulé 3 étapes → TaskCard étape 1 → « c'est fait » → étape 2 ; objet de l'étape visible → outline ; une seule tâche active à la fois.
+2. **ChangeAttentionSkill live** (la brique détection existe — E28 WorldBrain + E38 attributs — mais nocturne ; il manque le cue instantané) :
+   - [ ] À la re-entrée d'une zone connue (zones E28) : comparer l'état courant (tracks/entités/OCR ROI) au dernier état mémorisé de la zone → si écart net, cue sobre « quelque chose a changé ici » (point d'intérêt, priorité basse, truth_level honnête) ou EvidenceRequest.
+   - [ ] Anti-bruit : seuil de confiance + cooldown par zone ; jamais de cue si map_quality faible.
+   - Test : état de zone mémorisé simulé, re-entrée avec objet déplacé → cue émis une fois ; re-entrée sans changement → silence.
+   - (Réserve non décidée, notée pour plus tard : les 4 petits réflexes proposés — « on t'appelle » via KWS prénom, checklist de sortie porte/objets, obstacle tête baissée, minuteur contextuel.)
+
+## E49 — Lunettes XREAL (gate G1 matériel) (À FAIRE)
+
+- [ ] Obtenir le SDK XREAL (compte développeur utilisateur) et le déposer dans le projet Unity (le manifest PhoneOnly reste propre — la réf XREAL redevient active seulement pour ce build).
+- [ ] `XrealDeviceAdapter` (écrit depuis E22) : compiler, rendu stéréo, caméra Eye = `EyeCaptureSource` ; mêmes contrats/SceneCache/skills (aucun fork de code produit).
+- [ ] Rebuild APK profil lunettes ; gates G1 réels : affichage stéréo, caméra Eye, pose, sessions longues, budget batterie.
+- [ ] Plan B documenté si l'accès caméra Eye coince (handoff §risques) : one-xr + caméra S25 en attendant.
+- Test : session réelle lunettes → mêmes scénarios que FIRST_TRY_ANDROID (PersonTag, sous-titres, gestes) en stéréo.
+
+## E50 — Dashboard mémoire lecture seule (intégrer + adapter MemoryLight) (À FAIRE)
+
+Source : `memorylight_dashboard_readonly` v2 (Streamlit une page, SQLite `mode=ro`, verrou ECRIRE pour les rares actions CLI) — ZIP utilisateur `C:\Users\wabad\Downloads\memorylight_dashboard_readonly_v2_verified.zip`.
+
+- [ ] Intégrer la source sous `apps/memory-dashboard/` + `scripts/RUN_DASHBOARD.ps1` (pointe `.env`/memory.db du projet, `--person-id` du profil) ; dépendances dans un venv léger ou `.venv` cœur.
+- [ ] Adapter les requêtes aux schémas réellement présents dans la base V19 (les tables v14/v18 existantes restent lisibles telles quelles ; tout ce qui n'existe pas s'affiche « absent », pas d'erreur).
+- [ ] **Ajouter les vues V19** (ce que la mémoire produit maintenant) :
+  - hypothèses en attente / auto-confirmées / réfutées (E38) avec leurs preuves ;
+  - Life Model V19 : entrées typées, historique/transitions, prédictions + `verification_spec` + outcomes (verified/refuted) + calibration ;
+  - événements visuels + chaîne de preuve (visual_events/evidence_assets) et entités/lieux/routines WorldBrain (dont attributs bi-modaux changés) ;
+  - sessions live + close-day runs/stages (multi-sessions du jour, `reopened`, durées) ;
+  - compteurs live utiles (interventions H1 livrées/receipts, intents routés/gated — recoupe `/metrics`).
+- [ ] Rebrancher le chat sur le routeur Brain2 actuel (`ask_brain2` / CLI du cœur) au lieu de v14-ask si la signature a bougé ; garder le verrou écriture.
+- Test : dashboard lancé sur la base réelle post-première-session → chaque section s'affiche sans erreur ; aucune écriture DB (mode=ro prouvé).
+
+## E51 — Installateur / guide de bienvenue interactif (n'importe qui installe en 2 clics) (À FAIRE)
+
+Un assistant unique (`scripts/WELCOME_MLOMEGA.ps1`, réutilise `setup_profile.ps1`/`INSTALL_MLOMEGA_V19_WINDOWS.ps1`/`DOCTOR` existants — ne PAS réécrire l'install, l'orchestrer) qui déroule dans l'ordre :
+
+- [ ] 1. Matériel : « Avez-vous des lunettes ? » Oui → choix XREAL uniquement (Spectacles/Meta plus tard) / Non → mode PhoneOnly. Puis « Quel téléphone ? » → Android (S25/OnePlus… même APK).
+- [ ] 2. Scan machine (GPU/VRAM/RAM/disque via nvidia-smi & co) → proposer le set de modèles adapté (les plus utiles seulement, ex. Qwen3.5 4b live + 9b deep sur 8 Go VRAM ; dégradé sinon) ; option API cloud (OpenAI/Gemini) = opt-in avec saisie de clé.
+- [ ] 3. Token Hugging Face demandé (pyannote) avec lien direct + contrôle de validité.
+- [ ] 4. Installation complète sans erreur bête : venvs (.venv + .venv-live, locks existants), ffmpeg, Qdrant natif, Ollama + pulls des modèles choisis, `fetch_models_v19.py` (+ `--device`), `.env` généré, `setup_profile` rempli des réponses, DOCTOR -Full en garde-fou final.
+- [ ] 5. Lancement PC guidé (les 3 commandes, ou un `START_ALL` qui les enchaîne) → health vert affiché.
+- [ ] 6. Téléphone : où prendre l'APK, `adb install` OU copie manuelle, permissions, pairing auto ; si lunettes : connexion XREAL à l'app.
+- [ ] 7. Choix du mot d'éveil (« comment appeler l'assistant ? ») — avertir : PAS un mot trop courant (faux déclenchements) ; écrit dans la config.
+- [ ] 8. Mini-tutoriel : ce que le système sait faire, commandes vocales clés, gestes, où voir les suggestions.
+- [ ] 9. Comment quitter proprement (LE BOUTON Terminer → close-day) et pourquoi.
+- [ ] 10. Le lendemain : comment relancer le matin, changer de modèles, commandes utiles de contrôle (DOCTOR, `/metrics`, `/session/status`, dashboard E50, où vit memory.db + conseil backup manuel).
+- Test : dry-run complet sur machine « propre » simulée (ou VM) → zéro étape manuelle non guidée ; chaque échec d'étape donne une consigne claire, pas une stacktrace.
+
+## E52 — README complet du projet (À FAIRE)
+
+- [ ] Réécrire `README.md` en vrai document d'accueil détaillé : vision (exocortex mémoire de vie), architecture complète (3 couches + schéma flux téléphone↔PC↔nuit), tout ce que le système fait AUJOURD'HUI (capacités par domaine : mémoire, identité, vision, voix, gestes, proactivité, replay, dehors, multi-sessions), matrice matériel (PhoneOnly / XREAL / capture-only / viewer iPhone), installation (renvoi E51), première session (renvoi FIRST_TRY), dashboard (renvoi E50), invariants de vérité/vie privée, état des tests datés, roadmap honnête (fait / différé / futur).
+- [ ] Le README actuel (f7b2b1d) devient la base ; ne rien promettre de non validé (S25 tant que pas fait = « en attente de validation device »).
+- Test : relecture utilisateur — un inconnu comprend le projet et sait par où commencer sans lire une autre doc.
