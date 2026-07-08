@@ -15,7 +15,15 @@ MonoBehaviour:
   _pcHost: 192.168.1.199
   _sessionHubPort: 8710
   _useTls: 0
-  _endpoints: []
+  _endpoints:
+  - _name: lan
+    _host: 192.168.1.199
+    _port: 8710
+    _useTls: 0
+  - _name: tailscale
+    _host: 100.113.42.19
+    _port: 8710
+    _useTls: 0
   _deviceId: phone-only-primary
   _adapter: 3
   _clockSyncIntervalSeconds: 30
