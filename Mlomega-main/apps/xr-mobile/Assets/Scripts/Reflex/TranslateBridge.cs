@@ -32,6 +32,10 @@ namespace MLOmega.XR.Reflex
         [SerializeField] private MLOmegaConfig _config;
         [SerializeField] private AsrBridge _asrBridge;
         [SerializeField] private SubtitleSkill _subtitle;
+        // UI side (Reflex references UI; the reverse would be an assembly cycle, so
+        // the DeviceCommandHandler exposes an event we subscribe to instead).
+        [SerializeField] private MLOmega.XR.UI.DeviceCommandHandler _commands;
+        [SerializeField] private MLOmega.XR.UI.Components.StatusBar _statusBar;
 
         [Tooltip("E48-A: relative dir (under getExternalFilesDir()/models/) that " +
                  "holds the provisioned OPUS-MT translation directions " +
@@ -61,6 +65,8 @@ namespace MLOmega.XR.Reflex
             if (_config == null) _config = FindAnyObjectByType<SessionPairing>()?.Config;
             if (_asrBridge == null) _asrBridge = FindAnyObjectByType<AsrBridge>();
             if (_subtitle == null) _subtitle = FindAnyObjectByType<SubtitleSkill>();
+            if (_commands == null) _commands = FindAnyObjectByType<MLOmega.XR.UI.DeviceCommandHandler>();
+            if (_statusBar == null) _statusBar = FindAnyObjectByType<MLOmega.XR.UI.Components.StatusBar>();
             // Default the toggle from config so a build can ship with it pre-armed.
             TranslateLive = _config != null && _config.TranslateLiveDefault;
         }
@@ -68,11 +74,21 @@ namespace MLOmega.XR.Reflex
         private void OnEnable()
         {
             if (_asrBridge != null) _asrBridge.Transcript += OnTranscript;
+            if (_commands != null) _commands.TranslateLiveRequested += OnTranslateLiveRequested;
         }
 
         private void OnDisable()
         {
             if (_asrBridge != null) _asrBridge.Transcript -= OnTranscript;
+            if (_commands != null) _commands.TranslateLiveRequested -= OnTranslateLiveRequested;
+        }
+
+        /// <summary>The translate_live device command (menu flip / voice on-off).</summary>
+        private void OnTranslateLiveRequested(bool? on)
+        {
+            bool target = on ?? !TranslateLive;
+            SetTranslateLive(target);
+            if (_statusBar != null) _statusBar.TranslateLive = target;
         }
 
         private void Update()

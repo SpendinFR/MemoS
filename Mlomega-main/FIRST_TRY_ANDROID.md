@@ -170,3 +170,36 @@ Tu peux maintenant faire 2-3 sessions dans la journée : chaque « Terminer la s
 12. ☐ Paume → menu ; balayage → UI cachée ; pinch → zoom
 13. ☐ PC coupé → sous-titres toujours là ; retour PC → reconnexion auto
 14. ☐ 2e session du jour → close-day relancé (`--allow-rerun` visible dans les logs PC)
+
+---
+
+# MISE À JOUR — APK v3 (E48 : modèles auto, traduction live, mode dehors, cue changement)
+
+**Nouvel APK** : même fichier `mlomega-phoneonly.apk` (90,1 Mo — les petits modèles sont dedans) — réinstalle par-dessus (`adb install -r ...`). SHA-256 : `172394C67CBD451523E10D8CB6EF9140C8210D1BA0843BE5E7B7EA713199846B`.
+
+⚠️ **v3 répare un bug invisible de v2** : la couche réflexe (wake word, gestes, sous-titres offline) n'était pas câblée dans la scène — ces features E47 ne pouvaient pas démarrer sur v2. **Refais les tests 11-13 sur v3** : c'est la première fois qu'ils peuvent vraiment passer.
+
+## 🆕 Plus d'`adb push` : les modèles s'installent tout seuls
+- Les petits modèles (wake word, gestes, VAD) sont **dans l'APK** → marchent dès l'installation.
+- Les 2 gros modèles de reconnaissance vocale (~680 Mo) se **téléchargent automatiquement** depuis le PC au premier lancement (Wi-Fi conseillé) — suis la ligne `dl:<modèle> NN%` dans la StatusBar. En attendant la fin du download, les sous-titres offline restent indisponibles (dégradé normal, rien ne plante).
+- Le `adb push models\device\.` manuel marche toujours si tu préfères.
+
+## 🆕 Traduction live (offline, sur le téléphone)
+- **Menu** (paume) → « **Traduire** » pour activer/couper, ou à la voix : « **traduis en direct** » / « **stop traduction** » (la voix passe par le PC ; hors connexion, utilise le menu).
+- Effet : chaque phrase finale dans l'autre langue s'affiche **traduite sous le sous-titre original**. FR↔EN. Marche PC coupé.
+- Wake word du build : « **omega** » (changeable dans l'asset MLOmegaConfig).
+
+## 🆕 Mode dehors (Tailscale)
+- L'app essaie maintenant les endpoints **dans l'ordre : LAN → Tailscale** (`100.113.42.19`, déjà dans le build).
+- À faire une fois sur le téléphone : Play Store → **Tailscale** → connexion avec **le même compte** que le PC (contact.phonelib@) → activer le VPN. Ensuite : dehors en 4G/5G tout marche via le tunnel ; retour maison → re-bascule LAN automatique.
+- Guide complet + checklist 4G : `docs/OUTSIDE_ACCESS.md` §8.
+
+## 🆕 Cue de changement (ChangeAttention)
+- Pendant une session, si tu quittes une zone puis y reviens et qu'un objet a disparu/changé → petite carte discrète « quelque chose a changé ici ». Anti-bruit volontaire : un seul cue par retour, cooldown, silence si la carte spatiale est incertaine. Jour 1 : rare (les zones se construisent).
+
+## Checklist ajoutée (v3)
+15. ☐ Premier lancement → `dl:` visible dans la StatusBar → download des ASR terminé → sous-titres offline OK **sans adb push**
+16. ☐ Menu → « Traduire » → phrase en anglais → traduction française sous le sous-titre (puis teste PC coupé)
+17. ☐ « traduis en direct » à la voix → activé ; « stop traduction » → coupé
+18. ☐ Tailscale actif sur le tél, Wi-Fi coupé (4G) → `http://100.113.42.19:8710/health` répond → session dehors OK (`active_endpoint = tailscale` sur `/metrics`)
+19. ☐ Quitte une pièce, déplace un objet, reviens → cue « quelque chose a changé »

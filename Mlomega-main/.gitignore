@@ -38,3 +38,7 @@ apps/xr-mobile/Library/
 *.log
 editmode_results.xml
 apps/xr-mobile/.utmp/
+
+# E48-A: APK-embedded small models are regenerated at build time from models/device/
+apps/xr-mobile/Assets/StreamingAssets/models/
+apps/xr-mobile/Assets/StreamingAssets/models.meta

@@ -6,6 +6,7 @@
         "MLOmega.XR.UI",
         "MLOmega.XR.Scene",
         "MLOmega.XR.Transport",
+        "MLOmega.XR.Reflex",
         "MLOmega.Contracts",
         "Unity.TextMeshPro",
         "UnityEngine.UI"

@@ -51,10 +51,16 @@ namespace MLOmega.XR.UI
         [SerializeField] private StatusBar _statusBar;
         [SerializeField] private AppLauncherBridge _appLauncher;
         [SerializeField] private LiveTransportBridge _transport;
-        [SerializeField] private MLOmega.XR.Reflex.TranslateBridge _translate;
 
         /// <summary>Raised when a "menu" command arrives (MenuPanel opens the panel).</summary>
         public event Action MenuRequested;
+
+        /// <summary>
+        /// E48-A: raised for "translate_live" (null = flip current state). The Reflex
+        /// TranslateBridge subscribes — UI cannot reference the Reflex assembly
+        /// (Reflex already references UI; a typed field would be a cycle).
+        /// </summary>
+        public event Action<bool?> TranslateLiveRequested;
 
         /// <summary>Raised when a "replay {time}" command arrives (VirtualScreen replay).</summary>
         public event Action<string> ReplayRequested;
@@ -68,7 +74,6 @@ namespace MLOmega.XR.UI
             if (_statusBar == null) _statusBar = FindAnyObjectByType<StatusBar>();
             if (_appLauncher == null) _appLauncher = FindAnyObjectByType<AppLauncherBridge>();
             if (_transport == null) _transport = FindAnyObjectByType<LiveTransportBridge>();
-            if (_translate == null) _translate = FindAnyObjectByType<MLOmega.XR.Reflex.TranslateBridge>();
         }
 
         private void OnEnable()
@@ -145,14 +150,12 @@ namespace MLOmega.XR.UI
 
         // E48-A: toggle the live on-device translation reflex (« traduis en direct » /
         // « stop traduction » voice command, or the menu entry — same command path).
-        // `on` null (the menu toggle) flips the current state; an explicit value (the
-        // voice router's on/off intents) sets it.
+        // `on` null (the menu toggle) flips; the subscribed TranslateBridge applies it
+        // and updates the StatusBar. No subscriber (no reflex layer) = honest failure.
         private bool TranslateLive(bool? on)
         {
-            if (_translate == null) return false;
-            bool target = on ?? !_translate.TranslateLive;
-            _translate.SetTranslateLive(target);
-            if (_statusBar != null) _statusBar.TranslateLive = target;
+            if (TranslateLiveRequested == null) return false;
+            TranslateLiveRequested.Invoke(on);
             return true;
         }
 

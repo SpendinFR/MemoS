@@ -128,8 +128,9 @@ namespace MLOmega.XR.Editor
             Assign(commands, "_statusBar", statusBar);
             Assign(commands, "_appLauncher", appLauncher);
             Assign(commands, "_transport", transport);
-            Assign(commands, "_translate", translate);
             // E48-A reflex wiring (the rest self-finds in Awake at scene load).
+            Assign(translate, "_commands", commands);
+            Assign(translate, "_statusBar", statusBar);
             Assign(localBootstrap, "_broker", broker);
             Assign(localBootstrap, "_source", localIntents);
             Assign(reflex, "_gestureBridge", gestureBridge);

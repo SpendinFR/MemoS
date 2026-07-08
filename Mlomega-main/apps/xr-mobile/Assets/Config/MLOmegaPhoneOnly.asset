@@ -34,6 +34,7 @@ MonoBehaviour:
   _captureFps: 30
   _posePublishHz: 60
   _httpTimeoutSeconds: 5
-  _wakeWord: hey mlomega
+  _wakeWord: omega
   _asrLanguage: 0
   _commandWindowSeconds: 6
+  _translateLiveDefault: 0
