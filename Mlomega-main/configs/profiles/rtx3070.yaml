@@ -41,6 +41,18 @@ audio:
     model: small
     compute_type: int8       # GPU if CUDA present, else CPU
     target_language: fr      # subtitles translated into this language
+# E54: media retention & disk budget. The retention module
+# (services/live-pc/media_retention.py) and DOCTOR -Quota read this block; any
+# missing key falls back to a coded default. Decision (user, 2026-07-08): keep
+# everything, 100 GB budget, replay clips/audio at any time.
+storage_quota:
+  total_gb: 100          # global media budget; over this, evict oldest UNREFERENCED first
+  warn_gb: 80            # DOCTOR/retention WARN threshold before the hard budget
+  fail_gb: 95            # DOCTOR total-footprint FAIL threshold
+  retention_days: 90     # unreferenced media older than this become purge-eligible
+  transcode_audio: true  # post-close-day WAV -> Opus (~/10), reversible (keeps sha)
+  day_buffer_warn_gb: 2  # day-buffer size WARN (purged at close-day)
+  day_buffer_fail_gb: 5  # day-buffer size FAIL
 gpu:
   max_live_vram_ratio: 0.90
   degrade_order: [detector_floor, pause_changes, refuse_vlm]

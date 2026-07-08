@@ -106,8 +106,40 @@ def main() -> int:
     )
     if reopen_report is not None:
         result = {**result, "reopen": reopen_report}
+
+    # E54: media retention runs ONLY after the close-day has authorised cleanup
+    # (cleanup.eligible == True — the gate the pipeline sets once every stage,
+    # incl. the deep-audio re-transcription, is done). Best-effort: a failing
+    # purge/transcode never fails the close-day (the exit code stays driven by
+    # the close-day status alone).
+    cleanup = result.get("cleanup") if isinstance(result, dict) else None
+    if isinstance(cleanup, dict) and bool(cleanup.get("eligible")):
+        retention = _run_media_retention(person_id=args.person_id)
+        result = {**result, "media_retention": retention}
+
     print(json.dumps(result, ensure_ascii=False))
     return 0 if str(result.get("status")) == "completed" else 2
+
+
+def _run_media_retention(*, person_id: str) -> dict:
+    """Invoke the E54 retention module (services/live-pc/media_retention.py).
+
+    Loaded by file path — it lives under the live-pc service tree, not the ``src``
+    package. Never raises: any error is returned as a small report so it cannot
+    fail the close-day."""
+    try:
+        import importlib.util
+
+        mod_path = ROOT / "services" / "live-pc" / "media_retention.py"
+        spec = importlib.util.spec_from_file_location("v19_media_retention", mod_path)
+        if spec is None or spec.loader is None:
+            return {"status": "error", "error": "media_retention module not found"}
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["v19_media_retention"] = module
+        spec.loader.exec_module(module)
+        return module.run_media_retention(person_id=person_id)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)[:160]}
 
 
 if __name__ == "__main__":

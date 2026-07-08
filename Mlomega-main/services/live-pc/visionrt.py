@@ -31,6 +31,7 @@ import math
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -695,14 +696,48 @@ class VisionRT:
         return frame_bgr[y1:y2, x1:x2]
 
 
+def media_root() -> Path:
+    """E54: managed, persistent media root for keyframes/clips.
+
+    ``MLOMEGA_MEDIA`` if set, else ``storage/media/`` under the project. Unlike a
+    system ``tempfile``, this survives a ``%TEMP%`` cleanup — the base of the E54
+    bug fix (a keyframe referenced in ``vision_frames`` must not vanish)."""
+    import os
+
+    env = os.environ.get("MLOMEGA_MEDIA")
+    if env:
+        return Path(env)
+    return Path(__file__).resolve().parents[2] / "storage" / "media"
+
+
+def keyframe_dir(captured_at: Any = None) -> Path:
+    """Managed keyframe folder ``<media_root>/keyframes/AAAA-MM-JJ/`` for a day.
+
+    The day is taken from ``captured_at`` (ISO) when parseable, else today (UTC)."""
+    from datetime import datetime, timezone
+
+    day = None
+    if captured_at:
+        try:
+            txt = str(captured_at).strip().replace("Z", "+00:00")
+            day = datetime.fromisoformat(txt).astimezone(timezone.utc).strftime("%Y-%m-%d")
+        except Exception:
+            day = None
+    if not day:
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return media_root() / "keyframes" / day
+
+
 def default_keyframe_sink(person_id: str, live_session_id: str, db_path: Any = None) -> Callable[[np.ndarray, Any], Any]:
     """Build a keyframe sink that writes via v19_keyframes.register_xr_keyframe.
 
-    The image is written to a temp path, then registered (raw_assets +
+    E54: the image is written to a MANAGED, persistent media folder
+    (``<MLOMEGA_MEDIA or storage/media>/keyframes/AAAA-MM-JJ/``), never a system
+    ``tempfile`` — a ``%TEMP%`` cleanup used to orphan keyframes that
+    ``vision_frames`` still referenced. It is then registered (raw_assets +
     insert_only vision_frames, capture_mode='xr_keyframe') — the E14 production
-    bridge into the existing night chain.
-    """
-    import tempfile
+    bridge into the existing night chain. Old temp paths already in the DB stay
+    readable as-is (replay reads ``image_path`` verbatim)."""
     import cv2
 
     root = Path(__file__).resolve().parents[2]
@@ -715,13 +750,15 @@ def default_keyframe_sink(person_id: str, live_session_id: str, db_path: Any = N
     def _sink(frame_bgr: np.ndarray, envelope: Any) -> None:
         frame_id = getattr(envelope, "frame_id", None)
         captured_at = getattr(envelope, "captured_at_utc", None)
-        fd = tempfile.NamedTemporaryFile(prefix="kf_", suffix=".jpg", delete=False)
-        fd.close()
-        cv2.imwrite(fd.name, frame_bgr)
+        out_dir = keyframe_dir(captured_at)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        name = f"kf_{live_session_id}_{frame_id or 'nf'}_{uuid.uuid4().hex[:8]}.jpg"
+        out_path = out_dir / name
+        cv2.imwrite(str(out_path), frame_bgr)
         register_xr_keyframe(
             person_id=person_id,
             live_session_id=live_session_id,
-            image_path=fd.name,
+            image_path=str(out_path),
             captured_at=captured_at,
             frame_id=frame_id,
             db_path=db_path,

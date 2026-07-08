@@ -119,6 +119,8 @@ def test_keyframe_recorded_via_v19_keyframes(tmp_path, monkeypatch):
     monkeypatch.setenv("MLOMEGA_DB", str(tmp_path / "kf.db"))
     monkeypatch.setenv("MLOMEGA_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("MLOMEGA_RAW", str(tmp_path / "raw"))
+    # E54: keyframes must land in the managed media root, never a system tempfile.
+    monkeypatch.setenv("MLOMEGA_MEDIA", str(tmp_path / "media"))
     db_path = tmp_path / "kf.db"
 
     from mlomega_audio_elite.brainlive_v15 import start_live_session
@@ -138,7 +140,12 @@ def test_keyframe_recorded_via_v19_keyframes(tmp_path, monkeypatch):
 
     with connect(db_path) as con:
         rows = con.execute(
-            "SELECT capture_mode FROM vision_frames WHERE live_session_id=?", (lsid,)
+            "SELECT capture_mode, image_path FROM vision_frames WHERE live_session_id=?", (lsid,)
         ).fetchall()
     assert rows, "no vision_frames row written"
     assert rows[0][0] == "xr_keyframe"
+    # E54: the stored path is under the managed, persistent media root — not a
+    # %TEMP% file that a cleanup would orphan — and the file really exists there.
+    kf_path = Path(rows[0][1])
+    assert (tmp_path / "media" / "keyframes") in kf_path.parents
+    assert kf_path.exists()

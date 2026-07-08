@@ -179,28 +179,43 @@ if ($doXr) {
 if ($doQuota) {
   Section "Stockage / quotas"
 
-  # Thresholds are configurable in the user profile (storage_quota block); the
-  # defaults are conservative for a personal RTX-3070 box.
-  $warnGb = 8.0
-  $failGb = 20.0
+  # Thresholds come from the storage_quota block (E54): user_profile.yaml first,
+  # then configs\profiles\rtx3070.yaml, then these coded defaults. Decision
+  # (2026-07-08): keep everything, 100 GB budget.
+  $warnGb = 80.0
+  $failGb = 95.0
   $bufWarnGb = 2.0
   $bufFailGb = 5.0
-  if ($Python -and (Test-Path $profilePath)) {
+  $rtxProfile = Join-Path $ProjectRoot 'configs\profiles\rtx3070.yaml'
+  if ($Python) {
     $q = & $Python -c @"
-import sys, yaml
-d = yaml.safe_load(open(r'$profilePath', encoding='utf-8')) or {}
-sq = (d.get('storage_quota') or {}) if isinstance(d, dict) else {}
+import yaml
+def load(p):
+    try:
+        return yaml.safe_load(open(p, encoding='utf-8')) or {}
+    except Exception:
+        return {}
+sq = {}
+for p in (r'$profilePath', r'$rtxProfile'):
+    d = load(p)
+    block = (d.get('storage_quota') or {}) if isinstance(d, dict) else {}
+    if block:
+        sq = block
+        break
 def g(k, dflt):
     v = sq.get(k)
     return str(v) if v is not None else str(dflt)
-print('WARN_GB=' + g('warn_gb', 8))
-print('FAIL_GB=' + g('fail_gb', 20))
+# warn/fail default to warn_gb/total_gb so a profile with only total_gb still works.
+print('WARN_GB=' + g('warn_gb', 80))
+print('FAIL_GB=' + g('fail_gb', g('total_gb', 95)))
+print('TOTAL_GB=' + g('total_gb', 100))
 print('BUF_WARN_GB=' + g('day_buffer_warn_gb', 2))
 print('BUF_FAIL_GB=' + g('day_buffer_fail_gb', 5))
 "@ 2>$null
     foreach ($line in $q) {
       if ($line -like 'WARN_GB=*')     { $warnGb = [double]($line -replace 'WARN_GB=','') }
       elseif ($line -like 'FAIL_GB=*') { $failGb = [double]($line -replace 'FAIL_GB=','') }
+      elseif ($line -like 'TOTAL_GB=*') { $totalGbBudget = [double]($line -replace 'TOTAL_GB=','') }
       elseif ($line -like 'BUF_WARN_GB=*') { $bufWarnGb = [double]($line -replace 'BUF_WARN_GB=','') }
       elseif ($line -like 'BUF_FAIL_GB=*') { $bufFailGb = [double]($line -replace 'BUF_FAIL_GB=','') }
     }
