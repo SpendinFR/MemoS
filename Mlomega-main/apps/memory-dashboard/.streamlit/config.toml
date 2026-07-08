@@ -1,0 +1,19 @@
+[theme]
+base = "dark"
+primaryColor = "#8b7cff"
+backgroundColor = "#0f1117"
+secondaryBackgroundColor = "#171b24"
+textColor = "#f4f4f5"
+font = "sans serif"
+
+[server]
+headless = true
+# Port choisi pour MLOmega V19 : 8720.
+# Ports occupes/interdits du projet : 8710 (SessionHub), 6333 (Qdrant),
+# 11434 (Ollama), 8766 (Phone Bridge, interdit), 8704/8706 (profils sim),
+# 8776, 8601, 6334. 8720 est libre.
+port = 8720
+
+[browser]
+# Local-first : pas de telemetrie Streamlit.
+gatherUsageStats = false

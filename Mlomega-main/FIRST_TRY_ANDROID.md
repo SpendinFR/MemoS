@@ -203,3 +203,11 @@ Tu peux maintenant faire 2-3 sessions dans la journée : chaque « Terminer la s
 17. ☐ « traduis en direct » à la voix → activé ; « stop traduction » → coupé
 18. ☐ Tailscale actif sur le tél, Wi-Fi coupé (4G) → `http://100.113.42.19:8710/health` répond → session dehors OK (`active_endpoint = tailscale` sur `/metrics`)
 19. ☐ Quitte une pièce, déplace un objet, reviens → cue « quelque chose a changé »
+
+## 📊 Après le close-day : LIS ta mémoire (dashboard)
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\RUN_DASHBOARD.ps1
+```
+→ **http://localhost:8720** : hypothèses en attente/confirmées, modèle de vie, prédictions
+et leurs vérifications, preuves visuelles, zones/routines, et le détail de tes close-days —
+en lecture seule. C'est là que tu verras ce que ta première session a réellement produit.

@@ -260,9 +260,11 @@ Décision utilisateur 2026-07-08 : le mode aide universel « soit on le fait bie
 
 Source : `memorylight_dashboard_readonly` v2 (Streamlit une page, SQLite `mode=ro`, verrou ECRIRE pour les rares actions CLI) — ZIP utilisateur `C:\Users\wabad\Downloads\memorylight_dashboard_readonly_v2_verified.zip`.
 
-- [ ] Intégrer la source sous `apps/memory-dashboard/` + `scripts/RUN_DASHBOARD.ps1` (pointe `.env`/memory.db du projet, `--person-id` du profil) ; dépendances dans un venv léger ou `.venv` cœur.
-- [ ] Adapter les requêtes aux schémas réellement présents dans la base V19 (les tables v14/v18 existantes restent lisibles telles quelles ; tout ce qui n'existe pas s'affiche « absent », pas d'erreur).
-- [ ] **Ajouter les vues V19** (ce que la mémoire produit maintenant) :
+**FAIT (e50, 2026-07-08) — validation visuelle utilisateur en attente.** Port **8720** (vérifié sans collision : 8710/6333/6334/11434/8766/8704/8706/8776/8601 exclus). Lancement : `scripts\RUN_DASHBOARD.ps1` → http://localhost:8720. Smoke test headless : HTTP 200, zéro exception, base réelle en mode=ro. Schémas V19 inspectés dans la vraie base (pas devinés). Chat rebranché tel quel : `v14-ask`/`v14-answer` existent toujours dans la CLI cœur (→ `ask_brain2`), commande par défaut `python -m mlomega_audio_elite.cli` (pas d'install globale requise). Télémétrie Streamlit coupée.
+
+- [x] Intégrer la source sous `apps/memory-dashboard/` + `scripts/RUN_DASHBOARD.ps1` (pointe `.env`/memory.db du projet, `--person-id` du profil) ; dépendances dans `.venv-live` (install idempotente).
+- [x] Adapter les requêtes aux schémas réellement présents dans la base V19 (les tables v14/v18 existantes restent lisibles telles quelles ; tout ce qui n'existe pas s'affiche « absent », pas d'erreur).
+- [x] **Vues V19 ajoutées** (bloc « 🛰️ V19 — ce que la mémoire produit maintenant » : compteurs, hypothèses `brainlive_life_hypotheses`+evidence, Life Model `life_model_entries_v19`/`self_schema_v19`/`predictions_v19`+outcomes+`calibration_scores`, visuel `visual_events_v19`+`visual_evidence_assets_v19`, monde `world_entity_links_v19`/`brain2_spatial_routine_models`/`scene_session_summaries_v19`, sessions `brainlive_sessions`+`v18_close_day_runs` avec flag reopened) :
   - hypothèses en attente / auto-confirmées / réfutées (E38) avec leurs preuves ;
   - Life Model V19 : entrées typées, historique/transitions, prédictions + `verification_spec` + outcomes (verified/refuted) + calibration ;
   - événements visuels + chaîne de preuve (visual_events/evidence_assets) et entités/lieux/routines WorldBrain (dont attributs bi-modaux changés) ;
@@ -281,7 +283,7 @@ Un assistant unique (`scripts/WELCOME_MLOMEGA.ps1`, réutilise `setup_profile.ps
 - [ ] 4. Installation complète sans erreur bête : venvs (.venv + .venv-live, locks existants), ffmpeg, Qdrant natif, Ollama + pulls des modèles choisis, `fetch_models_v19.py` (+ `--device`), `.env` généré, `setup_profile` rempli des réponses, DOCTOR -Full en garde-fou final.
 - [ ] 5. Lancement PC guidé (les 3 commandes, ou un `START_ALL` qui les enchaîne) → health vert affiché.
 - [ ] 6. Téléphone : où prendre l'APK, `adb install` OU copie manuelle, permissions, pairing auto ; si lunettes : connexion XREAL à l'app.
-- [ ] 7. Choix du mot d'éveil (« comment appeler l'assistant ? ») — avertir : PAS un mot trop courant (faux déclenchements) ; écrit dans la config.
+- [ ] 7. Choix du mot d'éveil (« comment appeler l'assistant ? ») — avertir : PAS un mot trop courant (faux déclenchements) ; écrit dans la config. Inclut le chantier « wake word runtime » (demande utilisateur 2026-07-08) : aujourd'hui le mot est cuit dans l'APK (`_wakeWord` de l'asset) ; le rendre configurable sans rebuild — choisi à l'install, poussé par le PC au pairing (message contrôle → `KeywordEncoder` runtime, l'encodeur le permet déjà).
 - [ ] 8. Mini-tutoriel : ce que le système sait faire, commandes vocales clés, gestes, où voir les suggestions.
 - [ ] 9. Comment quitter proprement (LE BOUTON Terminer → close-day) et pourquoi.
 - [ ] 10. Le lendemain : comment relancer le matin, changer de modèles, commandes utiles de contrôle (DOCTOR, `/metrics`, `/session/status`, dashboard E50, où vit memory.db + conseil backup manuel).
