@@ -143,6 +143,27 @@ def _package_day(value: str | None) -> str:
     return post_stop_day(value)
 
 
+def _due_longitudinal_periods(day: str) -> list[str]:
+    """E54: which week/month rollups are due when closing ``day`` (YYYY-MM-DD).
+
+    ``week`` when ``day`` is a Sunday (ISO end-of-week), ``month`` when ``day`` is
+    the last day of its month — so each rollup consolidates a COMPLETE period. Any
+    parse issue yields no extra period (day-only, the safe default).
+    """
+    import datetime as _dt
+    try:
+        d = _dt.date.fromisoformat(str(day)[:10])
+    except Exception:
+        return []
+    due: list[str] = []
+    if d.isoweekday() == 7:  # Sunday closes the ISO week
+        due.append("week")
+    next_day = d + _dt.timedelta(days=1)
+    if next_day.month != d.month:  # last day of the month
+        due.append("month")
+    return due
+
+
 def _resolve_context(
     *,
     person_id: str,
@@ -424,7 +445,23 @@ def close_brainlive_day(
 
         def do_longitudinal() -> dict[str, Any]:
             from .brain2_longitudinal_cases_v17 import run_longitudinal_consolidation
-            return run_longitudinal_consolidation(person_id=person_id, period="day", run_date=day, use_llm=use_llm, run_periodic_mirror_layer=False, force_cases=False)
+            # E54: the day rollup runs at every close-day. When the closed day is the
+            # LAST day of an ISO week (Sunday) or of a month, the corresponding
+            # week/month rollup runs too — on the now-complete period, with the
+            # periodic mirror layer (parity with the V15/V18 nightly scheduler, which
+            # the PhoneOnly close-day path never invokes). Idempotent per period via
+            # the store's own keying, so a re-run does not duplicate.
+            out: dict[str, Any] = {
+                "day": run_longitudinal_consolidation(
+                    person_id=person_id, period="day", run_date=day,
+                    use_llm=use_llm, run_periodic_mirror_layer=False, force_cases=False)
+            }
+            for period in _due_longitudinal_periods(day):
+                out[period] = run_longitudinal_consolidation(
+                    person_id=person_id, period=period, run_date=day,
+                    use_llm=use_llm, run_periodic_mirror_layer=True, force_cases=False)
+            out["periods_run"] = ["day", *(_due_longitudinal_periods(day))]
+            return out
         heartbeat_execution_lease(execution_lease)
         longitudinal = _run_stage(run_id=run_id, name="longitudinal", fn=do_longitudinal)
         result["stages"]["longitudinal"] = longitudinal
