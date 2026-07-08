@@ -1,5 +1,17 @@
 # DECISIONS
 
+## 2026-07-08 — E55 : enregistrement clips vidéo + tiering (ADR)
+
+**Constat & décision.** Le replay ne servait qu'un diaporama de keyframes. Décision utilisateur : rejouer la scène en VRAIE vidéo, encode CPU (GPU 100 % vision/LLM), **mais jamais au détriment du live**. Le passthrough H.264 est impossible (aiortc livre des frames déjà décodées par PyAV dans `gateway._consume_track`), donc on ré-encode les frames déjà décodées pour la vision — seul l'encode s'ajoute, pas de décodage en plus. Coût CPU vérifié par bench (540p/12fps veryfast ≈ 1,8 % d'un cœur, ressource disjointe du GPU live) → GO.
+
+**Garantie « ne ralentit jamais le live » par construction.** (1) File bornée `queue.Queue(queue_max_frames)` DROP-on-full : `ClipRecorder.offer()` fait `put_nowait`, file pleine → jette la frame + compteur, retourne immédiatement ; jamais de back-pressure. Décimation fps par `capture_ns` avant la copie. (2) Encodeur ffmpeg en PROCESS séparé (libx264 veryfast, stdin rawvideo bgr24) possédé par un thread daemon dédié, priorité basse au spawn (Windows `BELOW_NORMAL_PRIORITY_CLASS` ; POSIX `nice(15)`) confirmée via `psutil`. Zéro GPU (pas de NVENC/AV1). (3) Auto-pause sur drops persistants (fenêtre glissante > `drop_pause_threshold`) → suspend, logge, le live continue, reprise après accalmie. (4) Best-effort total : ffmpeg absent/crash/pipe/DB captés, comptés, jamais propagés ; l'`offer` côté gateway est sous try/except → recorder None/désactivé = no-op.
+
+**Stockage & indexation.** Clips sous `<media_root>/clips/AAAA-MM-JJ/<session>_<t>.mp4` (réutilise `visionrt.media_root`, env `MLOMEGA_MEDIA` sinon `storage/media/`), segmentés (`segment_seconds`, défaut 120 s). À la clôture de chaque segment, indexation dans `visual_evidence_assets_v19` (`asset_kind='clip'`, `uri`, `sha256`, `captured_at`, `clip_id`, fenêtre en `metadata_json`) via les writers cœur existants (`ensure_v19_visual_schema` + `upsert`) — aucune modif du cœur. Les colonnes matchent la requête de `replay_service.assemble_bundle` → le replay les retrouve SANS changement. E54 (`media_retention.py`) reste seul responsable du budget/éviction.
+
+**Tiering close-day.** `tier_clips_close_day` réutilise `MediaRetention.inventory()` (notion « référencé » E54, non réinventée) : clip GARDÉ s'il est référencé OU si un événement `visual_events_v19` tombe dans sa fenêtre ; clip jeune (`<= keep_boring_days`), ennuyeux, non-référencé → DROP (fichier + ligne). Les vieux clips ennuyeux sont laissés au budget E54. Câblé dans `scripts/run_phoneonly_close_day.py` au gate `cleanup.eligible`, avant la rétention E54, best-effort strict.
+
+**Tests.** `tests/v19/test_clip_recorder.py` (6, dont ffmpeg RÉEL : MP4 encodé + retrouvé par la requête replay) + `test_media_retention.py` = 13 passed. **Réserve** : le chemin producteur `offer` depuis `_consume_track` et le coût CPU sous charge live continue ne sont validables qu'en vraie session WebRTC device (bench isolé fait).
+
 ## 2026-07-06 - E39 : `turns` sans colonne temporelle fictive
 
 Decision : aucun code ne doit dependre de `turns.created_at` ou `turns.absolute_start`, colonnes absentes du schema. Une preuve directement issue d'un tour peut porter `start_s`, offset relatif a sa conversation ; l'instant absolu doit etre resolu par la conversation ou rester inconnu. Le diff preexistant de `v18_close_day.py` est conserve hors du perimetre E39.

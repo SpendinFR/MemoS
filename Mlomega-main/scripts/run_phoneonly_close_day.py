@@ -114,8 +114,12 @@ def main() -> int:
     # the close-day status alone).
     cleanup = result.get("cleanup") if isinstance(result, dict) else None
     if isinstance(cleanup, dict) and bool(cleanup.get("eligible")):
+        # E55 tiering runs BEFORE E54 retention: it demotes boring/unreferenced
+        # clips to keyframes-only (deletes the MP4 + its asset row), then E54
+        # applies age-purge/budget on what remains. Both are best-effort.
+        clip_tiering = _run_clip_tiering(person_id=args.person_id)
         retention = _run_media_retention(person_id=args.person_id)
-        result = {**result, "media_retention": retention}
+        result = {**result, "clip_tiering": clip_tiering, "media_retention": retention}
 
     print(json.dumps(result, ensure_ascii=False))
     return 0 if str(result.get("status")) == "completed" else 2
@@ -138,6 +142,26 @@ def _run_media_retention(*, person_id: str) -> dict:
         sys.modules["v19_media_retention"] = module
         spec.loader.exec_module(module)
         return module.run_media_retention(person_id=person_id)
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)[:160]}
+
+
+def _run_clip_tiering(*, person_id: str) -> dict:
+    """Invoke the E55 clip tiering (services/live-pc/clip_recorder.py).
+
+    Loaded by file path — same pattern as media_retention. Never raises: any
+    error is returned as a small report so it cannot fail the close-day."""
+    try:
+        import importlib.util
+
+        mod_path = ROOT / "services" / "live-pc" / "clip_recorder.py"
+        spec = importlib.util.spec_from_file_location("v19_clip_recorder", mod_path)
+        if spec is None or spec.loader is None:
+            return {"status": "error", "error": "clip_recorder module not found"}
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["v19_clip_recorder"] = module
+        spec.loader.exec_module(module)
+        return module.tier_clips_close_day(person_id=person_id)
     except Exception as exc:
         return {"status": "error", "error": str(exc)[:160]}
 

@@ -53,6 +53,22 @@ storage_quota:
   transcode_audio: true  # post-close-day WAV -> Opus (~/10), reversible (keeps sha)
   day_buffer_warn_gb: 2  # day-buffer size WARN (purged at close-day)
   day_buffer_fail_gb: 5  # day-buffer size FAIL
+# E55: live clip recording + tiering. The recorder
+# (services/live-pc/clip_recorder.py) reads this block; any missing key falls
+# back to a coded default. CPU libx264 (GPU stays 100% for vision/LLM), bounded
+# queue drop-on-full + low-priority ffmpeg process → NEVER slows the live path.
+# Clips index into visual_evidence_assets_v19 (asset_kind='clip'); E54 owns the
+# disk budget/eviction. Bench (2026-07-08): 540p/12fps veryfast ~= 1.8% of one
+# core, zero GPU. GO confirmed.
+clip_recording:
+  enabled: true
+  segment_seconds: 120      # rotate a new MP4 every N seconds (clips 1-5 min)
+  target_fps: 12            # encode cadence (downsample from the 30fps live feed)
+  height: 540               # output height; width derived from the frame aspect
+  bitrate_kbps: 1000        # libx264 target bitrate (~1 Mbps)
+  queue_max_frames: 60      # bounded encode queue; full => DROP frame (never block live)
+  drop_pause_threshold: 120 # drops within the window => auto-pause recording
+  keep_boring_days: 2       # close-day: boring+unreferenced clips younger than this are dropped to keyframes-only
 gpu:
   max_live_vram_ratio: 0.90
   degrade_order: [detector_floor, pause_changes, refuse_vlm]

@@ -272,6 +272,7 @@ class AiortcIngress:
         source: str = "aiortc_ingress",
         max_frames: int | None = None,
         standalone_signaling: bool = True,
+        clip_recorder: Any | None = None,
     ) -> None:
         if not AIORTC_AVAILABLE:
             raise RuntimeError("aiortc is not installed; AiortcIngress is unavailable")
@@ -281,6 +282,10 @@ class AiortcIngress:
         self.source = source
         self.max_frames = max_frames
         self.standalone_signaling = standalone_signaling
+        # E55: optional live clip recorder. None/disabled → offer() is a no-op;
+        # it NEVER blocks the live loop (bounded queue, drop-on-full) and NEVER
+        # raises. Wired below in _consume_track after the existing bgr24 convert.
+        self._clip_recorder = clip_recorder
         self.bench = DecodeBench()
         self.recv_bench = DecodeBench()
         self.matcher = _EnvelopeMatcher()
@@ -501,6 +506,17 @@ class AiortcIngress:
             frame_id: str | None = None
             if frame.pts is not None and frame.time_base is not None:
                 capture_ns = int(float(frame.pts * frame.time_base) * 1_000_000_000)
+
+            # E55: hand the already-decoded bgr24 frame to the clip recorder.
+            # NON-BLOCKING drop-on-full by construction; a None/disabled recorder
+            # is a no-op and any error is swallowed — the live loop below is never
+            # slowed, back-pressured, or interrupted by the encoder.
+            recorder = self._clip_recorder
+            if recorder is not None:
+                try:
+                    recorder.offer(frame_bgr, capture_ns)
+                except Exception:
+                    pass
             # aiortc VideoFrames carry no app frame_id; association is by the
             # pending-envelope arrival order (frame_id embedded by sender) and
             # nearest capture timestamp fallback.
