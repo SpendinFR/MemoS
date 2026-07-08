@@ -60,16 +60,26 @@ dependencies {
     // frozen here at the first reproducible build (ADR docs/DECISIONS.md §E24).
     implementation("io.getstream:stream-webrtc-android:1.3.10")
 
-    // OkHttp for the signaling POST /webrtc/offer round-trip.
+    // OkHttp for the signaling POST /webrtc/offer round-trip and the E48-A
+    // device-model provisioning GETs (/models/device/*).
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // E48-A: pure-JVM tar.bz2 extraction for the sherpa ASR/KWS device models the
+    // phone downloads at first launch (ModelProvisioner). Same archive shape the
+    // PC's fetch_models_v19.py handles (bz2 + tar). Apache-2.0.
+    implementation("org.apache.commons:commons-compress:1.21")
 
     // Kotlin coroutines for the reconnect/backoff loop and stats polling.
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
     implementation("androidx.annotation:annotation:1.8.0")
 
-    // Pure-JVM unit tests for the SDP munging logic (no device required).
+    // Pure-JVM unit tests for the SDP munging logic + E48-A provisioning
+    // (no device required).
     testImplementation("junit:junit:4.13.2")
+    // The Android `org.json` on the unit-test classpath is an unmocked stub; the
+    // real implementation lets DeviceModelManifest.parse run on the JVM (E48-A).
+    testImplementation("org.json:json:20240303")
 }
 
 tasks.register<Copy>("exportUnityRelease") {

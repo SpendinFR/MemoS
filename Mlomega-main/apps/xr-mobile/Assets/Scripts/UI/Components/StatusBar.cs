@@ -25,6 +25,10 @@ namespace MLOmega.XR.UI.Components
         [SerializeField] private LiveTransportBridge _transport;
         [SerializeField] private XrSessionController _session;
 
+        [Tooltip("E48-A: device-model provisioning. When set, a discreet download " +
+                 "line appears while the two streaming ASR models are being fetched.")]
+        [SerializeField] private ModelProvisioningBridge _provisioning;
+
         [Header("Head-locked placement")]
         [Tooltip("Offset from the camera, in camera space (top-centre of the FOV).")]
         [SerializeField] private Vector3 _headOffset = new Vector3(0f, 0.24f, 1.0f);
@@ -57,6 +61,7 @@ namespace MLOmega.XR.UI.Components
             if (_camera == null) _camera = Camera.main;
             if (_transport == null) _transport = FindAnyObjectByType<LiveTransportBridge>();
             if (_session == null) _session = FindAnyObjectByType<XrSessionController>();
+            if (_provisioning == null) _provisioning = FindAnyObjectByType<ModelProvisioningBridge>();
         }
 
         private void Start()
@@ -113,7 +118,21 @@ namespace MLOmega.XR.UI.Components
             }
             _sb.Append(Battery());
 
+            // E48-A: discreet device-model download line while the streaming ASR
+            // models are fetched in the background (never blocks the session).
+            string dl = ProvisioningGlyph();
+            if (!string.IsNullOrEmpty(dl)) _sb.Append("  ").Append(dl);
+
             _panel.Body.text = _sb.ToString();
+        }
+
+        private string ProvisioningGlyph()
+        {
+            if (_provisioning == null || !_provisioning.IsProvisioning) return string.Empty;
+            ProvisioningProgress p = _provisioning.LastProgress;
+            string name = string.IsNullOrEmpty(p.ModelName) ? "models" : p.ModelName;
+            string pct = p.Fraction >= 0f ? $" {Mathf.RoundToInt(p.Fraction * 100f)}%" : string.Empty;
+            return $"<color=#B0C4DE>dl:{name}{pct}</color>";
         }
 
         private string NetGlyph()

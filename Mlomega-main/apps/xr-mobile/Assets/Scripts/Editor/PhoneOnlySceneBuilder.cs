@@ -40,6 +40,10 @@ namespace MLOmega.XR.Editor
             var pose = root.AddComponent<PosePublisher>();
             var capture = root.AddComponent<EyeCaptureSource>();
             var transport = root.AddComponent<LiveTransportBridge>();
+            // E48-A: install APK-embedded small models at first launch, then
+            // download any still-missing device models in the background.
+            var modelInstaller = root.AddComponent<StreamingAssetsModelInstaller>();
+            var provisioning = root.AddComponent<ModelProvisioningBridge>();
             var coordinator = root.AddComponent<PhoneOnlySessionCoordinator>();
             var preview = cameraGo.AddComponent<PhoneCameraPreview>();
 
@@ -91,6 +95,10 @@ namespace MLOmega.XR.Editor
             Assign(statusBar, "_camera", camera);
             Assign(statusBar, "_transport", transport);
             Assign(statusBar, "_session", session);
+            Assign(statusBar, "_provisioning", provisioning);
+            // E48-A provisioning wiring.
+            Assign(provisioning, "_pairing", pairing);
+            Assign(provisioning, "_installer", modelInstaller);
             Assign(entityHot, "_sceneCache", cache);
             Assign(entityHot, "_transport", transport);
             Assign(sceneDelta, "_transport", transport);

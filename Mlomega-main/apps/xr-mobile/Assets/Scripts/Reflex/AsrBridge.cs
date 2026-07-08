@@ -50,14 +50,21 @@ namespace MLOmega.XR.Reflex
     {
         [SerializeField] private MLOmegaConfig _config;
 
-        [Tooltip("Relative dir (under app files dir) of the streaming ASR model for the selected language.")]
-        [SerializeField] private string _asrModelRelativeDir = "reflex/asr";
+        [Tooltip("E48-A: relative dir (under getExternalFilesDir()/models/) of the EN " +
+                 "streaming ASR model. Matches the provisioned/extracted sherpa dir.")]
+        [SerializeField] private string _asrModelDirEn = "models/sherpa-onnx-streaming-zipformer-en-2023-06-26";
 
-        [Tooltip("Relative path of the Silero VAD model.")]
-        [SerializeField] private string _vadRelativePath = "reflex/silero_vad.onnx";
+        [Tooltip("E48-A: relative dir (under getExternalFilesDir()/models/) of the FR " +
+                 "streaming ASR model. Matches the provisioned/extracted sherpa dir.")]
+        [SerializeField] private string _asrModelDirFr = "models/sherpa-onnx-streaming-zipformer-fr-2023-04-14";
 
-        [Tooltip("Relative dir of the KeywordSpotter model.")]
-        [SerializeField] private string _kwsModelRelativeDir = "reflex/kws";
+        [Tooltip("Relative path (under getExternalFilesDir()/models/) of the Silero VAD " +
+                 "model. NOT in the device manifest yet — see DECISIONS §E48-A gap note.")]
+        [SerializeField] private string _vadRelativePath = "models/silero_vad.onnx";
+
+        [Tooltip("E48-A: relative dir (under getExternalFilesDir()/models/) of the " +
+                 "KeywordSpotter model. Matches the provisioned/extracted KWS dir.")]
+        [SerializeField] private string _kwsModelRelativeDir = "models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01";
 
         [Tooltip("E47-A: the live transport that owns the single microphone. On " +
                  "device, AsrKwsService consumes its PCM fan-out instead of opening " +
@@ -100,7 +107,19 @@ namespace MLOmega.XR.Reflex
             if (IsRunning) return;
             IsRunning = true;
 #if UNITY_ANDROID && !UNITY_EDITOR
-            StartAndroid();
+            // E48-A: if the sherpa models are still being provisioned (or absent),
+            // native construction throws. Reset IsRunning so the scheduler retries on
+            // a later tick / next launch once the models land — honest degraded, no
+            // stuck state, no crash. Capture (WebRTC uplink) is unaffected.
+            try
+            {
+                StartAndroid();
+            }
+            catch (Exception ex)
+            {
+                IsRunning = false;
+                Debug.LogWarning($"[AsrBridge] activation deferred (models not ready?): {ex.Message}");
+            }
 #else
             StartEditorMic();
 #endif
@@ -138,9 +157,17 @@ namespace MLOmega.XR.Reflex
             using var activity = new AndroidJavaClass("com.unity3d.player.UnityPlayer")
                 .GetStatic<AndroidJavaObject>("currentActivity");
             using var ctx = activity.Call<AndroidJavaObject>("getApplicationContext");
-            string filesDir = ctx.Call<AndroidJavaObject>("getFilesDir").Call<string>("getAbsolutePath");
+            // E48-A: models are provisioned to getExternalFilesDir()/models/ (same
+            // dir as gestures, mirroring the repo models/device/ layout). Fall back
+            // to getFilesDir() if the external dir is unavailable.
+            using var extDir = ctx.Call<AndroidJavaObject>("getExternalFilesDir", (object)null);
+            string filesDir = extDir != null
+                ? extDir.Call<string>("getAbsolutePath")
+                : ctx.Call<AndroidJavaObject>("getFilesDir").Call<string>("getAbsolutePath");
 
-            string lang = (_config != null && _config.AsrLanguage == ReflexAsrLanguage.Fr) ? "FR" : "EN";
+            bool isFr = _config != null && _config.AsrLanguage == ReflexAsrLanguage.Fr;
+            string lang = isFr ? "FR" : "EN";
+            string asrDir = isFr ? _asrModelDirFr : _asrModelDirEn;
             string wake = _config != null ? _config.WakeWord : "omega";
             long commandWindowMs = (long)((_config != null ? _config.CommandWindowSeconds : 6f) * 1000f);
             using var langEnum = new AndroidJavaClass("com.mlomega.xr.reflexvision.AsrLanguage")
@@ -152,7 +179,7 @@ namespace MLOmega.XR.Reflex
             using var cfg = new AndroidJavaClass("com.mlomega.xr.reflexvision.AsrKwsConfigFactory")
                 .CallStatic<AndroidJavaObject>("forUnity",
                     langEnum,
-                    filesDir + "/" + _asrModelRelativeDir,
+                    filesDir + "/" + asrDir,
                     filesDir + "/" + _vadRelativePath,
                     filesDir + "/" + _kwsModelRelativeDir,
                     wake,

@@ -35,12 +35,28 @@ namespace MLOmega.XR.Editor
         private const string ConfigPath = "Assets/Config/MLOmegaPhoneOnly.asset";
         private const string NdkVersion = "23.1.7779620";
 
+        // E48-A: the small device models embedded in the APK (StreamingAssets) so
+        // wake word + gestures work out-of-the-box. The two streaming ASR models
+        // (~300-380 MB each) are NOT embedded — the app downloads them at first
+        // launch (ModelProvisioner). These names must match the repo models/device/
+        // layout (extracted KWS dir + the two MediaPipe .task files).
+        private static readonly string[] EmbeddedModelNames =
+        {
+            "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01",
+            "hand_landmarker.task",
+            "gesture_recognizer.task",
+            // Silero VAD (~2 MB) gates the whole AsrKwsService stream — without it
+            // neither the wake word nor offline subtitles start.
+            "silero_vad.onnx",
+        };
+
         [MenuItem("MLOmega/Build PhoneOnly APK")]
         public static void BuildApk()
         {
             ConfigureExternalTools();
             ConfigurePlayerSettings();
             EnsureScene();
+            EmbedSmallDeviceModels();
             ApplyEndpointOverride();
 
             string outPath = Env("MLOMEGA_APK_OUT",
@@ -140,6 +156,89 @@ namespace MLOmega.XR.Editor
             PhoneOnlySceneBuilder.BuildScene();
             if (!File.Exists(ScenePath))
                 throw new Exception($"[AndroidBuild] PhoneOnly scene missing after build: {ScenePath}");
+        }
+
+        // --- embedded small device models (E48-A) ---------------------------
+        // Copy KWS + the two MediaPipe .task files from the repo models/device/
+        // into Assets/StreamingAssets/models/ so they ship inside the APK. At
+        // first launch the app copies StreamingAssets/models -> files/models
+        // before the ModelProvisioner computes what is still missing (see
+        // StreamingAssetsModelInstaller). Absent source = skip + warn (never fail
+        // the build — the background fetch tolerates their absence).
+        private static void EmbedSmallDeviceModels()
+        {
+            // Repo root is two levels above the Unity project (apps/xr-mobile).
+            string repoRoot = Path.GetFullPath(Path.Combine(
+                Application.dataPath, "..", "..", ".."));
+            string src = Path.Combine(repoRoot, "models", "device");
+            string dst = Path.Combine(Application.dataPath, "StreamingAssets", "models");
+            Directory.CreateDirectory(dst);
+
+            foreach (string name in EmbeddedModelNames)
+            {
+                string from = Path.Combine(src, name);
+                string to = Path.Combine(dst, name);
+                if (Directory.Exists(from))
+                {
+                    CopyDirectory(from, to);
+                    Debug.Log($"[AndroidBuild] embedded model dir: {name}");
+                }
+                else if (File.Exists(from))
+                {
+                    File.Copy(from, to, overwrite: true);
+                    Debug.Log($"[AndroidBuild] embedded model file: {name}");
+                }
+                else
+                {
+                    Debug.LogWarning(
+                        $"[AndroidBuild] embedded model absent, skipped: {from} " +
+                        "(run scripts/fetch_models_v19.py --device). It will be " +
+                        "downloaded at first launch instead.");
+                }
+            }
+
+            // Write an index of every embedded file (relative to StreamingAssets/models)
+            // so the runtime installer can enumerate them: on Android StreamingAssets
+            // lives inside the APK jar and cannot be directory-listed at runtime, so
+            // it reads this index and UnityWebRequest-copies each listed file.
+            WriteEmbeddedIndex(dst);
+            AssetDatabase.Refresh();
+        }
+
+        private static void WriteEmbeddedIndex(string modelsDir)
+        {
+            var rel = new System.Collections.Generic.List<string>();
+            if (Directory.Exists(modelsDir))
+            {
+                foreach (string file in Directory.GetFiles(modelsDir, "*", SearchOption.AllDirectories))
+                {
+                    string r = file.Substring(modelsDir.Length + 1).Replace('\\', '/');
+                    if (r.Equals("index.txt", StringComparison.OrdinalIgnoreCase)) continue;
+                    rel.Add(r);
+                }
+            }
+            rel.Sort(StringComparer.Ordinal);
+            File.WriteAllText(Path.Combine(modelsDir, "index.txt"), string.Join("\n", rel));
+            Debug.Log($"[AndroidBuild] embedded model index: {rel.Count} file(s)");
+        }
+
+        private static void CopyDirectory(string from, string to)
+        {
+            Directory.CreateDirectory(to);
+            foreach (string file in Directory.GetFiles(from))
+            {
+                // Skip test wavs / readmes to keep the embedded footprint minimal;
+                // sherpa only needs the onnx + tokens (+ keywords for KWS).
+                string fname = Path.GetFileName(file);
+                if (fname.Equals("README.md", StringComparison.OrdinalIgnoreCase)) continue;
+                File.Copy(file, Path.Combine(to, fname), overwrite: true);
+            }
+            foreach (string dir in Directory.GetDirectories(from))
+            {
+                string dname = Path.GetFileName(dir);
+                if (dname.Equals("test_wavs", StringComparison.OrdinalIgnoreCase)) continue;
+                CopyDirectory(dir, Path.Combine(to, dname));
+            }
         }
 
         // --- endpoint injection ---------------------------------------------

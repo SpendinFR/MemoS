@@ -140,7 +140,18 @@ namespace MLOmega.XR.Reflex
             IsRunning = true;
             _readbackAccum = _readbackPeriod; // feed the first frame immediately
 #if UNITY_ANDROID && !UNITY_EDITOR
-            StartAndroid();
+            // E48-A: the MediaPipe .task bundle may still be provisioning (or absent);
+            // native construction then throws. Reset IsRunning so the scheduler retries
+            // later / next launch once the model lands — honest degraded, no crash.
+            try
+            {
+                StartAndroid();
+            }
+            catch (Exception ex)
+            {
+                IsRunning = false;
+                Debug.LogWarning($"[GestureBridge] activation deferred (model not ready?): {ex.Message}");
+            }
 #else
             Debug.Log("[GestureBridge] editor: simulated gestures (mouse wheel = pinch zoom, " +
                       "M = menu, H = hide).");
