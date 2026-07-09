@@ -9,7 +9,9 @@
         "MLOmega.XR.Reflex",
         "MLOmega.Contracts",
         "Unity.TextMeshPro",
-        "UnityEngine.UI"
+        "UnityEngine.UI",
+        "Unity.XR.Management",
+        "Unity.XR.Management.Editor"
     ],
     "includePlatforms": [
         "Editor"

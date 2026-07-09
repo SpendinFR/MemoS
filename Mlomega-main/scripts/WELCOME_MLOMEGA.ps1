@@ -117,13 +117,12 @@ if ($glasses -eq "oui") {
   if ($brand -eq "xreal") {
     $display = "xreal_one_pro"
     $capture = "xreal_eye"
-    Warn "Support XREAL A VENIR (E49 pas encore fait)."
-    Hint "Le SDK XREAL (compte developpeur) n'est pas dans le projet. Depose-le dans"
-    Hint "le projet Unity puis rebuild l'APK profil lunettes. EN ATTENDANT, l'app"
-    Hint "tourne en PhoneOnly : tout le reste de l'install PC ci-dessous est IDENTIQUE."
-    Remember "Lunettes XREAL demandees : support E49 a venir (depose le SDK XREAL puis rebuild). L'app tourne en PhoneOnly en attendant."
-    $display = "phone_only"   # profil effectif tant que E49 n'est pas fait
-    $capture = "phone_camera"
+    Ok "Support XREAL disponible (E49 : adaptateur cable au SDK 3.1.0 + build lunettes prets)."
+    Hint "L'APK lunettes (mlomega-xreal-g1.apk) se BUILDE toi-meme : le SDK XREAL est"
+    Hint "proprietaire (non redistribue dans le repo). Depose com.xreal.xr.tar.gz dans"
+    Hint "apps/xr-mobile/Packages/xreal-sdk/ puis lance le build lunettes (menu Unity"
+    Hint "MLOmega > XREAL > 2, ou -executeMethod MLOmega.XR.Editor.AndroidBuildXreal.BuildApk)."
+    Remember "Lunettes XREAL : builde l'APK via AndroidBuildXreal.BuildApk (SDK dans Packages/xreal-sdk/). Le reste de l'install PC est identique au PhoneOnly."
   } else {
     Warn "Marque non supportee (Meta/Spectacles plus tard). On part sur PhoneOnly."
   }
@@ -495,7 +494,9 @@ Hint "- Accorde les permissions MICRO et CAMERA (indispensables)."
 Hint "- Le pairing avec le PC est automatique s'ils sont sur le meme Wi-Fi et le port 8710 ouvert."
 Hint "- Au 1er lancement, l'app telecharge ses modeles device depuis le PC (ASR/KWS/traduction) — Wi-Fi LAN, une seule fois."
 if ($display -eq "xreal_one_pro") {
-  Warn "Lunettes XREAL : connexion lunettes -> app (placeholder E49, pas encore livre)."
+  Say  "Lunettes XREAL :"
+  Hint "- APK lunettes : apps\xr-mobile\build\android\mlomega-xreal-g1.apk (a builder via AndroidBuildXreal si absent)."
+  Hint "- Installe-la sur le telephone, branche les lunettes (USB-C), lance l'app : rendu stereo + camera Eye."
 }
 
 # --- Enregistrement des choix (pas de mot d'eveil : cuit dans l'APK) ---

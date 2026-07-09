@@ -23,6 +23,7 @@ using System.Diagnostics;
 using UnityEngine;
 #if XREAL_SDK_PRESENT
 using Unity.XR.XREAL;
+using UnityEngine.XR;
 #endif
 
 namespace MLOmega.XR.Core
@@ -47,7 +48,10 @@ namespace MLOmega.XR.Core
         private long _lastNativeTimestamp = -1;
 
 #if XREAL_SDK_PRESENT
-        private RGBCameraTexture _rgbCamera;
+        // SDK 3.1.0: the RGB Eye camera is a singleton MonoBehaviour. Frame arrival is
+        // signalled by the OnRGBCameraUpdate action (there is no DidUpdateThisFrame).
+        private XREALRGBCameraTexture _rgbCamera;
+        private volatile bool _frameDirty;
 #endif
 
         public DeviceConnectionState ConnectionState => _state;
@@ -103,7 +107,7 @@ namespace MLOmega.XR.Core
                 }
                 _yuvMaterial = new Material(yuv);
 
-                DeviceName = XREALPlugin.GetDeviceName() ?? "XREAL One";
+                DeviceName = XREALPlugin.GetDeviceType().ToString();
                 SetState(DeviceConnectionState.Connected);
             }
             catch (Exception ex)
@@ -130,8 +134,22 @@ namespace MLOmega.XR.Core
 #if XREAL_SDK_PRESENT
             try
             {
-                _rgbCamera = new RGBCameraTexture();
-                _rgbCamera.Play();
+                // SingletonMonoBehaviour: CreateSingleton() spawns the GameObject +
+                // component the first time and returns the live instance.
+                _rgbCamera = XREALRGBCameraTexture.CreateSingleton();
+                _rgbCamera.OnRGBCameraUpdate += OnRgbCameraUpdate;
+                _frameDirty = false;
+                bool started = _rgbCamera.StartCapture();
+                if (!started)
+                {
+                    // Eye may be physically absent on this unit (One vs One Pro).
+                    _rgbCamera.OnRGBCameraUpdate -= OnRgbCameraUpdate;
+                    _rgbCamera = null;
+                    _eyeActive = false;
+                    UnityEngine.Debug.LogWarning(
+                        "[XrealDeviceAdapter] StartCapture returned false (Eye absent?) — pose-only plan B.");
+                    return;
+                }
                 _eyeActive = true;
                 _frameId = 0;
                 _lastNativeTimestamp = -1;
@@ -139,9 +157,9 @@ namespace MLOmega.XR.Core
             }
             catch (Exception ex)
             {
-                // Eye may be physically absent on this unit (One vs One Pro). Do not
-                // crash the gate: keep pose-only and let the overlay show Eye=KO.
+                // Do not crash the gate: keep pose-only and let the overlay show Eye=KO.
                 _eyeActive = false;
+                if (_rgbCamera != null) { _rgbCamera.OnRGBCameraUpdate -= OnRgbCameraUpdate; }
                 _rgbCamera = null;
                 UnityEngine.Debug.LogWarning(
                     $"[XrealDeviceAdapter] Eye capture unavailable (plan B pose-only): {ex.Message}");
@@ -161,7 +179,11 @@ namespace MLOmega.XR.Core
 #if XREAL_SDK_PRESENT
             try
             {
-                _rgbCamera?.Stop();
+                if (_rgbCamera != null)
+                {
+                    _rgbCamera.OnRGBCameraUpdate -= OnRgbCameraUpdate;
+                    _rgbCamera.StopCapture();
+                }
             }
             catch (Exception ex)
             {
@@ -170,6 +192,7 @@ namespace MLOmega.XR.Core
             finally
             {
                 _rgbCamera = null;
+                _frameDirty = false;
             }
 #endif
         }
@@ -181,7 +204,7 @@ namespace MLOmega.XR.Core
             {
                 return PoseSample.Untracked;
             }
-            bool tracking = XREALPlugin.IsTracking();
+            bool tracking = ReadHeadTracked();
             return new PoseSample(_headTransform.position, _headTransform.rotation, tracking);
 #else
             return PoseSample.Untracked;
@@ -197,14 +220,15 @@ namespace MLOmega.XR.Core
             }
             try
             {
-                if (!_rgbCamera.DidUpdateThisFrame)
+                if (!_frameDirty)
                 {
                     return null;
                 }
+                _frameDirty = false;
 
                 // YUV_420_888 -> RGB via shader blit. GetYUVFormatTextures() returns
                 // the three planes {Y, U, V}; the material samples all three.
-                Texture[] planes = _rgbCamera.GetYUVFormatTextures();
+                Texture2D[] planes = _rgbCamera.GetYUVFormatTextures();
                 if (planes == null || planes.Length < 3 || planes[0] == null)
                 {
                     return null;
@@ -219,7 +243,9 @@ namespace MLOmega.XR.Core
                 _yuvMaterial.SetTexture("_VTex", planes[2]);
                 Graphics.Blit(null, _rgbTarget, _yuvMaterial);
 
-                long nativeTs = _rgbCamera.GetFrameTimestampNs();
+                // GetTimeStamp() is in the SDK's native units (monotonic); used for
+                // frame ordering / relative timing, not as a wall-clock value.
+                long nativeTs = (long)_rgbCamera.GetTimeStamp();
                 if (nativeTs > 0 && nativeTs != _lastNativeTimestamp)
                 {
                     _lastNativeTimestamp = nativeTs;
@@ -238,6 +264,20 @@ namespace MLOmega.XR.Core
             return null;
 #endif
         }
+
+#if XREAL_SDK_PRESENT
+        // Set by the SDK when a new RGB frame is ready; consumed in TryGetLatestFrame.
+        private void OnRgbCameraUpdate() => _frameDirty = true;
+
+        // Provider-agnostic head tracking state via Unity XR (no internal SDK API).
+        private static bool ReadHeadTracked()
+        {
+            InputDevice head = InputDevices.GetDeviceAtXRNode(XRNode.Head);
+            return head.isValid
+                && head.TryGetFeatureValue(CommonUsages.isTracked, out bool tracked)
+                && tracked;
+        }
+#endif
 
         private void EnsureTarget(int width, int height)
         {

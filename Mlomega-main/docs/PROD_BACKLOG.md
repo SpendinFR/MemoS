@@ -248,13 +248,16 @@ Décision utilisateur 2026-07-08 : le mode aide universel « soit on le fait bie
    - Limite documentée (ADR) : le cue est surtout INTRA-session (`zone-N` de la carte de pose, stable en session seulement) ; le cross-session s'activera quand un `place_hint` stable sera fourni en live — même limite que `ReflexSignal.ZoneChange` device.
    - (Réserve non décidée, notée pour plus tard : les 4 petits réflexes proposés — « on t'appelle » via KWS prénom, checklist de sortie porte/objets, obstacle tête baissée, minuteur contextuel.)
 
-## E49 — Lunettes XREAL (gate G1 matériel) (À FAIRE)
+## E49 — Lunettes XREAL (gate G1) (CODE FAIT — 2026-07-09 ; validation sur lunettes physiques en attente)
 
-- [ ] Obtenir le SDK XREAL (compte développeur utilisateur) et le déposer dans le projet Unity (le manifest PhoneOnly reste propre — la réf XREAL redevient active seulement pour ce build).
-- [ ] `XrealDeviceAdapter` (écrit depuis E22) : compiler, rendu stéréo, caméra Eye = `EyeCaptureSource` ; mêmes contrats/SceneCache/skills (aucun fork de code produit).
-- [ ] Rebuild APK profil lunettes ; gates G1 réels : affichage stéréo, caméra Eye, pose, sessions longues, budget batterie.
-- [ ] Plan B documenté si l'accès caméra Eye coince (handoff §risques) : one-xr + caméra S25 en attendant.
-- Test : session réelle lunettes → mêmes scénarios que FIRST_TRY_ANDROID (PersonTag, sous-titres, gestes) en stéréo.
+SDK XREAL 3.1.0 fourni par l'utilisateur, intégré et APK lunettes **buildée** (`mlomega-xreal-g1.apk`, ~191 Mo).
+
+- [x] SDK déposé dans `apps/xr-mobile/Packages/xreal-sdk/com.xreal.xr.tar.gz` (git-ignoré — propriétaire) ; le manifest COMMITÉ reste XREAL-free (un clone PhoneOnly sans SDK compile ; la dép `com.xreal.xr` est injectée AU BUILD par `AndroidBuildXreal`).
+- [x] `XrealDeviceAdapter` **recâblé sur l'API réelle du SDK 3.1.0** (l'ancien code E22 visait des noms supposés) : `XREALRGBCameraTexture.CreateSingleton()` (pas `new RGBCameraTexture`), `StartCapture/StopCapture` (pas Play/Stop), callback `OnRGBCameraUpdate` (pas `DidUpdateThisFrame`), `GetTimeStamp` (pas `GetFrameTimestampNs`), `GetDeviceType` (pas `GetDeviceName`), tracking via `UnityEngine.XR.InputDevices` (API standard). `Core.asmdef` référence l'assembly XREAL par GUID (warning inoffensif sur un clone sans SDK, code compilé out par le define).
+- [x] Build lunettes reproductible : `AndroidBuildXreal.cs` (menu `MLOmega > XREAL`) — injecte la dép SDK, pose le define `XREAL_SDK_PRESENT` (retire `MLOMEGA_PHONE_ONLY`), active le **loader XREAL** pour Android (XR Plug-in Management), IL2CPP/ARM64, appId `com.mlomega.xr.glasses`, build la scène G1Gate → `build/android/mlomega-xreal-g1.apk`. **EditMode compile OK, IL2CPP OK, APK produite.**
+- [x] Installateur (WELCOME) : branche lunettes → APK lunettes (comment la builder) au lieu du placeholder.
+- [ ] **Gates G1 RÉELS sur lunettes physiques (en attente du matériel)** : affichage stéréo, caméra Eye (RGB → YUV→RGB shader), pose 6DoF, sessions longues, budget batterie. Plan B si l'Eye est absente (One vs One Pro) : pose-only (déjà géré dans l'adaptateur).
+- Test device : session réelle lunettes → mêmes scénarios que FIRST_TRY_ANDROID (PersonTag, sous-titres, gestes) en stéréo.
 
 ## E50 — Dashboard mémoire lecture seule (intégrer + adapter MemoryLight) (À FAIRE)
 

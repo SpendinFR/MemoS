@@ -14,5 +14,5 @@
     "com.unity.modules.imageconversion": "1.0.0",
     "com.unity.modules.subsystems": "1.0.0"
   },
-  "_comment_xreal": "PhoneOnly opens without XREAL. For the separate XREAL gate, download SDK 3.1.0 and add com.xreal.xr=file:xreal-sdk/com.xreal.xr.tar.gz to dependencies plus the XREAL_SDK_PRESENT define."
+  "_comment_xreal": "E49: XREAL SDK 3.1.0 installed as a local tarball (Packages/xreal-sdk/, git-ignored — proprietary, user-provided). The glasses build enables the XREAL_SDK_PRESENT define (AndroidBuildXreal). PhoneOnly build leaves it off."
 }

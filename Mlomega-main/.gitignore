@@ -42,3 +42,14 @@ apps/xr-mobile/.utmp/
 # E48-A: APK-embedded small models are regenerated at build time from models/device/
 apps/xr-mobile/Assets/StreamingAssets/models/
 apps/xr-mobile/Assets/StreamingAssets/models.meta
+
+# E49: proprietary XREAL SDK tarball (user-provided, ~248 MB) — not committed
+apps/xr-mobile/Packages/xreal-sdk/
+
+# E49: XREAL XR loader/settings generated at glasses-build time (recreated by AndroidBuildXreal)
+apps/xr-mobile/Assets/XR/Loaders/
+apps/xr-mobile/Assets/XR/Settings/
+apps/xr-mobile/Assets/Scenes/G1Gate.unity
+apps/xr-mobile/Assets/Scenes/G1Gate.unity.meta
+apps/xr-mobile/Assets/XR/Loaders.meta
+apps/xr-mobile/Assets/XR/Settings.meta
