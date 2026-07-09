@@ -1,5 +1,15 @@
 # DECISIONS
 
+## 2026-07-09 — E51 : installateur / guide de bienvenue (ADR)
+
+`scripts/WELCOME_MLOMEGA.ps1` ORCHESTRE les scripts existants (INSTALL/setup_profile/fetch_models/START_QDRANT/RUN/DOCTOR) — il ne réimplémente aucune install ; params vérifiés dans le code réel avant appel. 3 modes : interactif, `-Defaults`, `-DryRun` (aucun processus lourd). Idempotent, tolérant (Test-Path + WARN + consigne de reprise, jamais de stacktrace brute) ; clés (HF/OpenAI/Gemini) écrites dans `.env`, jamais loguées.
+
+**Encodage (piège PS 5.1).** Le fichier DOIT être UTF-8 **avec BOM** : sans BOM, PowerShell 5.1 lit un `.ps1` en ANSI/Windows-1252, mange les `—`/accents et un octet mal lu produit un guillemet parasite → erreur de parsing. Règle générale pour tout `.ps1` du projet contenant du non-ASCII. Validé par `Parser::ParseFile` (0 erreur) + dry-run exit 0.
+
+**Mot d'éveil — question RETIRÉE (décision utilisateur).** Le mot est cuit dans l'APK (`_wakeWord`, « omega ») et non modifiable sans rebuild. On n'ajoute pas de fausse question à l'install ; le mini-tuto mentionne « omega » (gated). La question reviendra avec le chantier **« wake word runtime »** (backlog E51 : mot choisi à l'install → poussé par le PC au pairing → `KeywordEncoder` runtime).
+
+**XREAL avant E49.** L'installateur pose la question lunettes et gère la branche XREAL en placeholder honnête (« dépose ton SDK puis rebuild ; PhoneOnly en attendant ») — l'install PC est identique, donc E49 ne remplira qu'une branche plus tard. Aucun fichier existant n'a été modifié (seuls `WELCOME_MLOMEGA.ps1` + `WELCOME.md` créés), donc zéro risque de régression sur le code livré.
+
 ## 2026-07-08 — E55 : enregistrement clips vidéo + tiering (ADR)
 
 **Constat & décision.** Le replay ne servait qu'un diaporama de keyframes. Décision utilisateur : rejouer la scène en VRAIE vidéo, encode CPU (GPU 100 % vision/LLM), **mais jamais au détriment du live**. Le passthrough H.264 est impossible (aiortc livre des frames déjà décodées par PyAV dans `gateway._consume_track`), donc on ré-encode les frames déjà décodées pour la vision — seul l'encode s'ajoute, pas de décodage en plus. Coût CPU vérifié par bench (540p/12fps veryfast ≈ 1,8 % d'un cœur, ressource disjointe du GPU live) → GO.

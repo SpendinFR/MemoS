@@ -273,21 +273,21 @@ Source : `memorylight_dashboard_readonly` v2 (Streamlit une page, SQLite `mode=r
 - [ ] Rebrancher le chat sur le routeur Brain2 actuel (`ask_brain2` / CLI du cœur) au lieu de v14-ask si la signature a bougé ; garder le verrou écriture.
 - Test : dashboard lancé sur la base réelle post-première-session → chaque section s'affiche sans erreur ; aucune écriture DB (mode=ro prouvé).
 
-## E51 — Installateur / guide de bienvenue interactif (n'importe qui installe en 2 clics) (À FAIRE)
+## E51 — Installateur / guide de bienvenue interactif (FAIT — 2026-07-09, install réelle sur machine propre en attente)
 
-Un assistant unique (`scripts/WELCOME_MLOMEGA.ps1`, réutilise `setup_profile.ps1`/`INSTALL_MLOMEGA_V19_WINDOWS.ps1`/`DOCTOR` existants — ne PAS réécrire l'install, l'orchestrer) qui déroule dans l'ordre :
+`scripts/WELCOME_MLOMEGA.ps1` (+ `WELCOME.md` à la racine) : assistant unique qui ORCHESTRE les scripts existants (n'en réécrit aucun). 3 modes : interactif (défaut), `-Defaults` (valeurs sûres, non bloquant), `-DryRun` (déroule sans rien installer). UTF-8 **avec BOM** (PS 5.1). Params des scripts appelés vérifiés dans le code réel. Dry-run exécuté → exit 0, déroulé des 9 étapes validé (détection RTX 3070 8 Go OK, set de modèles adapté).
 
-- [ ] 1. Matériel : « Avez-vous des lunettes ? » Oui → choix XREAL uniquement (Spectacles/Meta plus tard) / Non → mode PhoneOnly. Puis « Quel téléphone ? » → Android (S25/OnePlus… même APK).
-- [ ] 2. Scan machine (GPU/VRAM/RAM/disque via nvidia-smi & co) → proposer le set de modèles adapté (les plus utiles seulement, ex. Qwen3.5 4b live + 9b deep sur 8 Go VRAM ; dégradé sinon) ; option API cloud (OpenAI/Gemini) = opt-in avec saisie de clé.
-- [ ] 3. Token Hugging Face demandé (pyannote) avec lien direct + contrôle de validité.
-- [ ] 4. Installation complète sans erreur bête : venvs (.venv + .venv-live, locks existants), ffmpeg, Qdrant natif, Ollama + pulls des modèles choisis, `fetch_models_v19.py` (+ `--device`), `.env` généré, `setup_profile` rempli des réponses, DOCTOR -Full en garde-fou final.
-- [ ] 5. Lancement PC guidé (les 3 commandes, ou un `START_ALL` qui les enchaîne) → health vert affiché.
-- [ ] 6. Téléphone : où prendre l'APK, `adb install` OU copie manuelle, permissions, pairing auto ; si lunettes : connexion XREAL à l'app.
-- [ ] 7. Choix du mot d'éveil (« comment appeler l'assistant ? ») — avertir : PAS un mot trop courant (faux déclenchements) ; écrit dans la config. Inclut le chantier « wake word runtime » (demande utilisateur 2026-07-08) : aujourd'hui le mot est cuit dans l'APK (`_wakeWord` de l'asset) ; le rendre configurable sans rebuild — choisi à l'install, poussé par le PC au pairing (message contrôle → `KeywordEncoder` runtime, l'encodeur le permet déjà).
-- [ ] 8. Mini-tutoriel : ce que le système sait faire, commandes vocales clés, gestes, où voir les suggestions.
-- [ ] 9. Comment quitter proprement (LE BOUTON Terminer → close-day) et pourquoi.
-- [ ] 10. Le lendemain : comment relancer le matin, changer de modèles, commandes utiles de contrôle (DOCTOR, `/metrics`, `/session/status`, dashboard E50, où vit memory.db + conseil backup manuel).
-- Test : dry-run complet sur machine « propre » simulée (ou VM) → zéro étape manuelle non guidée ; chaque échec d'étape donne une consigne claire, pas une stacktrace.
+- [x] 1. Matériel : lunettes XREAL / Non (PhoneOnly). **Branche XREAL honnête** : enregistre le choix + explique « support E49 à venir, dépose ton SDK puis rebuild ; en attendant PhoneOnly », l'install PC reste identique. Téléphone → Android (même APK).
+- [x] 2. Scan machine (nvidia-smi VRAM / RAM / disque) → set de modèles selon la VRAM (≥8 Go : qwen3.5:4b + 9b + moondream ; 6-8 / <6 / CPU = dégradés proposés). Cloud opt-in OpenAI/Gemini avec saisie de clé (écrite dans `.env`, jamais loguée) + politique de données.
+- [x] 3. Token Hugging Face (pyannote) : liens directs (compte, conditions du modèle, token read), contrôle du format `hf_`, écrit dans `.env` (WARN honnête si absent).
+- [x] 4. Installation complète idempotente : `INSTALL_MLOMEGA_V19_WINDOWS.ps1 -SkipDoctor`, check/winget ffmpeg, `ollama pull` des modèles choisis, `fetch_models_v19.py --device`, `.env` généré depuis le template (placeholders `__PROJECT_ROOT__`/`__HF_TOKEN__`/`__PHONE_TOKEN__` substitués, token téléphone auto), `setup_profile.ps1` alimenté par les réponses, `DOCTOR -Full` en garde-fou. Chaque étape : Test-Path + message clair + reprise, jamais de stacktrace brute.
+- [x] 5. Lancement PC guidé (START_QDRANT + rappel `ollama serve` + RUN_MLOMEGA_V19 `-LivePhone -BindHost 0.0.0.0 -Port 8710`) + rappels pare-feu (port 8710 réseau privé) et même Wi-Fi.
+- [x] 6. Téléphone : APK (adb `install -r` ou copie), permissions micro/caméra, pairing auto, téléchargement auto des modèles device ; branche lunettes = placeholder E49. Choix enregistrés dans `configs/welcome_choices.txt`.
+- [x] 7. ~~Choix du mot d'éveil~~ **RETIRÉ (décision utilisateur 2026-07-09)** : le mot est cuit dans l'APK (« omega »), non modifiable sans rebuild. La question reviendra seulement avec le chantier **« wake word runtime »** (mot choisi à l'install, poussé par le PC au pairing → `KeywordEncoder` runtime). Le mini-tuto mentionne juste « omega » (mode gated).
+- [x] 8. Mini-tutoriel : ce que fait le système, commandes vocales clés, gestes (paume/balayage/pincement), où voir les suggestions.
+- [x] 9. Comment quitter (LE BOUTON Terminer → close-day) et pourquoi (consolidation ; une déconnexion ne consolide pas).
+- [x] 10. Le lendemain : relancer, changer de modèles, commandes de contrôle (DOCTOR, `/metrics`, `/session/status`, dashboard `RUN_DASHBOARD.ps1` → :8720, où vit `memory.db` + conseil backup manuel).
+- [x] Test : dry-run complet exécuté (exit 0), zéro étape non guidée, chaque échec donne une consigne claire. **Reste** : une install réelle de bout en bout sur machine propre (non exécutée ici — trop lourd/destructif) ; le chantier « wake word runtime » (branche 7).
 
 ## E53 — Mode aide universel, version complète (DIFFÉRÉ — décision 2026-07-08)
 
