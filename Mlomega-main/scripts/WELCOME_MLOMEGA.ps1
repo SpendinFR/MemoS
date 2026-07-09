@@ -502,8 +502,15 @@ Remember "Pare-feu : ouvre le port 8710 (profil reseau prive) et garde PC+teleph
 # ETAPE 6 — TELEPHONE
 # ========================================================================
 Step "6/9" "Telephone (APK, install, permissions, pairing)"
-$apkPath = "apps\xr-mobile\build\android\mlomega-phoneonly.apk"
-Say  "APK PhoneOnly : $apkPath"
+# E49/E58 : l'APK depend du choix materiel (lunettes vs telephone).
+if ($display -eq "xreal_one_pro") {
+  $apkPath = "apps\xr-mobile\build\android\mlomega-xreal-g1.apk"
+  Say  "APK LUNETTES (XREAL) : $apkPath"
+  Hint "(a builder via AndroidBuildXreal si absente — SDK dans Packages\xreal-sdk\)"
+} else {
+  $apkPath = "apps\xr-mobile\build\android\mlomega-phoneonly.apk"
+  Say  "APK PhoneOnly : $apkPath"
+}
 Say  "Deux facons d'installer :"
 Hint "A) Avec un cable + adb (developpeur) :  adb install -r `"$apkPath`""
 Hint "B) Copie manuelle : transfere l'APK sur le telephone et ouvre-le (autorise l'install depuis cette source)."
@@ -512,9 +519,7 @@ Hint "- Accorde les permissions MICRO et CAMERA (indispensables)."
 Hint "- Le pairing avec le PC est automatique s'ils sont sur le meme Wi-Fi et le port 8710 ouvert."
 Hint "- Au 1er lancement, l'app telecharge ses modeles device depuis le PC (ASR/KWS/traduction) — Wi-Fi LAN, une seule fois."
 if ($display -eq "xreal_one_pro") {
-  Say  "Lunettes XREAL :"
-  Hint "- APK lunettes : apps\xr-mobile\build\android\mlomega-xreal-g1.apk (a builder via AndroidBuildXreal si absent)."
-  Hint "- Installe-la sur le telephone, branche les lunettes (USB-C), lance l'app : rendu stereo + camera Eye."
+  Hint "- Lunettes : installe l'APK ci-dessus, branche les lunettes en USB-C, lance l'app -> rendu stereo + camera Eye."
 }
 
 # --- Enregistrement des choix (pas de mot d'eveil : cuit dans l'APK) ---
