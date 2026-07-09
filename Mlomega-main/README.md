@@ -69,7 +69,19 @@ Règle d'or : une frame ne devient **jamais** un souvenir directement — elle p
 
 ## 4. Installation (PC)
 
-> Un **installateur guidé en 2 clics** est prévu (E51). En attendant, l'installation manuelle :
+> **Le plus simple — l'assistant guidé** ([WELCOME.md](WELCOME.md)) : il fait tout dans
+> l'ordre (scan matériel, `.venv` cœur + `.venv-live`, ffmpeg, Qdrant, modèles Ollama dont
+> les VLM live + nuit, modèles device, `.env`, profil, DOCTOR), puis explique le lancement,
+> le téléphone et l'entretien :
+> ```powershell
+> powershell -ExecutionPolicy Bypass -File scripts\WELCOME_MLOMEGA.ps1
+> #  -DryRun pour voir le déroulé sans rien installer · -Defaults pour non interactif
+> ```
+> Prérequis qu'il ne peut pas poser à ta place : **Python 3.11 64-bit** et l'**appli Ollama**
+> (il les détecte et te guide). Aucun **Unity** requis pour utiliser l'app — Unity ne sert
+> qu'à *recompiler* l'APK (§7).
+
+Ou l'installation **manuelle**, étape par étape :
 
 ```powershell
 git clone https://github.com/SpendinFR/MemoS.git
@@ -81,8 +93,8 @@ python -m venv .venv
 powershell -ExecutionPolicy Bypass -File scripts\INSTALL_MLOMEGA_V19_WINDOWS.ps1   # crée .venv-live
 
 # 2. Qdrant natif (sans Docker) — cf. scripts\START_QDRANT.ps1
-# 3. Modèles
-ollama pull qwen3.5:4b ; ollama pull qwen3.5:9b ; ollama pull moondream
+# 3. Modèles — LLM live + deep + VLM live (moondream) + VLM VISION de nuit (qwen2.5vl)
+ollama pull qwen3.5:4b ; ollama pull qwen3.5:9b ; ollama pull moondream ; ollama pull qwen2.5vl:7b
 .venv-live\Scripts\python scripts\fetch_models_v19.py            # détecteur, visage, TTS
 .venv-live\Scripts\python scripts\fetch_models_v19.py --device   # modèles téléphone (ASR/KWS/gestes/VAD/traduction)
 

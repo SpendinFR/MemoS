@@ -17,11 +17,21 @@ models:
     phase: nocturne
   vlm:
     provider: ollama
-    # Targeted VLM crop, one job at a time (handoff §3.6 / §4.1). Pulled via
-    # `ollama pull`, not this fetch script. Env override: MLOMEGA_VLM_MODEL.
+    # LIVE VLM (jour) : crop cible, un job a la fois (handoff §3.6 / §4.1). Leger.
+    # Pulled via `ollama pull`, not this fetch script. Env override: MLOMEGA_VLM_MODEL.
     default: moondream
     license: model-card-required
     max_vram_mb: 5632
+  vlm_heavy:
+    provider: ollama
+    # NUIT (deep vision, E56) : VLM VISION lourd sur les keyframes selectionnes par
+    # bundle (max ~12/bundle), charge pour cette seule phase puis decharge
+    # (brainlive_offline_deep_vision_v16_1). Env: MLOMEGA_OFFLINE_VLM_MODEL /
+    # MLOMEGA_VLM_HEAVY_MODEL. Le tag exact est detecte a l'install (WELCOME).
+    default: qwen2.5vl:7b
+    license: model-card-required
+    phase: nocturne
+    max_vram_mb: 7168
 
   # --- Fetchable ONNX / CTranslate2 weights (scripts/fetch_models_v19.py) ---
   detector:

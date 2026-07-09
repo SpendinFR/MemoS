@@ -1,5 +1,11 @@
 # DECISIONS
 
+## 2026-07-09 — E56 : VLM lourd de nuit (V19) + installateur one-click complété (ADR)
+
+**VLM live vs nuit.** Le VLM live (jour) est `moondream` — léger, une vignette à la fois, à la demande. La deep-vision de NUIT (`brainlive_offline_deep_vision_v16_1`) tourne un VLM VISION lourd sur les keyframes SÉLECTIONNÉS par bundle (~12/bundle), chargé pour cette seule phase puis `ollama_unload`. Elle N'analyse PAS la vidéo ni les clips E55 (ceux-ci servent au replay utilisateur). Résolution du modèle : param → `MLOMEGA_OFFLINE_VLM_MODEL` → `MLOMEGA_VLM_HEAVY_MODEL` → `MLOMEGA_VLM_MODEL` → `settings.ollama_model`. Le template V18.8 pointait `qwen3-vl:8b`, mais le manifeste V19 ne déclarait que `moondream` → gap. Décision : entrée `vlm_heavy` dans `MODEL_MANIFEST.yaml`, défaut **`qwen2.5vl:7b`** (le modèle vision que l'utilisateur utilise déjà) ; l'installateur détecte le tag exact et pose les vars d'env. Profil dégradé (<6 Go VRAM) → VLM nuit ramené sur le léger.
+
+**Installateur one-click complété.** Deux trous rendaient WELCOME non « one-click » : (1) le `.venv` COEUR (moteur du close-day nocturne : torch/whisperx/pyannote) n'était pas créé — `INSTALL_MLOMEGA_V19_WINDOWS.ps1` ne crée que `.venv-live` et ne touche jamais `.venv` ; (2) le binaire Qdrant n'était pas provisionné — `START_QDRANT.ps1` attend `tools\qdrant\qdrant.exe` et échoue sinon. WELCOME crée désormais le `.venv` cœur (`python -m venv` + lock, idempotent, étape la plus longue signalée) et télécharge Qdrant `v1.12.6` (release GitHub) + génère son `config.yaml`, en best-effort. Restent des prérequis non auto-installables (Python 3.11, appli Ollama) : détectés et guidés, jamais installés en douce. Dry-run exit 0.
+
 ## 2026-07-09 — E51 : installateur / guide de bienvenue (ADR)
 
 `scripts/WELCOME_MLOMEGA.ps1` ORCHESTRE les scripts existants (INSTALL/setup_profile/fetch_models/START_QDRANT/RUN/DOCTOR) — il ne réimplémente aucune install ; params vérifiés dans le code réel avant appel. 3 modes : interactif, `-Defaults`, `-DryRun` (aucun processus lourd). Idempotent, tolérant (Test-Path + WARN + consigne de reprise, jamais de stacktrace brute) ; clés (HF/OpenAI/Gemini) écrites dans `.env`, jamais loguées.

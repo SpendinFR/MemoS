@@ -289,6 +289,16 @@ Source : `memorylight_dashboard_readonly` v2 (Streamlit une page, SQLite `mode=r
 - [x] 10. Le lendemain : relancer, changer de modèles, commandes de contrôle (DOCTOR, `/metrics`, `/session/status`, dashboard `RUN_DASHBOARD.ps1` → :8720, où vit `memory.db` + conseil backup manuel).
 - [x] Test : dry-run complet exécuté (exit 0), zéro étape non guidée, chaque échec donne une consigne claire. **Reste** : une install réelle de bout en bout sur machine propre (non exécutée ici — trop lourd/destructif) ; le chantier « wake word runtime » (branche 7).
 
+## E56 — VLM lourd de nuit (V19) + trous one-click de l'installateur (FAIT — 2026-07-09)
+
+Deux constats de l'audit 2026-07-09 : (a) le VLM lourd de nuit (deep vision sur keyframes de bundle) était réglé pour `qwen3-vl:8b` dans le template V18.8, mais **le manifeste V19 ne déclarait que `moondream`** et l'installateur ne tirait que le léger → la deep-vision de nuit retombait sur moondream (ou pire un modèle texte). (b) WELCOME ne créait pas le `.venv` cœur (moteur du close-day nocturne) ni ne provisionnait Qdrant → pas vraiment « one-click ».
+
+- [x] **Manifeste** : entrée `vlm_heavy` ajoutée (`configs/MODEL_MANIFEST.yaml`) — VLM VISION de nuit, `qwen2.5vl:7b` par défaut (modèle installé par l'utilisateur), phase nocturne, à côté de `vlm: moondream` (live). Rappel : la deep-vision tourne sur les keyframes sélectionnés par bundle (~12/bundle), pas sur la vidéo ; le modèle est chargé pour cette phase puis déchargé.
+- [x] **WELCOME — VLM léger + lourd** : détecte le tag exact `qwen2.5vl*` via `ollama list` (fallback `qwen2.5vl:7b`), tire moondream (live) **et** le VLM lourd (nuit), et pose `MLOMEGA_VLM_MODEL` (leger) + `MLOMEGA_OFFLINE_VLM_MODEL`/`MLOMEGA_VLM_HEAVY_MODEL` (lourd) dans `.env`. En profil dégradé (<6 Go VRAM), le VLM nuit retombe sur le léger.
+- [x] **WELCOME — `.venv` cœur** : sous-étape 4a0 — crée `.venv` (Python 3.11) + `pip install -r requirements-v18_8-windows.lock.txt` (torch cu121/whisperx/pyannote) si absent, idempotent, avertit que c'est l'étape la plus longue. Sans lui la consolidation nocturne était impossible.
+- [x] **WELCOME — Qdrant** : sous-étape 4a1 — télécharge la release GitHub `v1.12.6` (`qdrant-x86_64-pc-windows-msvc.zip`) dans `tools\qdrant\` si absent + génère `config.yaml` (storage local, port 6333), best-effort avec fallback clair.
+- [x] Dry-run WELCOME exit 0 ; les 3 sous-étapes + le pull des 2 VLM apparaissent. Prérequis restants non auto-installables (honnête) : Python 3.11 et l'appli Ollama (WELCOME les détecte et guide). ADR §E56.
+
 ## E53 — Mode aide universel, version complète (DIFFÉRÉ — décision 2026-07-08)
 
 « Aide-moi à faire X » (cuisiner, monter un meuble, réparer, coder…) fait BIEN, pas à moitié. Analyse coût/viabilité du 2026-07-08 :

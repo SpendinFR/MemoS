@@ -167,18 +167,30 @@ $freeGb = [math]::Floor($drive.Free / 1GB)
 if ($freeGb -lt 20) { Warn "Disque $($drive.Name): $freeGb Go libres — c'est juste (modeles + memoire grossissent). 20+ Go conseilles." }
 else { Ok "Disque $($drive.Name): $freeGb Go libres" }
 
+# --- VLM lourd de NUIT (E56) : deep vision sur les keyframes des bundles ---
+# Live = moondream (leger). NUIT = un VLM VISION lourd (qwen2.5vl), charge pour la
+# seule phase deep-vision puis dechargé. On detecte le tag exact installe sur cette
+# machine (fallback qwen2.5vl:7b) pour ne pas deviner.
+$vlmLight = "moondream"
+$vlmHeavy = "qwen2.5vl:7b"
+try {
+  $listed = @(ollama list 2>$null | ForEach-Object { ($_ -split '\s+')[0] })
+  $foundVl = $listed | Where-Object { $_ -match '^qwen2\.5vl' } | Select-Object -First 1
+  if ($foundVl) { $vlmHeavy = $foundVl; Info "VLM lourd detecte sur la machine : $vlmHeavy" }
+} catch {}
+
 # --- Recommandation set de modeles Ollama selon la VRAM ---
-$ollamaModels = @("qwen3.5:4b", "qwen3.5:9b", "moondream")
+$ollamaModels = @("qwen3.5:4b", "qwen3.5:9b", $vlmLight, $vlmHeavy)
 $degraded = $false
 if ($vramMb -ge 8000) {
-  Ok "VRAM >= 8 Go : set recommande = qwen3.5:4b (live) + qwen3.5:9b (deep) + moondream (VLM)."
+  Ok "VRAM >= 8 Go : set = qwen3.5:4b (live) + qwen3.5:9b (deep) + $vlmLight (VLM live) + $vlmHeavy (VLM nuit)."
 } elseif ($vramMb -ge 6000) {
-  Warn "VRAM 6-8 Go : le 9b deep tiendra en post-stop mais serre. Set = qwen3.5:4b + qwen3.5:9b + moondream (surveille la VRAM)."
+  Warn "VRAM 6-8 Go : deep 9b + VLM nuit tiennent en post-stop (charges/decharges par phase) mais serre. Set complet, surveille la VRAM."
 } elseif ($vramMb -gt 0) {
   $degraded = $true
-  $ollamaModels = @("qwen3.5:4b", "moondream")
-  Warn "VRAM < 6 Go : profil degrade propose = qwen3.5:4b (live) + moondream seulement (pas de 9b deep charge en live)."
-  Remember "GPU sous 6 Go VRAM : profil degrade — le deep 9b peut ne pas tenir; envisage un modele plus petit ou le cloud pour le deep."
+  $ollamaModels = @("qwen3.5:4b", $vlmLight)
+  Warn "VRAM < 6 Go : profil degrade = qwen3.5:4b (live) + $vlmLight seulement (pas de 9b deep ni VLM lourd de nuit)."
+  Remember "GPU sous 6 Go VRAM : profil degrade — le deep 9b et le VLM nuit peuvent ne pas tenir; envisage plus petit ou le cloud."
 } else {
   $degraded = $true
   $ollamaModels = @("qwen3.5:4b")
@@ -236,11 +248,73 @@ if ([string]::IsNullOrWhiteSpace($hfToken)) {
 # ========================================================================
 Step "4/9" "Installation complete (chaque sous-etape est idempotente)"
 
-# --- 4a. Environnements Python (.venv-live via l'installateur transactionnel) ---
+# --- 4a0. .venv COEUR (E56) : moteur du close-day nocturne (torch/whisperx/pyannote) ---
+# Le close-day de NUIT tourne dans .venv (pas .venv-live). L'installateur transactionnel
+# (4a) ne cree QUE .venv-live et ne touche jamais .venv — donc on cree le coeur ICI,
+# sinon la consolidation nocturne serait impossible. Idempotent : saute si .venv existe.
+Info "Sous-etape 4a0 : .venv coeur (moteur du close-day nocturne)."
+$coreVenv = Join-Path $ProjectRoot ".venv"
+$coreLock = Join-Path $ProjectRoot "requirements-v18_8-windows.lock.txt"
+$corePip  = Join-Path $coreVenv "Scripts\pip.exe"
+if (Test-Path (Join-Path $coreVenv "Scripts\python.exe")) {
+  Ok ".venv coeur deja present : conserve tel quel (aucune reinstallation)."
+} elseif (-not (Test-Path $coreLock)) {
+  Warn "Lock coeur introuvable ($coreLock) : je ne peux pas creer .venv. Le close-day nocturne sera indisponible."
+  Remember ".venv coeur non cree (lock absent) : la consolidation de nuit ne tournera pas."
+} elseif ($DryRun) {
+  DryNote "Creerait .venv coeur : python -m venv .venv  puis  .venv\Scripts\pip install -r requirements-v18_8-windows.lock.txt  (long : torch cu121/whisperx/pyannote)."
+} else {
+  Warn "Creation du .venv coeur : c'est l'etape LA PLUS LONGUE (torch cu121, whisperx, pyannote — plusieurs minutes / gros telechargement)."
+  & python -m venv $coreVenv
+  if ($LASTEXITCODE -ne 0) { Warn "Creation .venv coeur echouee. Verifie que Python 3.11 64-bit est installe (python --version)." ; Remember ".venv coeur : creation echouee, relance apres avoir installe Python 3.11." }
+  else {
+    & $corePip install --upgrade pip
+    & $corePip install -r $coreLock
+    if ($LASTEXITCODE -ne 0) { Warn "pip install (coeur) a signale un souci. Relance : .venv\Scripts\pip install -r requirements-v18_8-windows.lock.txt" ; Remember ".venv coeur : pip install a echoue en partie, relance la commande ci-dessus." }
+    else { Ok ".venv coeur installe (moteur close-day pret)." }
+  }
+}
+
+# --- 4a1. Qdrant natif (E56) : binaire + config, sans Docker ---
+# START_QDRANT.ps1 attend tools\qdrant\qdrant.exe + config.yaml et ECHOUE s'ils manquent.
+# On provisionne ici (release officielle GitHub v1.12.6, la version testee) si absent.
+Info "Sous-etape 4a1 : Qdrant natif (memoire vectorielle, sans Docker)."
+$qdrantDir = Join-Path $ProjectRoot "tools\qdrant"
+$qdrantExe = Join-Path $qdrantDir "qdrant.exe"
+$qdrantCfg = Join-Path $qdrantDir "config.yaml"
+$qdrantVersion = "v1.12.6"
+$qdrantUrl = "https://github.com/qdrant/qdrant/releases/download/$qdrantVersion/qdrant-x86_64-pc-windows-msvc.zip"
+if (Test-Path $qdrantExe) {
+  Ok "qdrant.exe deja present : conserve."
+} elseif ($DryRun) {
+  DryNote "Telechargerait Qdrant $qdrantVersion ($qdrantUrl) -> $qdrantDir, puis ecrirait config.yaml si absent."
+} else {
+  try {
+    if (-not (Test-Path $qdrantDir)) { New-Item -ItemType Directory -Path $qdrantDir -Force | Out-Null }
+    $zip = Join-Path $qdrantDir "qdrant.zip"
+    Info "Telechargement de Qdrant $qdrantVersion ..."
+    Invoke-WebRequest -Uri $qdrantUrl -OutFile $zip -UseBasicParsing
+    Expand-Archive -Path $zip -DestinationPath $qdrantDir -Force
+    Remove-Item $zip -ErrorAction SilentlyContinue
+    if (Test-Path $qdrantExe) { Ok "qdrant.exe provisionne." }
+    else { Warn "Archive Qdrant extraite mais qdrant.exe introuvable — verifie $qdrantDir." ; Remember "Qdrant : binaire non trouve apres extraction, provisionne-le a la main (voir INSTALL_STATE)." }
+  } catch {
+    Warn "Telechargement de Qdrant impossible ($($_.Exception.Message)). Provisionne tools\qdrant\qdrant.exe a la main (release $qdrantVersion) ou via INSTALL_STATE."
+    Remember "Qdrant non telecharge : mets tools\qdrant\qdrant.exe (release $qdrantVersion) puis relance START_QDRANT."
+  }
+}
+if ((Test-Path $qdrantExe) -and -not (Test-Path $qdrantCfg) -and -not $DryRun) {
+  $storage = (Join-Path $ProjectRoot "storage\qdrant") -replace '\\','/'
+  $cfg = @("storage:", "  storage_path: $storage", "service:", "  host: 127.0.0.1", "  http_port: 6333")
+  Set-Content -LiteralPath $qdrantCfg -Value $cfg -Encoding UTF8
+  Ok "tools\qdrant\config.yaml genere (storage local, port 6333)."
+}
+
+# --- 4a. Environnement live .venv-live (via l'installateur transactionnel) ---
 $installer = Join-Path $ScriptDir "INSTALL_MLOMEGA_V19_WINDOWS.ps1"
-if (-not (Test-Path $installer)) { Warn "Introuvable : $installer — impossible d'installer les venvs." }
+if (-not (Test-Path $installer)) { Warn "Introuvable : $installer — impossible d'installer .venv-live." }
 else {
-  Info "Sous-etape 4a : venvs (.venv coeur intact, .venv-live cree transactionnellement)."
+  Info "Sous-etape 4a : .venv-live (env live, cree transactionnellement ; .venv coeur intact)."
   if ($DryRun) {
     DryNote "Appellerait : $installer -SkipDoctor  (le DOCTOR final est lance en 4g)"
   } else {
@@ -326,6 +400,19 @@ if ($DryRun) {
   if (-not [string]::IsNullOrWhiteSpace($hfToken)) { Set-EnvValue $envPath "MLOMEGA_HF_TOKEN" $hfToken; Ok "MLOMEGA_HF_TOKEN ecrit dans .env." }
   if (-not [string]::IsNullOrWhiteSpace($openaiKey)) { Set-EnvValue $envPath "OPENAI_API_KEY" $openaiKey; Ok "OPENAI_API_KEY ecrit dans .env." }
   if (-not [string]::IsNullOrWhiteSpace($geminiKey)) { Set-EnvValue $envPath "GEMINI_API_KEY" $geminiKey; Ok "GEMINI_API_KEY ecrit dans .env." }
+  # E56 : VLM live (leger) + VLM nuit (lourd). Le template par defaut vise qwen3-vl:8b ;
+  # on aligne sur le modele VISION reellement choisi/detecte (qwen2.5vl par defaut).
+  if (-not $degraded) {
+    Set-EnvValue $envPath "MLOMEGA_VLM_MODEL" $vlmLight
+    Set-EnvValue $envPath "MLOMEGA_OFFLINE_VLM_MODEL" $vlmHeavy
+    Set-EnvValue $envPath "MLOMEGA_VLM_HEAVY_MODEL" $vlmHeavy
+    Ok "VLM configures dans .env : live=$vlmLight, nuit=$vlmHeavy."
+  } else {
+    Set-EnvValue $envPath "MLOMEGA_VLM_MODEL" $vlmLight
+    Set-EnvValue $envPath "MLOMEGA_OFFLINE_VLM_MODEL" $vlmLight
+    Set-EnvValue $envPath "MLOMEGA_VLM_HEAVY_MODEL" $vlmLight
+    Warn "Profil degrade : VLM nuit ramene sur $vlmLight (le VLM lourd risque de ne pas tenir)."
+  }
 }
 
 # --- 4f. setup_profile.ps1 alimente par les reponses ---
