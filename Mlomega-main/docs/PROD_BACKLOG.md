@@ -333,12 +333,10 @@ Principes qui tuent la latence :
 - **Étape N+1 PRÉ-CALCULÉE** pendant l'étape N (on a le plan) → transition **0 latence perçue**. Le cloud 1-2 s ne mord que sur l'**imprévu** (hors-plan).
 - **Cloud déclenché par le LOCAL** : signaux locaux (changement de scène / main active / pas de progrès / hésitation) → on n'appelle gpt5.4 que là. Proactif ET pas cher (quelques centimes/tâche, pas 1 img/s H24).
 
-### L'UI bank (beau ≠ « surligner »)
-~12 composants **glass conçus + animés**, par famille de tâche, remplis par les données de l'étape typée (`action`, `objet`, `quantité`, `zone`, `geste`, `next`) :
-- Cuisine : cartes ingrédients+quantités, **anneau minuteur** animé, icône d'action, barre de progression recette.
-- Montage : pièce en cours affichée, **flèche animée « A dans B »**, checklist pièces.
-- Réparation : carte outil animée, **encart zoomé** sur la zone.
-- Composant phare (le plus « waouh », le plus dur) : **main-fantôme** qui **rejoue en boucle le GESTE à faire** ancré sur l'objet (verser/visser/tourner/appuyer/essuyer…) — pas un contour. Nécessite une petite banque de gestes génériques.
+### L'UI bank (beau ≠ « surligner ») — des ATOMES qui se composent
+PAS 12 tâches codées en dur : ~12 **atomes glass réutilisables** qui se **combinent** pour couvrir un **ensemble OUVERT** de tâches (cuisine, montage, réparation, jardinage, brancher un appareil, instrument, sport, soin…). Chaque tâche = un assemblage d'atomes piloté par l'étape typée (`action`, `objet`, `quantité`, `zone`, `geste`, `next`). Extensible si un domaine le demande. Atomes :
+- **ancre-objet** (anneau/contour **qui SUIT l'objet** — si tu prends/déplaces le bol, l'UI le suit en temps réel, jamais collée à un point fixe) · **trajectoire/geste** · chip quantité/mesure · **anneau-minuteur** · panneau d'étapes (fait/en cours/suivant) · flèche directionnelle (objet hors-champ) · encart zoom · checklist · carte-instruction · cue d'attention/danger · **sélection** (« prends celui-là parmi plusieurs ») · barre de progression.
+- **Primitive « geste » = TRAJECTOIRE animée** (beau + tractable, PAS une main 3D) : tracé glowing qui se dessine, ancré sur l'objet — verser = arc bouteille→bol ; visser/tourner = flèche circulaire ; essuyer = va-et-vient ; appuyer = pulse. La **main-fantôme réaliste** = option premium plus tard.
 
 ### À implémenter (par phases — « bien ou pas du tout »)
 - [ ] **Schéma d'étape typée** (les champs que le LLM remplit et que l'UI bank consomme) — la fondation.
@@ -346,7 +344,7 @@ Principes qui tuent la latence :
 - [ ] **Moteur de tâche PC** : machine à états (étape courante/faite/suivante), pré-calcul de N+1, déclenchement cloud event-driven, `task_hot` poussé au device.
 - [ ] **Reco objet** : PC (VisionRT, LAN, ~0,2 s) = chemin principal ; **détecteur on-device** (MediaPipe Object Detector / ONNX léger, classes utiles) = mode dégradé dehors sans PC.
 - [ ] **Ancrage device** : le tracker local (StableTrack) colle l'UI sur l'objet détecté, maintient entre détections, ré-acquiert.
-- [ ] **UI bank glass** (~12 composants + la **main-fantôme geste**) pilotée par l'étape typée.
+- [ ] **UI bank glass** = ~12 atomes composables (ancre-objet qui SUIT l'objet, **trajectoire-geste** animée, minuteur, sélection, checklist, zoom, flèche, progression…), extensible, pilotée par l'étape typée. Couvre un ensemble ouvert de tâches par composition, pas du codage par tâche.
 - [ ] **Proactif** : signaux locaux (pas de progrès/hésitation) → indice cloud ciblé ; validation hybride (auto-suggérée « on dirait que c'est fait ? » + confirmation voix, jamais auto-silencieuse sur du fin).
 - [ ] **Coût live** : gpt5.4-mini opt-in, compteur de coût affiché (E33).
 - **Phasage** : **A** = objet+geste physique (cuisine/rangement/branchement) fait bien → **B** = tâches d'assemblage (pièces/repères) → **C** = geste fin sub-objet (attend les VLM spatiaux). Refs d'inspi : HoloAssist (dataset AR assistance MS), IKEA Place / overlays « how-to » AR, Set-of-Mark/OmniParser pour le grounding par éléments.
