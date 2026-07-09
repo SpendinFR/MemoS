@@ -313,6 +313,17 @@ Constat : le KWS sherpa est entraîné en **anglais** → « viki » matché « 
 - [x] APK v4 rebuild (embarque le matcher). **Change le mot n'importe quand** : édite `wake_word:` dans `configs/user_profile.yaml` → poussé à la prochaine session, zéro rebuild.
 - [ ] Validation S25 : dire « viki » → fenêtre de commande s'ouvre ; changer le mot dans le profil → nouvelle session le prend. ADR §E58.
 
+## E59 — Manipulation des fenêtres/panneaux à la main (window management gestuel) (À FAIRE)
+
+Constat (2026-07-09) : les gestes actuels (E47-B) = paume (menu) / balayage (cacher tout) / pincement (zoom LensWindow). Il MANQUE la manipulation directe des affichages — l'utilisateur doit pouvoir **placer, dimensionner et gérer** ce qu'il affiche (cards, menu, et surtout une **fenêtre vidéo** YouTube/replay) n'importe où dans son champ. Le tracking des mains (MediaPipe landmarks on-device, 12 fps) tourne déjà — c'est une nouvelle skill d'interaction, pas un chantier lourd.
+
+- [ ] **Grab-drag** : pincer (pouce-index) sur un panneau → il « colle » à la main → le déplacer où on veut dans le champ ; relâcher = poser. Ancrage stable (world-locked ou head-locked selon préférence).
+- [ ] **Pinch-scale** : deux mains (ou pincement + éloignement) → redimensionner la fenêtre (surtout la fenêtre vidéo).
+- [ ] **Fermer / réduire** : geste dédié (ex. balayage sur le panneau ciblé, ou bouton glass au coin) → fermer ou minimiser en pastille rappelable.
+- [ ] Cible prioritaire : la **fenêtre vidéo** (VirtualScreen/replay/YouTube) — déplaçable + resizable librement. Puis généraliser aux cards/menu.
+- [ ] Feedback visuel (halo/ombre glass pendant le drag), et respect du budget geste (MediaPipe on-demand, §9.4). Fonctionne PhoneOnly et lunettes.
+- Note : à câbler sur `GesturePipeline`/`MenuGestureController` existants + le broker UI (les panneaux doivent exposer position/taille manipulables).
+
 ## E53 — Mode aide universel « Viki mode aide » (ARCHI VALIDÉE 2026-07-09 — à implémenter par phases)
 
 « Aide-moi à faire X » (cuisiner, monter un meuble, réparer…) fait BIEN. **Périmètre : tâches PHYSIQUES au niveau OBJET+GESTE.** Les tâches écran/logiciel sont écartées (décision utilisateur : trop long) ; le geste sub-objet fin (« LA vis B4 ») reste la frontière (Phase C, plus tard).
