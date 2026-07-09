@@ -18,9 +18,9 @@ Deroule 9 etapes (cf. docs/PROD_BACKLOG.md §E51) :
   8. Comment quitter (bouton Terminer -> close-day)
   9. Le lendemain (relancer, changer de modeles, commandes utiles, dashboard, backup)
 
-Note : le choix du mot d'eveil est volontairement ABSENT (le mot est cuit dans
-l'APK = 'omega', non modifiable sans rebuild). Il sera ajoute quand le chantier
-'wake word runtime' sera fait. Le mini-tuto rappelle juste que le mot est 'omega'.
+Note : le mot d'eveil (E58) est demande a l'etape 4 : detecte dans l'ASR francais
+(prononciation naturelle), pousse au telephone a la connexion, changeable quand on
+veut (configs/user_profile.yaml) SANS rebuild. Defaut : 'viki'.
 
 Chaque section est autonome et idempotente. En cas d'echec : message clair +
 comment reprendre, jamais une stacktrace brute.
@@ -440,6 +440,24 @@ else {
   }
 }
 
+# --- 4f2. Mot d'eveil (E58) : detecte dans l'ASR francais, changeable sans rebuild ---
+Info "Sous-etape 4f2 : mot d'eveil (pour ouvrir une commande a la voix)."
+Say  "Comment veux-tu appeler l'assistant ? Il est detecte dans la transcription"
+Say  "FRANCAISE (prononciation naturelle) et pousse au telephone a la connexion"
+Say  "-> changeable quand tu veux, SANS rebuilder l'APK."
+Hint "Choisis un mot RARE et distinct (un mot courant = faux declenchements)."
+Hint "Exemples : viki, jarvis, nyx. Defaut : viki."
+$wake = Ask "Mot d'eveil" "viki"
+$profileYaml = Join-Path $ProjectRoot "configs\user_profile.yaml"
+if ($DryRun) {
+  DryNote "Ecrirait wake_word: $wake dans configs\user_profile.yaml"
+} elseif (Test-Path $profileYaml) {
+  $wlines = Get-Content -LiteralPath $profileYaml | Where-Object { $_ -notmatch '^\s*wake_word\s*:' }
+  $wlines += "wake_word: $wake"
+  Set-Content -LiteralPath $profileYaml -Value $wlines -Encoding UTF8
+  Ok "Mot d'eveil '$wake' enregistre (pousse au telephone a la connexion)."
+}
+Remember "Mot d'eveil = '$wake' : change-le quand tu veux dans configs\user_profile.yaml (pousse au device, pas de rebuild)."
 # --- 4g. DOCTOR -Full en garde-fou final ---
 Info "Sous-etape 4g : DOCTOR -Full (garde-fou : rien ne doit etre casse)."
 $doctor = Join-Path $ScriptDir "DOCTOR_MLOMEGA_V19.ps1"
@@ -525,8 +543,8 @@ Say  "Ce que MLOmega fait pour toi :"
 Hint "- Memoire de vie : il se souvient des gens, lieux, objets, conversations."
 Hint "- En direct : sous-titres, reconnaissance de personnes, rappels au bon moment."
 Hint "- La nuit : il consolide la journee (qui, quoi, predictions pour demain)."
-Say  "Mot d'eveil : dis 'omega' pour ouvrir une fenetre de commande (mode gated ;"
-Say  "le mot est fixe dans l'app pour l'instant, non modifiable sans rebuild)."
+Say  "Mot d'eveil : dis ton mot (defaut 'viki') pour ouvrir une fenetre de commande."
+Say  "Detecte dans l'ASR francais ; changeable quand tu veux (configs\user_profile.yaml)."
 Say  "Commandes vocales cles (apres le mot d'eveil) :"
 Hint "- 'configure ma voix'      -> t'enrole comme porteur (attribution correcte des tours)."
 Hint "- 'retiens : c'est Sarah'  -> nomme la personne en face (visage + voix)."

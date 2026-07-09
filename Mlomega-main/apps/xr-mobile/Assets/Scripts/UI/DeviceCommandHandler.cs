@@ -37,6 +37,8 @@ namespace MLOmega.XR.UI
         [JsonProperty("time")] public string Time { get; set; }
         /// <summary>E48-A: on/off for toggle commands (translate_live). Null = flip current.</summary>
         [JsonProperty("on")] public bool? On { get; set; }
+        /// <summary>E58: the new wake word for the set_wake_word command (PC push, no rebuild).</summary>
+        [JsonProperty("word")] public string Word { get; set; }
 
         public static bool IsDeviceCommand(string json)
         {
@@ -61,6 +63,13 @@ namespace MLOmega.XR.UI
         /// (Reflex already references UI; a typed field would be a cycle).
         /// </summary>
         public event Action<bool?> TranslateLiveRequested;
+
+        /// <summary>
+        /// E58: raised for "set_wake_word" — the PC pushes the owner-chosen wake word
+        /// (detected in the French ASR transcript, changeable without an APK rebuild).
+        /// AsrBridge (Reflex) subscribes; UI cannot reference Reflex (cycle).
+        /// </summary>
+        public event Action<string> SetWakeWordRequested;
 
         /// <summary>Raised when a "replay {time}" command arrives (VirtualScreen replay).</summary>
         public event Action<string> ReplayRequested;
@@ -128,6 +137,9 @@ namespace MLOmega.XR.UI
                 case "translate_live":
                     ok = TranslateLive(cmd.On);
                     break;
+                case "set_wake_word":
+                    ok = SetWakeWord(cmd.Word);
+                    break;
                 default:
                     Debug.LogWarning($"[DeviceCommand] unknown action: {cmd.Action}");
                     ok = false;
@@ -156,6 +168,16 @@ namespace MLOmega.XR.UI
         {
             if (TranslateLiveRequested == null) return false;
             TranslateLiveRequested.Invoke(on);
+            return true;
+        }
+
+        // E58: apply a new wake word pushed by the PC (owner-chosen, no rebuild). The
+        // subscribed AsrBridge re-points the on-device ASR-transcript matcher. Empty =
+        // ignored (never silently disable the wake word).
+        private bool SetWakeWord(string word)
+        {
+            if (string.IsNullOrWhiteSpace(word) || SetWakeWordRequested == null) return false;
+            SetWakeWordRequested.Invoke(word.Trim());
             return true;
         }
 

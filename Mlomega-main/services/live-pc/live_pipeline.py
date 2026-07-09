@@ -487,6 +487,14 @@ class LivePipeline:
         ).strip().lower()
         if self.wake_word_policy not in ("open", "gated"):
             self.wake_word_policy = "open"
+        # E58: owner-chosen wake word, detected in the device's French ASR transcript
+        # (natural pronunciation, not the English KWS). Pushed to the device on connect
+        # so it can change without an APK rebuild. Default "viki".
+        self.wake_word = str(
+            (self.user_profile.get("wake_word") if isinstance(self.user_profile, dict) else None)
+            or "viki"
+        ).strip()
+        self._wake_word_pushed = False
         self._command_window_until: float = 0.0
         # How long a wake-word arm stays valid for the following command turn.
         self._command_window_s = 8.0
@@ -634,6 +642,22 @@ class LivePipeline:
                 self.ingress.send_ui_intent(json.dumps(cmd))
             except Exception:
                 pass
+
+    def push_wake_word(self, *, force: bool = False) -> None:
+        """E58: push the owner-chosen wake word to the device (once per session).
+
+        Sent as a ``set_wake_word`` device_command over the same DataChannel; the
+        device re-points its ASR-transcript wake matcher — no APK rebuild. Idempotent
+        per session unless ``force``. Best-effort: a closed channel is a no-op."""
+        if self._wake_word_pushed and not force:
+            return
+        word = (self.wake_word or "").strip()
+        if not word:
+            return
+        self._wake_word_pushed = True
+        self._push_device_command(
+            {"type": "device_command", "action": "set_wake_word", "word": word}
+        )
 
     # ------------------------------------------------------ wake-word gating (E47-C §4)
     def set_wake_word_policy(self, policy: str) -> None:

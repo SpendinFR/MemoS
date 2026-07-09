@@ -150,6 +150,12 @@ class PhoneOnlyRuntime:
             return await self.delivery_adapter.dispatch_once()
 
     def _on_receipt(self, raw: str) -> None:
+        # E58: the first inbound DataChannel message means the device is connected —
+        # push the owner-chosen wake word once (idempotent, best-effort). No rebuild.
+        try:
+            self.pipeline.push_wake_word()
+        except Exception:
+            pass
         # E47-C §4: an additive DataChannel control message from the device (agent A)
         # arms a wake-word command window. It is NOT a UIReceipt — route it first,
         # then fall through to receipt handling for everything else. Shape:

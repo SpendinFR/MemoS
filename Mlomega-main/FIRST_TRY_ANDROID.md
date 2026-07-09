@@ -187,7 +187,7 @@ Tu peux maintenant faire 2-3 sessions dans la journée : chaque « Terminer la s
 ## 🆕 Traduction live (offline, sur le téléphone)
 - **Menu** (paume) → « **Traduire** » pour activer/couper, ou à la voix : « **traduis en direct** » / « **stop traduction** » (la voix passe par le PC ; hors connexion, utilise le menu).
 - Effet : chaque phrase finale dans l'autre langue s'affiche **traduite sous le sous-titre original**. FR↔EN. Marche PC coupé.
-- Wake word du build : « **omega** » (changeable dans l'asset MLOmegaConfig).
+- **Wake word (E58, APK v4)** : défaut « **viki** », **détecté dans l'ASR français** (prononciation naturelle — dis « viki », pas « vaïki »). Change-le **quand tu veux sans rebuild** : édite `wake_word:` dans `configs\user_profile.yaml` → poussé au téléphone à la prochaine session. Choisis un mot **rare** (on scanne tout ce que tu dis → un mot courant = faux déclenchements).
 
 ## 🆕 Mode dehors (Tailscale)
 - L'app essaie maintenant les endpoints **dans l'ordre : LAN → Tailscale** (`100.113.42.19`, déjà dans le build).

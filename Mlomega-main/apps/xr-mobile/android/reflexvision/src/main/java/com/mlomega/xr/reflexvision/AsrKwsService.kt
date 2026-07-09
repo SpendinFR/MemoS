@@ -77,6 +77,15 @@ class AsrKwsService(
     private val kwsArmed = AtomicBoolean(true)
 
     /**
+     * E58 — wake word detected in the FR ASR transcript (see [WakeWordMatcher]).
+     * Seeded from [AsrKwsConfig.wakeWords] and runtime-settable via [setWakeWord]
+     * so Unity can change it with no rebuild. Empty → transcript matching off
+     * (the legacy sherpa KWS still runs; this is an additive FR-friendly path).
+     */
+    @Volatile private var wakeWordText: String =
+        config.wakeWords.firstOrNull()?.trim().orEmpty()
+
+    /**
      * E47-A command window: a wake-word hit opens it for
      * [AsrKwsConfig.commandWindowMs]; finals ending inside are flagged
      * `isCommand`. Capture itself is never affected — routing only.
@@ -126,6 +135,12 @@ class AsrKwsService(
 
     /** Arm/disarm the wake-word spotter without tearing down ASR (e.g. while a command is being taken). */
     fun setWakeWordArmed(armed: Boolean) = kwsArmed.set(armed)
+
+    /**
+     * E58 — set the FR-transcript wake word at runtime (Unity, no rebuild). Blank
+     * disables transcript matching. See [WakeWordMatcher].
+     */
+    fun setWakeWord(word: String) { wakeWordText = word.trim() }
 
     /**
      * E47-A — the [PcmFeed] the transport fan-out pushes microphone PCM into.
@@ -370,6 +385,17 @@ class AsrKwsService(
                 // command; capture already went to the PC regardless.
                 val isCommand = isWithinCommandWindow(endMs)
                 callbacks.onTranscript(finalText, true, langCode(), startMs, endMs, isCommand)
+
+                // E58: FR-friendly wake word detected in the ASR transcript itself
+                // (the EN sherpa KWS mispronounces French words). Open the command
+                // window at endMs so the NEXT final routes as a command — same
+                // semantics as the KWS path. Capture is never affected (routing
+                // only). The final that *carries* the wake word stays plain memory.
+                val ww = wakeWordText
+                if (ww.isNotEmpty() && WakeWordMatcher.matches(finalText, ww)) {
+                    openCommandWindow(endMs) // gate ROUTING only; capture continues
+                    callbacks.onWakeWord(ww, endMs)
+                }
             }
         } finally {
             stream.release()

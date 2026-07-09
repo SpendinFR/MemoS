@@ -130,14 +130,16 @@ namespace MLOmega.XR.Core
         [SerializeField] private float _httpTimeoutSeconds = 5f;
 
         [Header("Ultra-Live reflex (E26)")]
-        [Tooltip("Spoken wake word that arms command listening. User-chosen and " +
-                 "encoded to the sherpa keywords format by the reflexvision module. " +
-                 "Default 'omega' (E47-A).")]
-        [SerializeField] private string _wakeWord = "omega";
+        [Tooltip("Spoken wake word that arms command listening. E58: detected in the " +
+                 "on-device streaming ASR transcript (natural pronunciation in the ASR " +
+                 "language), NOT the English KWS. Runtime-settable (PC push, no rebuild). " +
+                 "Default 'viki'. Pick a RARE word to avoid false triggers.")]
+        [SerializeField] private string _wakeWord = "viki";
 
         [Tooltip("Language of the on-device streaming ASR/subtitles (fr or en). " +
-                 "Selects the sherpa-onnx model loaded by AsrKwsService.")]
-        [SerializeField] private ReflexAsrLanguage _asrLanguage = ReflexAsrLanguage.En;
+                 "Selects the sherpa-onnx model loaded by AsrKwsService. Also the " +
+                 "language the wake word is heard in (E58).")]
+        [SerializeField] private ReflexAsrLanguage _asrLanguage = ReflexAsrLanguage.Fr;
 
         [Tooltip("E47-A: how long the wake word keeps command routing armed. " +
                  "Final transcripts ending inside this window are flagged as " +

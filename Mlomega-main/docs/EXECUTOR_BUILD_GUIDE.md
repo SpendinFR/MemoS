@@ -522,6 +522,15 @@ SDK propriétaire fourni par l'utilisateur → `apps/xr-mobile/Packages/xreal-sd
 
 **Comment builder l'APK lunettes** (résumé) : déposer `com.xreal.xr.tar.gz` dans `apps/xr-mobile/Packages/xreal-sdk/`, puis `& "<Unity.exe>" -batchmode -quit -projectPath apps\xr-mobile -executeMethod MLOmega.XR.Editor.AndroidBuildXreal.PrepareDefines` (import SDK + define) puis `...AndroidBuildXreal.BuildApk` (compile + APK). Piège rencontré : la réf asmdef vers XREAL doit être par GUID (par nom ne résout pas ici) ; les noms d'API du SDK 3.1.0 diffèrent de NRSDK — inspecter le tarball avant de coder.
 
+## E58 — Wake word par ASR français + changeable sans rebuild (FAIT — 2026-07-09)
+
+Le KWS sherpa est anglais (« viki »→« vaïki »). Remplacé : détection du mot dans la **transcription de l'ASR français** (déjà sur l'appareil), défaut **« viki »**, changeable sans rebuild.
+- **Device** : `WakeWordMatcher.kt` (normalise sans accents/ponctuation + Levenshtein tolérant selon longueur), branché dans `AsrKwsService.decodeSegment` (final ASR → `openCommandWindow`) ; `setWakeWord(String)` runtime. KWS anglais laissé en place (inoffensif). Tests JVM.
+- **Unity** : `MLOmegaConfig._wakeWord="viki"` + ASR défaut Fr ; `AsrBridge.SetWakeWord` (appliqué même si le service démarre après) ; `DeviceCommandHandler` action `set_wake_word` → événement `SetWakeWordRequested`.
+- **PC** : `LivePipeline.wake_word` (profil, défaut viki) + `push_wake_word()` (idempotent) envoyé à la 1re réception DataChannel (`PhoneOnlyRuntime._on_receipt`). Tests verts (push + 19 live pipeline).
+- **Installateur** : question « comment appeler l'assistant ? » ré-ajoutée (défaut viki, mot rare), écrit `wake_word:` dans `user_profile.yaml`.
+- **Latence** : aucune ajoutée — l'ASR tournait déjà ; le matcher scanne juste le texte final. **Changer le mot** : `configs/user_profile.yaml` → effectif à la session suivante, zéro rebuild. APK v4 (PhoneOnly) embarque le matcher ; l'APK lunettes (E49) est antérieure — la rebuilder pour l'inclure. ADR §E58.
+
 ## Phases futures — NON FAITES (à traiter plus tard)
 
 - [ ] **Configuration du wake word (runtime, sans rebuild)** : aujourd'hui le mot d'éveil est cuit dans l'APK (`_wakeWord` de `MLOmegaPhoneOnly.asset`, défaut « omega ») et ne se change qu'en rebuildant. À faire : le rendre choisi à l'installation et poussé par le PC au pairing (message contrôle → `KeywordEncoder` runtime, l'encodeur le permet déjà) ; réintégrer alors la question « comment appeler l'assistant ? » (retirée de WELCOME/E51) avec l'avertissement « pas un mot trop courant ». Réf. backlog E51.

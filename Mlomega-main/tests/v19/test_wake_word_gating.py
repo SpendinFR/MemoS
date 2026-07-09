@@ -185,3 +185,29 @@ def test_runtime_control_message_arms_command_window():
     # A plain (non-control) receipt does not arm and does not crash.
     rt._on_receipt('{"ui_intent_id":"x","event":"shown"}')
     assert armed["n"] == 1
+
+
+def test_push_wake_word_sends_set_wake_word_command_once():
+    """E58: the PC pushes the owner-chosen wake word to the device as a
+    set_wake_word device_command, once per session (idempotent), so it can be
+    changed without an APK rebuild."""
+    import json as _json
+
+    pipe = _pipeline("gated")
+    pipe.wake_word = "viki"
+    sent: list[str] = []
+
+    class _Ingress:
+        def send_ui_intent(self, payload):
+            sent.append(payload)
+            return 0
+
+    pipe.ingress = _Ingress()
+    pipe.push_wake_word()
+    pipe.push_wake_word()  # idempotent — must not send twice
+
+    cmds = [_json.loads(s) for s in sent]
+    set_words = [c for c in cmds if c.get("action") == "set_wake_word"]
+    assert len(set_words) == 1
+    assert set_words[0]["type"] == "device_command"
+    assert set_words[0]["word"] == "viki"

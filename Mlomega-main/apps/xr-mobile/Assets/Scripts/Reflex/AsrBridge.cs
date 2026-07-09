@@ -87,10 +87,37 @@ namespace MLOmega.XR.Reflex
         private AsrProxy _proxy;
 #endif
 
+        // E58: the PC-pushed wake word override (runtime, no rebuild). Stored so it is
+        // (re)applied if the ASR service starts after the push arrives.
+        private string _pendingWakeWord;
+        private MLOmega.XR.UI.DeviceCommandHandler _commands;
+
         private void Awake()
         {
             if (_config == null) _config = FindAnyObjectByType<SessionPairing>()?.Config;
             if (_transport == null) _transport = FindAnyObjectByType<MLOmega.XR.Transport.LiveTransportBridge>();
+            if (_commands == null) _commands = FindAnyObjectByType<MLOmega.XR.UI.DeviceCommandHandler>();
+            if (_commands != null) _commands.SetWakeWordRequested += SetWakeWord;
+        }
+
+        private void OnDestroy()
+        {
+            if (_commands != null) _commands.SetWakeWordRequested -= SetWakeWord;
+        }
+
+        /// <summary>
+        /// E58: apply a new wake word at runtime (PC push, no APK rebuild). It is
+        /// detected in the on-device ASR transcript (natural pronunciation). Stored so
+        /// it also applies if the service starts later. Empty is ignored (never
+        /// silently disables the wake word).
+        /// </summary>
+        public void SetWakeWord(string word)
+        {
+            if (string.IsNullOrWhiteSpace(word)) return;
+            _pendingWakeWord = word.Trim();
+#if UNITY_ANDROID && !UNITY_EDITOR
+            _service?.Call("setWakeWord", _pendingWakeWord);
+#endif
         }
 
         private void Update()
@@ -189,6 +216,8 @@ namespace MLOmega.XR.Reflex
             _service = new AndroidJavaObject(
                 "com.mlomega.xr.reflexvision.AsrKwsService", ctx, cfg, _proxy);
             _service.Call("start");
+            // E58: apply a wake word the PC pushed before the service was up.
+            if (!string.IsNullOrEmpty(_pendingWakeWord)) _service.Call("setWakeWord", _pendingWakeWord);
 
             // E47-A single-mic arbitration: hand the transport's WebRTC-captured
             // PCM to sherpa. asPcmSink() returns a livetransport-shaped PcmFeed the

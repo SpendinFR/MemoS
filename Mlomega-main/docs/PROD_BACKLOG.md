@@ -302,6 +302,17 @@ Deux constats de l'audit 2026-07-09 : (a) le VLM lourd de nuit (deep vision sur 
 - [x] **WELCOME — Qdrant** : sous-étape 4a1 — télécharge la release GitHub `v1.12.6` (`qdrant-x86_64-pc-windows-msvc.zip`) dans `tools\qdrant\` si absent + génère `config.yaml` (storage local, port 6333), best-effort avec fallback clair.
 - [x] Dry-run WELCOME exit 0 ; les 3 sous-étapes + le pull des 2 VLM apparaissent. Prérequis restants non auto-installables (honnête) : Python 3.11 et l'appli Ollama (WELCOME les détecte et guide). ADR §E56.
 
+## E58 — Wake word par ASR français + changeable sans rebuild (FAIT — 2026-07-09 ; validation S25 en attente)
+
+Constat : le KWS sherpa est entraîné en **anglais** → « viki » matché « vaïki », « jarvis » « djarviss » — inutilisable pour un francophone. Et le mot était cuit dans l'APK (rebuild pour changer). Décision utilisateur : détecter le mot dans la **transcription de l'ASR français** (déjà sur l'appareil), défaut **« viki »**, changeable **n'importe quand sans rebuild**.
+
+- [x] **Device (Kotlin)** : `WakeWordMatcher.kt` (match tolérant — normalisation sans accents/ponctuation + distance d'édition selon longueur), branché dans `AsrKwsService.decodeSegment` sur le final ASR → `openCommandWindow` (le KWS anglais reste inoffensif, non supprimé). `setWakeWord(String)` runtime. Tests JVM `WakeWordMatcherTest`.
+- [x] **Unity** : défaut `MLOmegaConfig._wakeWord = "viki"` + ASR par défaut **Fr** (le mot est entendu dans la langue de l'ASR) ; `AsrBridge.SetWakeWord` (natif, appliqué même si le service démarre après) ; `DeviceCommandHandler` action `set_wake_word` → événement `SetWakeWordRequested` (AsrBridge s'abonne, pas de cycle asmdef).
+- [x] **PC** : `LivePipeline.wake_word` lu du profil (défaut viki) + `push_wake_word()` (idempotent/session) envoyé en `device_command set_wake_word` à la 1re réception DataChannel (`PhoneOnlyRuntime._on_receipt`). Tests : `test_push_wake_word_sends_set_wake_word_command_once` (+ 19 tests live pipeline verts, rien cassé).
+- [x] **Installateur** : question « comment appeler l'assistant ? » ré-ajoutée (défaut viki, conseil « mot RARE »), écrit `wake_word:` dans `user_profile.yaml`. Dry-run OK.
+- [x] APK v4 rebuild (embarque le matcher). **Change le mot n'importe quand** : édite `wake_word:` dans `configs/user_profile.yaml` → poussé à la prochaine session, zéro rebuild.
+- [ ] Validation S25 : dire « viki » → fenêtre de commande s'ouvre ; changer le mot dans le profil → nouvelle session le prend. ADR §E58.
+
 ## E53 — Mode aide universel, version complète (DIFFÉRÉ — décision 2026-07-08)
 
 « Aide-moi à faire X » (cuisiner, monter un meuble, réparer, coder…) fait BIEN, pas à moitié. Analyse coût/viabilité du 2026-07-08 :
