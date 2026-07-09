@@ -313,21 +313,44 @@ Constat : le KWS sherpa est entraîné en **anglais** → « viki » matché « 
 - [x] APK v4 rebuild (embarque le matcher). **Change le mot n'importe quand** : édite `wake_word:` dans `configs/user_profile.yaml` → poussé à la prochaine session, zéro rebuild.
 - [ ] Validation S25 : dire « viki » → fenêtre de commande s'ouvre ; changer le mot dans le profil → nouvelle session le prend. ADR §E58.
 
-## E53 — Mode aide universel, version complète (DIFFÉRÉ — décision 2026-07-08)
+## E53 — Mode aide universel « Viki mode aide » (ARCHI VALIDÉE 2026-07-09 — à implémenter par phases)
 
-« Aide-moi à faire X » (cuisiner, monter un meuble, réparer, coder…) fait BIEN, pas à moitié. Analyse coût/viabilité du 2026-07-08 :
+« Aide-moi à faire X » (cuisiner, monter un meuble, réparer…) fait BIEN. **Périmètre : tâches PHYSIQUES au niveau OBJET+GESTE.** Les tâches écran/logiciel sont écartées (décision utilisateur : trop long) ; le geste sub-objet fin (« LA vis B4 ») reste la frontière (Phase C, plus tard).
 
-- **Coût cloud vision** : force brute (1 image haute résolution/0,5 s, modèle frontier) ≈ 20-40 $/h de tâche ; architecture événementielle (keyframes sur changement de scène/main active) ≈ 2-6 $/h. Le coût n'est PAS le bloqueur.
-- **Bloqueurs réels (état de l'art 2026-07)** : (1) latence cloud 1-3 s → coordonnées mortes sur caméra de tête, l'ancrage doit passer par keyframe cloud + tracker LOCAL qui colle l'ancre au présent ; (2) pointage spatial fin des VLM non fiable (« le trou B4 » → erreurs fréquentes ; flèche fausse = pire que rien, invariant de vérité) ; (3) validation auto d'étape fiable seulement sur le grossier (~85-90 % cuisine, non fiable assemblage fin).
-- **Ce qui marche déjà très bien** : scan de notice page par page (extraction d'étapes ~95 %), recherche de plan sur internet, plan typé.
+### Le flux (UX cible)
+« **Viki, mode aide** » → tu décris le problème → Viki : « *t'as une notice/un plan, ou je t'en fais un ?* » → si notice : elle la **scanne** (VLM document, extraction ~95 %) ; sinon : **recherche web** + génère → **plan d'étapes TYPÉES**. Puis on avance **ensemble** : elle suit où tu en es, te montre le prochain geste, et **proactivement** te débloque. Mode **opt-in cloud (gpt5.4-mini)** avec **coût affiché en live** (mécanique E33).
 
-**Architecture cible actée** (à implémenter quand les VLM auront progressé sur le pointage spatial, ou en acceptant les limites) :
-- [ ] Acquisition du plan : « as-tu un plan/une notice ? » → scan page par page (VLM document) OU recherche internet → plan d'étapes TYPÉES (objets, minuteur, zoom utile, next_action/next_intent).
-- [ ] Banque d'UI par famille de tâche (cuisine : timer+ingrédients ; assemblage : pièce+zone ; réparation : outil+zone ; etc.) — choisie par le type du plan, pas codée en dur par tâche.
-- [ ] Ancrage live : keyframes cloud événementielles (changement de scène / main active / demande) → ancre sémantique → tracker local (StableTrack) la maintient entre keyframes.
-- [ ] Validation hybride : auto-suggérée avec confiance (« on dirait que c'est fait ? »), confirmée à la voix ; jamais d'auto-validation silencieuse sur du fin.
-- [ ] Mode payant obligatoire pour la vision (opt-in, coût affiché — mécanique E33 existante) ; tâche persistée dans les open loops (reprise au briefing).
-- Gate de viabilité avant de lancer : un banc d'essai pointage spatial (10 scènes réelles S25) où le VLM du moment atteint ≥ 90 % de localisation correcte d'objet désigné — sinon on attend.
+### La règle d'or latence : séparer le lent du rapide (jamais le cloud dans la boucle d'affichage)
+| Couche | Latence | Qui | Rythme |
+|---|---|---|---|
+| **Plan** (les étapes) | lent OK (~1-2 s) | cloud gpt5.4-mini | 1 fois au début |
+| **Reconnaissance d'objet** (« où est le bol », le QUOI+où sémantique) | **~100-250 ms** | **PC RTX 3070 en LAN** (YOLOX/VisionRT, workhorse) ; dehors via **Tailscale** (un peu + haut, viable) | continu (4-10/s) |
+| **Ancrage de l'UI** (collée au réel quand la tête bouge) | temps réel | **téléphone** (tracker local StableTrack, optical flow) | chaque frame, on-device |
+| **Vérif « fait » / « bloqué » / hors-plan** | 1-2 s | cloud, **event-driven** | quelques appels/tâche |
+
+Principes qui tuent la latence :
+- **Ancrage SÉMANTIQUE, jamais coordonnées cloud fixes** : le cloud/PC dit « bol » ; le **téléphone reconnaît/track le bol et pose l'UI dessus en temps réel** → l'UI reste collée même quand tu bouges (lunettes = tête mobile). Ré-acquisition après sortie de champ : PC re-détecte (LAN rapide) ou petit détecteur on-device.
+- **Étape N+1 PRÉ-CALCULÉE** pendant l'étape N (on a le plan) → transition **0 latence perçue**. Le cloud 1-2 s ne mord que sur l'**imprévu** (hors-plan).
+- **Cloud déclenché par le LOCAL** : signaux locaux (changement de scène / main active / pas de progrès / hésitation) → on n'appelle gpt5.4 que là. Proactif ET pas cher (quelques centimes/tâche, pas 1 img/s H24).
+
+### L'UI bank (beau ≠ « surligner »)
+~12 composants **glass conçus + animés**, par famille de tâche, remplis par les données de l'étape typée (`action`, `objet`, `quantité`, `zone`, `geste`, `next`) :
+- Cuisine : cartes ingrédients+quantités, **anneau minuteur** animé, icône d'action, barre de progression recette.
+- Montage : pièce en cours affichée, **flèche animée « A dans B »**, checklist pièces.
+- Réparation : carte outil animée, **encart zoomé** sur la zone.
+- Composant phare (le plus « waouh », le plus dur) : **main-fantôme** qui **rejoue en boucle le GESTE à faire** ancré sur l'objet (verser/visser/tourner/appuyer/essuyer…) — pas un contour. Nécessite une petite banque de gestes génériques.
+
+### À implémenter (par phases — « bien ou pas du tout »)
+- [ ] **Schéma d'étape typée** (les champs que le LLM remplit et que l'UI bank consomme) — la fondation.
+- [ ] **Acquisition du plan** : intent « Viki mode aide » (IntentRouter) → « plan ou pas » → scan notice (VLM doc) OU recherche web → plan typé, persisté en open loop (reprise au briefing).
+- [ ] **Moteur de tâche PC** : machine à états (étape courante/faite/suivante), pré-calcul de N+1, déclenchement cloud event-driven, `task_hot` poussé au device.
+- [ ] **Reco objet** : PC (VisionRT, LAN, ~0,2 s) = chemin principal ; **détecteur on-device** (MediaPipe Object Detector / ONNX léger, classes utiles) = mode dégradé dehors sans PC.
+- [ ] **Ancrage device** : le tracker local (StableTrack) colle l'UI sur l'objet détecté, maintient entre détections, ré-acquiert.
+- [ ] **UI bank glass** (~12 composants + la **main-fantôme geste**) pilotée par l'étape typée.
+- [ ] **Proactif** : signaux locaux (pas de progrès/hésitation) → indice cloud ciblé ; validation hybride (auto-suggérée « on dirait que c'est fait ? » + confirmation voix, jamais auto-silencieuse sur du fin).
+- [ ] **Coût live** : gpt5.4-mini opt-in, compteur de coût affiché (E33).
+- **Phasage** : **A** = objet+geste physique (cuisine/rangement/branchement) fait bien → **B** = tâches d'assemblage (pièces/repères) → **C** = geste fin sub-objet (attend les VLM spatiaux). Refs d'inspi : HoloAssist (dataset AR assistance MS), IKEA Place / overlays « how-to » AR, Set-of-Mark/OmniParser pour le grounding par éléments.
+- Gate qualité avant de livrer une phase : sur 10 scènes réelles S25, ancrage objet correct ≥ 90 % et transition d'étape < 300 ms perçue.
 
 ## E54 — Rétention médias & budget disque (EN COURS — 2026-07-08)
 
