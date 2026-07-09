@@ -63,7 +63,7 @@ Règle d'or : une frame ne devient **jamais** un souvenir directement — elle p
 | Cible | État | Note |
 |---|---|---|
 | **PhoneOnly** (Android, S25 / OnePlus…) | ✅ APK v3 livré | le premier vrai terrain |
-| **Lunettes XREAL** | 🔜 adaptateur écrit, SDK à déposer (E49) | même app, rendu stéréo + caméra Eye |
+| **Lunettes XREAL** | ✅ code + APK lunettes (E49), validation matériel en attente | même app, rendu stéréo + caméra Eye ; APK `mlomega-xreal-g1.apk` (builder soi-même, SDK propriétaire) |
 | **Capture-only + viewer iPhone** | ✅ | lunettes/caméra capturent, tu vérifies dans Safari (`apps/companion-web/`) |
 | Snap Spectacles / autres | ⏳ futur | contrats indépendants du matériel, prévus pour ça |
 

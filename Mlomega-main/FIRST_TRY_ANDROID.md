@@ -204,6 +204,26 @@ Tu peux maintenant faire 2-3 sessions dans la journée : chaque « Terminer la s
 18. ☐ Tailscale actif sur le tél, Wi-Fi coupé (4G) → `http://100.113.42.19:8710/health` répond → session dehors OK (`active_endpoint = tailscale` sur `/metrics`)
 19. ☐ Quitte une pièce, déplace un objet, reviens → cue « quelque chose a changé »
 
+## 👓 Lunettes XREAL (E49 — à valider sur matériel)
+
+L'app lunettes est une **APK séparée** : `mlomega-xreal-g1.apk` (~191 Mo), à builder toi-même
+(le SDK XREAL est propriétaire, non redistribué). Build : dépose `com.xreal.xr.tar.gz` dans
+`apps\xr-mobile\Packages\xreal-sdk\`, puis le menu Unity **MLOmega > XREAL** (ou
+`-executeMethod MLOmega.XR.Editor.AndroidBuildXreal.BuildApk`).
+
+Utilisation (flux prévu — à confirmer sur tes vraies lunettes) :
+1. Installe l'APK lunettes sur le **téléphone** : `adb install -r apps\xr-mobile\build\android\mlomega-xreal-g1.apk`.
+2. **Branche les lunettes XREAL en USB-C** au téléphone (les lunettes = écran + caméra Eye ;
+   le calcul reste sur le téléphone). Le téléphone doit sortir la vidéo en USB-C (DisplayPort).
+3. Lance l'app → **rendu stéréo** dans les lunettes, la **caméra Eye** devient la source vidéo.
+   Tout le reste (PC, mémoire, commandes, gestes) est **identique au mode téléphone**.
+4. Si l'Eye est absente/indisponible sur ton unité (One vs One Pro), l'app reste en **pose-only**
+   (pas de capture vidéo lunettes) sans planter — c'est le plan B intégré.
+
+⚠️ Non encore validé sur lunettes physiques : affichage stéréo réel, caméra Eye, pose 6DoF,
+batterie sur session longue. Le code compile et l'APK est produite ; la validation terrain
+se fera quand tu auras les lunettes.
+
 ## 📊 Après le close-day : LIS ta mémoire (dashboard)
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\RUN_DASHBOARD.ps1
