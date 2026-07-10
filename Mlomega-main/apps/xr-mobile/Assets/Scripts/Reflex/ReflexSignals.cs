@@ -23,7 +23,11 @@ namespace MLOmega.XR.Reflex
         /// <summary>Spoken "where is …" command → FocusSearch.</summary>
         WhereIsCommand = 4,
         /// <summary>Zone change → keyframe / WorldBrain change candidate (not an on-device skill).</summary>
-        ZoneChange = 5
+        ZoneChange = 5,
+        /// <summary>PhoneOnly session active: keep ASR + Subtitle warm for wake word/offline speech.</summary>
+        ContinuousSpeech = 6,
+        /// <summary>PhoneOnly session active: keep the gesture detector warm so a hand can be discovered.</summary>
+        ContinuousGestures = 7
     }
 
     /// <summary>The on-device Ultra-Live skills the scheduler owns.</summary>

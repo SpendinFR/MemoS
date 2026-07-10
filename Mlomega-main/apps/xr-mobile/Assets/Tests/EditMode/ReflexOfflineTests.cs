@@ -271,6 +271,29 @@ namespace MLOmega.XR.Tests
             Assert.IsTrue(sched.IsSkillActive(ReflexSkillId.LensWindow));
         }
 
+        [Test]
+        public void PhoneOnlySignalSource_WarmsSpeechAndGestureDetectors()
+        {
+            var reflex = new CapturingReflex();
+            var cap = new CapturingIntents();
+            LocalIntentSource src = NewSource(cap);
+            ReflexScheduler sched = BuildScheduler(src, reflex, budget: 5);
+            var asr = Make<AsrBridge>("baseline_asr");
+            var gestures = Make<GestureBridge>("baseline_gestures");
+            SetField(sched, "_asrBridge", asr);
+            SetField(sched, "_gestureBridge", gestures);
+
+            var source = Make<PhoneOnlyReflexSignalSource>("phoneonly_signals");
+            SetField(source, "_scheduler", sched);
+            source.EmitBaselineSignals();
+            sched.Tick(100);
+
+            Assert.IsTrue(asr.IsRunning, "production baseline signal must warm ASR/wake word");
+            Assert.IsTrue(gestures.IsRunning, "production baseline signal must warm palm/pinch/swipe");
+            Assert.IsTrue(sched.IsSkillActive(ReflexSkillId.Subtitle),
+                "continuous speech also keeps offline subtitles subscribed");
+        }
+
         private ReflexScheduler BuildScheduler(LocalIntentSource src, IReflexEventSink reflex, int budget)
         {
             var config = ReflexConfig.CreateDefault();

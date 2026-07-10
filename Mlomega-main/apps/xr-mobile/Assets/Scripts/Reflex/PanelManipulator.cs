@@ -170,6 +170,7 @@ namespace MLOmega.XR.Reflex
             if (best == null) return; // nothing manipulable under the pinch → zoom as before
 
             _target = best;
+            SetFeedback(_target, true, bestKind == ManipulationKind.Resize);
             if (_pendingButtonTap || _pendingRestore) return; // resolve on release
 
             _mode = bestKind;
@@ -294,11 +295,18 @@ namespace MLOmega.XR.Reflex
 
         private void Cancel()
         {
+            SetFeedback(_target, false, false);
             _mode = ManipulationKind.None;
             _target = null;
             _pendingButtonTap = false;
             _pendingCloseNotMinimise = false;
             _pendingRestore = false;
+        }
+
+        private static void SetFeedback(IManipulablePanel panel, bool active, bool resizing)
+        {
+            if (panel is IManipulationFeedback feedback)
+                feedback.SetManipulationFeedback(active, resizing);
         }
 
         private static void Persist(IManipulablePanel panel)

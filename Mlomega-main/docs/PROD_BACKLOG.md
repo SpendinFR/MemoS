@@ -427,7 +427,7 @@ Source de vérité : appels réellement présents dans le checkout. Une case n'e
 - [ ] **22 — CloseDay de secours** : garder le bouton Terminer comme chemin normal, mais reprendre/clôturer sûrement après crash, batterie vide ou fermeture PC, sans double clôture.
 - [ ] **23 — Lanceur avec readiness** : vérifier/démarrer ou guider clairement Ollama, Qdrant, modèles, ports et environnements avant d'annoncer FirstTry prêt.
 - [ ] **24 — `/health` honnête** : distinguer liveness, readiness de pairing et santé de chaîne IA (DB, modèles, ASR, Ollama, Qdrant, GPU, disque, venv nuit).
-- [ ] **25 — Pairing authentifié** : exiger secret/code/confirmation initiale avant émission d'un token, compatible LAN/Tailscale et renouvellement.
+- [x] **25 — Pairing sans secret conservé (audit original 24, décision utilisateur)** : aucun secret/code préalable ajouté. Le modèle LAN/Tailscale personnel + token de session reste volontairement inchangé ; ne pas rouvrir ce point comme bug E60.
 - [ ] **26 — Aucun `seg_*.wav` perdu dans `%TEMP%`** : utiliser le stockage média géré et supprimer/transcoder selon archive/rétention après consommation.
 - [ ] **27 — Identité objet durable** : ne plus dériver l'identité de la session transport ; réassocier les mêmes objets entre sessions pour mouvements/routines.
 - [ ] **28 — Journée visuelle locale** : consolider selon le fuseau utilisateur et classer correctement matin/après-midi/soir autour de minuit local.
@@ -437,3 +437,5 @@ Source de vérité : appels réellement présents dans le checkout. Une case n'e
 - [ ] **32 — E58 fiable de bout en bout** : accepter E58 seulement lorsque les points 13 et 15 passent avec mauvais mot, mot changé, expiration, reconnexion et parole ambiante.
 
 **Gate final E60** : APK reconstruite depuis la scène générée, puis matrice S25 réelle FirstTryAndroid (LAN, perte/reconnexion, arrière-plan/écran éteint, mauvais token, second device, wake word changé, Reflex/gestes/traduction, TTS, clips, E53, BrainLive et CloseDay/reprise même jour). Aucun test synthétique ne clôt ce gate matériel.
+
+**Avancement lot Android A (2026-07-10, code branché — cases 01/02/04/07/10/11 encore ouvertes jusqu'au build/test Unity)** : `PhoneOnlyReflexSignalSource` émet réellement les baselines speech+gestures pendant une session ; le builder ajoute MenuPanel glass + MenuGestureController + OrientationGuard ; le menu devient `IManipulablePanel` avec feedback de prise ; le package PhoneOnly est forcé et la scène est toujours régénérée ; fin de session null-safe et veille interdite seulement pendant la session. Compilation Roslyn avec les `.rsp` Unity réels : Transport/UI/Reflex/Editor/Tests OK, deux tests E60 ajoutés. Runner Unity non exécuté : licence machine absente (`No ULF license found`, `No valid Unity Editor license`) ; aucune case nécessitant Unity/S25 n'est cochée sur cette seule compilation.

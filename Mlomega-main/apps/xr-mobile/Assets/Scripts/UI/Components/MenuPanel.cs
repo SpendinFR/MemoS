@@ -14,6 +14,7 @@
 // is directly unit-testable in EditMode without the component lifecycle.
 using System;
 using System.Collections.Generic;
+using System.Text;
 using MLOmega.Contracts.V19;
 using MLOmega.XR.UI;
 using UnityEngine;
@@ -33,7 +34,7 @@ namespace MLOmega.XR.UI.Components
         }
     }
 
-    public sealed class MenuPanel : MonoBehaviour
+    public sealed class MenuPanel : MonoBehaviour, IManipulablePanel, IManipulationFeedback
     {
         [SerializeField] private DeviceCommandHandler _commandHandler;
         [SerializeField] private UITheme _theme;
@@ -42,6 +43,9 @@ namespace MLOmega.XR.UI.Components
 
         [Tooltip("Seconds of continuous gaze on an item before it selects (dwell).")]
         [SerializeField] private float _dwellSeconds = 1.0f;
+        [SerializeField] private Vector2 _size = new Vector2(0.78f, 0.68f);
+        [SerializeField] private Vector2 _minSize = new Vector2(0.48f, 0.42f);
+        [SerializeField] private Vector2 _maxSize = new Vector2(1.15f, 0.95f);
 
         /// <summary>Whether the panel is currently open.</summary>
         public bool IsOpen { get; private set; }
@@ -58,13 +62,36 @@ namespace MLOmega.XR.UI.Components
         private readonly List<MenuAction> _actions = new List<MenuAction>();
         private int _gazeIndex = -1;
         private float _gazeStart;
+        private GlassPanel _panel;
+        private bool _registered;
+        private bool _placed;
+        private bool _minimised;
+        private Vector3 _restorePosition;
+        private Quaternion _restoreRotation;
+        private Vector2 _restoreSize;
 
         private void Awake()
         {
             if (_commandHandler == null) _commandHandler = FindAnyObjectByType<DeviceCommandHandler>();
             if (_camera == null) _camera = Camera.main;
+            if (ReceiptSink == null) ReceiptSink = FindAnyObjectByType<UIReceiptTransportSink>();
+            EnsureVisual();
             BuildDefaultActions();
             gameObject.SetActive(false);
+        }
+
+        private void EnsureVisual()
+        {
+            if (_panel != null) return;
+            if (_glassMaterial == null)
+            {
+                Shader shader = Shader.Find("MLOmega/LiquidGlass");
+                if (shader != null) _glassMaterial = new Material(shader);
+            }
+            _panel = new GlassPanel(transform, _size, _theme, _glassMaterial,
+                withTitle: true, withBody: true, withTruthChip: false);
+            _panel.Title.text = "Viki — menu                         −   ×";
+            _panel.SetAlpha(1f);
         }
 
         /// <summary>The default action grid (§5). Public so tests/scene-builders can rebuild it.</summary>
@@ -94,6 +121,20 @@ namespace MLOmega.XR.UI.Components
             _actions.Add(new MenuAction("Mode local", new DeviceCommand { Type = "device_command", Action = "local_mode" }));
             // Close.
             _actions.Add(new MenuAction("Fermer", new DeviceCommand { Type = "device_command", Action = "close_menu" }));
+            RefreshVisual();
+        }
+
+        private void RefreshVisual()
+        {
+            if (_panel?.Body == null) return;
+            var text = new StringBuilder(256);
+            for (int i = 0; i < _actions.Count; i++)
+            {
+                text.Append(i == _gazeIndex ? "› " : "  ");
+                text.Append(_actions[i].Label);
+                if (i + 1 < _actions.Count) text.Append('\n');
+            }
+            _panel.Body.text = text.ToString();
         }
 
         private static MenuAction Mode(string label, string uiMode) =>
@@ -108,7 +149,15 @@ namespace MLOmega.XR.UI.Components
             if (IsOpen) return;
             IsOpen = true;
             _gazeIndex = -1;
+            EnsureVisual();
+            if (!_placed) PlaceInView();
             gameObject.SetActive(true);
+            if (!_registered)
+            {
+                ManipulablePanelRegistry.Register(this);
+                _registered = true;
+            }
+            RefreshVisual();
         }
 
         /// <summary>Close the panel. Idempotent.</summary>
@@ -116,7 +165,37 @@ namespace MLOmega.XR.UI.Components
         {
             if (!IsOpen) return;
             IsOpen = false;
+            if (_registered)
+            {
+                ManipulablePanelRegistry.Unregister(this);
+                _registered = false;
+            }
             gameObject.SetActive(false);
+        }
+
+        private void OnDisable()
+        {
+            if (_registered)
+            {
+                ManipulablePanelRegistry.Unregister(this);
+                _registered = false;
+            }
+        }
+
+        private void PlaceInView()
+        {
+            if (PanelPlacementStore.TryGet(PersistenceKey, out PanelPlacement saved))
+            {
+                transform.SetPositionAndRotation(saved.Position, saved.Rotation);
+                ResizeTo(saved.Size);
+            }
+            else if (_camera != null)
+            {
+                transform.SetPositionAndRotation(
+                    _camera.transform.TransformPoint(new Vector3(0f, 0f, 1.15f)),
+                    Quaternion.LookRotation(transform.position - _camera.transform.position, Vector3.up));
+            }
+            _placed = true;
         }
 
         /// <summary>Toggle open/closed (palm gesture).</summary>
@@ -189,6 +268,7 @@ namespace MLOmega.XR.UI.Components
             {
                 _gazeIndex = index;
                 _gazeStart = Time.unscaledTime;
+                RefreshVisual();
             }
         }
 
@@ -197,5 +277,59 @@ namespace MLOmega.XR.UI.Components
         {
             if (_gazeIndex >= 0) Select(_gazeIndex);
         }
+
+        public string PersistenceKey => "menu_panel";
+        public Transform PanelTransform => transform;
+        public Vector2 PanelSize => _size;
+        public bool IsManipulable => IsOpen && gameObject.activeInHierarchy;
+        public bool LockAspectRatio => false;
+        public Vector2 MinSize => _minSize;
+        public Vector2 MaxSize => _maxSize;
+        public bool IsMinimised => _minimised;
+
+        public void MoveTo(Vector3 worldPosition)
+        {
+            _placed = true;
+            transform.position = worldPosition;
+        }
+
+        public void ResizeTo(Vector2 size)
+        {
+            _placed = true;
+            _size = size;
+            if (_panel != null) _panel.Root.sizeDelta = size;
+        }
+
+        public void CloseFromGesture() => Close();
+
+        public void MinimiseFromGesture()
+        {
+            if (_minimised) return;
+            _minimised = true;
+            _restorePosition = transform.position;
+            _restoreRotation = transform.rotation;
+            _restoreSize = _size;
+            ResizeTo(new Vector2(0.12f, 0.12f));
+            if (_panel?.Body != null) _panel.Body.gameObject.SetActive(false);
+            if (_camera != null)
+            {
+                transform.SetPositionAndRotation(
+                    _camera.transform.TransformPoint(new Vector3(0.55f, -0.3f, 1.15f)),
+                    Quaternion.LookRotation(transform.position - _camera.transform.position, Vector3.up));
+            }
+        }
+
+        public void RestoreFromGesture()
+        {
+            if (!_minimised) return;
+            _minimised = false;
+            transform.SetPositionAndRotation(_restorePosition, _restoreRotation);
+            ResizeTo(_restoreSize);
+            if (_panel?.Body != null) _panel.Body.gameObject.SetActive(true);
+            RefreshVisual();
+        }
+
+        public void SetManipulationFeedback(bool active, bool resizing) =>
+            _panel?.SetManipulationFeedback(active, resizing);
     }
 }

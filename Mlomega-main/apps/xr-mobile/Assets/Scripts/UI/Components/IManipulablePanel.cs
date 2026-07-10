@@ -84,4 +84,10 @@ namespace MLOmega.XR.UI.Components
         /// <summary>True while minimised (the manipulator then only offers restore).</summary>
         bool IsMinimised { get; }
     }
+
+    /// <summary>Optional visual hook used by PanelManipulator during a claimed pinch.</summary>
+    public interface IManipulationFeedback
+    {
+        void SetManipulationFeedback(bool active, bool resizing);
+    }
 }

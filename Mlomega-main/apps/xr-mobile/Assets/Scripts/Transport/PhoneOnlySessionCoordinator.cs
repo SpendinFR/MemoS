@@ -22,6 +22,8 @@ namespace MLOmega.XR.Transport
         public bool EndRequested { get; private set; }
         public string EndStatus { get; private set; }
         public bool ConnectedConfirmed { get; private set; }
+        private int _previousSleepTimeout;
+        private bool _sleepLockHeld;
 
         private void Awake()
         {
@@ -35,6 +37,8 @@ namespace MLOmega.XR.Transport
             if (_pairing != null) _pairing.StateChanged += OnPairingStateChanged;
             if (_session != null) _session.SessionStateChanged += OnSessionStateChanged;
             if (_transport != null) _transport.StateChanged += OnTransportStateChanged;
+            Application.runInBackground = true;
+            UpdateSleepPolicy(_session != null ? _session.State : XrSessionState.Idle);
             TryStartTransport();
         }
 
@@ -43,6 +47,7 @@ namespace MLOmega.XR.Transport
             if (_pairing != null) _pairing.StateChanged -= OnPairingStateChanged;
             if (_session != null) _session.SessionStateChanged -= OnSessionStateChanged;
             if (_transport != null) _transport.StateChanged -= OnTransportStateChanged;
+            ReleaseSleepLock();
             // Lifecycle loss is not an explicit end: never call /session/end here.
         }
 
@@ -53,6 +58,7 @@ namespace MLOmega.XR.Transport
 
         private void OnSessionStateChanged(XrSessionState state)
         {
+            UpdateSleepPolicy(state);
             if (state == XrSessionState.Running) TryStartTransport();
         }
 
@@ -78,14 +84,21 @@ namespace MLOmega.XR.Transport
         {
             if (EndRequested || _pairing == null || !_pairing.TryGetActiveSession(out var sid, out var token))
                 return;
+            string baseUrl = _pairing.ActiveBaseUrl;
+            if (string.IsNullOrWhiteSpace(baseUrl))
+            {
+                EndStatus = "PC unreachable: reconnect before ending the session";
+                Debug.LogWarning("[PhoneOnly] " + EndStatus);
+                return;
+            }
             EndRequested = true;
-            StartCoroutine(EndExplicitly(sid, token));
+            StartCoroutine(EndExplicitly(baseUrl, sid, token));
         }
 
-        private IEnumerator EndExplicitly(string sessionId, string token)
+        private IEnumerator EndExplicitly(string baseUrl, string sessionId, string token)
         {
             EndStatus = "requesting";
-            string url = _pairing.ActiveBaseUrl.TrimEnd('/') + "/session/end";
+            string url = baseUrl.TrimEnd('/') + "/session/end";
             byte[] body = Encoding.UTF8.GetBytes(ContractJson.Serialize(new { session_id = sessionId, token }));
             using var req = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST);
             req.uploadHandler = new UploadHandlerRaw(body);
@@ -101,7 +114,7 @@ namespace MLOmega.XR.Transport
             if (req.result == UnityWebRequest.Result.Success)
             {
                 EndStatus = req.downloadHandler.text;
-                yield return PollCloseDay(sessionId);
+                yield return PollCloseDay(baseUrl, sessionId);
             }
             else
             {
@@ -111,13 +124,13 @@ namespace MLOmega.XR.Transport
             }
         }
 
-        private IEnumerator PollCloseDay(string sessionId)
+        private IEnumerator PollCloseDay(string baseUrl, string sessionId)
         {
             while (true)
             {
                 yield return new WaitForSecondsRealtime(2f);
                 if (_pairing == null || string.IsNullOrEmpty(_pairing.Token)) yield break;
-                string url = _pairing.ActiveBaseUrl.TrimEnd('/') + "/session/status";
+                string url = baseUrl.TrimEnd('/') + "/session/status";
                 byte[] body = Encoding.UTF8.GetBytes(ContractJson.Serialize(new
                 {
                     session_id = sessionId,
@@ -148,6 +161,28 @@ namespace MLOmega.XR.Transport
                     yield break;
                 }
             }
+        }
+
+        private void UpdateSleepPolicy(XrSessionState state)
+        {
+            bool active = state == XrSessionState.Running || state == XrSessionState.Suspended;
+            if (active && !_sleepLockHeld)
+            {
+                _previousSleepTimeout = Screen.sleepTimeout;
+                Screen.sleepTimeout = SleepTimeout.NeverSleep;
+                _sleepLockHeld = true;
+            }
+            else if (!active)
+            {
+                ReleaseSleepLock();
+            }
+        }
+
+        private void ReleaseSleepLock()
+        {
+            if (!_sleepLockHeld) return;
+            Screen.sleepTimeout = _previousSleepTimeout;
+            _sleepLockHeld = false;
         }
 
         private void OnGUI()

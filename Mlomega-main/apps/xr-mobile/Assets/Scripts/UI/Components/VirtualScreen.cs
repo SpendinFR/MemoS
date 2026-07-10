@@ -16,7 +16,7 @@ using UnityEngine.UI;
 
 namespace MLOmega.XR.UI.Components
 {
-    public sealed class VirtualScreen : UIComponentBase, IManipulablePanel
+    public sealed class VirtualScreen : UIComponentBase, IManipulablePanel, IManipulationFeedback
     {
         [SerializeField] private Vector2 _size = new Vector2(1.2f, 0.68f);
         [SerializeField] private Vector3 _placeOffset = new Vector3(0f, 0.1f, 1.8f);
@@ -169,5 +169,8 @@ namespace MLOmega.XR.UI.Components
             transform.SetPositionAndRotation(_restorePosition, _restoreRotation);
             SetSize(_restoreSize);
         }
+
+        public void SetManipulationFeedback(bool active, bool resizing) =>
+            _panel?.SetManipulationFeedback(active, resizing);
     }
 }

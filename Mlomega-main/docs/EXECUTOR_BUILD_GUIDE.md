@@ -10,6 +10,14 @@ Conventions : `E<n>` = étape ; chaque étape a Objectif / Créer / Brancher / V
 
 La checklist canonique des **32 corrections** se trouve dans `docs/PROD_BACKLOG.md` §E60. Exécution imposée : petit lot cohérent → appel produit prouvé → tests ciblés du bon arbre → mise à jour simultanée du guide et du backlog → commit. Les validations S25 restent ouvertes tant qu'elles n'ont pas été exécutées sur le téléphone réel.
 
+Décision utilisateur E60 : le pairing initial **reste sans secret préalable** (réseau personnel LAN/Tailscale + token de session). Aucun durcissement par code/PIN n'est à implémenter dans ce lot.
+
+### E60 — Lot Android A (code branché, validation Unity/device ouverte)
+
+Le runtime PhoneOnly possède désormais un producteur réel de signaux baseline (`PhoneOnlyReflexSignalSource`) : ASR/wake/subtitle et détection gestes sont chauffés pendant `XrSessionState.Running`, puis restent soumis au scheduler/budget. Le builder instancie aussi le menu réel sur un GameObject enfant (pour que sa fermeture ne désactive jamais la racine), son contrôleur geste/commande, sa surface `GlassPanel` manipulable et `OrientationGuard`. `AndroidBuild` force `com.mlomega.xr.phoneonly`, `runInBackground`, et régénère systématiquement la scène au lieu de réutiliser un YAML ancien. `PhoneOnlySessionCoordinator` conserve une URL immuable pour end/status, refuse proprement une clôture sans endpoint et tient `NeverSleep` seulement pendant Running/Suspended.
+
+Validation disponible : compilation Roslyn directe des `.rsp` Unity dans l'ordre Transport → UI → Reflex → Editor → Tests, **tous OK** ; tests E60 ajoutés pour les baselines ASR/gestures et la vraie surface menu. Le runner Unity n'a pas pu démarrer : le client répond mais indique `No ULF license found` / `No valid Unity Editor license`. Ce blocage d'environnement ne vaut ni échec code ni test vert ; régénération scène, EditMode effectif, APK et S25 restent à faire après réactivation Unity Hub/manual ULF.
+
 ---
 
 ## E39 - Invariant temporel V18 `turns` restaure (2026-07-06)

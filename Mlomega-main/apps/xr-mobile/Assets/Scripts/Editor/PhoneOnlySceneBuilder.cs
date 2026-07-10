@@ -41,6 +41,7 @@ namespace MLOmega.XR.Editor
             var pairing = root.AddComponent<SessionPairing>();
             var pose = root.AddComponent<PosePublisher>();
             var capture = root.AddComponent<EyeCaptureSource>();
+            var orientation = root.AddComponent<OrientationGuard>();
             var transport = root.AddComponent<LiveTransportBridge>();
             // E48-A: install APK-embedded small models at first launch, then
             // download any still-missing device models in the background.
@@ -86,6 +87,14 @@ namespace MLOmega.XR.Editor
             // E59: hand window-management (grab/resize/close/minimise of manipulable panels).
             var panelManipulator = root.AddComponent<PanelManipulator>();
             var reflex = root.AddComponent<ReflexScheduler>();
+            var reflexSignals = root.AddComponent<PhoneOnlyReflexSignalSource>();
+
+            // MenuPanel disables its own GameObject while closed, so it must live on
+            // a child rather than disabling the entire PhoneOnly session root.
+            var menuGo = new GameObject("PhoneOnly Menu");
+            menuGo.transform.SetParent(root.transform, false);
+            var menu = menuGo.AddComponent<MenuPanel>();
+            var menuGestures = root.AddComponent<MenuGestureController>();
 
             Assign(session, "_config", config);
             Assign(session, "_permissions", permissions);
@@ -93,6 +102,8 @@ namespace MLOmega.XR.Editor
             Assign(capture, "_session", session);
             Assign(capture, "_pairing", pairing);
             Assign(capture, "_pose", pose);
+            Assign(orientation, "_capture", capture);
+            Assign(orientation, "_pose", pose);
             Assign(transport, "_pairing", pairing);
             Assign(transport, "_capture", capture);
             Assign(coordinator, "_pairing", pairing);
@@ -118,6 +129,7 @@ namespace MLOmega.XR.Editor
             Assign(statusBar, "_transport", transport);
             Assign(statusBar, "_session", session);
             Assign(statusBar, "_provisioning", provisioning);
+            Assign(orientation, "_statusBar", statusBar);
             // E48-A provisioning wiring.
             Assign(provisioning, "_pairing", pairing);
             Assign(provisioning, "_installer", modelInstaller);
@@ -144,11 +156,19 @@ namespace MLOmega.XR.Editor
             Assign(reflex, "_subtitle", subtitle);
             // E59: the manipulator runs BEFORE the lens on the pinch stream (claim → no zoom).
             Assign(reflex, "_panelManipulator", panelManipulator);
+            Assign(reflexSignals, "_scheduler", reflex);
+            Assign(reflexSignals, "_session", session);
             Assign(panelManipulator, "_camera", camera);
             Assign(wakeGate, "_asr", asrBridge);
             Assign(translate, "_asrBridge", asrBridge);
             Assign(translate, "_subtitle", subtitle);
             Assign(translate, "_config", config);
+            Assign(menu, "_commandHandler", commands);
+            Assign(menu, "_theme", theme);
+            Assign(menu, "_camera", camera);
+            Assign(menuGestures, "_gestures", gestureBridge);
+            Assign(menuGestures, "_menu", menu);
+            Assign(menuGestures, "_commandHandler", commands);
 
             new GameObject("EventSystem",
                 typeof(UnityEngine.EventSystems.EventSystem),

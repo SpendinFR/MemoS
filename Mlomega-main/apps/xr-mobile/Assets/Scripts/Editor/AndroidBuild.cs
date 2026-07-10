@@ -129,13 +129,10 @@ namespace MLOmega.XR.Editor
             PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
             PlayerSettings.Android.minSdkVersion = AndroidSdkVersions.AndroidApiLevel29;
             PlayerSettings.Android.targetSdkVersion = AndroidSdkVersions.AndroidApiLevel34;
-
-            if (string.IsNullOrEmpty(PlayerSettings.applicationIdentifier) ||
-                PlayerSettings.applicationIdentifier.Contains("DefaultCompany"))
-            {
-                PlayerSettings.SetApplicationIdentifier(
-                    BuildTargetGroup.Android, "com.mlomega.xr.phoneonly");
-            }
+            PlayerSettings.runInBackground = true;
+            // Never inherit the XREAL/G1 identifier from a previous build target.
+            PlayerSettings.SetApplicationIdentifier(
+                BuildTargetGroup.Android, "com.mlomega.xr.phoneonly");
 
             // PhoneOnly profile: no XREAL SDK. The proprietary tarball define stays
             // absent so the guarded adapters compile without it.
@@ -151,8 +148,8 @@ namespace MLOmega.XR.Editor
 
         private static void EnsureScene()
         {
-            if (File.Exists(ScenePath)) return;
-            // Delegate to the canonical scene builder so the scene contents match.
+            // Always regenerate from the canonical builder. Merely checking that the
+            // YAML exists produced stale APKs after runtime components were added.
             PhoneOnlySceneBuilder.BuildScene();
             if (!File.Exists(ScenePath))
                 throw new Exception($"[AndroidBuild] PhoneOnly scene missing after build: {ScenePath}");

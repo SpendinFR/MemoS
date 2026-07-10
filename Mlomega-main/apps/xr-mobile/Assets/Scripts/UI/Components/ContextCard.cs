@@ -9,7 +9,7 @@ using UnityEngine;
 
 namespace MLOmega.XR.UI.Components
 {
-    public sealed class ContextCard : UIComponentBase, IManipulablePanel
+    public sealed class ContextCard : UIComponentBase, IManipulablePanel, IManipulationFeedback
     {
         [SerializeField] private Vector2 _size = new Vector2(0.42f, 0.20f);
         [SerializeField] private Vector3 _lateralOffset = new Vector3(0.34f, 0.02f, 1.1f);
@@ -159,5 +159,8 @@ namespace MLOmega.XR.UI.Components
             transform.SetPositionAndRotation(_restorePosition, _restoreRotation);
             ResizeTo(_restoreSize);
         }
+
+        public void SetManipulationFeedback(bool active, bool resizing) =>
+            _panel?.SetManipulationFeedback(active, resizing);
     }
 }

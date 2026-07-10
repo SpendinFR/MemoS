@@ -58,7 +58,12 @@ namespace MLOmega.XR.Reflex
                 { ReflexSignal.FastMotionOrProximity, new[] { ReflexSkillId.MotionProximity } },
                 { ReflexSignal.WhereIsCommand, new[] { ReflexSkillId.FocusSearch } },
                 // ZoneChange is a WorldBrain/keyframe concern, not an on-device skill.
-                { ReflexSignal.ZoneChange, Array.Empty<ReflexSkillId>() }
+                { ReflexSignal.ZoneChange, Array.Empty<ReflexSkillId>() },
+                // Baseline PhoneOnly signals break the detector chicken-and-egg:
+                // ASR must already run to discover speech/wake words and gestures must
+                // already run to discover a hand. Skills remain budgeted/event-driven.
+                { ReflexSignal.ContinuousSpeech, new[] { ReflexSkillId.Subtitle } },
+                { ReflexSignal.ContinuousGestures, Array.Empty<ReflexSkillId>() }
             };
 
         // Last time each skill was requested by a signal (for linger).
@@ -127,6 +132,8 @@ namespace MLOmega.XR.Reflex
         /// </summary>
         public void Tick(long nowMs)
         {
+            bool continuousSpeech = _activeSignals.Contains(ReflexSignal.ContinuousSpeech);
+            bool continuousGestures = _activeSignals.Contains(ReflexSignal.ContinuousGestures);
             // 1) collect desired skills from raised signals.
             var desired = new HashSet<ReflexSkillId>();
             foreach (ReflexSignal s in _activeSignals)
@@ -168,13 +175,15 @@ namespace MLOmega.XR.Reflex
             }
 
             // 5) drive native detectors on demand (battery — §9.4).
-            DriveDetectors(keep);
+            DriveDetectors(keep, continuousSpeech, continuousGestures);
         }
 
-        private void DriveDetectors(HashSet<ReflexSkillId> keep)
+        private void DriveDetectors(HashSet<ReflexSkillId> keep,
+            bool continuousSpeech, bool continuousGestures)
         {
             // Gestures are needed when LensWindow (pinch zoom) or StableTrack (hand) run.
-            bool wantGestures = keep.Contains(ReflexSkillId.LensWindow) ||
+            bool wantGestures = continuousGestures ||
+                                keep.Contains(ReflexSkillId.LensWindow) ||
                                 keep.Contains(ReflexSkillId.StableTrack);
             if (_gestureBridge != null)
             {
@@ -184,7 +193,7 @@ namespace MLOmega.XR.Reflex
 
             // ASR is needed when Subtitle runs. (The WakeWordGate manages the mic
             // independently for wake-word-only listening.)
-            bool wantAsr = keep.Contains(ReflexSkillId.Subtitle);
+            bool wantAsr = continuousSpeech || keep.Contains(ReflexSkillId.Subtitle);
             if (_asrBridge != null)
             {
                 if (wantAsr && !_asrBridge.IsRunning) _asrBridge.Activate();

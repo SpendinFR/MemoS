@@ -190,6 +190,24 @@ namespace MLOmega.XR.Tests
         }
 
         [Test]
+        public void MenuPanel_IsARealGlassManipulableSurfaceWhileOpen()
+        {
+            ManipulablePanelRegistry.Clear();
+            var menu = Make<MenuPanel>("menu_glass");
+            menu.Open();
+
+            Assert.IsInstanceOf<IManipulablePanel>(menu);
+            Assert.IsTrue(menu.IsManipulable);
+            Assert.IsNotNull(menu.GetComponentInChildren<Canvas>(true),
+                "the menu must own actual world-space glass geometry");
+            CollectionAssert.Contains((System.Collections.ICollection)ManipulablePanelRegistry.Panels, menu);
+
+            menu.Close();
+            CollectionAssert.DoesNotContain((System.Collections.ICollection)ManipulablePanelRegistry.Panels, menu);
+            ManipulablePanelRegistry.Clear();
+        }
+
+        [Test]
         public void MenuRegistry_ResolvesMenuPanel()
         {
             Assert.AreEqual(typeof(MenuPanel), UIComponentRegistry.ResolveType("menu_panel"));

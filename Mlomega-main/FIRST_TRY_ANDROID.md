@@ -141,7 +141,7 @@ peut-être sa première prédiction. C'est là que tout commence.**
 ## ⚠️ Avant la session : pousser les modèles device (une fois)
 ```powershell
 python scripts\fetch_models_v19.py --device
-adb push models\device\. /sdcard/Android/data/com.mlomega.xr/files/models/
+adb push models\device\. /sdcard/Android/data/com.mlomega.xr.phoneonly/files/models/
 ```
 (Le nom exact du package est visible via `adb shell pm list packages | findstr mlomega`. Client de téléchargement automatique = prochain petit ajout.)
 

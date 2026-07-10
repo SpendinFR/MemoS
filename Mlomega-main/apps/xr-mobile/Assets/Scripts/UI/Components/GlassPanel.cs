@@ -148,6 +148,26 @@ namespace MLOmega.XR.UI.Components
             SetLabelAlpha(TruthChip, alpha);
         }
 
+        /// <summary>Visible claimed-pinch feedback without creating a new material.</summary>
+        public void SetManipulationFeedback(bool active, bool resizing)
+        {
+            if (Root != null)
+                Root.localScale = active ? Vector3.one * 1.018f : Vector3.one;
+            if (_mat == null) return;
+            if (!active)
+            {
+                PushStatic();
+                return;
+            }
+            Color glow = resizing
+                ? new Color(1f, 0.62f, 0.16f, 1f)
+                : new Color(0.12f, 0.86f, 1f, 1f);
+            _mat.SetColor(AccentColorId, glow);
+            _mat.SetColor(RimColorId, glow);
+            _mat.SetFloat(AccentMixId, 0.92f);
+            _mat.SetFloat(RimWidthId, _theme != null ? _theme.RimWidth * 1.8f : 0.02f);
+        }
+
         private void SetLabelAlpha(TMP_Text label, float alpha)
         {
             if (label == null) return;
