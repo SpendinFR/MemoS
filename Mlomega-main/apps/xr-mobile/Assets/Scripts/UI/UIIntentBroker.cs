@@ -259,6 +259,9 @@ namespace MLOmega.XR.UI
                 var refreshed = new ActiveIntent(intent, UIIntentPriority.Classify(intent), nowMs, existing.SourceName);
                 _active[id] = refreshed;
                 _sceneCache?.SubmitVisibleIntent(id, intent.TtlMs);
+                // UIRuntime listens to this same event and recognises the live id,
+                // then calls UIComponentBase.Refresh instead of allocating again.
+                IntentAdmitted?.Invoke(refreshed);
                 return;
             }
 

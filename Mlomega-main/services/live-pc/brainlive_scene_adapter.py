@@ -346,7 +346,8 @@ class BrainLiveSceneAdapter:
         )
 
     def _enqueue(self, *, source_key: str, message: str, evidence_refs: Sequence[str], priority: float,
-                 kind: str | None = None, item_id: str | None = None) -> dict[str, Any]:
+                 kind: str | None = None, item_id: str | None = None,
+                 ui_intent_id: str | None = None, ttl_ms: int | None = None) -> dict[str, Any]:
         from mlomega_audio_elite import v18_delivery  # type: ignore
 
         candidate = {
@@ -361,6 +362,10 @@ class BrainLiveSceneAdapter:
         # the user's spoken answer back through the existing conversation path.
         if kind:
             candidate["kind"] = kind
+        if ui_intent_id:
+            candidate["ui_intent_id"] = ui_intent_id
+        if ttl_ms is not None:
+            candidate["ttl_ms"] = max(1, int(ttl_ms))
         if item_id:
             candidate["clarification_item_id"] = item_id
         result = v18_delivery.enqueue_delivery(

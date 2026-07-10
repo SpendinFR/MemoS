@@ -19,12 +19,18 @@ namespace MLOmega.XR.UI.Components.TaskAtoms
 
         private LineRenderer _trace;
         private TaskAnchorMath _anchor;
+        private TaskAnchorMath _fromAnchor;
+        private TaskAnchorMath _toAnchor;
         private string _trackId;
+        private string _fromTrackId;
+        private string _toTrackId;
         private GestureKind _kind = GestureKind.None;
         private Vector2 _from = new Vector2(0.5f, 1.2f); // default: above the object
         private Vector2 _to = new Vector2(0.5f, 0.5f);   // default: object centre
         private Color _accent = Color.white;
         private readonly Vector3[] _corners = new Vector3[4];
+        private readonly Vector3[] _fromCorners = new Vector3[4];
+        private readonly Vector3[] _toCorners = new Vector3[4];
         private float _phase;
 
         protected override void Build()
@@ -40,7 +46,8 @@ namespace MLOmega.XR.UI.Components.TaskAtoms
         }
 
         public void SetGesture(TaskAnchorMath anchor, string trackId, GestureKind kind,
-            Vector2 from, bool hasFrom, Vector2 to, bool hasTo, Color accent)
+            Vector2 from, bool hasFrom, Vector2 to, bool hasTo, Color accent,
+            string fromTrackId = null, string toTrackId = null, float planeDistance = 1.4f)
         {
             _anchor = anchor;
             _trackId = trackId;
@@ -48,6 +55,14 @@ namespace MLOmega.XR.UI.Components.TaskAtoms
             if (hasFrom) _from = from;
             if (hasTo) _to = to;
             _accent = accent;
+            _fromTrackId = fromTrackId;
+            _toTrackId = toTrackId;
+            _fromAnchor = !string.IsNullOrEmpty(fromTrackId)
+                ? new TaskAnchorMath(Context != null ? Context.SceneCache : null, Cam, planeDistance)
+                : null;
+            _toAnchor = !string.IsNullOrEmpty(toTrackId)
+                ? new TaskAnchorMath(Context != null ? Context.SceneCache : null, Cam, planeDistance)
+                : null;
             _trace.loop = kind == GestureKind.Circular || kind == GestureKind.Pulse;
         }
 
@@ -55,6 +70,8 @@ namespace MLOmega.XR.UI.Components.TaskAtoms
         {
             if (_anchor == null || _trace == null || _kind == GestureKind.None) return;
             _anchor.Resolve(_trackId, _corners);
+            if (_fromAnchor != null) _fromAnchor.Resolve(_fromTrackId, _fromCorners);
+            if (_toAnchor != null) _toAnchor.Resolve(_toTrackId, _toCorners);
             _phase += dt * 0.9f;
             float loop = Mathf.Repeat(_phase, 1f);
 
@@ -75,8 +92,8 @@ namespace MLOmega.XR.UI.Components.TaskAtoms
         // Arc: quadratic Bézier from→to with the control point lifted, revealed by `loop`.
         private void DrawArc(float loop)
         {
-            Vector3 p0 = _anchor.LocalToWorld(_from);
-            Vector3 p2 = _anchor.LocalToWorld(_to);
+            Vector3 p0 = FromPoint();
+            Vector3 p2 = ToPoint();
             Vector3 mid = (p0 + p2) * 0.5f;
             Camera cam = Cam;
             Vector3 up = cam != null ? cam.transform.up : Vector3.up;
@@ -108,8 +125,8 @@ namespace MLOmega.XR.UI.Components.TaskAtoms
         // Linear: a straight sweep from→to whose head oscillates back and forth.
         private void DrawLinear(float loop)
         {
-            Vector3 p0 = _anchor.LocalToWorld(_from);
-            Vector3 p1 = _anchor.LocalToWorld(_to);
+            Vector3 p0 = FromPoint();
+            Vector3 p1 = ToPoint();
             float tri = Mathf.PingPong(_phase, 1f);
             for (int i = 0; i < Points; i++)
             {
@@ -121,7 +138,7 @@ namespace MLOmega.XR.UI.Components.TaskAtoms
         // Pulse: an expanding ring on the target zone (press here).
         private void DrawPulse(float loop)
         {
-            Vector3 c = _anchor.LocalToWorld(_to);
+            Vector3 c = ToPoint();
             float r = _anchor.WorldRadius(_corners) * (0.2f + 0.8f * loop);
             Camera cam = Cam;
             Vector3 right = cam != null ? cam.transform.right : Vector3.right;
@@ -138,5 +155,11 @@ namespace MLOmega.XR.UI.Components.TaskAtoms
             float u = 1f - t;
             return u * u * a + 2f * u * t * b + t * t * c;
         }
+
+        private Vector3 FromPoint() => _fromAnchor != null && _fromAnchor.TrackPresent
+            ? _fromAnchor.Center : _anchor.LocalToWorld(_from);
+
+        private Vector3 ToPoint() => _toAnchor != null && _toAnchor.TrackPresent
+            ? _toAnchor.Center : _anchor.LocalToWorld(_to);
     }
 }

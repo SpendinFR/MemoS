@@ -23,6 +23,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -55,9 +56,11 @@ class _FakeLLM:
         self._data = data
         self.cloud_active = cloud_active
         self.calls = 0
+        self.last_user = None
 
     def complete_json(self, system, user, *, schema_hint=None, timeout=None):
         self.calls += 1
+        self.last_user = user
         if isinstance(self._data, Exception):
             raise self._data
         return self._data
@@ -218,6 +221,60 @@ def test_entering_step_pre_pushes_next_as_ghost_anchor():
     assert ghosts[0]["priority"] < current[0]["priority"]
 
 
+# --------------------------------------------------------------------------- contract / identity
+def test_panel_contract_and_anchor_ids_refresh_in_place():
+    eng, pushed = _engine()
+    plan = eng.start_from_description("x")
+    task_id = plan["task_id"]
+    first_panel = next(p for p in pushed if p["component"] == "task_panel")
+    assert first_panel["ui_intent_id"] == f"help-panel:{task_id}"
+    assert [s["status"] for s in first_panel["content"]["steps"]] == ["current", "next"]
+    ghost_cup = next(p for p in pushed if p["component"] == "task_anchor"
+                     and p["content"]["label_en"] == "cup")
+
+    pushed.clear()
+    eng.advance()
+    second_panel = next(p for p in pushed if p["component"] == "task_panel")
+    current_cup = next(p for p in pushed if p["component"] == "task_anchor"
+                       and p["content"]["label_en"] == "cup")
+    assert second_panel["ui_intent_id"] == first_panel["ui_intent_id"]
+    assert [s["status"] for s in second_panel["content"]["steps"]] == ["done", "current"]
+    assert current_cup["ui_intent_id"] == ghost_cup["ui_intent_id"]
+    assert current_cup["content"]["ghost"] is False
+
+
+def test_cross_object_gesture_is_owned_once_and_carries_grounded_endpoints():
+    wb = _FakeWorldBrain([
+        {"label": "bottle", "track_id": "bottle-1", "entity_id": "eb", "lifecycle": "confirmed"},
+        {"label": "kettle", "track_id": "kettle-1", "entity_id": "ek", "lifecycle": "confirmed"},
+    ])
+    eng, pushed = _engine(worldbrain=wb)
+    eng.start_from_description("x")
+    current = [p for p in pushed if p["component"] == "task_anchor" and not p["content"]["ghost"]]
+    gestures = [p for p in current if p["content"]["gesture"]["kind"] != "none"]
+    assert len(gestures) == 1
+    assert gestures[0]["content"]["from_track_id"] == "bottle-1"
+    assert gestures[0]["content"]["to_track_id"] == "kettle-1"
+
+
+def test_h1_panel_is_not_double_pushed_and_preserves_typed_contract():
+    class Scene:
+        def __init__(self): self.calls = []
+        def _enqueue(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"status": "queued"}
+
+    scene = Scene()
+    eng, pushed = _engine(scene_adapter=scene)
+    plan = eng.start_from_description("x")
+    panels = [p for p in pushed if p["component"] == "task_panel"]
+    assert panels == [], "queued H1 panel must not also use the direct renderer"
+    assert scene.calls[0]["kind"] == "task_panel"
+    assert scene.calls[0]["ui_intent_id"] == f"help-panel:{plan['task_id']}"
+    payload = __import__("json").loads(scene.calls[0]["message"])
+    assert payload["steps"][0]["status"] == "current"
+
+
 # --------------------------------------------------------------------------- grounding
 def test_grounding_joins_track_when_label_matches():
     wb = _FakeWorldBrain([
@@ -362,6 +419,22 @@ def test_resume_active_none_when_task_done(tmp_path):
     assert e2.resume_active() is None
 
 
+def test_product_db_path_persists_from_worker_thread(tmp_path):
+    db = str(tmp_path / "product.db")
+    e1 = help_mode.HelpTaskEngine(
+        llm_router=_FakeLLM(_tea_plan()), emit_ui_intent=lambda i: None,
+        db_path=db, person_id="me",
+    )
+    thread = threading.Thread(
+        target=lambda: e1.start_from_description("je suis bloqué au branchement")
+    )
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    e2 = help_mode.HelpTaskEngine(emit_ui_intent=lambda i: None, db_path=db, person_id="me")
+    assert e2.resume_active() is not None
+
+
 # --------------------------------------------------------------------------- intents
 class _Sink:
     def __init__(self):
@@ -408,6 +481,21 @@ def test_mode_aide_alone_is_multiturn():
     r2 = router.on_transcript("monter une étagère")
     assert r2["intent"] == "help_start"
     assert eng.active
+
+
+def test_mode_aide_accepts_free_mid_task_blockage_verbatim():
+    llm = _FakeLLM(_tea_plan())
+    eng = help_mode.HelpTaskEngine(llm_router=llm, emit_ui_intent=lambda i: None)
+    sink = _Sink()
+    router = intent_router.IntentRouter(
+        vision_focus=lambda r: None, on_device_command=sink.emit_device,
+        emit_ui_intent=sink.emit_ui, help_engine=eng,
+    )
+    router.on_transcript("mode aide")
+    description = "j'ai déjà monté l'étagère mais je bloque seulement pour fixer la porte"
+    result = router.on_transcript(description)
+    assert result["intent"] == "help_start"
+    assert llm.last_user.startswith(description)
 
 
 def test_active_task_controls_route_to_engine():

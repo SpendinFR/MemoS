@@ -47,6 +47,14 @@ namespace MLOmega.XR.Reflex
                  "on a close/minimise button (a longer hold is a drag, ignored on buttons).")]
         [SerializeField] private float _tapMaxSeconds = 0.5f;
 
+        [Tooltip("Soft alignment duration after releasing a moved/resized panel.")]
+        [Min(0.01f)]
+        [SerializeField] private float _snapDurationSeconds = 0.18f;
+
+        [Tooltip("Camera-local position grid used by the soft release snap (metres).")]
+        [Min(0.005f)]
+        [SerializeField] private float _snapGridMeters = 0.025f;
+
         /// <summary>
         /// True while a pinch is actively grabbing/resizing a panel. Read by the reflex
         /// layer to SUPPRESS the LensWindow zoom for the same pinch (single owner).
@@ -76,16 +84,33 @@ namespace MLOmega.XR.Reflex
         private bool _pendingRestore;
         private long _pinchBeginMs;
 
+        // Release polish: a short camera-local grid/facing interpolation. It is
+        // tick-driven (rather than a coroutine) so EditMode tests are deterministic.
+        private IManipulablePanel _snapPanel;
+        private Vector3 _snapStartPosition;
+        private Quaternion _snapStartRotation;
+        private Vector3 _snapTargetPosition;
+        private Quaternion _snapTargetRotation;
+        private float _snapElapsed;
+
+        public bool IsSnapping => _snapPanel != null;
+
         private void Awake()
         {
             if (_camera == null) _camera = Camera.main;
         }
 
+        private void Update() => TickSnap(Time.unscaledDeltaTime);
+
         // NB: the manipulator is driven by ReflexScheduler.OnGestureForLens (same pinch
         // stream as LensWindow), which calls OnGesture BEFORE the lens so a claimed
         // grab/resize suppresses the zoom. It therefore does NOT self-subscribe to the
         // GestureBridge — that would double-process the pinch and race the lens decision.
-        private void OnDisable() => Cancel();
+        private void OnDisable()
+        {
+            Cancel();
+            _snapPanel = null;
+        }
 
         /// <summary>Handle one gesture. Public so EditMode tests drive it without a device.</summary>
         public void OnGesture(GestureEvent ev)
@@ -110,6 +135,8 @@ namespace MLOmega.XR.Reflex
 
         private void Begin(GestureEvent ev)
         {
+            // A new grab interrupts the cosmetic snap at its current interpolated pose.
+            _snapPanel = null;
             Cancel();
             _pinchBeginMs = ev.TimestampMs;
 
@@ -289,8 +316,52 @@ namespace MLOmega.XR.Reflex
             if (_target != null && _mode != ManipulationKind.None)
             {
                 Persist(_target);
+                StartSoftSnap(_target);
             }
             Cancel();
+        }
+
+        private void StartSoftSnap(IManipulablePanel panel)
+        {
+            Transform t = panel?.PanelTransform;
+            if (t == null) return;
+            Camera cam = _camera != null ? _camera : Camera.main;
+            _snapPanel = panel;
+            _snapStartPosition = t.position;
+            _snapStartRotation = t.rotation;
+            _snapTargetPosition = t.position;
+            _snapTargetRotation = t.rotation;
+            _snapElapsed = 0f;
+            if (cam == null) return;
+
+            Vector3 local = cam.transform.InverseTransformPoint(t.position);
+            float grid = Mathf.Max(0.005f, _snapGridMeters);
+            local.x = Mathf.Round(local.x / grid) * grid;
+            local.y = Mathf.Round(local.y / grid) * grid;
+            _snapTargetPosition = cam.transform.TransformPoint(local);
+            _snapTargetRotation = Quaternion.LookRotation(
+                _snapTargetPosition - cam.transform.position, cam.transform.up);
+        }
+
+        /// <summary>Advance the release snap; public for deterministic EditMode tests.</summary>
+        public void TickSnap(float deltaSeconds)
+        {
+            if (_snapPanel == null) return;
+            Transform t = _snapPanel.PanelTransform;
+            if (t == null || !_snapPanel.IsManipulable)
+            {
+                _snapPanel = null;
+                return;
+            }
+            _snapElapsed += Mathf.Max(0f, deltaSeconds);
+            float duration = Mathf.Max(0.01f, _snapDurationSeconds);
+            float raw = Mathf.Clamp01(_snapElapsed / duration);
+            float eased = raw * raw * (3f - 2f * raw);
+            _snapPanel.MoveTo(Vector3.Lerp(_snapStartPosition, _snapTargetPosition, eased));
+            t.rotation = Quaternion.Slerp(_snapStartRotation, _snapTargetRotation, eased);
+            if (raw < 1f) return;
+            Persist(_snapPanel);
+            _snapPanel = null;
         }
 
         private void Cancel()

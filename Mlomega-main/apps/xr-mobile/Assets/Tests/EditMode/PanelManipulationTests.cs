@@ -18,6 +18,7 @@ using MLOmega.XR.Scene;
 using MLOmega.XR.UI.Components;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.UI;
 // TaskAtoms also declares a GestureKind (task trajectory kinds); alias its anchor
 // component rather than `using` the whole namespace, so GestureKind stays the Reflex one.
 using TaskAnchorComponent = MLOmega.XR.UI.Components.TaskAtoms.TaskAnchorComponent;
@@ -148,6 +149,44 @@ namespace MLOmega.XR.Tests
 
             m.OnGesture(Pinch(GestureKind.PinchEnd, rightVp, 200));
             Assert.IsFalse(m.HasClaim, "claim released on pinch end");
+        }
+
+        [Test]
+        public void Grab_ShowsGlassHaloAndShadow_UntilRelease()
+        {
+            PanelManipulator m = MakeManipulator();
+            VirtualScreen vs = MakeVirtualScreen(new Vector3(0f, 0f, 3f));
+            Shadow shadow = vs.GetComponentInChildren<Shadow>(true);
+            Assert.IsNotNull(shadow, "glass panel owns the drag shadow");
+            Assert.IsFalse(shadow.enabled);
+
+            Vector2 centre = ViewportOnPanel(vs.PanelTransform, Vector2.zero);
+            m.OnGesture(Pinch(GestureKind.PinchBegin, centre, 0));
+            Assert.IsTrue(shadow.enabled, "claimed drag shows glass feedback");
+            Assert.Greater(shadow.transform.parent.localScale.x, 1f,
+                "halo feedback gently lifts the glass surface");
+
+            m.OnGesture(Pinch(GestureKind.PinchEnd, centre, 100));
+            Assert.IsFalse(shadow.enabled, "feedback clears as soon as the hand releases");
+        }
+
+        [Test]
+        public void Release_SoftSnapsToCameraGridAndFacing()
+        {
+            PanelManipulator m = MakeManipulator();
+            VirtualScreen vs = MakeVirtualScreen(new Vector3(0.013f, 0.017f, 3f));
+            Vector2 centre = ViewportOnPanel(vs.PanelTransform, Vector2.zero);
+            m.OnGesture(Pinch(GestureKind.PinchBegin, centre, 0));
+            m.OnGesture(Pinch(GestureKind.PinchEnd, centre, 100));
+
+            Assert.IsTrue(m.IsSnapping, "release starts the cosmetic snap");
+            m.TickSnap(1f);
+            Assert.IsFalse(m.IsSnapping, "snap completes after its configured duration");
+            Vector3 local = _camera.transform.InverseTransformPoint(vs.PanelTransform.position);
+            Assert.AreEqual(Mathf.Round(local.x / 0.025f), local.x / 0.025f, 1e-3f);
+            Assert.AreEqual(Mathf.Round(local.y / 0.025f), local.y / 0.025f, 1e-3f);
+            Vector3 facing = (vs.PanelTransform.position - _camera.transform.position).normalized;
+            Assert.Greater(Vector3.Dot(vs.PanelTransform.forward, facing), 0.999f);
         }
 
         // ---- pinch elsewhere = existing zoom preserved ---------------------

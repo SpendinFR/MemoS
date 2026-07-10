@@ -71,6 +71,7 @@ class FakeConversation:
 class FakePipeline:
     def __init__(self, *, ingress, **_kwargs):
         self.ingress = ingress
+        self.init_kwargs = dict(_kwargs)
         self.conversation = FakeConversation()
         self.audio_archive = type("Archive", (), {"metrics": {"segments_archived": 1}})()
         self.end_calls = 0
@@ -109,6 +110,7 @@ def test_runtime_starts_pipeline_audio_and_explicit_close_day_once():
             close_day=lambda **kw: close_calls.append(kw) or {"status": "completed"},
         )
         await rt.start()
+        assert rt.pipeline.init_kwargs["enable_help_mode"] is True
         rt.ingress.on_audio_chunk(np.zeros(480, dtype=np.int16), 48000)
         first = await rt.end_and_close_day()
         second = await rt.end_and_close_day()

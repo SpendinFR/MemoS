@@ -83,6 +83,9 @@ namespace MLOmega.XR.UI.Components.TaskAtoms
         public string Role;         // target|tool|ingredient|part
         public string TrackId;      // set when the PC matched a VisionRT track
         public string EntityId;
+        public string FromTrackId;  // optional source object for cross-object gesture
+        public string ToTrackId;    // optional target object for cross-object gesture
+        public bool Ghost;          // preloaded N+1 anchor: configured but invisible
         public GestureKind Gesture;
         public Vector2 GestureFrom; // 0..1 local to the anchored region
         public Vector2 GestureTo;
@@ -107,6 +110,9 @@ namespace MLOmega.XR.UI.Components.TaskAtoms
             // track_id/entity_id may live on the content or on the intent's typed fields.
             c.TrackId = IntentRead.Str(d, "track_id", intent?.TargetTrackId);
             c.EntityId = IntentRead.Str(d, "entity_id", intent?.EntityId);
+            c.FromTrackId = IntentRead.Str(d, "from_track_id", null);
+            c.ToTrackId = IntentRead.Str(d, "to_track_id", null);
+            c.Ghost = IntentRead.Flag(d, "ghost", IntentRead.Flag(d, "lookahead", false));
             c.Quantity = IntentRead.Str(d, "quantity", null);
             c.TimerSeconds = (float)IntentRead.Num(d, "timer_seconds", 0.0);
             c.Caution = IntentRead.Str(d, "caution", null);

@@ -59,6 +59,8 @@ namespace MLOmega.XR.UI.Components.TaskAtoms
         public bool ZoomActive => _zoom != null && _zoom.gameObject.activeSelf;
         public TimerRing TimerAtom => _timer;
         public ObjectAnchorRing RingAtom => _ring;
+        public TrajectoryGesture GestureAtom => _gesture;
+        public bool IsGhost => _content != null && _content.Ghost;
 
         protected override void OnConfigured()
         {
@@ -91,7 +93,8 @@ namespace MLOmega.XR.UI.Components.TaskAtoms
             SetAtom(ref _gesture, _content.HasGesture, "Gesture", a =>
                 a.SetGesture(_anchor, _content.TrackId, _content.Gesture,
                     _content.GestureFrom, _content.HasFrom,
-                    _content.GestureTo, _content.HasTo, _accent));
+                    _content.GestureTo, _content.HasTo, _accent,
+                    _content.FromTrackId, _content.ToTrackId, _planeDistance));
 
             // 4) Quantity chip.
             SetAtom(ref _quantity, _content.HasQuantity, "Quantity", a =>
@@ -115,6 +118,13 @@ namespace MLOmega.XR.UI.Components.TaskAtoms
             SetAtom(ref _zoom, wantZoom, "Zoom", a =>
                 a.SetZoom(_anchor, _content.TrackId, null,
                     IntentRead.Content(intent, "zoom_caption", "Zoom")));
+
+            // N+1 is admitted early to pre-create/configure its atoms, but it must
+            // stay invisible until the PC refreshes this stable id as current.
+            if (_content.Ghost)
+            {
+                for (int n = 0; n < _all.Count; n++) _all[n].SetVisible(false);
+            }
         }
 
         // Create-on-demand + show/hide + reconfigure. Never reallocates on Refresh:

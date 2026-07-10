@@ -8,21 +8,21 @@ Conventions : `E<n>` = étape ; chaque étape a Objectif / Créer / Brancher / V
 
 ## E60 — Corrections d'intégration pré-production (EN COURS — 2026-07-10)
 
-La checklist canonique des **32 corrections** se trouve dans `docs/PROD_BACKLOG.md` §E60. Exécution imposée : petit lot cohérent → appel produit prouvé → tests ciblés du bon arbre → mise à jour simultanée du guide et du backlog → commit. Les validations S25 restent ouvertes tant qu'elles n'ont pas été exécutées sur le téléphone réel.
+La checklist canonique des **32 corrections** se trouve dans `docs/PROD_BACKLOG.md` §E60. Une case y représente la correction code/test ciblé ; la matrice S25 reste un gate transversal unique. Exécution imposée : petit lot cohérent → appel produit prouvé → tests ciblés du bon arbre → mise à jour simultanée du guide et du backlog → commit.
 
 Décision utilisateur E60 : le pairing initial **reste sans secret préalable** (réseau personnel LAN/Tailscale + token de session). Aucun durcissement par code/PIN n'est à implémenter dans ce lot.
 
-### E60 — Lot Android A (code branché, validation Unity verte, device ouvert)
+### E60 — Lot Android A (code clos, validation Unity verte, rebuild APK ouvert)
 
 Le runtime PhoneOnly possède désormais un producteur réel de signaux baseline (`PhoneOnlyReflexSignalSource`) : ASR/wake/subtitle et détection gestes sont chauffés pendant `XrSessionState.Running`, puis restent soumis au scheduler/budget. Le builder instancie aussi le menu réel sur un GameObject enfant (pour que sa fermeture ne désactive jamais la racine), son contrôleur geste/commande, sa surface `GlassPanel` manipulable et `OrientationGuard`. `AndroidBuild` force `com.mlomega.xr.phoneonly`, `runInBackground`, et régénère systématiquement la scène au lieu de réutiliser un YAML ancien. `PhoneOnlySessionCoordinator` conserve une URL immuable pour end/status, refuse proprement une clôture sans endpoint et tient `NeverSleep` seulement pendant Running/Suspended.
 
-Validation : compilation Roslyn directe des `.rsp` Unity dans l'ordre Transport → UI → Reflex → Editor → Tests, **tous OK** ; tests E60 ajoutés pour les baselines ASR/gestures et la vraie surface menu. Après rafraîchissement de la licence Personal via Unity Hub, le runner réel termine à **80/80 EditMode**. Le premier passage 79/80 a seulement détecté que le test baseline ouvrait le micro Windows ; `_editorMicrophoneEnabled` reste vrai par défaut et n'est coupé que dans ce test. Les lignes de bruit ULF/licensing ne sont pas utilisées comme verdict : fin de processus et XML NUnit le sont. Régénération scène, APK et S25 restent à faire après les autres raccords E60.
+Validation : compilation Roslyn directe des `.rsp` Unity dans l'ordre Transport → UI → Reflex → Editor → Tests, **tous OK** ; tests E60 ajoutés pour les baselines ASR/gestures et la vraie surface menu. Après rafraîchissement de la licence Personal via Unity Hub, le runner réel termine à **80/80 EditMode**. Le menu a ensuite reçu halo/rim, ombre et snap doux, validés dans le lot G. Les lignes de bruit ULF/licensing ne sont pas utilisées comme verdict : fin de processus et XML NUnit le sont. Régénération scène/APK reste à faire ; S25 demeure le gate produit transversal.
 
-### E60 — Lot audio B (code branché, validation device ouverte)
+### E60 — Lot audio B (code clos, validation device au gate transversal)
 
 `PhoneOnlyRuntime` construit désormais TTS et pousse le wake word dès l'ouverture du DataChannel. La commande porte un ID ; Unity renvoie `device_command_result` et le PC ne marque le mot livré qu'après ack positif. Le gating route le `device_transcript` exact et dédupliqué, jamais le tour PC suivant. `TtsAudioPlayer` décode uniquement RIFF PCM16 borné et joue via `AudioSource`. `AsrBridge` choisit `ownMicrophone=true` hors transport, redémarre proprement vers le fan-out WebRTC connecté, conserve son sink et appelle `DetachPcmFeed` avant libération.
 
-Preuves : `test_wake_word_gating.py` + `test_e35_outputs.py` = **26 passed** ; build Gradle complet réussi et `mlomega-reflexvision.aar` reconstruit ; compilation Roslyn des assemblies Editor et Android réussie ; suite Unity globale **80/80 EditMode**. L'AAR ONNX retouché mécaniquement par le build a été restauré et n'entre pas dans le commit. Lecture audio, switch micro et reconnexion/ack restent à valider sur S25.
+Preuves : `test_wake_word_gating.py` + `test_e35_outputs.py` = **26 passed** ; build Gradle complet réussi et `mlomega-reflexvision.aar` reconstruit ; compilation Roslyn des assemblies Editor et Android réussie ; suite Unity globale **80/80 EditMode**. L'AAR ONNX retouché mécaniquement par le build a été restauré et n'entre pas dans le commit. Lecture audio, switch micro et reconnexion/ack appartiennent maintenant à la matrice S25 globale, pas à des cases code artificiellement ouvertes.
 
 ### E60 — Lot PC live C (raccords critiques branchés, charge/GPU partiels)
 
@@ -30,7 +30,7 @@ Preuves : `test_wake_word_gating.py` + `test_e35_outputs.py` = **26 passed** ; b
 
 La vision synchrone (détecteur, tracker, WorldBrain, keyframes) est attendue via `asyncio.to_thread` derrière la file latest=1, donc signaling/FastAPI restent sur l'event loop. `LiveDiscourse.close()` ne retourne plus avant drain + barrière + `join` ; un timeout échoue la fin de session et bloque CloseDay. `GpuArbiter` est maintenant construit en produit, protège tracker/détecteur/ASR même sans NVML, et alimente périodiquement `update_degraded` avec les drops de la fenêtre courante. Le provider CUDA réel, initialement non disponible, est corrigé et validé dans le lot D ci-dessous.
 
-Preuves : suites ciblées distinctes **50 passed**, puis SessionHub/WebRTC/E27/E31/multi-session **24 passed, 1 skipped** (Ollama réel opt-in). Nouveaux tests : recorder injecté dans l'ingress puis fermé, PTS espacé conservé et callback timing, timestamp AudioRT→BrainLive, worker sémantique non bloquant, retry/erreur observable, WAV temporaire supprimé, vision hors thread asyncio et LiveDiscourse joint. La case 16 (mesure longue drops S25) demeure ouverte ; les anciens constats 19/20 sont clos par le lot suivant.
+Preuves : suites ciblées distinctes **50 passed**, puis SessionHub/WebRTC/E27/E31/multi-session **24 passed, 1 skipped** (Ollama réel opt-in). Nouveaux tests : recorder injecté dans l'ingress puis fermé, PTS espacé conservé et callback timing, timestamp AudioRT→BrainLive, worker sémantique non bloquant, retry/erreur observable, WAV temporaire supprimé, vision hors thread asyncio et LiveDiscourse joint. Le code de la case 16 est clos ; sa mesure longue de drops appartient au gate S25. Les anciens constats 19/20 sont clos par le lot suivant.
 
 ### E60 — Lot durabilité/GPU D (raccords et environnement réels validés)
 
@@ -56,7 +56,15 @@ Validation : suites ciblées **39 passed**, puis rerun lifespan/readiness **29 p
 
 Le manifeste CloseDay n'utilise plus `observed=list(expected)`. L'attendu contient les dix markers statiques et tous les IDs annoncés ; l'observé est reconstruit en relisant `v18_pipeline_stages`, en validant le statut sémantique, puis en cherchant chaque ID dans sa table réelle avec le même `person_id`. Une ligne absente laisse le manifeste incomplet et interdit le cleanup. Enfin, clip tiering et MediaRetention restent best-effort après un CloseDay valide, mais leur rapport est persisté dans `phoneonly_close_day_maintenance_v19` et remonte au runtime (`close_day_maintenance=completed|warning|error`) au lieu de disparaître avec le subprocess.
 
-Validation : **25/25** tests cœur/durabilité dans `.venv` et **41/41** tests runtime/SessionHub dans `.venv-live`. La preuve négative couvre explicitement le cas « stage retourne un summary_id mais aucune ligne n'existe » : le manifeste refuse l'observé jusqu'à insertion réelle. La case E60-30 reste ouverte uniquement pour la preuve S25 téléphone→Live→BrainLive→CloseDay, pas pour l'observabilité du code.
+Validation : **25/25** tests cœur/durabilité dans `.venv` et **41/41** tests runtime/SessionHub dans `.venv-live`. La preuve négative couvre explicitement le cas « stage retourne un summary_id mais aucune ligne n'existe » : le manifeste refuse l'observé jusqu'à insertion réelle. E60-30 est clos côté code ; la preuve téléphone→Live→BrainLive→CloseDay reste dans le gate S25 transversal.
+
+### E60 — Lot raccord E53/menu G (contrat produit aligné)
+
+`PhoneOnlyRuntime` active maintenant HelpTaskEngine. Le panneau passe par H1 en conservant `task_panel`, le contenu structuré attendu par Unity et un `ui_intent_id` stable ; un enqueue réussi n'est plus doublé par un push direct. Les ancres utilisent le vrai renderer UIIntent, pas un message hot sans consommateur, et gardent un ID stable entre le préchargement ghost et leur promotion current. Les gestes inter-objets transportent les tracks source/cible ; Unity les résout dans SceneCache, préconstruit les ghosts invisibles puis les rend visibles lors du refresh. `UIIntentBroker` retransmet les refreshs même-ID à UIRuntime. La reprise Help persiste dans la base produit avec accès multi-thread et est réémise à la reconnexion DataChannel.
+
+Le mode reste naturel : la grammaire reconnaît seulement « mode aide » et les contrôles de navigation. La description libre suivante — tâche complète, blocage en cours ou action unique — est envoyée telle quelle au LLM, enrichie une seule fois du contexte visuel ; aucun plan « un/deux » ni tâche générique n'existe en production. Le prompt interdit explicitement de recommencer depuis le début lorsque l'utilisateur décrit un blocage en cours. Le `MenuPanel` construit en scène est réellement manipulable ; le feedback de prise associe rim/halo, ombre et légère élévation, puis la libération effectue un snap doux face caméra sur grille locale.
+
+Preuves : **50/50** tests Python ciblés (`help_mode`, DeliveryAdapter H1, runtime PhoneOnly) et **22/22** Unity EditMode (`PanelManipulation`, `TaskAtomsComposition`, refresh broker), exit Unity 0 et XML NUnit `Passed`.
 
 ---
 

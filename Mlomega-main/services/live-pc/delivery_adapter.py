@@ -31,15 +31,36 @@ def _now() -> str:
 def delivery_row_to_ui_intent(row: sqlite3.Row | dict[str, Any]) -> UIIntent:
     data = dict(row)
     evidence = json_loads(data.get("evidence_json") or "{}") or {}
+    candidate = evidence.get("candidate") or {}
+    if not isinstance(candidate, dict):
+        candidate = {}
     refs = evidence.get("evidence_refs") or evidence.get("refs") or []
+    if not refs:
+        refs = candidate.get("evidence_refs") or []
     if isinstance(refs, str):
         refs = [refs]
+    kind = str(candidate.get("kind") or "")
+    component = "context_card"
+    content: dict[str, Any] = {
+        "message": data.get("message") or "",
+        "action_type": data.get("action_type") or "notify",
+    }
+    producer = "brainlive"
+    ttl_ms = 15000
+    ui_intent_id = str(candidate.get("ui_intent_id") or f"ui-{data.get('delivery_id') or uuid.uuid4()}")
+    if kind == "task_panel":
+        parsed = json_loads(data.get("message") or "{}", {}) or {}
+        if isinstance(parsed, dict):
+            content = parsed
+            component = "task_panel"
+            producer = "ultralive"
+            ttl_ms = max(1, int(candidate.get("ttl_ms") or 3_600_000))
     return UIIntent(
-        ui_intent_id=f"ui-{uuid.uuid4()}", producer="brainlive", source_frame_id=None,
-        component="context_card", anchor={"type": "panel", "position": "side"},
-        content={"message": data.get("message") or "", "action_type": data.get("action_type") or "notify"},
+        ui_intent_id=ui_intent_id, producer=producer, source_frame_id=None,
+        component=component, anchor={"type": "panel", "position": "side"},
+        content=content,
         truth_level="inferred", confidence=1.0, priority=max(0.0, min(1.0, float(data.get("priority") or 0.0))),
-        ttl_ms=15000, evidence_refs=list(refs), delivery_id=data.get("delivery_id"),
+        ttl_ms=ttl_ms, evidence_refs=list(refs), delivery_id=data.get("delivery_id"),
     )
 
 

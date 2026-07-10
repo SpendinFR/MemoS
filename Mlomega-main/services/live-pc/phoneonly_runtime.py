@@ -366,6 +366,7 @@ class PhoneOnlyRuntime:
             "enable_tts": True,
             "enable_stranger_profiles": True,
             "enable_fine_intel": True,
+            "enable_help_mode": True,
         }
         if product_pipeline:
             pipeline_kwargs.update({
@@ -462,6 +463,8 @@ class PhoneOnlyRuntime:
             if hasattr(self.pipeline, "push_wake_word") and not self.pipeline.push_wake_word():
                 self.recent_errors.append("wake_word: no open DataChannel")
             self.pipeline.deliver_morning_briefing()
+            if hasattr(self.pipeline, "redeliver_active_help"):
+                self.pipeline.redeliver_active_help()
             await self._dispatch_deliveries()
         except ConnectionError:
             pass

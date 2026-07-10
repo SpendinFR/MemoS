@@ -19,9 +19,8 @@ What the engine emits (via the EXISTING delivery paths — no new queue):
 
 * a ``task_panel`` UIIntent through the scene adapter's H1 ``_enqueue`` path
   (steps done/current/next, progress, domain) — the sober plan overview;
-* a ``task_anchor`` per object of the CURRENT step through the SceneCache hot
-  channel (the same ``_on_entity_hot_update`` / ``_emit_hot`` DataChannel the
-  E34/E35 hot pushes use), carrying ``label_en``, ``role``, gesture params, timer,
+* a ``task_anchor`` UIIntent per object of the CURRENT step through the live
+  DataChannel renderer, carrying ``label_en``, ``role``, gesture params, timer,
   quantity, caution — plus a joined ``track_id``/``entity_id`` when WorldBrain is
   already tracking that object (grounding). The device does the anchoring; an
   anchor with no track ships anyway (the device shows a directional arrow / waits).
@@ -49,6 +48,7 @@ with its cost via the existing mechanism.
 
 import json
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -240,7 +240,10 @@ _PLAN_SYSTEM = (
     "(verser=arc, visser/tourner=circular, essuyer/déplacer=linear, appuyer=pulse, sinon "
     "none), `from`/`to` = label_en source/cible. `timer_seconds` seulement si l'action a "
     "une attente réelle. `caution` seulement si un vrai danger. N'invente pas d'actions "
-    "non nécessaires. Si un CONTEXTE VISUEL de la scène est fourni, sers-t'en pour "
+    "non nécessaires. L'utilisateur peut demander de l'aide AU MILIEU d'une tâche ou "
+    "pour UNE SEULE ACTION : commence à son blocage actuel et ne lui impose jamais de "
+    "reprendre la tâche depuis le début. Sa description est du langage naturel libre, "
+    "pas une commande ou un patron à recopier. Si un CONTEXTE VISUEL de la scène est fourni, sers-t'en pour "
     "adapter le plan à ce que l'utilisateur a réellement devant lui. Réponds en JSON "
     "uniquement."
 )
@@ -278,9 +281,8 @@ class HelpTaskEngine:
 
     * ``llm_router`` — the E33 :class:`LLMRouter`. Its ``active`` provider decides
       local vs paid (cloud). ``cloud_active`` gates the on-demand cloud hint.
-    * ``scene_adapter`` — a :class:`BrainLiveSceneAdapter`; we reuse its ``_enqueue``
-      (H1 queue → ``task_panel`` card) and its ``_emit_hot`` (SceneCache hot channel
-      → ``task_anchor``). A bare adapter-less engine only returns the dicts.
+    * ``scene_adapter`` — a :class:`BrainLiveSceneAdapter`; its ``_enqueue`` carries
+      the ``task_panel`` through H1. Anchors are real UIIntents on the renderer path.
     * ``worldbrain`` — for grounding: match a step object's ``label_en`` to a live
       track/entity and join its ``track_id``/``entity_id`` into the anchor.
     * ``vlm`` — a ``VisionRT.VlmCrop``-shaped object with ``describe(img, prompt=…)``
@@ -312,14 +314,14 @@ class HelpTaskEngine:
         self.worldbrain = worldbrain
         self.vlm = vlm
         self._keyframe_provider = keyframe_provider
-        # A direct UIIntent emitter (the pipeline's _push_intent). When a scene
-        # adapter is present its hot channel is preferred for anchors; this is the
-        # fallback for the panel/hint cards when no adapter/queue is wired.
+        # Direct UIIntent emitter (the pipeline's thread-safe DataChannel path).
+        # Panels prefer the durable H1 queue; anchors use this renderer path.
         self._emit = emit_ui_intent
         self.config = config or HelpModeConfig()
         self.db_path = db_path
         self._now = now_fn or time.monotonic
-        self._svc_db = self._init_service_db(service_db_path)
+        self._svc_lock = threading.RLock()
+        self._svc_db = self._init_service_db(service_db_path or db_path)
 
         self.plan: dict[str, Any] | None = None
         # per-step no-progress timer bookkeeping (monotonic seconds).
@@ -340,13 +342,15 @@ class HelpTaskEngine:
             "cloud_hints": 0,
             "llm_unavailable": 0,
             "resumes_offered": 0,
+            "delivery_errors": 0,
+            "persistence_errors": 0,
         }
 
     # ----------------------------------------------------------------- persistence
     def _init_service_db(self, path: str | Path | None):
         import sqlite3
 
-        conn = sqlite3.connect(str(path) if path else ":memory:")
+        conn = sqlite3.connect(str(path) if path else ":memory:", check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute(
             """CREATE TABLE IF NOT EXISTS help_mode_tasks(
@@ -361,24 +365,25 @@ class HelpTaskEngine:
         if self.plan is None:
             return
         try:
-            self._svc_db.execute(
-                """INSERT INTO help_mode_tasks(
-                     task_id, person_id, live_session_id, title, domain, status,
-                     plan_json, current_index, created_at, updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?)
-                   ON CONFLICT(task_id) DO UPDATE SET
-                     status=excluded.status, plan_json=excluded.plan_json,
-                     current_index=excluded.current_index, updated_at=excluded.updated_at""",
-                (
-                    self.plan["task_id"], self.person_id, self.live_session_id,
-                    self.plan["title"], self.plan["domain"], self.plan["status"],
-                    json.dumps(self.plan, ensure_ascii=False), self.plan["current_index"],
-                    _iso_now(), _iso_now(),
-                ),
-            )
-            self._svc_db.commit()
+            with self._svc_lock:
+                self._svc_db.execute(
+                    """INSERT INTO help_mode_tasks(
+                         task_id, person_id, live_session_id, title, domain, status,
+                         plan_json, current_index, created_at, updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(task_id) DO UPDATE SET
+                         status=excluded.status, plan_json=excluded.plan_json,
+                         current_index=excluded.current_index, updated_at=excluded.updated_at""",
+                    (
+                        self.plan["task_id"], self.person_id, self.live_session_id,
+                        self.plan["title"], self.plan["domain"], self.plan["status"],
+                        json.dumps(self.plan, ensure_ascii=False), self.plan["current_index"],
+                        _iso_now(), _iso_now(),
+                    ),
+                )
+                self._svc_db.commit()
         except Exception:
-            pass
+            self.metrics["persistence_errors"] += 1
 
     def resume_active(self) -> dict[str, Any] | None:
         """Propose picking up the most recent still-active task (session resume).
@@ -388,13 +393,15 @@ class HelpTaskEngine:
         stored TaskPlan (without re-emitting UI) so the caller can ask the user
         "on reprend « X » ?" — nothing is auto-resumed silently."""
         try:
-            row = self._svc_db.execute(
-                """SELECT plan_json FROM help_mode_tasks
-                   WHERE person_id=? AND status IN ('active','paused')
-                   ORDER BY updated_at DESC LIMIT 1""",
-                (self.person_id,),
-            ).fetchone()
+            with self._svc_lock:
+                row = self._svc_db.execute(
+                    """SELECT plan_json FROM help_mode_tasks
+                       WHERE person_id=? AND status IN ('active','paused')
+                       ORDER BY updated_at DESC LIMIT 1""",
+                    (self.person_id,),
+                ).fetchone()
         except Exception:
+            self.metrics["persistence_errors"] += 1
             return None
         if not row:
             return None
@@ -639,6 +646,21 @@ class HelpTaskEngine:
             return None
         i = self._current_index()
         steps = self.plan["steps"]
+        rendered_steps = []
+        for index, step in enumerate(steps):
+            if done or index < i:
+                step_status = "done"
+            elif index == i:
+                step_status = "current"
+            elif index == i + 1:
+                step_status = "next"
+            else:
+                step_status = "pending"
+            rendered_steps.append({
+                "index": index,
+                "text": step.get("text"),
+                "status": step_status,
+            })
         content = {
             "kind": "task_panel",
             "task_id": self.plan["task_id"],
@@ -650,9 +672,12 @@ class HelpTaskEngine:
             "progress": round((i + (1 if done else 0)) / max(1, len(steps)), 3),
             "current_text": (steps[i]["text"] if 0 <= i < len(steps) else None),
             "next_text": (steps[i + 1]["text"] if i + 1 < len(steps) else None),
+            "steps": rendered_steps,
+            "ghost_next": not done and i + 1 < len(steps),
         }
+        stable_intent_id = f"help-panel:{self.plan['task_id']}"
         intent = {
-            "type": "ui_intent", "ui_intent_id": str(uuid.uuid4()),
+            "type": "ui_intent", "ui_intent_id": stable_intent_id,
             "producer": "ultralive", "component": "task_panel",
             "content": content,
             "truth_level": "inferred",   # a generated plan is a hypothesis, not a fact
@@ -661,19 +686,26 @@ class HelpTaskEngine:
             "evidence_refs": [],
         }
         self.metrics["panels_emitted"] += 1
-        # Prefer the H1 queue (same sober delivery path as change_attention) when a
-        # scene adapter is wired; fall back to the direct DataChannel emitter.
+        # Prefer the durable H1 queue. A queued panel is sent exactly once by the
+        # DeliveryAdapter; a deduplicated repeat is pushed directly to refresh it
+        # after reconnection with the same UI id.
+        delivery_status = "unavailable"
         if self.scene_adapter is not None and hasattr(self.scene_adapter, "_enqueue"):
             source_key = f"help:{self.live_session_id}:panel:{self.plan['task_id']}"
             try:
-                self.scene_adapter._enqueue(
+                result = self.scene_adapter._enqueue(
                     source_key=source_key,
                     message=json.dumps(content, ensure_ascii=False),
                     evidence_refs=[], priority=0.55, kind="task_panel",
+                    ui_intent_id=stable_intent_id,
+                    ttl_ms=4000 if done else self.config.panel_ttl_ms,
                 )
+                delivery_status = str((result or {}).get("status") or "error")
             except Exception:
-                pass
-        self._push(intent)
+                self.metrics["delivery_errors"] += 1
+                delivery_status = "error"
+        if delivery_status in {"unavailable", "error", "skipped", "deduplicated"}:
+            self._push(intent)
         return intent
 
     def _emit_anchors_for(self, index: int, *, ghost: bool) -> list[dict[str, Any]]:
@@ -690,8 +722,19 @@ class HelpTaskEngine:
         out: list[dict[str, Any]] = []
         objects = step["objects"] or [{"name": step["text"], "label_en": "",
                                        "role": "target", "quantity": None}]
-        for obj in objects:
-            anchor = self._build_anchor(step, obj, index=index, ghost=ghost, tracks=tracks)
+        gesture = step.get("gesture") or {}
+        from_label = str(gesture.get("from") or "").lower()
+        gesture_owner = next(
+            (n for n, obj in enumerate(objects)
+             if from_label and str(obj.get("label_en") or "").lower() == from_label),
+            0,
+        )
+        for object_index, obj in enumerate(objects):
+            anchor = self._build_anchor(
+                step, obj, index=index, object_index=object_index,
+                ghost=ghost, tracks=tracks,
+                show_gesture=object_index == gesture_owner,
+            )
             self._push_anchor(anchor)
             out.append(anchor)
             self.metrics["anchors_emitted"] += 1
@@ -701,12 +744,18 @@ class HelpTaskEngine:
 
     def _build_anchor(
         self, step: Mapping[str, Any], obj: Mapping[str, Any], *,
-        index: int, ghost: bool, tracks: Mapping[str, dict[str, Any]],
+        index: int, object_index: int, ghost: bool,
+        tracks: Mapping[str, dict[str, Any]], show_gesture: bool,
     ) -> dict[str, Any]:
         label_en = str(obj.get("label_en") or "").lower()
         ground = tracks.get(label_en) if label_en else None
         if ground:
             self.metrics["grounding_hits"] += 1
+        step_gesture = dict(step.get("gesture") or {})
+        from_label = str(step_gesture.get("from") or "").lower()
+        to_label = str(step_gesture.get("to") or "").lower()
+        if not show_gesture:
+            step_gesture["kind"] = "none"
         content: dict[str, Any] = {
             "kind": "task_anchor",
             "task_id": self.plan["task_id"] if self.plan else None,
@@ -716,7 +765,9 @@ class HelpTaskEngine:
             "role": obj.get("role"),
             "quantity": obj.get("quantity"),
             "action": step.get("action"),
-            "gesture": step.get("gesture"),
+            "gesture": step_gesture,
+            "from_track_id": (tracks.get(from_label) or {}).get("track_id") if from_label else None,
+            "to_track_id": (tracks.get(to_label) or {}).get("track_id") if to_label else None,
             "timer_seconds": step.get("timer_seconds"),
             "caution": step.get("caution"),
             "lookahead": bool(ghost),
@@ -727,7 +778,8 @@ class HelpTaskEngine:
             "entity_id": (ground or {}).get("entity_id"),
         }
         return {
-            "type": "ui_intent", "ui_intent_id": str(uuid.uuid4()),
+            "type": "ui_intent",
+            "ui_intent_id": f"help-anchor:{self.plan['task_id']}:{index}:{object_index}",
             "producer": "ultralive", "component": "task_anchor",
             "content": content,
             "truth_level": "inferred", "confidence": 0.8,
@@ -767,17 +819,7 @@ class HelpTaskEngine:
         return {k: {kk: vv for kk, vv in v.items() if kk != "_score"} for k, v in best.items()}
 
     def _push_anchor(self, anchor: Mapping[str, Any]) -> None:
-        """Anchors ride the SceneCache HOT channel (the same ``_on_entity_hot_update``
-        DataChannel the E34/E35 hot pushes use) when a scene adapter is present, so
-        the device caches them for zero-round-trip anchoring; else the direct emitter."""
-        if self.scene_adapter is not None and hasattr(self.scene_adapter, "_emit_hot"):
-            hot = {"type": "task_anchor_update", **dict(anchor.get("content") or {}),
-                   "as_of": _iso_now()}
-            try:
-                self.scene_adapter._emit_hot(hot, "task_hot_updates")
-                return
-            except Exception:
-                pass
+        """Send a real UIIntent; Unity's broker/component own the local track cache."""
         self._push(dict(anchor))
 
     def _push(self, intent: Mapping[str, Any]) -> None:
@@ -786,7 +828,7 @@ class HelpTaskEngine:
         try:
             self._emit(dict(intent))
         except Exception:
-            pass
+            self.metrics["delivery_errors"] += 1
 
     # ----------------------------------------------------------------- proactivity
     def tick(self, *, now: float | None = None) -> dict[str, Any] | None:

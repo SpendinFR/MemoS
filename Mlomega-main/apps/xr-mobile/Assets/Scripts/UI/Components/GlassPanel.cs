@@ -32,6 +32,7 @@ namespace MLOmega.XR.UI.Components
         public TMP_Text Title { get; }
         public TMP_Text Body { get; }
         public TMP_Text TruthChip { get; }
+        public bool ManipulationFeedbackActive { get; private set; }
 
         private readonly UITheme _theme;
         // UGUI Graphics have no MaterialPropertyBlock API (Renderer-only): the
@@ -39,6 +40,7 @@ namespace MLOmega.XR.UI.Components
         // bounded by the UIRuntime pool, so this does not grow unbounded.
         private Material _mat;
         private Color _accent;
+        private readonly Shadow _dragShadow;
 
         /// <summary>
         /// Build a glass panel under <paramref name="parent"/> sized to
@@ -72,6 +74,11 @@ namespace MLOmega.XR.UI.Components
             Background.material = _mat;
             Background.raycastTarget = false;
             Background.color = Color.white;
+            _dragShadow = bgGo.AddComponent<Shadow>();
+            _dragShadow.effectColor = new Color(0.02f, 0.7f, 1f, 0.45f);
+            _dragShadow.effectDistance = new Vector2(0.018f, -0.018f);
+            _dragShadow.useGraphicAlpha = true;
+            _dragShadow.enabled = false;
 
             if (withTitle) Title = MakeLabel(Root, "Title", 0.055f, FontStyles.Bold, TextAlignmentOptions.TopLeft);
             if (withBody) Body = MakeLabel(Root, "Body", 0.045f, FontStyles.Normal, TextAlignmentOptions.TopLeft);
@@ -151,8 +158,19 @@ namespace MLOmega.XR.UI.Components
         /// <summary>Visible claimed-pinch feedback without creating a new material.</summary>
         public void SetManipulationFeedback(bool active, bool resizing)
         {
+            ManipulationFeedbackActive = active;
             if (Root != null)
                 Root.localScale = active ? Vector3.one * 1.018f : Vector3.one;
+            if (_dragShadow != null)
+            {
+                _dragShadow.enabled = active;
+                _dragShadow.effectColor = resizing
+                    ? new Color(1f, 0.46f, 0.08f, 0.48f)
+                    : new Color(0.02f, 0.7f, 1f, 0.45f);
+                _dragShadow.effectDistance = resizing
+                    ? new Vector2(0.012f, -0.012f)
+                    : new Vector2(0.02f, -0.02f);
+            }
             if (_mat == null) return;
             if (!active)
             {

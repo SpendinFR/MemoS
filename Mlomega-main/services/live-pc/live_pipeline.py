@@ -775,6 +775,13 @@ class LivePipeline:
                 return False
         return False
 
+    def redeliver_active_help(self) -> bool:
+        """Rehydrate the active task UI after a DataChannel (re)connection."""
+        if self.help_engine is None or not self.help_engine.active:
+            return False
+        self.help_engine.repeat()
+        return True
+
     def push_wake_word(self, *, force: bool = False) -> bool:
         """E58: push the owner-chosen wake word to the device (once per session).
 

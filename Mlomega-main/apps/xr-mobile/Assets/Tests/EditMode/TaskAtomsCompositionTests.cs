@@ -129,6 +129,48 @@ namespace MLOmega.XR.Tests
         }
 
         [Test]
+        public void GhostAnchor_IsPrebuiltInvisible_ThenRefreshesInPlace()
+        {
+            SubmitTrack("cup-1", 0.5f, 0.5f, 0.2f, 0.2f, 10);
+            var ghost = new Dictionary<string, object>
+            {
+                { "label_en", "cup" }, { "track_id", "cup-1" }, { "ghost", true },
+                { "gesture", new Dictionary<string, object> { { "kind", "pulse" } } },
+            };
+            TaskAnchorComponent c = MakeAnchor(AnchorIntent(ghost, "cup-1"));
+            Assert.IsTrue(c.IsGhost);
+            Assert.IsNotNull(c.RingAtom, "ghost pre-creates its atoms");
+            Assert.IsFalse(c.RingActive, "ghost must not render before promotion");
+            Assert.IsFalse(c.GestureActive);
+
+            var current = new Dictionary<string, object>(ghost) { ["ghost"] = false };
+            c.Refresh(AnchorIntent(current, "cup-1"));
+            c.TickAtoms(0.02f, 0.02f);
+            Assert.IsFalse(c.IsGhost);
+            Assert.IsTrue(c.RingActive, "same-id refresh promotes the preloaded anchor");
+            Assert.IsTrue(c.GestureActive);
+        }
+
+        [Test]
+        public void Gesture_FromAndToTracks_DrawsAcrossTheTwoObjects()
+        {
+            SubmitTrack("bottle-1", 0.20f, 0.50f, 0.12f, 0.18f, 10);
+            SubmitTrack("kettle-1", 0.75f, 0.50f, 0.16f, 0.20f, 10);
+            var content = new Dictionary<string, object>
+            {
+                { "label_en", "bottle" }, { "track_id", "bottle-1" },
+                { "from_track_id", "bottle-1" }, { "to_track_id", "kettle-1" },
+                { "gesture", new Dictionary<string, object> { { "kind", "arc" } } },
+            };
+            TaskAnchorComponent c = MakeAnchor(AnchorIntent(content, "bottle-1"));
+            c.TickAtoms(0.83f, 0.83f);
+            LineRenderer trace = c.GestureAtom.GetComponent<LineRenderer>();
+            Assert.Greater(trace.GetPosition(trace.positionCount - 1).x,
+                trace.GetPosition(0).x + 0.15f,
+                "arc must travel from the source track toward the target track");
+        }
+
+        [Test]
         public void CautionContent_ShowsCautionCue()
         {
             SubmitTrack("pan-1", 0.5f, 0.5f, 0.2f, 0.2f, 10);
