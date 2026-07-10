@@ -398,3 +398,42 @@ Note : quel que soit le disque, le moteur s'adapte au budget — 100 Go = ~3 h/j
 - [x] Réécrire `README.md` en vrai document d'accueil détaillé : vision (exocortex mémoire de vie), architecture complète (3 couches + schéma flux téléphone↔PC↔nuit), tout ce que le système fait AUJOURD'HUI (capacités par domaine : mémoire, identité, vision, voix, gestes, proactivité, replay, dehors, multi-sessions), matrice matériel (PhoneOnly / XREAL / capture-only / viewer iPhone), installation (renvoi E51), première session (renvoi FIRST_TRY), dashboard (renvoi E50), invariants de vérité/vie privée, état des tests datés, roadmap honnête (fait / différé / futur).
 - [ ] Le README actuel (f7b2b1d) devient la base ; ne rien promettre de non validé (S25 tant que pas fait = « en attente de validation device »).
 - Test : relecture utilisateur — un inconnu comprend le projet et sait par où commencer sans lire une autre doc.
+
+## E60 — Corrections d'intégration pré-production (EN COURS — 2026-07-10)
+
+Source de vérité : appels réellement présents dans le checkout. Une case n'est cochée qu'après raccord produit et test ciblé du vrai chemin. Quand le matériel est indispensable, la validation S25 reste explicitement ouverte. Les choix de conception acceptés sont conservés, avec les durcissements demandés.
+
+- [ ] **01 — Déclenchement Reflex production** : produire les `ReflexSignal` réels et prouver le démarrage automatique d'ASR, wake word, sous-titres, gestes, traduction et skills, sans injection de test.
+- [ ] **02 — Menu PhoneOnly + finition E59** : construire le `MenuPanel` dans la scène avec une vraie surface `GlassPanel`, raccorder `MenuGestureController`/`MenuRequested`, le rendre manipulable avec bornes réelles et ajouter halo/ombre glass + snap doux pendant grab/resize.
+- [ ] **03 — TTS PhoneOnly bout-en-bout** : activer le TTS dans le runtime, consommer `tts_audio` dans Unity et jouer le WAV borné, avec repli texte honnête.
+- [ ] **04 — APK et scène reproductibles** : imposer `com.mlomega.xr.phoneonly`, aligner `adb`/FIRST_TRY et reconstruire la scène même si elle existe afin d'embarquer réellement les composants récents (dont E53/E59).
+- [ ] **05 — ClipRecorder productisé** : construire, fournir et fermer `ClipRecorder` dans l'ingress aiortc réel ; prouver écriture/indexation/replay sans back-pressure live.
+- [ ] **06 — Reflex offline à froid** : utiliser le micro natif `ownMicrophone=true` quand le PC/PCM WebRTC est absent, puis basculer sans double `AudioRecord` quand le transport revient.
+- [ ] **07 — Fin de session null-safe** : protéger `ActiveBaseUrl`, perte réseau et état `Paired` obsolète afin que `EndExplicitly()` reste utilisable et observable.
+- [ ] **08 — Multi-session/jour durable** : déterminer `allow_rerun` depuis la base après redémarrage du service, pas depuis un compteur mémoire uniquement.
+- [ ] **09 — Chemin vidéo téléphone performant** : activer le chemin texture/native prévu, conserver la conversion CPU comme fallback E44 et mesurer thread Unity, chauffe, batterie et latence S25.
+- [ ] **10 — Rotation capture réelle** : instancier/raccorder `OrientationGuard` et appliquer rotation/mirror au flux transmis à VisionRT/gestes, pas seulement à l'aperçu.
+- [ ] **11 — Continuité arrière-plan** : activer `runInBackground`, empêcher la veille pendant une session active et gérer pause/reprise/wake lock sans laisser tourner hors session.
+- [ ] **12 — Cycle de vie PCM** : conserver le sink attaché, appeler `DetachPcmFeed` à la désactivation/reconnexion et garantir un propriétaire unique.
+- [ ] **13 — Push wake word fiable** : envoyer dès l'ouverture DataChannel, marquer après succès/ack et réessayer de façon bornée après course ou reconnexion.
+- [ ] **14 — `pose_valid` bout-en-bout** : sérialiser le flag réel et empêcher les poses PhoneOnly placeholder d'améliorer artificiellement la qualité de carte.
+- [ ] **15 — Gating corrélé** : relier `is_command` au transcript PC correspondant par ID/timestamps ; conserver explicitement le mode compatibilité `open` sans autoriser la phrase suivante par erreur.
+- [ ] **16 — Audio sans perte sous charge** : découpler capture et traitements Whisper/identité/IntentRouter/BrainLive, dimensionner/backpressurer honnêtement et mesurer les drops en conversation continue.
+- [ ] **17 — Timestamps audio réels** : conserver PTS/time_base WebRTC jusqu'aux segments, archives et tours BrainLive afin de préserver ordre A/V et frontière de journée.
+- [ ] **18 — Vision hors boucle asyncio** : isoler détection/tracking/SQLite/keyframes dans un worker borné et garder signaling/FastAPI/DataChannel réactifs sous charge.
+- [ ] **19 — GPU réellement arbitré** : construire `GpuArbiter`, appeler `update_degraded`, brancher les adaptations et utiliser ONNX Runtime CUDA dans l'environnement réellement lancé, avec fallback CPU explicite.
+- [ ] **20 — Erreurs BrainLive visibles** : ne plus avaler silencieusement les échecs d'ingestion/WorldBrain/écritures ; les remonter dans statuts, métriques et reprise bornée.
+- [ ] **21 — Fermeture LiveDiscourse jointe** : drain/flush puis `join` du worker avant que CloseDay lise la base, avec timeout et échec visible.
+- [ ] **22 — CloseDay de secours** : garder le bouton Terminer comme chemin normal, mais reprendre/clôturer sûrement après crash, batterie vide ou fermeture PC, sans double clôture.
+- [ ] **23 — Lanceur avec readiness** : vérifier/démarrer ou guider clairement Ollama, Qdrant, modèles, ports et environnements avant d'annoncer FirstTry prêt.
+- [ ] **24 — `/health` honnête** : distinguer liveness, readiness de pairing et santé de chaîne IA (DB, modèles, ASR, Ollama, Qdrant, GPU, disque, venv nuit).
+- [ ] **25 — Pairing authentifié** : exiger secret/code/confirmation initiale avant émission d'un token, compatible LAN/Tailscale et renouvellement.
+- [ ] **26 — Aucun `seg_*.wav` perdu dans `%TEMP%`** : utiliser le stockage média géré et supprimer/transcoder selon archive/rétention après consommation.
+- [ ] **27 — Identité objet durable** : ne plus dériver l'identité de la session transport ; réassocier les mêmes objets entre sessions pour mouvements/routines.
+- [ ] **28 — Journée visuelle locale** : consolider selon le fuseau utilisateur et classer correctement matin/après-midi/soir autour de minuit local.
+- [ ] **29 — Manifeste CloseDay non circulaire** : relire les sorties réellement persistées et comparer attendu/observé au lieu de recopier `expected` dans `observed`.
+- [ ] **30 — Rétention et preuve produit observables** : faire remonter tiering/transcode/purge/quota dans le résultat global et remplacer la seule base synthétique par une preuve téléphone→Live→BrainLive→CloseDay.
+- [ ] **31 — E53 activé et contrat PC→Unity aligné** : activation PhoneOnly réelle ; `task_panel`/`task_anchor`, liste d'étapes, IDs stables, persistance, watchdog et H1/hot sans doublon, test traversant DataChannel puis registre Unity.
+- [ ] **32 — E58 fiable de bout en bout** : accepter E58 seulement lorsque les points 13 et 15 passent avec mauvais mot, mot changé, expiration, reconnexion et parole ambiante.
+
+**Gate final E60** : APK reconstruite depuis la scène générée, puis matrice S25 réelle FirstTryAndroid (LAN, perte/reconnexion, arrière-plan/écran éteint, mauvais token, second device, wake word changé, Reflex/gestes/traduction, TTS, clips, E53, BrainLive et CloseDay/reprise même jour). Aucun test synthétique ne clôt ce gate matériel.

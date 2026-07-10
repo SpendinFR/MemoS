@@ -6,6 +6,12 @@ Conventions : `E<n>` = étape ; chaque étape a Objectif / Créer / Brancher / V
 
 ---
 
+## E60 — Corrections d'intégration pré-production (EN COURS — 2026-07-10)
+
+La checklist canonique des **32 corrections** se trouve dans `docs/PROD_BACKLOG.md` §E60. Exécution imposée : petit lot cohérent → appel produit prouvé → tests ciblés du bon arbre → mise à jour simultanée du guide et du backlog → commit. Les validations S25 restent ouvertes tant qu'elles n'ont pas été exécutées sur le téléphone réel.
+
+---
+
 ## E39 - Invariant temporel V18 `turns` restaure (2026-07-06)
 
 **[x] Fait et teste.** Le schema reel est l'autorite : `turns` ne possede ni `created_at` ni `absolute_start`. Le registre conversationnel de `v18_life_model.py` utilise desormais uniquement `start_s`, le seul offset temporel stocke sur un tour. `tests/v19/test_v18_turn_schema_invariant.py` verrouille le schema et la declaration source. Le bootstrap post-stop deja present dans le diff de `v18_close_day.py` reste separe de E39 et n'est pas revendique comme changement PhoneOnly.
