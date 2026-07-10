@@ -25,6 +25,11 @@ namespace MLOmega.XR.Reflex
         [SerializeField] private GestureBridge _gestureBridge;
         [SerializeField] private AsrBridge _asrBridge;
 
+        // E59: when the PanelManipulator claims a pinch (grab/resize/button-tap on a
+        // manipulable panel), the SAME pinch must NOT also drive the LensWindow zoom.
+        // Optional — absent = old behaviour (every pinch zooms). See PanelManipulator.
+        [SerializeField] private PanelManipulator _panelManipulator;
+
         [Header("Skills")]
         [SerializeField] private StableTrackSkill _stableTrack;
         [SerializeField] private LensWindowSkill _lensWindow;
@@ -91,6 +96,14 @@ namespace MLOmega.XR.Reflex
 
         private void OnGestureForLens(GestureEvent ev)
         {
+            // E59: run the window-manager FIRST so its pinch-begin hit-test can claim a
+            // grab/resize on a manipulable panel. Only when it does NOT claim does the
+            // pinch fall through to the LensWindow zoom (never steal the existing zoom).
+            if (_panelManipulator != null)
+            {
+                _panelManipulator.OnGesture(ev);
+                if (_panelManipulator.HasClaim) return;
+            }
             if (_lensWindow != null) _lensWindow.OnGesture(ev);
         }
 

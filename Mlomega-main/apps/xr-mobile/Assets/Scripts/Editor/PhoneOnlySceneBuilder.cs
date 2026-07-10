@@ -83,6 +83,8 @@ namespace MLOmega.XR.Editor
             var focusSearch = root.AddComponent<FocusSearchSkill>();
             var subtitle = root.AddComponent<SubtitleSkill>();
             var translate = root.AddComponent<TranslateBridge>();
+            // E59: hand window-management (grab/resize/close/minimise of manipulable panels).
+            var panelManipulator = root.AddComponent<PanelManipulator>();
             var reflex = root.AddComponent<ReflexScheduler>();
 
             Assign(session, "_config", config);
@@ -140,6 +142,9 @@ namespace MLOmega.XR.Editor
             Assign(reflex, "_motionProximity", motionProximity);
             Assign(reflex, "_focusSearch", focusSearch);
             Assign(reflex, "_subtitle", subtitle);
+            // E59: the manipulator runs BEFORE the lens on the pinch stream (claim → no zoom).
+            Assign(reflex, "_panelManipulator", panelManipulator);
+            Assign(panelManipulator, "_camera", camera);
             Assign(wakeGate, "_asr", asrBridge);
             Assign(translate, "_asrBridge", asrBridge);
             Assign(translate, "_subtitle", subtitle);
