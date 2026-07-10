@@ -249,6 +249,7 @@ class LivePipeline:
             on_scene_delta=self._on_scene_delta,
             on_ui_intent=self._push_intent,
             keyframe_sink=keyframe_sink,
+            on_error=self._report_error,
         )
         self.audio = audiort.AudioRT(
             session_id=session_id,
@@ -357,8 +358,8 @@ class LivePipeline:
             if self.proactive is not None:
                 try:
                     self.proactive.refresh()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._report_error("proactive.refresh", exc)
             # E34 §6: the morning briefing is built on the first session of the day.
             if enable_proactivity:
                 self.morning_briefing = morning_briefing.MorningBriefing(
@@ -707,8 +708,8 @@ class LivePipeline:
         if self.conversation is not None:
             try:
                 return self.conversation.ensure_session()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._report_error("conversation.ensure_session", exc)
         return self.live_session_id
 
     # ------------------------------------------------------------- push helpers
@@ -954,8 +955,8 @@ class LivePipeline:
         if self.ingress is not None and hasattr(self.ingress, "send_ui_intent"):
             try:
                 self.ingress.send_ui_intent(json.dumps({"type": "scene_delta", **delta}))
-            except Exception:
-                pass
+            except Exception as exc:
+                self._report_error("scene_delta.downlink", exc)
         if self.worldbrain is not None:
             try:
                 self.worldbrain.ingest_scene_delta(delta)
@@ -969,8 +970,8 @@ class LivePipeline:
                 self.change_attention.on_scene_snapshot(
                     self.worldbrain.snapshot(), place_hint=self._current_place_subject(),
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                self._report_error("change_attention.on_scene_snapshot", exc)
         # E38 §3: approaching a zone/entity whose learned routine implies an object
         # → proactively push that object's last-seen (deduped per session).
         if self.enable_fine_intel and self.routine_associations is not None:
@@ -979,20 +980,20 @@ class LivePipeline:
                 if place:
                     visible = [e.get("label") for e in (delta.get("entities") or [])]
                     self.routine_associations.on_approach(place_key=place, visible_labels=visible)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._report_error("routine_associations.on_approach", exc)
         # E53: the help engine's no-progress watchdog is event-driven — ticked on
         # the scene cadence (cheap, no cloud unless the escalation gate fires).
         if self.help_engine is not None:
             try:
                 self.help_engine.tick()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._report_error("help_engine.tick", exc)
         if self._external_scene_cb is not None:
             try:
                 self._external_scene_cb(delta)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._report_error("scene_delta.external_callback", exc)
 
     # ------------------------------------------------------------------ degraded
     def update_degraded(self, signals: Any) -> dict[str, Any]:
@@ -1003,8 +1004,8 @@ class LivePipeline:
             if self._status_cb is not None:
                 try:
                     self._status_cb(state.event())
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._report_error("status_sink", exc)
         return state.event()
 
     # ------------------------------------------------------------------- feeders
@@ -1030,8 +1031,8 @@ class LivePipeline:
                 try:
                     pd = pose.model_dump() if hasattr(pose, "model_dump") else dict(pose) if isinstance(pose, dict) else {"position": getattr(pose, "position", None), "rotation": getattr(pose, "rotation", None)}
                     self.spatial.observe_pose(getattr(envelope, "frame_id", "?"), pd)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._report_error("spatial.observe_pose", exc)
         delta = self.vision.process_frame(frame_bgr, envelope, focus_active=focus_active, now=now)
         # Identity (E32): face-embed person crops at an economical cadence — on a
         # newly-seen person track, or every ``identity_frame_interval`` deltas.
@@ -1039,16 +1040,16 @@ class LivePipeline:
             self._frame_counter += 1
             try:
                 self._run_face_identity(frame_bgr, delta)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._report_error("face_identity.frame", exc)
         # StrangerProfiler (E36 §3): a persistent, still-anonymous person track →
         # one VLM description (name-less hypothesis). Runs after identity so a
         # freshly-named track is skipped.
         if delta is not None and self.stranger_profiler is not None:
             try:
                 self._run_stranger_profiles(frame_bgr, delta)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._report_error("stranger_profile.observe", exc)
         return delta
 
     def _maybe_fuse_stranger(self, text: str) -> None:
@@ -1089,8 +1090,8 @@ class LivePipeline:
         if entity_id:
             try:
                 self.hypothesis_engine.break_hypotheses_for_entity(entity_id)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._report_error("hypothesis_engine.break", exc)
 
     def _run_stranger_profiles(self, frame_bgr: np.ndarray, delta: dict[str, Any]) -> None:
         """Feed each visible person track to the StrangerProfiler (E36 §3)."""
@@ -1124,8 +1125,8 @@ class LivePipeline:
                         session=self._brainlive_session_id() or self.live_session_id,
                         evidence_ref=f"vlm:{track_id}",
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._report_error("attribute_memory.person_appearance", exc)
 
     def _person_entity_id(self, track_id: str) -> str | None:
         """Best-effort WorldBrain entity_id for a person track (if promoted)."""
@@ -1164,8 +1165,8 @@ class LivePipeline:
                     text, session=session, speaker_entity=speaker_entity,
                     present_person_entities=self._present_person_entities(),
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                self._report_error("hypothesis_engine.note_turn", exc)
         if self.attribute_memory is not None:
             try:
                 self.attribute_memory.note_turn(
@@ -1174,8 +1175,8 @@ class LivePipeline:
                     default_subject=self._current_place_subject(),
                     evidence_ref=f"turn:{content.get('event_id') or ''}",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                self._report_error("attribute_memory.note_turn", exc)
 
     def _speaker_entity_for(self, content: dict[str, Any]) -> str | None:
         """Map the turn's speaker (voice-matched person_id) to a present person
@@ -1197,8 +1198,8 @@ class LivePipeline:
                 ent = self.worldbrain.find_entity(subject_hint)
                 if ent is not None:
                     return ent.entity_id
-            except Exception:
-                pass
+            except Exception as exc:
+                self._report_error("worldbrain.find_entity", exc)
         return None
 
     def _brainlive_session_id(self) -> str | None:
@@ -1490,8 +1491,8 @@ class LivePipeline:
                         session=self._brainlive_session_id() or self.live_session_id,
                         evidence_ref=f"frame:{getattr(envelope, 'frame_id', '?')}",
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                self._report_error("attribute_memory.observe_ocr", exc)
         return result
 
     async def run_video(self, *, limit: int | None = None) -> dict[str, Any]:

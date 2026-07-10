@@ -29,6 +29,10 @@ namespace MLOmega.Contracts.V19
         [JsonProperty("pose")]
         public Pose Pose { get; set; }
 
+        // default: True
+        [JsonProperty("pose_valid")]
+        public bool PoseValid { get; set; }
+
         [JsonProperty("intrinsics")]
         public Dictionary<string, object> Intrinsics { get; set; }
 

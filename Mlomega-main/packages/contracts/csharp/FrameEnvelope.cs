@@ -28,6 +28,10 @@ public sealed class FrameEnvelope
     [JsonPropertyName("pose")]
     public Pose Pose { get; set; }
 
+    // default: True
+    [JsonPropertyName("pose_valid")]
+    public bool PoseValid { get; set; }
+
     [JsonPropertyName("intrinsics")]
     public Dictionary<string, object> Intrinsics { get; set; }
 

@@ -41,6 +41,7 @@ namespace MLOmega.XR.Tests
             Assert.AreEqual("xrs-abc", env.SessionId);
             Assert.AreEqual("f_7", env.FrameId);
             Assert.AreEqual(999, env.CaptureMonotonicNs);
+            Assert.IsTrue(env.PoseValid);
             Assert.AreEqual(90, env.Rotation);
             Assert.AreEqual("xreal_eye", env.Source);
             StringAssert.StartsWith("2026-07-04T12:30:00", env.CapturedAtUtc);
@@ -85,6 +86,8 @@ namespace MLOmega.XR.Tests
                 long monotonic = i * 33_000_000L; // ~30fps
                 EyeCaptureSource.BuildEnvelopeInto(
                     env, "s", i, monotonic, DateTime.UtcNow, pose, 0, "simulated");
+
+                Assert.IsFalse(env.PoseValid, "untracked PhoneOnly/simulated pose must stay invalid");
 
                 Assert.AreEqual($"f_{i}", env.FrameId);
 

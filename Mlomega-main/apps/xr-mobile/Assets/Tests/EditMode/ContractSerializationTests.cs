@@ -88,6 +88,7 @@ namespace MLOmega.XR.Tests
                 FrameId = "f_5",
                 CaptureMonotonicNs = 123456789,
                 CapturedAtUtc = "2026-07-04T12:00:00.0000000Z",
+                PoseValid = false,
                 Rotation = 90,
                 Source = "phone_camera",
                 Pose = new Pose
@@ -104,12 +105,14 @@ namespace MLOmega.XR.Tests
             Assert.AreEqual("xrs-1", (string)o["session_id"]);
             Assert.AreEqual("f_5", (string)o["frame_id"]);
             Assert.AreEqual(123456789, (long)o["capture_monotonic_ns"]);
+            Assert.IsFalse((bool)o["pose_valid"]);
             Assert.AreEqual(90, (long)o["rotation"]);
             Assert.AreEqual("phone_camera", (string)o["source"]);
             Assert.AreEqual(3, ((JArray)o["pose"]["position"]).Count);
 
             var back = ContractJson.Deserialize<FrameEnvelope>(json);
             Assert.AreEqual("f_5", back.FrameId);
+            Assert.IsFalse(back.PoseValid);
             Assert.AreEqual(90, back.Rotation);
             CollectionAssert.AreEqual(env.Pose.Position, back.Pose.Position);
             CollectionAssert.AreEqual(env.Pose.Rotation, back.Pose.Rotation);

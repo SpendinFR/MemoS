@@ -53,6 +53,12 @@
     "pose": {
       "$ref": "#/$defs/Pose"
     },
+    "pose_valid": {
+      "default": true,
+      "description": "True only when pose contains a tracked device sample; false for PhoneOnly/placeholders.",
+      "title": "Pose Valid",
+      "type": "boolean"
+    },
     "intrinsics": {
       "anyOf": [
         {

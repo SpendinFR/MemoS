@@ -149,3 +149,19 @@ def test_keyframe_recorded_via_v19_keyframes(tmp_path, monkeypatch):
     kf_path = Path(rows[0][1])
     assert (tmp_path / "media" / "keyframes") in kf_path.parents
     assert kf_path.exists()
+
+
+def test_keyframe_write_failure_is_observable_not_silent():
+    errors = []
+
+    def broken_sink(*_args):
+        raise OSError("disk full")
+
+    vr = visionrt.VisionRT(
+        detector=None,
+        keyframe_sink=broken_sink,
+        on_error=lambda scope, exc: errors.append((scope, str(exc))),
+    )
+    vr._record_keyframe(np.zeros((8, 8, 3), dtype=np.uint8), _envelope("kf-error"))
+    assert errors == [("vision.keyframe_sink", "disk full")]
+    assert vr.metrics.snapshot()["vision_errors"] == 1

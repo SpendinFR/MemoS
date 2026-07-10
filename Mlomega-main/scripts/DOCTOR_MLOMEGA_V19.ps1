@@ -64,6 +64,25 @@ if (Test-Path $LivePython) {
   if ([string]::IsNullOrWhiteSpace($missLine)) { Check-Ok ".venv-live importable (fastapi, pydantic, pynvml)" }
   else { Check-Fail ".venv-live: modules manquants: $missLine" }
   if ($aiortcLine -eq "yes") { Check-Ok "aiortc present" } else { Check-Warn "aiortc absent (transport WebRTC indisponible; simulateur/contrats restent OK)" }
+  $ortProviders = (& $LivePython -c "import json,onnxruntime as o; print(json.dumps(o.get_available_providers()))" 2>$null | Select-Object -Last 1)
+  if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($ortProviders)) {
+    Check-Fail "ONNX Runtime non importable dans .venv-live"
+  } elseif ((Get-Command nvidia-smi -ErrorAction SilentlyContinue) -and $ortProviders -notmatch "CUDAExecutionProvider") {
+    Check-Fail "GPU NVIDIA present mais VisionRT ONNX reste CPU. Providers: $ortProviders"
+  } else {
+    Check-Ok "ONNX Runtime providers: $ortProviders"
+  }
+  $detectorModel = Join-Path $ProjectRoot "models\yolox_nano.onnx"
+  if ((Get-Command nvidia-smi -ErrorAction SilentlyContinue) -and (Test-Path $detectorModel)) {
+    $sessionProviders = (& $LivePython -c "import json,onnxruntime as o; o.preload_dlls(directory='') if hasattr(o,'preload_dlls') else None; s=o.InferenceSession(r'$detectorModel',providers=['CUDAExecutionProvider','CPUExecutionProvider']); print(json.dumps(s.get_providers()))" 2>$null | Select-Object -Last 1)
+    if ($LASTEXITCODE -ne 0 -or $sessionProviders -notmatch "CUDAExecutionProvider") {
+      Check-Fail "Le provider CUDA est liste mais une vraie session YOLOX retombe CPU: $sessionProviders"
+    } else {
+      Check-Ok "Session YOLOX reelle sur CUDA: $sessionProviders"
+    }
+  } elseif (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
+    Check-Warn "Modele YOLOX absent: impossible de prouver une vraie session ONNX CUDA"
+  }
 } else {
   Check-Warn ".venv-live absent: lance scripts\INSTALL_MLOMEGA_V19_WINDOWS.ps1 (checks contrats via python systeme)."
 }

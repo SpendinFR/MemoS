@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -242,7 +243,8 @@ class FakePipeline:
         return {"conversation_turns": 1, "keyframes_recorded": 1}
 
 
-def test_manager_arms_allow_rerun_on_second_same_day_session():
+def test_manager_arms_allow_rerun_on_second_same_day_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("MLOMEGA_DB", str(tmp_path / "same-process.db"))
     close_kwargs = []
 
     async def scenario():
@@ -258,6 +260,29 @@ def test_manager_arms_allow_rerun_on_second_same_day_session():
         second = await manager.get_or_create("sess-2")
         assert second.allow_rerun is True
         assert manager._completed_close_days == 1
+
+    asyncio.run(scenario())
+
+
+def test_manager_reads_completed_close_day_after_service_restart(tmp_path, monkeypatch):
+    db = tmp_path / "restart.db"
+    monkeypatch.setenv("MLOMEGA_DB", str(db))
+    day = datetime.now().astimezone().date().isoformat()
+    _seed_completed_close_day("owner", day)
+
+    async def scenario():
+        # Fresh manager: its in-memory counter is zero, exactly like a PC service
+        # restart. The durable day row must still arm the reopen path.
+        manager = runtime_mod.SinglePhoneRuntimeManager(
+            person_id="owner",
+            db_path=db,
+            ingress_factory=FakeIngress,
+            pipeline_factory=FakePipeline,
+            close_day=lambda **_: {"status": "completed"},
+        )
+        runtime = await manager.get_or_create("transport-after-restart")
+        assert manager._completed_close_days == 0
+        assert runtime.allow_rerun is True
 
     asyncio.run(scenario())
 

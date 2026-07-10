@@ -54,6 +54,8 @@ def test_generated_cs_is_up_to_date(tmp_path, monkeypatch):
     assert "public sealed class Pose" in fe
     assert "public long Rotation { get; set; }" in fe
     assert "public Pose Pose { get; set; }" in fe
+    assert '[JsonPropertyName("pose_valid")]' in fe
+    assert "public bool PoseValid { get; set; }" in fe
 
 
 def test_generator_is_deterministic(tmp_path, monkeypatch):

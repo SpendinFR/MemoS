@@ -32,6 +32,25 @@ clip_recorder_mod = _load("v19_clip_recorder_runtime", "clip_recorder.py")
 gpu_arbiter_mod = _load("v19_gpu_arbiter_runtime", "gpu_arbiter.py")
 
 
+def _completed_close_day_exists(*, person_id: str, db_path: Any = None) -> bool:
+    """Read today's durable CloseDay state instead of trusting process memory."""
+    from mlomega_audio_elite.db import connect
+    from mlomega_audio_elite.v18_close_day import _package_day
+
+    path = Path(db_path) if db_path is not None else None
+    with connect(path) as con:
+        table = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='v18_close_day_runs'"
+        ).fetchone()
+        if table is None:
+            return False
+        row = con.execute(
+            "SELECT status FROM v18_close_day_runs WHERE person_id=? AND package_date=?",
+            (str(person_id or "me"), _package_day(None)),
+        ).fetchone()
+    return row is not None and str(row["status"] or "") == "completed"
+
+
 class DataChannelRenderer(delivery_adapter.RendererHub):
     def __init__(self, ingress: Any) -> None:
         super().__init__()
@@ -477,8 +496,14 @@ class SinglePhoneRuntimeManager:
             if self.active is None or self.active.session_id != session_id:
                 kwargs = dict(self.runtime_kwargs)
                 # A session created after a same-day close-day already completed
-                # must reopen it so its own data is consolidated.
-                if self._completed_close_days > 0:
+                # must reopen it so its own data is consolidated. The DB query is
+                # authoritative across service restarts; the counter is only a
+                # same-process fast path.
+                persisted_completed = _completed_close_day_exists(
+                    person_id=str(kwargs.get("person_id") or "me"),
+                    db_path=kwargs.get("db_path"),
+                )
+                if self._completed_close_days > 0 or persisted_completed:
                     kwargs.setdefault("allow_rerun", True)
                 self.active = self.runtime_factory(session_id=session_id, **kwargs)
                 await self.active.start()

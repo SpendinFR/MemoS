@@ -36,8 +36,8 @@ $LiveDeps = @(
   "fastapi", "uvicorn", "pydantic", "websockets", "pynvml",
   "numpy", "opencv-python-headless", "aiortc", "aiohttp", "av", "pytest", "pyyaml",
   "python-multipart", "python-dotenv", "faster-whisper", "webrtcvad-wheels",
-  "onnxruntime-gpu", "rapidocr-onnxruntime", "argostranslate",
-  "nvidia-cublas-cu12", "nvidia-cudnn-cu12"
+  "onnxruntime-gpu==1.22.0", "rapidocr-onnxruntime", "argostranslate",
+  "nvidia-cuda-runtime-cu12", "nvidia-cublas-cu12", "nvidia-cufft-cu12", "nvidia-cudnn-cu12"
 )
 
 function Write-Step([string]$Message) { Write-Host "`n==> $Message" -ForegroundColor Cyan }
@@ -123,6 +123,17 @@ try {
   Invoke-Checked { & $NewPython -m pip install --upgrade --disable-pip-version-check pip } "Mise a niveau pip impossible"
   Write-Host "Installation des dependances live: $($LiveDeps -join ', ')" -ForegroundColor Gray
   Invoke-Checked { & $NewPython -m pip install --disable-pip-version-check @LiveDeps } "Installation des dependances live impossible"
+  # rapidocr-onnxruntime declares the CPU distribution ``onnxruntime`` as a hard
+  # dependency. Pip can therefore leave both distributions installed; uninstalling
+  # the CPU wheel also deletes their shared module files. Restore the GPU wheel last
+  # and verify the provider actually exposed by the interpreter used in production.
+  & $NewPython -m pip uninstall -y onnxruntime | Out-Null
+  Invoke-Checked { & $NewPython -m pip install --force-reinstall --no-deps --disable-pip-version-check "onnxruntime-gpu==1.22.0" } "Restauration ONNX Runtime GPU impossible"
+  $OrtProviders = (& $NewPython -c "import json,onnxruntime as o; print(json.dumps(o.get_available_providers()))" | Select-Object -Last 1)
+  if (-not $CpuOnly -and $OrtProviders -notmatch "CUDAExecutionProvider") {
+    Fail "GPU NVIDIA present mais ONNX Runtime CUDA absent. Providers reels: $OrtProviders"
+  }
+  Write-Ok "ONNX Runtime providers: $OrtProviders"
   Invoke-Checked { & $NewPython -c "import fastapi, uvicorn, pydantic, websockets, pynvml, numpy, cv2, aiortc, av, yaml; print('live deps import OK')" } "Verification d'import des dependances live impossible"
 
   Write-Step "Bascule atomique de .venv-live"

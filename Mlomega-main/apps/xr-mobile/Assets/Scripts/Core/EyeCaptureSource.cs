@@ -201,6 +201,7 @@ namespace MLOmega.XR.Core
             env.CaptureMonotonicNs = captureMonotonicNs;
             env.CapturedAtUtc = capturedAtUtc.ToUniversalTime()
                 .ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", CultureInfo.InvariantCulture);
+            env.PoseValid = pose.IsTracking;
             env.Rotation = rotation;
             env.Source = source;
 

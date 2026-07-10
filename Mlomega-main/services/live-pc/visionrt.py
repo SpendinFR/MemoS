@@ -126,6 +126,17 @@ class YoloxDetector:
     ) -> None:
         import onnxruntime as ort
 
+        # Windows production installs CUDA/cuDNN as NVIDIA Python wheels inside
+        # .venv-live. ORT >=1.21 can preload those exact DLLs; a provider merely
+        # listed by get_available_providers() is not proof that a session can load.
+        if hasattr(ort, "preload_dlls"):
+            try:
+                ort.preload_dlls(directory="")
+            except Exception:
+                # Session construction below is authoritative and will either use
+                # CUDA or expose the explicit CPU fallback in ``self.providers``.
+                pass
+
         self.model_path = str(model_path)
         self.input_size = int(input_size)
         self.score_threshold = float(score_threshold)
@@ -383,6 +394,7 @@ class VisionMetrics:
     tracker_frames: int = 0
     keyframes_recorded: int = 0
     drops: int = 0
+    errors: int = 0
 
     def snapshot(self) -> dict[str, Any]:
         def pct(xs: list[float], p: float) -> float:
@@ -401,6 +413,7 @@ class VisionMetrics:
             "tracker_frames": self.tracker_frames,
             "keyframes_recorded": self.keyframes_recorded,
             "drops": self.drops,
+            "vision_errors": self.errors,
         }
 
 
@@ -429,6 +442,7 @@ class VisionRT:
         on_scene_delta: Callable[[dict[str, Any]], Any] | None = None,
         on_ui_intent: Callable[[dict[str, Any]], Any] | None = None,
         keyframe_sink: Callable[[np.ndarray, Any], Any] | None = None,
+        on_error: Callable[[str, Any], Any] | None = None,
     ) -> None:
         # ByteTracker lives beside this module; import robustly whether loaded as
         # a package or via importlib (tests).
@@ -450,6 +464,7 @@ class VisionRT:
         self.on_scene_delta = on_scene_delta
         self.on_ui_intent = on_ui_intent
         self.keyframe_sink = keyframe_sink
+        self.on_error = on_error
         self.metrics = VisionMetrics()
         self._prev_track_ids: set[str] = set()
         self._last_detect_t = -1e9
@@ -457,6 +472,14 @@ class VisionRT:
         self._changes_paused = False
         self._vlm_refused = False
         self._ui_intent_seq = 0
+
+    def _report_error(self, scope: str, exc: Any) -> None:
+        self.metrics.errors += 1
+        if self.on_error is not None:
+            try:
+                self.on_error(scope, exc)
+            except Exception:
+                pass
 
     # ---------------------------------------------------------- degraded control
     def apply_action_level(self, action_level: str) -> None:
@@ -565,8 +588,8 @@ class VisionRT:
         if self.on_scene_delta:
             try:
                 self.on_scene_delta(delta)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._report_error("vision.on_scene_delta", exc)
         return delta
 
     def _record_keyframe(self, frame_bgr: np.ndarray, envelope: Any) -> None:
@@ -574,8 +597,8 @@ class VisionRT:
         if self.keyframe_sink is not None:
             try:
                 self.keyframe_sink(frame_bgr, envelope)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._report_error("vision.keyframe_sink", exc)
 
     # -------------------------------------------------------------------- focus
     def _next_ui_id(self) -> str:
@@ -680,8 +703,8 @@ class VisionRT:
         if self.on_ui_intent:
             try:
                 self.on_ui_intent(intent)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._report_error("vision.on_ui_intent", exc)
         return intent
 
     def _crop(self, frame_bgr: np.ndarray, bbox: Any) -> np.ndarray:
