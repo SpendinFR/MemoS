@@ -1,5 +1,17 @@
 # DECISIONS
 
+## 2026-07-10 — E53 Phase A : « Viki mode aide » (moteur PC + UI bank Unity) (ADR)
+
+**Plan = MICRO-ACTIONS (décision utilisateur).** Chaque step du TaskPlan est UNE action atomique = UN geste affichable (« verse la farine dans le bol »), jamais une étape composite — imposé par `_PLAN_SYSTEM`/`_DOC_PROMPT`. Un plan d'une seule action est légitime (aide ponctuelle en pleine activité).
+
+**Coup d'œil scène initial.** Au démarrage de l'aide, UN appel VLM (`_guess_scene_context`, keyframe courante) devine le problème/les objets visibles et le contexte est injecté dans le prompt du plan → le plan colle à ce que l'utilisateur a réellement devant lui. Best-effort (échec = plan depuis la description seule), event-driven (jamais par frame).
+
+**Latence par construction.** Le fantôme de N+1 est pré-poussé à l'entrée dans N (`task_panel.ghost_next` + anchors fantômes) → transition 0 latence ; le cloud (gpt-5.4-mini via le LLMRouter E33, coût affiché) ne sert qu'au plan + à UN indice visuel d'escalade (watchdog pas-de-progrès : indice local d'abord, cloud seulement si mode payant + `allow_cloud_hints`). Grounding : `label_en` des objets matché aux tracks WorldBrain/VisionRT, `track_id` joint au `task_anchor` — l'ancrage temps réel reste 100 % device.
+
+**Routeur.** Grammaire help AVANT les règles génériques (piège translate_live) ; contrôles de tâche (« c'est fait », « répète », « étape suivante », pause/reprends/termine) via un PRÉ-ROUTEUR actif seulement quand une tâche tourne (paused inclus pour « reprends ») → jamais volés hors tâche. Multi-tour : « mode aide » seul → question → la description arrive au tour suivant. Persistance sqlite additive (reprise inter-sessions).
+
+**UI bank Unity.** 12 atomes glass data-driven sous `UI/Components/TaskAtoms/` + 2 composants registre E25 (`task_panel` famille plan, `task_anchor` = cerveau de composition : compose les atomes selon le content, suit le track en temps réel, perte→recherche→réacquisition, hors-champ→flèche, multi-candidats→SelectionHighlight, fantôme promu sans recréation). Un seul owner émetteur de receipts par intent (la voie E25) ; les atomes sont des MonoBehaviour purs pilotés par le renderer. Aucun changement de scène requis (le registre est statique, UIRuntime instancie génériquement). Piège EditMode documenté : Awake ne tourne pas via AddComponent → config SceneCache injectée par réflexion dans les tests. Tests : PC 23 + non-régression = 62 verts ; EditMode TaskAtoms 9/9.
+
 ## 2026-07-09 — E58 : wake word par transcription ASR française, changeable sans rebuild (ADR)
 
 **Pourquoi pas le KWS ni la voix.** Le KWS sherpa embarqué est entraîné en anglais → un mot français (« viki », « jarvis ») est matché en phonèmes anglais (« vaïki »/« djarviss »), inutilisable pour un francophone. L'enrôlement vocal résoudrait la prononciation mais = nouveau modèle lourd + speaker-dépendant + ré-enregistrer pour changer. Décision : **détecter le mot dans la transcription de l'ASR français** qui tourne déjà sur l'appareil (sous-titres/mémoire) → prononciation naturelle, aucun modèle nouveau, coût quasi nul, changeable en tapant le mot.

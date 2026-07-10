@@ -349,15 +349,15 @@ PAS 12 tâches codées en dur : ~12 **atomes glass réutilisables** qui se **com
 - **ancre-objet** (anneau/contour **qui SUIT l'objet** — si tu prends/déplaces le bol, l'UI le suit en temps réel, jamais collée à un point fixe) · **trajectoire/geste** · chip quantité/mesure · **anneau-minuteur** · panneau d'étapes (fait/en cours/suivant) · flèche directionnelle (objet hors-champ) · encart zoom · checklist · carte-instruction · cue d'attention/danger · **sélection** (« prends celui-là parmi plusieurs ») · barre de progression.
 - **Primitive « geste » = TRAJECTOIRE animée** (beau + tractable, PAS une main 3D) : tracé glowing qui se dessine, ancré sur l'objet — verser = arc bouteille→bol ; visser/tourner = flèche circulaire ; essuyer = va-et-vient ; appuyer = pulse. La **main-fantôme réaliste** = option premium plus tard.
 
-### À implémenter (par phases — « bien ou pas du tout »)
-- [ ] **Schéma d'étape typée** (les champs que le LLM remplit et que l'UI bank consomme) — la fondation.
-- [ ] **Acquisition du plan** : intent « Viki mode aide » (IntentRouter) → « plan ou pas » → scan notice (VLM doc) OU recherche web → plan typé, persisté en open loop (reprise au briefing).
-- [ ] **Moteur de tâche PC** : machine à états (étape courante/faite/suivante), pré-calcul de N+1, déclenchement cloud event-driven, `task_hot` poussé au device.
-- [ ] **Reco objet** : PC (VisionRT, LAN, ~0,2 s) = chemin principal ; **détecteur on-device** (MediaPipe Object Detector / ONNX léger, classes utiles) = mode dégradé dehors sans PC.
-- [ ] **Ancrage device** : le tracker local (StableTrack) colle l'UI sur l'objet détecté, maintient entre détections, ré-acquiert.
-- [ ] **UI bank glass** = ~12 atomes composables (ancre-objet qui SUIT l'objet, **trajectoire-geste** animée, minuteur, sélection, checklist, zoom, flèche, progression…), extensible, pilotée par l'étape typée. Couvre un ensemble ouvert de tâches par composition, pas du codage par tâche.
-- [ ] **Proactif** : signaux locaux (pas de progrès/hésitation) → indice cloud ciblé ; validation hybride (auto-suggérée « on dirait que c'est fait ? » + confirmation voix, jamais auto-silencieuse sur du fin).
-- [ ] **Coût live** : gpt5.4-mini opt-in, compteur de coût affiché (E33).
+### À implémenter (par phases — « bien ou pas du tout ») — **PHASE A FAITE (2026-07-10, commits dcc4af4 + 98e9adf ; validation device en attente)**
+- [x] **Schéma d'étape typée** figé (TaskPlan/TaskStep : action, objects[name/label_en/role/quantity], gesture{kind,from,to}, timer, caution, done_when). **Évolution utilisateur intégrée : chaque step = UNE MICRO-ACTION = UN GESTE affichable** (les étapes composites sont interdites par le prompt).
+- [x] **Acquisition du plan** (`help_mode.py`) : intents « (viki) mode aide » / « aide-moi à X » (grammaire AVANT les règles génériques + high-confidence + LLM schema + multi-tour description) → **UN coup d'œil VLM initial sur la keyframe courante** (devine le problème/objets visibles → le plan colle à la scène réelle, utile en plein milieu d'une activité) → plan LLM (local ou gpt-5.4-mini si mode payant, coût affiché E33) ; chemin notice = `plan_from_document` (VLM doc). Persistance sqlite additive + reprise (« reprends la tâche »).
+- [x] **Moteur de tâche PC** : machine à états (advance/repeat/go_to/pause/resume/finish à la voix — pré-routeur actif pour ne jamais voler « c'est fait » hors tâche), **pré-push fantôme de N+1** (0 latence perçue), émission `task_panel`/`task_anchor` par la queue H1/hot existante, tick câblé sur la cadence scène.
+- [ ] **Reco objet on-device** (détecteur MediaPipe/ONNX léger, mode dégradé dehors sans PC) — SEUL reste de Phase A ; le chemin principal (PC VisionRT LAN) est câblé.
+- [x] **Ancrage device** : grounding PC joint `track_id` par `label_en` → `ObjectAnchorRing` SUIT le track en temps réel (perte → mode recherche → réacquisition ; hors-champ → `TaskDirectionalArrow`).
+- [x] **UI bank glass** : 12 atomes composables livrés (`TaskAtoms/`) + 2 composants registre E25 (`task_panel`, `task_anchor` = cerveau de composition). Trajectoire-geste animée arc/circular/linear/pulse. EditMode 9/9.
+- [x] **Proactif** : watchdog pas-de-progrès (indice local, puis UN indice visuel cloud si payant+autorisé). Validation voix (« c'est fait ») ; auto-validation fine = Phase C.
+- [x] **Coût live** : gpt-5.4-mini opt-in via LLMRouter E33 (clé demandée dans WELCOME, fallback local honnête).
 - **Phasage** : **A** = objet+geste physique (cuisine/rangement/branchement) fait bien → **B** = tâches d'assemblage (pièces/repères) → **C** = geste fin sub-objet (attend les VLM spatiaux). Refs d'inspi : HoloAssist (dataset AR assistance MS), IKEA Place / overlays « how-to » AR, Set-of-Mark/OmniParser pour le grounding par éléments.
 - Gate qualité avant de livrer une phase : sur 10 scènes réelles S25, ancrage objet correct ≥ 90 % et transition d'étape < 300 ms perçue.
 
