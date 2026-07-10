@@ -80,6 +80,12 @@ def _build_rules() -> list[tuple[re.Pattern[str], str, dict[str, Any]]]:
     add(r"\b(?:ouvre|lance|open)\b\s+youtube\b\s*" + _TARGET, "open_app", app="youtube")
     add(r"\b(?:ouvre|lance|open|launch)\b\s+(?:l'?app(?:lication)?\s+)?" + _TARGET, "open_app", app="package")
 
+    # --- help mode (E53 "Viki mode aide") — BEFORE the generic vision/find rules:
+    # "aide-moi à cuisiner" must never be swallowed by find/what_is, exactly the
+    # translate_live E48-A precaution. "mode aide" alone starts the multi-turn ask.
+    add(r"\b(?:mode\s+aide|help\s+mode)\b", "help_start", help_desc="")
+    add(r"\b(?:aide|aide-?moi|help\s+me)\s+(?:[àa]|pour|to)\s+" + _TARGET, "help_start")
+
     # --- vision handlers ---
     add(r"\b(?:c'?est\s+quoi|qu'?est-?ce\s+que\s+c'?est|what\s+is\s+(?:this|that))\b", "what_is")
     add(r"\b(?:lis|lire|ocr|read|d[ée]chiffre)\b(?:\s+(?:le\s+)?texte)?", "ocr")
@@ -160,6 +166,8 @@ _HIGH_CONFIDENCE: list[tuple[re.Pattern[str], str]] = [
         (r"traduction\s+en\s+(?:direct|continu)\b", "translate_live"),
         (r"stop\s+traduction\b", "translate_live"),
         (r"arr[êe]te\s+la\s+traduction\b", "translate_live"),
+        (r"mode\s+aide\b", "help_start"),
+        (r"help\s+mode\b", "help_start"),
     ]
 ]
 
@@ -186,6 +194,26 @@ _FOLLOWUP = re.compile(
 
 def _is_deictic_followup(text: str) -> bool:
     return bool(_FOLLOWUP.search(text))
+
+
+# E53: control phrases handled ONLY while a help task is active. Kept out of the
+# general grammar so they never steal a turn when no task runs (e.g. "c'est fait"
+# said in ordinary conversation). Ordered: more specific (stop/pause) first.
+_HELP_CONTROLS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\b(?:pause\s+la\s+t[âa]che|mets?\s+en\s+pause|pause\s+l'?aide)\b", re.IGNORECASE), "help_pause"),
+    (re.compile(r"\b(?:reprends?\s+la\s+t[âa]che|reprends?\s+l'?aide|continue\s+la\s+t[âa]che)\b", re.IGNORECASE), "help_resume"),
+    (re.compile(r"\b(?:termine|finis|arr[êe]te|annule|stop)\s+(?:la\s+)?(?:t[âa]che|aide)\b|\b(?:sors\s+du\s+mode\s+aide)\b", re.IGNORECASE), "help_stop"),
+    (re.compile(r"\b(?:[ée]tape\s+suivante|prochaine\s+[ée]tape|suivante?|c'?est\s+fait|next\s+step|done)\b", re.IGNORECASE), "help_advance"),
+    (re.compile(r"\b(?:[ée]tape\s+pr[ée]c[ée]dente|reviens\s+en\s+arri[èe]re|[ée]tape\s+d'?avant)\b", re.IGNORECASE), "help_back"),
+    (re.compile(r"\b(?:r[ée]p[èe]te|redis|quelle\s+[ée]tape|on\s+en\s+est\s+o[ùu]|repeat)\b", re.IGNORECASE), "help_repeat"),
+]
+
+
+def _match_help_control(text: str) -> str | None:
+    for pat, name in _HELP_CONTROLS:
+        if pat.search(text):
+            return name
+    return None
 
 
 def _clean_target(raw: str | None) -> str | None:
@@ -254,6 +282,7 @@ class IntentRouter:
         emit_ui_intent: Callable[[dict[str, Any]], Any] | None = None,
         replay_service: Any = None,
         owner_setup: Any = None,
+        help_engine: Any = None,
         person_id: str = "me",
     ) -> None:
         self.vision_focus = vision_focus
@@ -269,6 +298,11 @@ class IntentRouter:
         # of a bare ``replay`` device_command. Falls back to the device_command
         # path (the phone's own replay UI) when no service is injected.
         self.replay_service = replay_service
+        # E53 "Viki mode aide": the HelpTaskEngine. When wired, "mode aide" / "aide-moi
+        # à X" starts a typed task, and — while a task is ACTIVE — "étape suivante" /
+        # "c'est fait" / "répète" / "pause"/"reprends"/"termine" are pre-routed to it
+        # (before the generic grammar can swallow them).
+        self.help_engine = help_engine
         self.person_id = person_id
         self.context = IntentContext()
         self.metrics: dict[str, Any] = {
@@ -277,6 +311,7 @@ class IntentRouter:
             "grammar_hits": 0,
             "multiturn_hits": 0,
             "llm_fallbacks": 0,
+            "help_hits": 0,
         }
 
     # ---- context feed (pipeline updates the "current focus target") ---------
@@ -325,6 +360,19 @@ class IntentRouter:
                 self.metrics["grammar_hits"] += 1
                 self.context.note(intent=ident.get("intent"))
                 return RoutedIntent(intent=ident.get("intent"), params=ident, handled=True)
+
+        # 1b) Help mode (E53) is pre-routed BEFORE the general grammar/LLM:
+        #   * if the engine is awaiting a description ("mode aide" asked last turn),
+        #     THIS turn IS the description → start the task (multi-turn);
+        #   * while a task is ACTIVE, control phrases ("étape suivante", "c'est fait",
+        #     "répète", "pause"/"reprends"/"termine") route to the engine and never
+        #     reach the generic rules that could swallow them.
+        if self.help_engine is not None:
+            routed = self._match_help(raw)
+            if routed is not None:
+                self.metrics["help_hits"] += 1
+                self.metrics["intents_routed"] += 1
+                return routed
 
         # 2) Multi-turn deixis first when the utterance is clearly a follow-up
         # ("zoom dessus", "traduis-le", "et ça ?") and a fresh target exists —
@@ -400,6 +448,13 @@ class IntentRouter:
             elif intent == "ask_memory":
                 q = _clean_target(m.group(1)) if m.groups() else None
                 out["question"] = q or text
+            elif intent == "help_start":
+                # "mode aide" (no group) → empty desc (multi-turn ask); "aide-moi à X"
+                # → the task description in group 1.
+                if "help_desc" in params:
+                    out["help_desc"] = params["help_desc"]
+                else:
+                    out["help_desc"] = _clean_target(m.group(1)) or ""
             return out
         return None
 
@@ -425,7 +480,8 @@ class IntentRouter:
             return None
         schema = {
             "intent": "one of: what_is|find|ocr|translate|translate_live|zoom|set_ui_mode|privacy_pause|"
-                      "open_app|paid_mode|local_mode|menu|replay|ask_memory|owner_enroll|unknown",
+                      "open_app|paid_mode|local_mode|menu|replay|ask_memory|owner_enroll|help_start|unknown",
+            "help_desc": "string (help_start: the task the user wants help with, e.g. 'monter l'étagère'; '' if none given)",
             "on": "bool (translate_live: true='traduis en direct', false='stop traduction')",
             "query": "string (target for find, or search text for open_app youtube)",
             "ui_mode": "hide_all|minimal|normal|freeguy",
@@ -448,7 +504,9 @@ class IntentRouter:
             "« qu'est-ce que j'avais promis à Sarah déjà ? » -> "
             "{\"intent\":\"ask_memory\",\"question\":\"qu'est-ce que j'avais promis à Sarah\"} ; "
             "« configure ma voix » / « c'est moi qui parle » -> "
-            "{\"intent\":\"owner_enroll\"}. "
+            "{\"intent\":\"owner_enroll\"} ; "
+            "« aide-moi à monter cette étagère » / « viki mode aide » -> "
+            "{\"intent\":\"help_start\",\"help_desc\":\"monter cette étagère\"}. "
             "Si aucun intent ne correspond, intent=unknown."
         )
         try:
@@ -462,6 +520,10 @@ class IntentRouter:
         for k in ("query", "ui_mode", "app", "language", "provider", "question", "package", "destination", "time"):
             if data.get(k):
                 out[k] = data[k]
+        # E53: help_start carries a free description that may legitimately be empty
+        # ("mode aide" alone → ask in the next turn); copy it explicitly.
+        if intent == "help_start":
+            out["help_desc"] = _clean_target(data.get("help_desc")) or ""
         # E48-A: "on" is a real boolean — the falsy-skip above would drop on=False
         # ("stop traduction"), so copy it explicitly.
         if intent == "translate_live" and "on" in data:
@@ -504,6 +566,8 @@ class IntentRouter:
             return self._do_device({"type": "device_command", "action": "set_tts", "tts": bool(on)}, intent)
         if intent == "owner_enroll":
             return self._do_owner_enroll()
+        if intent == "help_start":
+            return self._do_help_start(routed)
         return self._unknown(text)
 
     def _do_owner_enroll(self) -> RoutedIntent:
@@ -515,6 +579,62 @@ class IntentRouter:
         except Exception:
             return self._unavailable("owner_enroll", "Impossible de démarrer la configuration de ta voix.")
         return RoutedIntent(intent="owner_enroll", result=res, handled=True)
+
+    # ---- help mode (E53) ----------------------------------------------------
+    def _match_help(self, text: str) -> RoutedIntent | None:
+        """Pre-route help-mode turns (E53). Returns a RoutedIntent when the turn is a
+        help turn (pending description or active-task control), else None."""
+        eng = self.help_engine
+        # A pending "mode aide" ask: this turn is the task description.
+        if getattr(eng, "awaiting_description", False):
+            res = eng.start_from_description(text)
+            self.context.note(intent="help_start")
+            return RoutedIntent(intent="help_start", result=res, handled=True)
+        # Control phrases are only interpreted when a task exists (active OR paused),
+        # so ordinary "c'est fait" in conversation is never captured. A paused task
+        # only accepts "reprends"/"termine"; everything else needs an active task.
+        plan = getattr(eng, "plan", None)
+        if not plan:
+            return None
+        control = _match_help_control(text)
+        if control is None:
+            return None
+        if not getattr(eng, "active", False) and control not in ("help_resume", "help_stop"):
+            return None
+        try:
+            if control == "help_advance":
+                res = eng.advance()
+            elif control == "help_back":
+                res = eng.go_to(max(0, (eng.current_step() or {}).get("index", 0) - 1))
+            elif control == "help_repeat":
+                res = eng.repeat()
+            elif control == "help_pause":
+                res = eng.pause()
+            elif control == "help_resume":
+                res = eng.resume()
+            elif control == "help_stop":
+                res = eng.finish(cancelled=True)
+            else:
+                res = None
+        except Exception:
+            res = None
+        self.context.note(intent=control)
+        return RoutedIntent(intent=control, result=res, handled=True)
+
+    def _do_help_start(self, routed: dict[str, Any]) -> RoutedIntent:
+        """« mode aide » / « aide-moi à X » → start (or ask for) a help task (E53)."""
+        if self.help_engine is None:
+            return self._unavailable("help_start", "Mode aide indisponible sur ce profil.")
+        desc = (routed.get("help_desc") or "").strip()
+        try:
+            if desc:
+                res = self.help_engine.start_from_description(desc)
+            else:
+                # No description yet → the engine asks and awaits the next turn.
+                res = self.help_engine.start_from_description("")
+        except Exception:
+            return self._unavailable("help_start", "Impossible de démarrer le mode aide.")
+        return RoutedIntent(intent="help_start", result=res, handled=True)
 
     def _do_vision(self, routed: dict[str, Any], text: str) -> RoutedIntent:
         intent = routed["intent"]

@@ -69,6 +69,14 @@ clip_recording:
   queue_max_frames: 60      # bounded encode queue; full => DROP frame (never block live)
   drop_pause_threshold: 120 # drops within the window => auto-pause recording
   keep_boring_days: 2       # close-day: boring+unreferenced clips younger than this are dropped to keyframes-only
+# E53: "Viki mode aide" universal help mode. The HelpTaskEngine
+# (services/live-pc/help_mode.py) reads this block; any missing key falls back to
+# a coded default. The plan/hint reuse the E33 LLM router (paid mode + cost). The
+# no-progress watchdog is event-driven; a cloud visual hint fires only on the 2nd
+# timeout AND only when paid mode is active AND allow_cloud_hints (never per frame).
+help_mode:
+  no_progress_seconds: 90     # per-step "no progress" timer before a proactive hint
+  allow_cloud_hints: true     # 2nd timeout may call cloud for a keyframe hint IF paid mode active
 gpu:
   max_live_vram_ratio: 0.90
   degrade_order: [detector_floor, pause_changes, refuse_vlm]

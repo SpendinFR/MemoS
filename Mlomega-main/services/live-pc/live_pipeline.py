@@ -75,6 +75,7 @@ hypothesis_engine = _load_sibling("v19_hypothesis_engine", "hypothesis_engine.py
 attribute_memory = _load_sibling("v19_attribute_memory", "attribute_memory.py")
 routine_associations = _load_sibling("v19_routine_associations", "routine_associations.py")
 change_attention = _load_sibling("v19_change_attention", "change_attention.py")
+help_mode = _load_sibling("v19_help_mode", "help_mode.py")
 
 
 def load_profile(profile_path: Path | str | None = None) -> dict[str, Any]:
@@ -181,6 +182,7 @@ class LivePipeline:
         enable_audio_archive: bool = False,
         enable_fine_intel: bool = False,
         fine_intel_llm: Any = None,
+        enable_help_mode: bool = False,
         active_link: str = "lan",
     ) -> None:
         self.session_id = session_id
@@ -533,6 +535,35 @@ class LivePipeline:
                 db_path=db_path,
             )
 
+        # ---- HelpTaskEngine (E53 "Viki mode aide"): typed physical-task assistant. --
+        # Reuses the E33 LLM router (paid/cost mechanic), the scene adapter's queue +
+        # hot channel for UI, WorldBrain for object grounding, and the VisionRT VLM
+        # for the "j'ai une notice" document path + the escalated visual hint. All
+        # optional — a bare pipeline without WorldBrain still generates/advances a plan.
+        self.enable_help_mode = enable_help_mode
+        self.help_engine: Any = None
+        if enable_help_mode:
+            if self.llm_router is None:
+                self.llm_router = llm_providers.LLMRouter(
+                    profile=self.user_profile, on_cloud_event=self._push_intent,
+                )
+            hmcfg = self.profile.get("help_mode", {}) if isinstance(self.profile, dict) else {}
+            self.help_engine = help_mode.HelpTaskEngine(
+                person_id=self.person_id,
+                live_session_id=self.live_session_id,
+                llm_router=self.llm_router,
+                scene_adapter=self.scene_adapter,
+                worldbrain=self.worldbrain,
+                vlm=getattr(self.vision, "vlm", None),
+                keyframe_provider=lambda: self._latest_frame_bgr,
+                emit_ui_intent=self._push_intent,
+                config=help_mode.HelpModeConfig(
+                    no_progress_seconds=float(hmcfg.get("no_progress_seconds", 90.0)),
+                    allow_cloud_hints=bool(hmcfg.get("allow_cloud_hints", True)),
+                ),
+                db_path=self.db_path,
+            )
+
         if enable_intents:
             if self.llm_router is None:
                 self.llm_router = llm_providers.LLMRouter(
@@ -549,6 +580,7 @@ class LivePipeline:
                 emit_ui_intent=self._push_intent,
                 replay_service=self.replay,
                 owner_setup=self.owner_setup,
+                help_engine=self.help_engine,
                 person_id=self.person_id,
             )
 
@@ -784,6 +816,13 @@ class LivePipeline:
                 if place:
                     visible = [e.get("label") for e in (delta.get("entities") or [])]
                     self.routine_associations.on_approach(place_key=place, visible_labels=visible)
+            except Exception:
+                pass
+        # E53: the help engine's no-progress watchdog is event-driven — ticked on
+        # the scene cadence (cheap, no cloud unless the escalation gate fires).
+        if self.help_engine is not None:
+            try:
+                self.help_engine.tick()
             except Exception:
                 pass
         if self._external_scene_cb is not None:
@@ -1333,6 +1372,12 @@ class LivePipeline:
             cam = self.change_attention.metrics
             m["change_attention_cues"] = cam.get("cues_emitted", 0)
             m["change_attention_reentries"] = cam.get("zone_reentries", 0)
+        if self.help_engine is not None:
+            hem = self.help_engine.metrics
+            m["help_plans_generated"] = hem.get("plans_generated", 0)
+            m["help_steps_advanced"] = hem.get("steps_advanced", 0)
+            m["help_grounding_hits"] = hem.get("grounding_hits", 0)
+            m["help_cloud_hints"] = hem.get("cloud_hints", 0)
         if self.ingress is not None and hasattr(self.ingress, "matcher"):
             try:
                 m["envelope_match"] = self.ingress.matcher.stats()
