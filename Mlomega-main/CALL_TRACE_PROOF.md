@@ -990,4 +990,4 @@ risks if modified:
 - **TTS connecté** : `LivePipeline(enable_tts=True)` → message `tts_audio` DataChannel → Unity `TtsAudioPlayer` (NOUVEAU consommateur). **to_verify** device.
 - **pose** : `FrameEnvelope.pose_valid` (nouveau champ contrat) sérialisé Unity → gate `live_pipeline` (pose neutre jamais spatialisée). **proven** unit.
 - **panel manipulation (E59)** : `GestureBridge` pinch(x,y) → `PanelManipulator` claim/hit-test → `IManipulablePanel.MoveTo/Resize/Close/Minimise` ; sinon fallback zoom `LensWindowSkill` inchangé. **proven** EditMode.
-- **Mismatch maintenus** : `ClipRecorder` non instancié en prod (aucun edge réel `gateway→ClipRecorder.offer` actif) ; `GpuArbiter` non construit. **mismatch**.
+- **Mismatch maintenus** : `ClipRecorder` — **RÉSOLU (E60 final)** : phoneonly_runtime construit ClipRecorder (ingress_kwargs[clip_recorder] → edge gateway._consume_track→offer actif) et GpuArbiter. Device **to_verify**.

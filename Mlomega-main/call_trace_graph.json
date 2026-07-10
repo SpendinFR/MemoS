@@ -1619,8 +1619,9 @@
       "apk_appid_and_scene_regen"
     ],
     "persisting_mismatch": [
-      "ClipRecorder never constructed in production (E55 wiring absent)",
-      "GpuArbiter never constructed"
+      "RESOLVED 2026-07-10 (E60 final): ClipRecorder constructed+started in phoneonly_runtime and passed to AiortcIngress (clip_recorder kwarg).",
+      "RESOLVED 2026-07-10 (E60 final): GpuArbiter constructed in phoneonly_runtime (arbiter_factory).",
+      "Device paths still to_verify until the real S25 matrix."
     ]
   }
 }
