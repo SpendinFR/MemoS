@@ -23,7 +23,11 @@ Metrics: :meth:`metrics` merges VisionRT + AudioRT + queue counters, exposed by
 import asyncio
 import importlib.util
 import json
+import queue
 import sys
+import threading
+import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
@@ -184,8 +188,13 @@ class LivePipeline:
         fine_intel_llm: Any = None,
         enable_help_mode: bool = False,
         active_link: str = "lan",
+        defer_final_processing: bool = False,
+        on_error: Callable[[str], Any] | None = None,
     ) -> None:
         self.session_id = session_id
+        self._error_sink = on_error
+        self._recent_errors: deque[str] = deque(maxlen=50)
+        self._error_count = 0
         # Transport identity and BrainLive identity are deliberately distinct.
         # Every durable semantic writer must use this one shared BrainLive id.
         self.live_session_id = live_session_id or session_id
@@ -603,6 +612,91 @@ class LivePipeline:
                 live_session_id=self._archive_session_id(),
                 db_path=db_path,
             )
+        # Whisper remains ordered in the ingress audio worker, but BrainLive,
+        # intents and LLM/hot-cycle work move to a separate ordered worker in the
+        # PhoneOnly product path. This prevents a long semantic turn from starving
+        # incoming PCM while preserving transcript order.
+        self.defer_final_processing = bool(defer_final_processing)
+        self._final_queue: "queue.Queue[list[dict[str, Any]] | None]" = queue.Queue(maxsize=256)
+        self._final_pending = 0
+        self._final_pending_lock = threading.Lock()
+        self._final_idle = threading.Event()
+        self._final_idle.set()
+        self._final_worker: threading.Thread | None = None
+        if self.defer_final_processing:
+            self._ensure_final_worker()
+
+    def _report_error(self, scope: str, exc: Any) -> None:
+        message = f"{scope}: {str(exc)[:400]}"
+        self._error_count += 1
+        self._recent_errors.append(message)
+        if self._error_sink is not None:
+            try:
+                self._error_sink(message)
+            except Exception:
+                pass
+
+    def _ensure_final_worker(self) -> None:
+        if self._final_worker is not None and self._final_worker.is_alive():
+            return
+        worker = threading.Thread(
+            target=self._run_final_worker, name="phoneonly-final-turns", daemon=True
+        )
+        self._final_worker = worker
+        worker.start()
+
+    def _enqueue_final_processing(self, intents: list[dict[str, Any]]) -> None:
+        if not intents:
+            return
+        self._ensure_final_worker()
+        with self._final_pending_lock:
+            self._final_pending += 1
+            self._final_idle.clear()
+        try:
+            self._final_queue.put_nowait(intents)
+        except queue.Full as exc:
+            with self._final_pending_lock:
+                self._final_pending -= 1
+                if self._final_pending == 0:
+                    self._final_idle.set()
+            self._report_error("final_queue_full", exc)
+            # Never drop a durable turn. This exceptional path applies backpressure
+            # only after 256 semantic batches are already pending.
+            self._handle_audio_intents(intents)
+
+    def _run_final_worker(self) -> None:
+        while True:
+            job = self._final_queue.get()
+            try:
+                if job is None:
+                    return
+                self._handle_audio_intents(job)
+            except Exception as exc:
+                self._report_error("final_worker", exc)
+            finally:
+                self._final_queue.task_done()
+                if job is not None:
+                    with self._final_pending_lock:
+                        self._final_pending -= 1
+                        if self._final_pending == 0:
+                            self._final_idle.set()
+
+    def drain_final_processing(self, timeout_s: float = 30.0) -> None:
+        if not self.defer_final_processing:
+            return
+        if not self._final_idle.wait(timeout=max(0.1, float(timeout_s))):
+            raise TimeoutError(f"final turn processing did not drain in {timeout_s:.1f}s")
+
+    def _stop_final_worker(self, timeout_s: float = 5.0) -> None:
+        worker = self._final_worker
+        if worker is None:
+            return
+        self.drain_final_processing(timeout_s=max(timeout_s, 30.0))
+        self._final_queue.put(None, timeout=max(0.1, timeout_s))
+        worker.join(timeout=max(0.1, timeout_s))
+        if worker.is_alive():
+            raise TimeoutError("final turn worker did not stop")
+        self._final_worker = None
 
     def _archive_session_id(self) -> str:
         """The BrainLive session id to attach archived audio to.
@@ -865,8 +959,8 @@ class LivePipeline:
         if self.worldbrain is not None:
             try:
                 self.worldbrain.ingest_scene_delta(delta)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._report_error("worldbrain.ingest_scene_delta", exc)
         # E48-B §2: zone re-entry → compare current vs memorized state, one sober
         # cue if the difference is net (never on first visit, never below the
         # confidence/map_quality floor, never twice within the cooldown).
@@ -1151,16 +1245,24 @@ class LivePipeline:
 
         # (1) Persist a WAV clip so E32 voice matching / owner capture have a file.
         wav_clip: str | None = None
-        if self.voice_identity is not None or self.owner_setup is not None or self.audio_archive is not None:
+        needs_voice_clip = bool(self.voice_identity is not None and uiid and meta.get("text"))
+        needs_owner_clip = False
+        if self.owner_setup is not None:
+            try:
+                needs_owner_clip = bool(self.owner_setup.is_arming())
+            except Exception as exc:
+                self._report_error("owner_setup.is_arming", exc)
+        if needs_voice_clip or needs_owner_clip:
             try:
                 import tempfile
                 fd = tempfile.NamedTemporaryFile(prefix="seg_", suffix=".wav", delete=False)
                 fd.close()
                 audio_archive.write_segment_wav(fd.name, seg, sample_rate=int(meta.get("sample_rate", 16000)))
                 wav_clip = fd.name
-            except Exception:
+            except Exception as exc:
+                self._report_error("segment_wav.write", exc)
                 wav_clip = None
-        if uiid and wav_clip:
+        if needs_voice_clip and uiid and wav_clip:
             # Picked up in on_audio_chunk's intent loop for voice matching (E32).
             self._segment_clips[str(uiid)] = wav_clip
 
@@ -1174,23 +1276,50 @@ class LivePipeline:
                     source_event_id=str(uiid) if uiid else None,
                     transcript_text=meta.get("text"),
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                self._report_error("audio_archive.archive_segment", exc)
 
         # (3) Owner enrolment (E37 §3): while armed, the wearer's next segments enrol
         # their voice as is_user=True. Runs on the clip we just wrote.
         if self.owner_setup is not None and wav_clip:
             try:
                 self.owner_setup.offer_segment(wav_clip)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._report_error("owner_setup.offer_segment", exc)
+        if wav_clip and not needs_voice_clip:
+            self._delete_temp_wav(wav_clip)
 
-    def on_audio_chunk(self, samples: np.ndarray, src_rate: int) -> list[dict[str, Any]]:
-        return self._handle_audio_intents(self.audio.push_audio(samples, src_rate))
+    @staticmethod
+    def _delete_temp_wav(path: str | None) -> None:
+        if not path:
+            return
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def on_audio_chunk(
+        self,
+        samples: np.ndarray,
+        src_rate: int,
+        source_timing: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        intents = self.audio.push_audio(samples, src_rate, source_timing=source_timing)
+        if self.defer_final_processing:
+            self._enqueue_final_processing(intents)
+        else:
+            self._handle_audio_intents(intents)
+        return intents
 
     def flush_audio(self) -> list[dict[str, Any]]:
         """Finalize the pending VAD segment through the normal final-turn path."""
-        return self._handle_audio_intents(self.audio.flush())
+        intents = self.audio.flush()
+        if self.defer_final_processing:
+            self._enqueue_final_processing(intents)
+            self.drain_final_processing()
+        else:
+            self._handle_audio_intents(intents)
+        return intents
 
     def _handle_audio_intents(self, intents: list[dict[str, Any]]) -> list[dict[str, Any]]:
         # Feed final transcripts two ways: (1) as scene conversation context for
@@ -1204,8 +1333,8 @@ class LivePipeline:
             if self.scene_adapter is not None:
                 try:
                     self.scene_adapter.note_transcript(text)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._report_error("scene_adapter.note_transcript", exc)
             # E38 §1/§2: feed the final turn to the fine-intelligence engines — the
             # addressed-name hypothesis signal and the heard attribute-fact signal.
             self._note_fine_intel_turn(text, content)
@@ -1221,11 +1350,13 @@ class LivePipeline:
             # bridge turn (speaker_person_id / speaker_label) when a wav clip is
             # available on the intent.
             wav_path = content.get("audio_path") or content.get("wav_path")
+            owned_temp_wav = False
             if not wav_path:
                 # E37 §1: the WAV clip written by _on_audio_segment for this final.
                 wav_path = self._segment_clips.pop(str(it.get("ui_intent_id") or ""), None)
-            if self.voice_identity is not None and wav_path:
-                try:
+                owned_temp_wav = bool(wav_path)
+            try:
+                if self.voice_identity is not None and wav_path:
                     if self.enrollment is not None:
                         self.enrollment.set_active_segment(wav_path)
                     vres = self.voice_identity.match(wav_path)
@@ -1235,8 +1366,8 @@ class LivePipeline:
                         # here → speaker_person_id=owner on this turn.
                         content["speaker_person_id"] = vres.get("person_id")
                         content["speaker_label"] = vres.get("name")
-                except Exception:
-                    pass
+            except Exception as exc:
+                self._report_error("voice_identity.match", exc)
             # E33: the IntentRouter is the single entry for final transcripts; it
             # ABSORBS the enrollment_watcher (identity commands are pre-routed
             # inside it). When intents are disabled, fall back to the standalone
@@ -1269,21 +1400,40 @@ class LivePipeline:
             # active entity's identity hypotheses (the deduction was wrong).
             self._maybe_break_hypotheses(text)
             if self.conversation is not None:
-                try:
-                    self.conversation.ingest_segment(
-                        text,
-                        language=content.get("language"),
-                        is_final=True,
-                        event_id=it.get("ui_intent_id"),
-                        speaker_label=content.get("speaker_label"),
-                        speaker_person_id=content.get("speaker_person_id"),
-                    )
-                except Exception:
-                    pass
+                last_exc: Exception | None = None
+                for attempt in range(3):
+                    try:
+                        self.conversation.ingest_segment(
+                            text,
+                            language=content.get("language"),
+                            is_final=True,
+                            timestamp_start=content.get("timestamp_start"),
+                            timestamp_end=content.get("timestamp_end"),
+                            duration_s=content.get("duration_s"),
+                            event_id=it.get("ui_intent_id"),
+                            speaker_label=content.get("speaker_label"),
+                            speaker_person_id=content.get("speaker_person_id"),
+                        )
+                        last_exc = None
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        if attempt < 2:
+                            time.sleep(0.05 * (attempt + 1))
+                if last_exc is not None:
+                    self._report_error("conversation.ingest_segment", last_exc)
+            if owned_temp_wav and wav_path:
+                if self.enrollment is not None:
+                    try:
+                        self.enrollment.set_active_segment(None)
+                    except Exception as exc:
+                        self._report_error("enrollment.clear_segment", exc)
+                self._delete_temp_wav(str(wav_path))
         return intents
 
     def release_live_resources(self) -> None:
         """Drop live model references before core post-stop/CloseDay phases."""
+        self._stop_final_worker()
         self.audio.close()
         detector = getattr(self.vision, "detector", None)
         for attr in ("session", "_session", "model", "_model"):
@@ -1295,6 +1445,7 @@ class LivePipeline:
 
     def end_session(self, *, place_hint: str | None = None, strict: bool = False) -> str | None:
         """Flush the WorldBrain end-of-session summary (E28) + discourse (E34)."""
+        self.drain_final_processing()
         if self.live_discourse is not None:
             try:
                 self.live_discourse.close()
@@ -1348,7 +1499,9 @@ class LivePipeline:
         assert self.ingress is not None, "ingress required for run_video"
         count = 0
         async for frame_bgr, envelope in self.ingress:
-            self.on_video_frame(frame_bgr, envelope)
+            # Detector/tracker/WorldBrain/keyframe IO are synchronous and may take
+            # tens of milliseconds. Keep them off aiortc/FastAPI's event loop.
+            await asyncio.to_thread(self.on_video_frame, frame_bgr, envelope)
             count += 1
             if limit is not None and count >= limit:
                 break
@@ -1362,6 +1515,9 @@ class LivePipeline:
             "action_level": self._last_action,
             "display": self.display,
             "rotation_corrections": self.rotation_corrections,
+            "pipeline_errors": self._error_count,
+            "pipeline_recent_errors": list(self._recent_errors),
+            "final_processing_pending": self._final_pending,
             # E36 §1: which PC endpoint this session reached the PC through and the
             # active network link (lan|wan) driving the network thresholds.
             "active_endpoint": self.active_endpoint,

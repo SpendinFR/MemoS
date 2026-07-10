@@ -132,8 +132,10 @@ class GpuArbiter:
         if job_class not in _PRIORITY:
             return {"grant": False, "reason": "unknown_job_class", "snapshot": snap}
         if not snap.available:
-            # Without NVML we can only safely admit the CPU-bound tracker.
-            grant = job_class in {"tracker"}
+            # Missing NVML must not disable the protected live path. Detector and
+            # ASR can still run on their own CPU/provider fallback; only optional
+            # on-demand jobs are refused until VRAM can be measured.
+            grant = job_class in {"tracker", "detector", "asr"}
             return {"grant": grant, "reason": "gpu_unavailable", "snapshot": snap}
 
         ratio = snap.used_mb / max(1, snap.total_mb)

@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 import numpy as np
 
@@ -314,6 +314,7 @@ class AudioRT:
         self.on_segment = on_segment
         self.metrics = AudioMetrics()
         self._seq = 0
+        self._latest_source_timing: dict[str, Any] | None = None
 
     def _admit_asr(self) -> bool:
         if self.arbiter is None:
@@ -355,37 +356,78 @@ class AudioRT:
             except Exception:
                 pass
 
-    def push_audio(self, samples: np.ndarray, src_rate: int) -> list[dict[str, Any]]:
+    def push_audio(
+        self,
+        samples: np.ndarray,
+        src_rate: int,
+        source_timing: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         """Feed a chunk of raw audio. Returns the list of subtitle intents emitted."""
+        if source_timing:
+            self._latest_source_timing = dict(source_timing)
         mono = to_mono_16k(samples, src_rate)
         segments = self.vad.push(mono)
         emitted: list[dict[str, Any]] = []
         for seg in segments:
-            emitted.extend(self._handle_segment(seg))
+            emitted.extend(self._handle_segment(seg, source_timing=self._latest_source_timing))
         return emitted
 
     def flush(self) -> list[dict[str, Any]]:
         seg = self.vad.flush()
-        return self._handle_segment(seg) if seg is not None else []
+        return self._handle_segment(seg, source_timing=self._latest_source_timing) if seg is not None else []
 
-    def _handle_segment(self, seg: np.ndarray) -> list[dict[str, Any]]:
+    def _segment_window(
+        self, seg: np.ndarray, source_timing: Mapping[str, Any] | None
+    ) -> tuple[str, str, float, str]:
+        """Return a durable UTC window derived from capture PTS when available."""
+        dur_s = float(len(seg)) / 16000.0
+        clock_source = str((source_timing or {}).get("clock_source") or "processing_clock")
+        end: datetime | None = None
+        raw_end = (source_timing or {}).get("absolute_end")
+        if raw_end:
+            try:
+                end = datetime.fromisoformat(str(raw_end).replace("Z", "+00:00"))
+                if end.tzinfo is None:
+                    end = end.replace(tzinfo=timezone.utc)
+                end = end.astimezone(timezone.utc)
+            except (TypeError, ValueError):
+                end = None
+        if end is None:
+            end = datetime.now(timezone.utc)
+            clock_source = "processing_clock"
+        start = end - timedelta(seconds=dur_s)
+        return start.isoformat(), end.isoformat(), dur_s, clock_source
+
+    def _handle_segment(
+        self, seg: np.ndarray, *, source_timing: Mapping[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         self.metrics.segments += 1
+        timestamp_start, timestamp_end, duration_s, clock_source = self._segment_window(seg, source_timing)
         out: list[dict[str, Any]] = []
         if not self._admit_asr():
             intent = self._intent("", final=True, language=None, translated=None, status="asr_refused")
             self._emit(intent)
-            self._notify_segment(seg, ui_intent_id=intent.get("ui_intent_id"), asr_status="asr_refused")
+            self._notify_segment(
+                seg, ui_intent_id=intent.get("ui_intent_id"), asr_status="asr_refused",
+                timestamp_start=timestamp_start, timestamp_end=timestamp_end,
+                duration_s=duration_s, clock_source=clock_source,
+            )
             return [intent]
         try:
             result = self.transcriber.transcribe(seg)
         except Exception:
-            self._notify_segment(seg, asr_status="asr_error")
+            self._notify_segment(
+                seg, asr_status="asr_error", timestamp_start=timestamp_start,
+                timestamp_end=timestamp_end, duration_s=duration_s, clock_source=clock_source,
+            )
             raise
         if result["status"] != "ok":
             intent = self._intent("", final=True, language=None, translated=None, status=result["status"])
             self._emit(intent)
             self._notify_segment(
-                seg, ui_intent_id=intent.get("ui_intent_id"), asr_status=str(result["status"])
+                seg, ui_intent_id=intent.get("ui_intent_id"), asr_status=str(result["status"]),
+                timestamp_start=timestamp_start, timestamp_end=timestamp_end,
+                duration_s=duration_s, clock_source=clock_source,
             )
             return [intent]
         self.metrics.asr_ms.append(self.transcriber.last_infer_ms)
@@ -413,6 +455,12 @@ class AudioRT:
             text, final=True, language=language, translated=translated,
             status="ok" if translated is not None or translate_status in {"noop"} else translate_status,
         )
+        final["content"].update({
+            "timestamp_start": timestamp_start,
+            "timestamp_end": timestamp_end,
+            "duration_s": duration_s,
+            "timestamp_source": clock_source,
+        })
         self.metrics.finals += 1
         self._emit(final)
         out.append(final)
@@ -421,17 +469,15 @@ class AudioRT:
         # window ends "now" (finalisation time). Never blocks / raises the reflex path.
         if self.on_segment is not None:
             try:
-                dur_s = float(len(seg)) / 16000.0
-                end = datetime.now(timezone.utc)
-                start = end - timedelta(seconds=dur_s)
                 self.on_segment(seg, {
                     "ui_intent_id": final.get("ui_intent_id"),
                     "text": text,
                     "language": language,
                     "asr_status": "ok",
-                    "absolute_start": start.isoformat(),
-                    "absolute_end": end.isoformat(),
-                    "duration_s": dur_s,
+                    "absolute_start": timestamp_start,
+                    "absolute_end": timestamp_end,
+                    "duration_s": duration_s,
+                    "timestamp_source": clock_source,
                     "sample_rate": 16000,
                 })
             except Exception:
@@ -446,22 +492,28 @@ class AudioRT:
         text: str | None = None,
         language: str | None = None,
         asr_status: str,
+        timestamp_start: str | None = None,
+        timestamp_end: str | None = None,
+        duration_s: float | None = None,
+        clock_source: str | None = None,
     ) -> None:
         """Archive one VAD-final segment even when ASR cannot produce text."""
         if self.on_segment is None:
             return
         try:
-            dur_s = float(len(seg)) / 16000.0
-            end = datetime.now(timezone.utc)
-            start = end - timedelta(seconds=dur_s)
+            if not timestamp_start or not timestamp_end or duration_s is None:
+                timestamp_start, timestamp_end, duration_s, clock_source = self._segment_window(
+                    seg, self._latest_source_timing
+                )
             self.on_segment(seg, {
                 "ui_intent_id": ui_intent_id or f"audiort-segment-{self.session_id}-{self.metrics.segments}",
                 "text": text,
                 "language": language,
                 "asr_status": asr_status,
-                "absolute_start": start.isoformat(),
-                "absolute_end": end.isoformat(),
-                "duration_s": dur_s,
+                "absolute_start": timestamp_start,
+                "absolute_end": timestamp_end,
+                "duration_s": duration_s,
+                "timestamp_source": clock_source or "processing_clock",
                 "sample_rate": 16000,
             })
         except Exception:

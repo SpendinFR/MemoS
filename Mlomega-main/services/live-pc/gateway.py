@@ -30,10 +30,12 @@ below only depends on the ``VideoIngress`` protocol.
 """
 
 import asyncio
+import inspect
 import json
 import statistics
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
 
 import sys
@@ -273,6 +275,7 @@ class AiortcIngress:
         max_frames: int | None = None,
         standalone_signaling: bool = True,
         clip_recorder: Any | None = None,
+        audio_queue_max_chunks: int = 3000,
     ) -> None:
         if not AIORTC_AVAILABLE:
             raise RuntimeError("aiortc is not installed; AiortcIngress is unavailable")
@@ -293,7 +296,12 @@ class AiortcIngress:
         # building latency.  Audio has a small bounded queue and is drained by a
         # dedicated worker so ASR never blocks aiortc's receive loop.
         self._frames: asyncio.Queue[FramePacket | None] = asyncio.Queue(maxsize=1)
-        self._audio: asyncio.Queue[tuple[Any, int] | None] = asyncio.Queue(maxsize=32)
+        # Keep capture independent from ASR/LLM stalls. At the usual 20 ms Opus
+        # cadence 3000 chunks retain roughly one minute while using only a few MB.
+        # The queue stays bounded; an extreme overrun is explicit in metrics.
+        self._audio: asyncio.Queue[tuple[Any, int, dict[str, Any] | None] | None] = asyncio.Queue(
+            maxsize=max(32, int(audio_queue_max_chunks))
+        )
         self._pcs: set[Any] = set()
         self._runner: Any | None = None
         self._site: Any | None = None
@@ -311,6 +319,7 @@ class AiortcIngress:
         self.audio_chunks_received = 0
         self.audio_chunks_dropped = 0
         self.audio_errors = 0
+        self.audio_queue_peak = 0
         self.video_frames_dropped = 0
         self.peer_state = "new"
         self._audio_worker: asyncio.Task[Any] | None = None
@@ -320,6 +329,9 @@ class AiortcIngress:
         self._audio_idle = asyncio.Event()
         self._audio_idle.set()
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._audio_pts_origin_s: float | None = None
+        self._audio_wall_origin_s: float | None = None
+        self._audio_last_pts_s: float | None = None
 
     def send_ui_intent(self, intent_json: str) -> int:
         """Send a UIIntent (JSON string) to every open downlink DataChannel.
@@ -540,6 +552,11 @@ class AiortcIngress:
         """Convert aiortc/PyAV AudioFrame to interleaved mono PCM + source rate."""
         import numpy as np
 
+        # A reconnect starts a new RTP timeline. Anchor it independently to wall
+        # clock so durable BrainLive timestamps never reuse the previous peer PTS.
+        self._audio_pts_origin_s = None
+        self._audio_wall_origin_s = None
+        self._audio_last_pts_s = None
         while not self._closed:
             if not self._accepting_media:
                 break
@@ -549,9 +566,11 @@ class AiortcIngress:
                 break
             try:
                 pcm, rate = _audio_frame_to_mono(frame)
+                timing = self._audio_source_timing(frame, pcm, rate)
                 self.audio_chunks_received += 1
                 try:
-                    self._audio.put_nowait((pcm, rate))
+                    self._audio.put_nowait((pcm, rate, timing))
+                    self.audio_queue_peak = max(self.audio_queue_peak, self._audio.qsize())
                 except asyncio.QueueFull:
                     self.audio_chunks_dropped += 1
                     try:
@@ -559,9 +578,52 @@ class AiortcIngress:
                         self._audio.task_done()
                     except asyncio.QueueEmpty:
                         pass
-                    self._audio.put_nowait((pcm, rate))
+                    self._audio.put_nowait((pcm, rate, timing))
             except Exception:
                 self.audio_errors += 1
+
+    def _audio_source_timing(self, frame: Any, pcm: Any, rate: int) -> dict[str, Any]:
+        """Map the RTP/PyAV media clock to a stable UTC capture window.
+
+        ``pts`` is relative to the peer, not wall-clock. The first frame of each
+        audio track anchors that media clock to its receive time minus the frame
+        duration; subsequent frames retain their real PTS spacing. Missing or
+        discontinuous PTS falls back honestly to the receive clock.
+        """
+        duration_s = float(len(pcm)) / float(max(1, rate))
+        received_end_s = time.time()
+        pts_s: float | None = None
+        if getattr(frame, "pts", None) is not None and getattr(frame, "time_base", None) is not None:
+            try:
+                pts_s = float(frame.pts * frame.time_base)
+            except (TypeError, ValueError, OverflowError):
+                pts_s = None
+
+        discontinuity = (
+            pts_s is not None
+            and self._audio_last_pts_s is not None
+            and (pts_s < self._audio_last_pts_s or (pts_s - self._audio_last_pts_s) > 5.0)
+        )
+        if pts_s is not None and (
+            self._audio_pts_origin_s is None or self._audio_wall_origin_s is None or discontinuity
+        ):
+            self._audio_pts_origin_s = pts_s
+            self._audio_wall_origin_s = received_end_s - duration_s
+
+        if pts_s is not None and self._audio_pts_origin_s is not None and self._audio_wall_origin_s is not None:
+            start_s = self._audio_wall_origin_s + (pts_s - self._audio_pts_origin_s)
+            self._audio_last_pts_s = pts_s
+            source = "webrtc_pts"
+        else:
+            start_s = received_end_s - duration_s
+            source = "receive_clock"
+        end_s = start_s + duration_s
+        return {
+            "absolute_start": datetime.fromtimestamp(start_s, timezone.utc).isoformat(),
+            "absolute_end": datetime.fromtimestamp(end_s, timezone.utc).isoformat(),
+            "duration_s": duration_s,
+            "clock_source": source,
+        }
 
     async def _drain_audio(self) -> None:
         while True:
@@ -570,11 +632,20 @@ class AiortcIngress:
                 self._audio.task_done()
                 return
             callback = self.on_audio_chunk
+            pcm, rate = item[0], item[1]
+            timing = item[2] if len(item) >= 3 else None
             self._audio_inflight += 1
             self._audio_idle.clear()
             try:
                 if callback is not None:
-                    result = await asyncio.to_thread(callback, item[0], item[1])
+                    args: tuple[Any, ...] = (pcm, rate, timing)
+                    try:
+                        inspect.signature(callback).bind(*args)
+                    except (TypeError, ValueError):
+                        # Compatibility for injected/test callbacks written before
+                        # source timing became additive to the product contract.
+                        args = (pcm, rate)
+                    result = await asyncio.to_thread(callback, *args)
                     if asyncio.iscoroutine(result):
                         await result
             except Exception:
@@ -618,6 +689,8 @@ class AiortcIngress:
             "audio_chunks_received": self.audio_chunks_received,
             "audio_chunks_dropped": self.audio_chunks_dropped,
             "audio_errors": self.audio_errors,
+            "audio_queue_depth": self._audio.qsize(),
+            "audio_queue_peak": self.audio_queue_peak,
             "audio_inflight": self._audio_inflight,
             "accepting_media": self._accepting_media,
         }

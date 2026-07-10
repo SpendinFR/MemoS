@@ -24,6 +24,14 @@ Validation : compilation Roslyn directe des `.rsp` Unity dans l'ordre Transport 
 
 Preuves : `test_wake_word_gating.py` + `test_e35_outputs.py` = **26 passed** ; build Gradle complet réussi et `mlomega-reflexvision.aar` reconstruit ; compilation Roslyn des assemblies Editor et Android réussie ; suite Unity globale **80/80 EditMode**. L'AAR ONNX retouché mécaniquement par le build a été restauré et n'entre pas dans le commit. Lecture audio, switch micro et reconnexion/ack restent à valider sur S25.
 
+### E60 — Lot PC live C (raccords critiques branchés, charge/GPU partiels)
+
+`PhoneOnlyRuntime` ouvre d'abord la session BrainLive, construit `ClipRecorder` avec cet ID durable, le passe au vrai `AiortcIngress` et le stoppe avant toute lecture CloseDay. Le RTP audio conserve désormais une fenêtre UTC issue de PTS/time_base (ré-ancrage à chaque track/reconnexion), avec fallback horloge explicitement marqué ; AudioRT la propage aux archives et aux tours BrainLive. La file PCM passe de 32 chunks (~0,6 s) à 3000 (~60 s, profondeur/pic/drops métrés) et les traitements IntentRouter/identité/BrainLive/LLM sont déportés dans un worker sémantique ordonné et borné. Les échecs BrainLive sont retentés trois fois puis visibles dans `pipeline_recent_errors`/statut runtime ; WorldBrain et AudioArchive remontent aussi leurs erreurs. Les `seg_*.wav` ne sont plus créés pour l'archive seule et les temporaires identité/setup sont supprimés après usage.
+
+La vision synchrone (détecteur, tracker, WorldBrain, keyframes) est attendue via `asyncio.to_thread` derrière la file latest=1, donc signaling/FastAPI restent sur l'event loop. `LiveDiscourse.close()` ne retourne plus avant drain + barrière + `join` ; un timeout échoue la fin de session et bloque CloseDay. `GpuArbiter` est maintenant construit en produit, protège tracker/détecteur/ASR même sans NVML, et alimente périodiquement `update_degraded` avec les drops de la fenêtre courante. Point non clos : le Python réellement lancé expose encore ONNX Runtime `1.27.0` avec seulement Azure/CPU, pas CUDA.
+
+Preuves : suites ciblées distinctes **50 passed**, puis SessionHub/WebRTC/E27/E31/multi-session **24 passed, 1 skipped** (Ollama réel opt-in). Nouveaux tests : recorder injecté dans l'ingress puis fermé, PTS espacé conservé et callback timing, timestamp AudioRT→BrainLive, worker sémantique non bloquant, retry/erreur observable, WAV temporaire supprimé, vision hors thread asyncio et LiveDiscourse joint. Les cases 16 (mesure longue drops S25), 19 (provider CUDA réel) et 20 (reste des écritures best-effort) demeurent ouvertes.
+
 ---
 
 ## E39 - Invariant temporel V18 `turns` restaure (2026-07-06)

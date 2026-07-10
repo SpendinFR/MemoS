@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import threading
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -120,6 +122,74 @@ def test_current_phone_gate_makes_untagged_pc_asr_memory_only():
     pipe._handle_audio_intents([_final_intent("conversation ambiante")])
     assert pipe.intents.routed == []
     assert pipe.conversation.ingested == ["conversation ambiante"]
+
+
+def test_brainlive_receives_capture_timestamps_and_temp_wav_is_removed(tmp_path):
+    pipe = _pipeline("open")
+    calls = []
+
+    class _Conversation(SpyConversation):
+        def ingest_segment(self, text, **kwargs):
+            calls.append((text, kwargs))
+            return {"live_turn_id": "turn-1"}
+
+    pipe.conversation = _Conversation()
+    wav = tmp_path / "seg_test.wav"
+    wav.write_bytes(b"RIFF")
+    intent = _final_intent("bonjour")
+    intent["content"].update({
+        "timestamp_start": "2026-07-10T10:00:04+00:00",
+        "timestamp_end": "2026-07-10T10:00:05+00:00",
+        "duration_s": 1.0,
+    })
+    pipe._segment_clips[intent["ui_intent_id"]] = str(wav)
+    pipe._handle_audio_intents([intent])
+    assert calls[0][1]["timestamp_start"] == "2026-07-10T10:00:04+00:00"
+    assert calls[0][1]["timestamp_end"] == "2026-07-10T10:00:05+00:00"
+    assert not wav.exists()
+
+
+def test_brainlive_failure_is_retried_then_visible_in_metrics():
+    pipe = _pipeline("open")
+
+    class _BrokenConversation(SpyConversation):
+        def __init__(self):
+            self.calls = 0
+
+        def ingest_segment(self, *_args, **_kwargs):
+            self.calls += 1
+            raise RuntimeError("db unavailable")
+
+    broken = _BrokenConversation()
+    pipe.conversation = broken
+    pipe._handle_audio_intents([_final_intent("garde ceci")])
+    assert broken.calls == 3
+    metrics = pipe.metrics()
+    assert metrics["pipeline_errors"] == 1
+    assert "conversation.ingest_segment" in metrics["pipeline_recent_errors"][0]
+
+
+def test_semantic_processing_worker_does_not_block_audio_producer():
+    pipe = _pipeline("open")
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _SlowConversation(SpyConversation):
+        def ingest_segment(self, text, **kwargs):
+            entered.set()
+            assert release.wait(2.0)
+            return super().ingest_segment(text, **kwargs)
+
+    pipe.conversation = _SlowConversation()
+    pipe.defer_final_processing = True
+    start = time.perf_counter()
+    pipe._enqueue_final_processing([_final_intent("tour lent")])
+    assert (time.perf_counter() - start) < 0.1
+    assert entered.wait(1.0)
+    release.set()
+    pipe.drain_final_processing(timeout_s=2.0)
+    pipe._stop_final_worker(timeout_s=2.0)
+    assert pipe.conversation.ingested == ["tour lent"]
 
 
 def test_device_transcript_routes_exact_command_once_not_next_pc_turn():

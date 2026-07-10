@@ -37,6 +37,8 @@ def test_request_grants_tracker_even_without_gpu():
     arb = _arbiter_with_snapshot(0, 0, available=False)
     res = arb.request("tracker")
     assert res["grant"] is True
+    assert arb.request("detector")["grant"] is True
+    assert arb.request("asr")["grant"] is True
     res_vlm = arb.request("vlm")
     assert res_vlm["grant"] is False
 

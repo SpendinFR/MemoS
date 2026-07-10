@@ -5,6 +5,8 @@ import importlib.util
 import sys
 import time
 import threading
+from datetime import datetime
+from fractions import Fraction
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -345,6 +347,109 @@ def test_explicit_end_waits_inflight_audio_before_flush_and_pipeline_end(monkeyp
         assert order == ["audio_done", "flush", "pipeline_end"]
 
     asyncio.run(scenario())
+
+
+def test_product_clip_recorder_is_passed_to_ingress_and_stopped():
+    recorders = []
+
+    class _Recorder:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.started = False
+            self.stopped = False
+            self.metrics = SimpleNamespace(to_dict=lambda: {"frames_offered": 0})
+            recorders.append(self)
+
+        def start(self):
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+            return {"segments_written": 1}
+
+    class _Ingress(FakeIngress):
+        received_recorder = None
+
+        def __init__(self, **kwargs):
+            type(self).received_recorder = kwargs.get("clip_recorder")
+            super().__init__(**kwargs)
+
+    async def scenario():
+        rt = runtime_mod.PhoneOnlyRuntime(
+            "transport-clips",
+            ingress_factory=_Ingress,
+            pipeline_factory=FakePipeline,
+            clip_recorder_factory=_Recorder,
+        )
+        assert recorders[0].started is True
+        assert _Ingress.received_recorder is recorders[0]
+        await rt.end_session_only()
+        assert recorders[0].stopped is True
+        assert rt.status()["clip_recording"]["segments_written"] == 1
+
+    asyncio.run(scenario())
+
+
+def test_audio_pts_is_anchored_and_forwarded_to_three_arg_callback():
+    async def scenario():
+        ingress = gateway.AiortcIngress(
+            session_id="pts-test", standalone_signaling=False, audio_queue_max_chunks=64
+        )
+        pcm = np.zeros(960, dtype=np.int16)
+        first = SimpleNamespace(pts=48000, time_base=Fraction(1, 48000))
+        second = SimpleNamespace(pts=48960, time_base=Fraction(1, 48000))
+        t1 = ingress._audio_source_timing(first, pcm, 48000)
+        t2 = ingress._audio_source_timing(second, pcm, 48000)
+        start1 = datetime.fromisoformat(t1["absolute_start"])
+        start2 = datetime.fromisoformat(t2["absolute_start"])
+        assert abs((start2 - start1).total_seconds() - 0.02) < 0.001
+        assert t2["clock_source"] == "webrtc_pts"
+
+        received = []
+        ingress.on_audio_chunk = lambda samples, rate, timing: received.append(timing)
+        ingress._audio_worker = asyncio.create_task(ingress._drain_audio())
+        ingress._audio.put_nowait((pcm, 48000, t2))
+        await ingress.close()
+        assert received == [t2]
+
+    asyncio.run(scenario())
+
+
+def test_run_video_executes_sync_pipeline_off_event_loop_thread():
+    async def frames():
+        yield np.zeros((2, 2, 3), dtype=np.uint8), SimpleNamespace(frame_id="f1")
+
+    class _Ingress:
+        def __aiter__(self):
+            return frames()
+
+    async def scenario():
+        event_thread = threading.get_ident()
+        processed_threads = []
+        pipe = runtime_mod.live_pipeline.LivePipeline.__new__(runtime_mod.live_pipeline.LivePipeline)
+        pipe.ingress = _Ingress()
+        pipe.on_video_frame = lambda *_args, **_kwargs: processed_threads.append(threading.get_ident())
+        pipe.metrics = lambda: {"ok": True}
+        assert await runtime_mod.live_pipeline.LivePipeline.run_video(pipe) == {"ok": True}
+        assert processed_threads and processed_threads[0] != event_thread
+
+    asyncio.run(scenario())
+
+
+def test_live_discourse_close_joins_and_drains_every_batch():
+    ingested = []
+
+    discourse = runtime_mod.live_pipeline.live_discourse.LiveDiscourse(
+        min_turns=1,
+        min_interval_s=0,
+        ingest_fn=lambda data: (time.sleep(0.03), ingested.append(data)),
+    )
+    discourse.note_turn("premier")
+    discourse.note_turn("deuxieme")
+    discourse.close(timeout=2.0)
+    turns = [turn["text"] for batch in ingested for turn in batch["turns"]]
+    assert turns == ["premier", "deuxieme"]
+    assert discourse._worker is None
 
 
 def test_vad_segment_is_archived_when_asr_unavailable():

@@ -135,3 +135,26 @@ def test_degraded_asr_refused_by_arbiter():
     seg = np.random.default_rng(0).uniform(-0.3, 0.3, 8000).astype(np.float32)
     out = rt._handle_segment(seg)
     assert out and out[0]["content"]["status"] == "asr_refused"
+
+
+def test_final_segment_keeps_capture_clock_instead_of_asr_finish_time():
+    class _Transcriber:
+        last_infer_ms = 2500.0
+
+        def transcribe(self, _segment):
+            return {"status": "ok", "text": "bonjour", "language": "fr"}
+
+    seen = []
+    rt = audiort.AudioRT(transcriber=_Transcriber(), on_segment=lambda _seg, meta: seen.append(meta))
+    out = rt._handle_segment(
+        np.zeros(16000, dtype=np.float32),
+        source_timing={
+            "absolute_end": "2026-07-10T10:00:05+00:00",
+            "clock_source": "webrtc_pts",
+        },
+    )
+    final = [item for item in out if item["content"]["final"]][0]
+    assert final["content"]["timestamp_start"] == "2026-07-10T10:00:04+00:00"
+    assert final["content"]["timestamp_end"] == "2026-07-10T10:00:05+00:00"
+    assert final["content"]["timestamp_source"] == "webrtc_pts"
+    assert seen[0]["absolute_start"] == final["content"]["timestamp_start"]

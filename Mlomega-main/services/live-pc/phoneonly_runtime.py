@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
+import time
 from collections import deque
 from pathlib import Path
 from typing import Any, Callable
@@ -27,6 +28,8 @@ def _load(name: str, filename: str) -> Any:
 gateway = _load("gateway", "gateway.py")
 live_pipeline = _load("v19_live_pipeline", "live_pipeline.py")
 delivery_adapter = _load("v19_delivery_adapter", "delivery_adapter.py")
+clip_recorder_mod = _load("v19_clip_recorder_runtime", "clip_recorder.py")
+gpu_arbiter_mod = _load("v19_gpu_arbiter_runtime", "gpu_arbiter.py")
 
 
 class DataChannelRenderer(delivery_adapter.RendererHub):
@@ -53,49 +56,107 @@ class PhoneOnlyRuntime:
         db_path: Any = None,
         ingress_factory: Callable[..., Any] | None = None,
         pipeline_factory: Callable[..., Any] | None = None,
+        clip_recorder_factory: Callable[..., Any] | None = None,
+        arbiter_factory: Callable[..., Any] | None = None,
         close_day: Callable[..., Any] | None = None,
         allow_rerun: bool = False,
     ) -> None:
         self.session_id = session_id
         self.person_id = person_id
+        self.recent_errors: deque[str] = deque(maxlen=20)
         # E47-C livrable 6: when this is a SECOND (or later) live session on the
         # same day, its close-day must REOPEN the day's already-completed close-day
         # run so this session's data is consolidated too (multi-session/day). The
         # manager sets this on any session created after a same-day close-day
         # already completed.
         self.allow_rerun = bool(allow_rerun)
-        ingress_ctor = ingress_factory or gateway.AiortcIngress
-        try:
-            self.ingress = ingress_ctor(session_id=session_id, standalone_signaling=False)
-        except TypeError:  # simple injected test doubles
-            self.ingress = ingress_ctor(session_id=session_id)
+        product_pipeline = pipeline_factory is None
         conversation = None
         keyframe_sink = None
-        if pipeline_factory is None:
+        live_session_id: str | None = None
+        if product_pipeline:
             conversation = live_pipeline.conversation_bridge.ConversationBridge(person_id=person_id)
             live_session_id = conversation.ensure_session()
             keyframe_sink = live_pipeline.visionrt.default_keyframe_sink(
                 person_id=person_id, live_session_id=live_session_id, db_path=db_path
             )
-        self.pipeline = (pipeline_factory or live_pipeline.LivePipeline)(
-            session_id=session_id,
-            live_session_id=live_session_id if pipeline_factory is None else None,
-            ingress=self.ingress,
-            person_id=person_id,
-            db_path=db_path,
-            conversation_bridge=conversation,
-            keyframe_sink=keyframe_sink,
-            enable_worldbrain=True,
-            enable_conversation=True,
-            enable_audio_archive=True,
-            enable_identity=True,
-            enable_intents=True,
-            enable_proactivity=True,
-            enable_replay=True,
-            enable_tts=True,
-            enable_stranger_profiles=True,
-            enable_fine_intel=True,
-        )
+
+        self.arbiter: Any = None
+        if product_pipeline or arbiter_factory is not None:
+            try:
+                self.arbiter = (arbiter_factory or gpu_arbiter_mod.GpuArbiter)()
+            except Exception as exc:
+                self._record_pipeline_error(f"gpu_arbiter.init: {exc}")
+
+        self.clip_recorder: Any = None
+        self.clip_metrics: dict[str, Any] = {}
+        recorder_factory = clip_recorder_factory
+        if product_pipeline and recorder_factory is None:
+            recorder_factory = clip_recorder_mod.ClipRecorder
+        if recorder_factory is not None:
+            try:
+                config = clip_recorder_mod.load_recorder_config()
+                self.clip_recorder = recorder_factory(
+                    person_id=person_id,
+                    session_id=live_session_id or session_id,
+                    config=config,
+                    db_path=db_path,
+                )
+                self.clip_recorder.start()
+            except Exception as exc:
+                self.clip_recorder = None
+                self._record_pipeline_error(f"clip_recorder.init: {exc}")
+
+        ingress_ctor = ingress_factory or gateway.AiortcIngress
+        ingress_kwargs: dict[str, Any] = {
+            "session_id": session_id,
+            "standalone_signaling": False,
+        }
+        if self.clip_recorder is not None:
+            ingress_kwargs["clip_recorder"] = self.clip_recorder
+        try:
+            self.ingress = ingress_ctor(**ingress_kwargs)
+        except TypeError:  # simple injected test doubles / legacy constructors
+            try:
+                self.ingress = ingress_ctor(session_id=session_id)
+            except Exception:
+                self._stop_clip_recorder()
+                raise
+        except Exception:
+            self._stop_clip_recorder()
+            raise
+
+        pipeline_ctor = pipeline_factory or live_pipeline.LivePipeline
+        pipeline_kwargs: dict[str, Any] = {
+            "session_id": session_id,
+            "live_session_id": live_session_id,
+            "ingress": self.ingress,
+            "person_id": person_id,
+            "db_path": db_path,
+            "conversation_bridge": conversation,
+            "keyframe_sink": keyframe_sink,
+            "enable_worldbrain": True,
+            "enable_conversation": True,
+            "enable_audio_archive": True,
+            "enable_identity": True,
+            "enable_intents": True,
+            "enable_proactivity": True,
+            "enable_replay": True,
+            "enable_tts": True,
+            "enable_stranger_profiles": True,
+            "enable_fine_intel": True,
+        }
+        if product_pipeline:
+            pipeline_kwargs.update({
+                "arbiter": self.arbiter,
+                "defer_final_processing": True,
+                "on_error": self._record_pipeline_error,
+            })
+        try:
+            self.pipeline = pipeline_ctor(**pipeline_kwargs)
+        except Exception:
+            self._stop_clip_recorder()
+            raise
         self.ingress.on_audio_chunk = self._on_audio_chunk
         self.delivery_adapter = delivery_adapter.DeliveryAdapter(
             renderer=DataChannelRenderer(self.ingress)
@@ -109,13 +170,16 @@ class PhoneOnlyRuntime:
         self.close_day_started = False
         self.close_day_status = "not_started"
         self.end_status = "active"
-        self.recent_errors: deque[str] = deque(maxlen=20)
         self._end_lock = asyncio.Lock()
         self._delivery_lock = asyncio.Lock()
         self._close_day = close_day
         self.audio_chunks = 0
         self.final_segments = 0
-        self.live_session_id: str | None = None
+        self.live_session_id: str | None = live_session_id
+        self._last_frame_drops = 0
+
+    def _record_pipeline_error(self, message: str) -> None:
+        self.recent_errors.append(str(message)[:500])
 
     async def start(self) -> None:
         if self.video_task is None:
@@ -128,6 +192,7 @@ class PhoneOnlyRuntime:
     async def _delivery_loop(self) -> None:
         while not self.ended:
             try:
+                self._update_degraded_health()
                 await self._dispatch_deliveries()
             except ConnectionError:
                 pass
@@ -136,6 +201,36 @@ class PhoneOnlyRuntime:
             except Exception as exc:
                 self.recent_errors.append(str(exc)[:500])
             await asyncio.sleep(0.5)
+
+    def _update_degraded_health(self) -> None:
+        if not hasattr(self.pipeline, "update_degraded"):
+            return
+        now = time.monotonic()
+        free_vram: int | None = None
+        if self.arbiter is not None:
+            try:
+                snapshot = self.arbiter.snapshot()
+                if getattr(snapshot, "available", False):
+                    free_vram = int(snapshot.free_mb)
+            except Exception as exc:
+                self._record_pipeline_error(f"gpu_arbiter.snapshot: {exc}")
+        frame_drops = 0
+        if hasattr(self.ingress, "stats"):
+            try:
+                total_drops = int((self.ingress.stats() or {}).get("frames_dropped", 0))
+                frame_drops = max(0, total_drops - self._last_frame_drops)
+                self._last_frame_drops = total_drops
+            except Exception as exc:
+                self._record_pipeline_error(f"ingress.stats: {exc}")
+        try:
+            self.pipeline.update_degraded(live_pipeline.degraded.DegradedSignals(
+                now_ts=now,
+                heartbeat_ts=now,
+                free_vram_mb=free_vram,
+                frame_drops=frame_drops,
+            ))
+        except Exception as exc:
+            self._record_pipeline_error(f"degraded.update: {exc}")
 
     async def _on_datachannel_open(self) -> None:
         try:
@@ -194,10 +289,20 @@ class PhoneOnlyRuntime:
         except Exception as exc:
             self.recent_errors.append(("receipt: " + str(exc))[:500])
 
-    def _on_audio_chunk(self, samples: Any, src_rate: int) -> Any:
+    def _on_audio_chunk(
+        self, samples: Any, src_rate: int, source_timing: dict[str, Any] | None = None
+    ) -> Any:
         self.audio_chunks += 1
         before = int(self.pipeline.metrics().get("conversation_turns", 0))
-        out = self.pipeline.on_audio_chunk(samples, src_rate)
+        if source_timing is None:
+            out = self.pipeline.on_audio_chunk(samples, src_rate)
+        else:
+            try:
+                out = self.pipeline.on_audio_chunk(samples, src_rate, source_timing)
+            except TypeError:
+                # Compatibility for an injected pre-E60 pipeline; the product
+                # LivePipeline accepts and persists source timing.
+                out = self.pipeline.on_audio_chunk(samples, src_rate)
         after_metrics = self.pipeline.metrics()
         after = int(after_metrics.get("conversation_turns", 0))
         if "audio_finals_emitted" in after_metrics:
@@ -240,6 +345,7 @@ class PhoneOnlyRuntime:
             except Exception as exc:
                 self.recent_errors.append(str(exc)[:500])
                 self.end_status = "error"
+                await asyncio.to_thread(self._stop_clip_recorder)
             return self.status()
 
     async def run_close_day(self) -> dict[str, Any]:
@@ -301,6 +407,18 @@ class PhoneOnlyRuntime:
             # ASGI test transports and server shutdown may already have cancelled
             # the consumer task; transport closure remains idempotent.
             await asyncio.gather(self.video_task, return_exceptions=True)
+        await asyncio.to_thread(self._stop_clip_recorder)
+
+    def _stop_clip_recorder(self) -> None:
+        recorder = self.clip_recorder
+        if recorder is None:
+            return
+        try:
+            self.clip_metrics = dict(recorder.stop() or {})
+        except Exception as exc:
+            self._record_pipeline_error(f"clip_recorder.stop: {exc}")
+        finally:
+            self.clip_recorder = None
 
     def status(self) -> dict[str, Any]:
         metrics = dict(self.pipeline.metrics())
@@ -323,6 +441,11 @@ class PhoneOnlyRuntime:
                 "close_day": self.close_day_status,
                 "recent_errors": list(self.recent_errors),
                 "ui_intents_delivered": len(self.delivery_adapter.renderer.sent),
+                "clip_recording": dict(self.clip_metrics) if self.clip_metrics else (
+                    dict(getattr(self.clip_recorder, "metrics", {}).to_dict())
+                    if self.clip_recorder is not None and hasattr(getattr(self.clip_recorder, "metrics", None), "to_dict")
+                    else {}
+                ),
             }
         )
         return metrics

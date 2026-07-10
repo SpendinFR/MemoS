@@ -65,6 +65,8 @@ class LiveDiscourse:
         self._last_flush = 0.0
         self._q: "queue.Queue[dict[str, Any] | None]" = queue.Queue(maxsize=max_pending_flushes)
         self._worker: threading.Thread | None = None
+        self._closed = False
+        self._closing = False
         self._started_at = _now_iso()
         self.metrics = {"turns_seen": 0, "flushes": 0, "flush_errors": 0, "dropped": 0}
         if start_worker:
@@ -73,6 +75,8 @@ class LiveDiscourse:
     # ------------------------------------------------------------ public
     def note_turn(self, text: str, *, speaker_label: str | None = None, topic: str | None = None) -> None:
         """Append one FINAL turn. O(1), non-blocking; may trigger a background flush."""
+        if self._closed or self._closing:
+            raise RuntimeError("LiveDiscourse is closed")
         text = (text or "").strip()
         if not text:
             return
@@ -93,14 +97,39 @@ class LiveDiscourse:
         self._do_flush(batch)
         return True
 
-    def close(self) -> None:
-        """Flush remaining turns and stop the worker."""
-        self.flush()
-        if self._worker is not None:
-            try:
-                self._q.put_nowait(None)
-            except queue.Full:
-                pass
+    def close(self, timeout: float = 30.0) -> None:
+        """Drain every queued/current batch, stop and join the worker.
+
+        Returning is the ordering barrier used before CloseDay. A worker that
+        cannot drain raises instead of allowing a premature nightly read.
+        """
+        if self._closed:
+            return
+        self._closing = True
+        try:
+            batch = self._take_batch()
+            worker = self._worker
+            if worker is None or not worker.is_alive():
+                self._worker = None
+                if batch:
+                    self._do_flush(batch)
+                self._closed = True
+                return
+            deadline = max(0.1, float(timeout))
+            if batch:
+                self._q.put(
+                    {"turns": batch, "topic": getattr(self, "_topic", None)}, timeout=deadline
+                )
+            self._q.put(None, timeout=deadline)
+            worker.join(timeout=deadline)
+            if worker.is_alive():
+                raise TimeoutError("LiveDiscourse worker did not drain before CloseDay")
+            self._worker = None
+            self._closed = True
+        except queue.Full as exc:
+            raise TimeoutError("LiveDiscourse queue did not accept the close barrier") from exc
+        finally:
+            self._closing = False
 
     # ------------------------------------------------------------ internals
     def _flush_due_locked(self) -> bool:
@@ -131,9 +160,11 @@ class LiveDiscourse:
         try:
             self._q.put_nowait({"turns": batch, "topic": getattr(self, "_topic", None)})
         except queue.Full:
-            # Worker is behind — drop this flush rather than block live ingestion.
-            self.metrics["dropped"] += 1
-            print("[live_discourse] worker backlog: dropped a discourse flush", file=sys.stderr)
+            # Keep ingestion non-blocking without losing the batch. The next
+            # cadence or close() will retry it in the original order.
+            with self._lock:
+                self._buffer = batch + self._buffer
+            print("[live_discourse] worker backlog: flush deferred", file=sys.stderr)
 
     def _ensure_worker(self) -> None:
         if self._worker is not None and self._worker.is_alive():
@@ -144,9 +175,12 @@ class LiveDiscourse:
     def _run(self) -> None:
         while True:
             job = self._q.get()
-            if job is None:
-                return
-            self._do_flush(job.get("turns") or [], topic=job.get("topic"))
+            try:
+                if job is None:
+                    return
+                self._do_flush(job.get("turns") or [], topic=job.get("topic"))
+            finally:
+                self._q.task_done()
 
     def _do_flush(self, turns: list[dict[str, Any]], *, topic: str | None = None) -> None:
         if not turns:
