@@ -204,6 +204,9 @@ $llmModel = "qwen3.5:4b"
 $cloudPolicy = "local_only"
 $openaiKey = ""
 $geminiKey = ""
+Say  "Le cloud OPT-IN sert au mode payant ET au « mode aide » (Viki t'assiste pas a pas"
+Say  "sur une tache : plan gpt-5.4-mini + indices visuels — cout affiche en live)."
+Hint "Sans cle : le mode aide marche quand meme avec le LLM local (qualite moindre)."
 $wantCloud = AskYesNo "Veux-tu activer un LLM cloud en OPT-IN (OpenAI/Gemini) en plus du local ?" "non"
 if ($wantCloud -eq "oui") {
   $provider = Ask "Quel fournisseur cloud ?" "openai" @("openai", "gemini")

@@ -9,6 +9,7 @@
 using System.Collections.Generic;
 using System.Text;
 using MLOmega.XR.UI.Components;
+using MLOmega.XR.UI.Components.TaskAtoms; // E53: task_panel / task_anchor renderers
 
 namespace MLOmega.XR.UI
 {
@@ -28,6 +29,9 @@ namespace MLOmega.XR.UI
                 { "virtualscreen", typeof(VirtualScreen) },
                 { "correctionchip", typeof(CorrectionChip) },
                 { "menupanel", typeof(MenuPanel) },
+                // E53 — Viki mode aide: the task overlay pair (plan + object anchor).
+                { "taskpanel", typeof(TaskPanelComponent) },
+                { "taskanchor", typeof(TaskAnchorComponent) },
             };
 
         // A few common aliases -> canonical key (translation is a subtitle surface).
@@ -44,6 +48,10 @@ namespace MLOmega.XR.UI
                 { "screen", "virtualscreen" },
                 { "correction", "correctionchip" },
                 { "menu", "menupanel" },
+                // E53 aliases.
+                { "taskplan", "taskpanel" },
+                { "anchor", "taskanchor" },
+                { "objectanchor", "taskanchor" },
             };
 
         /// <summary>Normalise a contract component string to a canonical key, or null if unknown.</summary>
