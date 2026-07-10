@@ -40,6 +40,14 @@ L'environnement GPU a été validé par création de session, pas par nom de pro
 
 Enfin, les frontières d'écriture live ne sont plus silencieuses : retry BrainLive, WorldBrain, spatial, keyframes, AudioArchive, attributs/hypothèses, change-attention/routines et callbacks visuels alimentent tous le compteur et `pipeline_recent_errors`; une erreur keyframe est testée explicitement. Validation : pytest ciblé **51 passed**, Unity batchmode **80/80 EditMode**, scripts PowerShell parsés, Doctor Vision **0 FAIL, 2 WARN** (Ollama/Qdrant non démarrés). Ces deux WARN alimentent le prochain lot readiness ; ils ne sont pas présentés comme un état production prêt.
 
+### E60 — Lot recovery/readiness E (fermeture de secours et faux-ready supprimés)
+
+`AiortcIngress` expose l'âge de la dernière frame audio/vidéo. Le manager ferme puis lance CloseDay après une inactivité média bornée (5 min par défaut) et le lifespan FastAPI effectue le même drain au shutdown normal. Pour le kill brutal, le démarrage inscrit chaque ancienne session `brainlive_sessions(active, live_xr)` dans la table de service `phoneonly_session_recovery_v19`, la marque ended, puis reprend CloseDay. L'état pending/error est durable : si le processus retombe entre end et nuit, le démarrage suivant reprend la même ligne ; si le manifeste CloseDay couvre déjà ce `live_session_id`, il ne relance pas. Une recovery running/error refuse la création du runtime WebRTC. Tests : échec nuit simulé → marker error/attempt=1 → nouveau processus → completed/attempt=2 ; watchdog inactif → end+CloseDay une seule fois.
+
+La santé a trois contrats distincts : `/live` prouve seulement le processus, `/health` retourne 200 lorsque le transport peut pairer et expose `pairing_ready`, `ai_ready`, recovery et chaque check, tandis que `/ready` exige toute la chaîne et retourne 503 sinon. Le probe profond s'exécute hors event loop après la recovery et vérifie DB, `.venv` nocturne, modèles device, ffmpeg, disque, vraie session YOLOX CUDA, chargement Whisper `small` sur CUDA, synthèse TTS, Ollama et Qdrant. `RUN_MLOMEGA_V19.ps1 -LivePhone` exécute le même gate avant de démarrer le serveur et donne les commandes correctives au lieu d'annoncer FirstTry prêt.
+
+Validation : suites ciblées **39 passed**, puis rerun lifespan/readiness **29 passed**. Preflight profond réel : DB, venv nuit, 12 modèles device, ffmpeg, disque, YOLOX CUDA, Whisper CUDA et TTS sherpa verts ; sortie non-zéro attendue pour `ollama,qdrant` actuellement arrêtés. Ce refus est le comportement correct. `FIRST_TRY_ANDROID.md` documente désormais `/health` vs `/ready` et le redémarrage des deux services.
+
 ---
 
 ## E39 - Invariant temporel V18 `turns` restaure (2026-07-06)

@@ -45,8 +45,12 @@ Port 8710 is the SessionHub HTTP port hard-wired in
 import sys
 import time
 import asyncio
+import json
+import shutil
+import urllib.request
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 # Resolve the monorepo root so ``packages`` / sibling live-pc modules import
 # whether launched as a script or loaded via importlib in tests.
@@ -180,6 +184,138 @@ def build_device_manifest_payload() -> dict[str, Any]:
     return {"models": models, "count": len(models)}
 
 
+def _url_ready(url: str, *, timeout: float = 0.5) -> tuple[bool, str]:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310 - localhost only
+            code = int(getattr(response, "status", 200))
+        return 200 <= code < 500, f"http_{code}"
+    except Exception as exc:
+        return False, type(exc).__name__
+
+
+def _ollama_models_ready(*, timeout: float = 0.8) -> tuple[bool, Any]:
+    required: list[str] = []
+    try:
+        import yaml
+
+        manifest = yaml.safe_load((_ROOT / "configs" / "MODEL_MANIFEST.yaml").read_text(encoding="utf-8")) or {}
+        for spec in (manifest.get("models") or {}).values():
+            if isinstance(spec, dict) and spec.get("provider") == "ollama" and spec.get("default"):
+                required.append(str(spec["default"]))
+    except Exception:
+        required = []
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=timeout) as response:  # noqa: S310
+            payload = json.loads(response.read().decode("utf-8"))
+        installed = {
+            str(item.get("name") or item.get("model"))
+            for item in (payload.get("models") or []) if isinstance(item, dict)
+        }
+        missing = [name for name in required if name not in installed]
+        return not missing, {"required": required, "installed": sorted(installed), "missing": missing}
+    except Exception as exc:
+        return False, {"required": required, "error": type(exc).__name__}
+
+
+def _probe_ai_chain(*, person_id: str = "me", deep: bool = False) -> dict[str, Any]:
+    """Bounded dependency snapshot for /health and strict /ready."""
+    checks: dict[str, dict[str, Any]] = {}
+
+    def record(name: str, ok: bool, detail: Any) -> None:
+        checks[name] = {"ok": bool(ok), "detail": detail}
+
+    try:
+        from mlomega_audio_elite.db import connect
+
+        with connect() as con:
+            con.execute("SELECT 1").fetchone()
+        record("db", True, "sqlite_readable")
+    except Exception as exc:
+        record("db", False, f"{type(exc).__name__}: {str(exc)[:160]}")
+
+    core_python = _ROOT / ".venv" / "Scripts" / "python.exe"
+    record("close_day_env", core_python.exists(), str(core_python))
+    detector = _ROOT / "models" / "yolox_nano.onnx"
+    record("detector_model", detector.exists(), str(detector))
+    record("ffmpeg", shutil.which("ffmpeg") is not None, shutil.which("ffmpeg"))
+
+    try:
+        import onnxruntime as ort
+
+        if hasattr(ort, "preload_dlls"):
+            ort.preload_dlls(directory="")
+        providers = list(ort.get_available_providers())
+        if deep and detector.exists():
+            session = ort.InferenceSession(
+                str(detector), providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+            )
+            providers = list(session.get_providers())
+        record("onnx_cuda", "CUDAExecutionProvider" in providers, providers)
+    except Exception as exc:
+        record("onnx_cuda", False, f"{type(exc).__name__}: {str(exc)[:160]}")
+
+    try:
+        import importlib.util as importlib_util
+
+        record("asr", importlib_util.find_spec("faster_whisper") is not None, "faster_whisper")
+    except Exception as exc:
+        record("asr", False, type(exc).__name__)
+
+    if deep and checks.get("asr", {}).get("ok"):
+        try:
+            audio_mod = _load_sibling("v19_readiness_audiort", "audiort.py")
+            transcriber = audio_mod.WhisperTranscriber(model_size="small")
+            model = transcriber._ensure()
+            record(
+                "asr",
+                model is not None and transcriber.available,
+                {"model": "small", "device": transcriber.device},
+            )
+            transcriber._model = None
+        except Exception as exc:
+            record("asr", False, f"{type(exc).__name__}: {str(exc)[:160]}")
+
+        try:
+            tts_mod = _load_sibling("v19_readiness_tts", "tts_local.py")
+            provider = tts_mod.build_tts_provider()
+            wav = provider.speak("Test audio", lang="fr")
+            record("tts", bool(wav and wav[:4] == b"RIFF"), getattr(provider, "name", type(provider).__name__))
+        except Exception as exc:
+            record("tts", False, f"{type(exc).__name__}: {str(exc)[:160]}")
+
+    ollama_ok, ollama_detail = _ollama_models_ready()
+    qdrant_ok, qdrant_detail = _url_ready("http://127.0.0.1:6333/collections")
+    record("ollama", ollama_ok, ollama_detail)
+    record("qdrant", qdrant_ok, qdrant_detail)
+
+    try:
+        free_gb = shutil.disk_usage(_ROOT).free / (1024 ** 3)
+        record("disk", free_gb >= 2.0, {"free_gb": round(free_gb, 2), "minimum_gb": 2.0})
+    except Exception as exc:
+        record("disk", False, type(exc).__name__)
+
+    try:
+        device_specs = load_device_manifest()
+        missing = [name for name, spec in device_specs.items() if _device_artifact_path(spec) is None]
+        record("device_models", not missing, {"count": len(device_specs), "missing": missing})
+    except Exception as exc:
+        record("device_models", False, f"{type(exc).__name__}: {str(exc)[:160]}")
+
+    required = (
+        "db", "close_day_env", "detector_model", "ffmpeg", "onnx_cuda",
+        "asr", "ollama", "qdrant", "disk", "device_models",
+    )
+    if deep:
+        required = (*required, "tts")
+    ready = all(checks.get(name, {}).get("ok") for name in required)
+    return {
+        "ready": ready,
+        "person_id": person_id,
+        "checks": checks,
+        "failed": [name for name in required if not checks.get(name, {}).get("ok")],
+    }
+
+
 def create_app(
     hub: "SessionHub | None" = None,
     ingress: Any | None = None,
@@ -187,6 +323,7 @@ def create_app(
     enable_signaling: bool = True,
     runtime_manager: Any | None = None,
     person_id: str = "me",
+    readiness_probe: Callable[[], dict[str, Any]] | None = None,
 ):
     """Build the FastAPI app fronting ``hub`` and (optionally) media signaling.
 
@@ -205,13 +342,48 @@ def create_app(
         raise RuntimeError("fastapi is required for sessionhub_http.create_app()")
 
     hub = hub or SessionHub()
-    app = FastAPI(title="MLOmega V19 SessionHub HTTP")
-    app.state.hub = hub
-    app.state.ingress = ingress
     if runtime_manager is None and ingress is None and enable_signaling and _gateway.AIORTC_AVAILABLE:
         runtime_mod = _load_sibling("phoneonly_runtime", "phoneonly_runtime.py")
         runtime_manager = runtime_mod.SinglePhoneRuntimeManager(person_id=person_id)
+
+    @asynccontextmanager
+    async def _lifespan(application: Any):
+        manager = application.state.runtime_manager
+        if manager is not None and hasattr(manager, "startup_recovery"):
+            application.state.recovery_task = asyncio.create_task(manager.startup_recovery())
+        if manager is not None and hasattr(manager, "start_watchdog"):
+            manager.start_watchdog()
+        if enable_signaling:
+            async def _readiness_after_recovery() -> dict[str, Any]:
+                if application.state.recovery_task is not None:
+                    await asyncio.gather(application.state.recovery_task, return_exceptions=True)
+                return await asyncio.to_thread(readiness_probe)
+
+            application.state.readiness_task = asyncio.create_task(_readiness_after_recovery())
+        try:
+            yield
+        finally:
+            recovery_task = application.state.recovery_task
+            if recovery_task is not None:
+                await asyncio.gather(recovery_task, return_exceptions=True)
+            readiness_task = application.state.readiness_task
+            if readiness_task is not None:
+                await asyncio.gather(readiness_task, return_exceptions=True)
+            manager = application.state.runtime_manager
+            if manager is not None and hasattr(manager, "shutdown"):
+                await manager.shutdown()
+            elif application.state.ingress is not None and hasattr(application.state.ingress, "close"):
+                await application.state.ingress.close()
+
+    app = FastAPI(title="MLOmega V19 SessionHub HTTP", lifespan=_lifespan)
+    app.state.hub = hub
+    app.state.ingress = ingress
     app.state.runtime_manager = runtime_manager
+    app.state.recovery_task = None
+    app.state.readiness_cache = None
+    app.state.readiness_cache_at = 0.0
+    app.state.readiness_task = None
+    readiness_probe = readiness_probe or (lambda: _probe_ai_chain(person_id=person_id, deep=True))
 
     def _authenticate(session_id: str, token: str) -> "Session":
         session = hub.authenticate(token)
@@ -227,18 +399,60 @@ def create_app(
     async def health():
         signaling = bool(enable_signaling) and _gateway.AIORTC_AVAILABLE
         runtime_ready = app.state.runtime_manager is not None or app.state.ingress is not None
-        ready = signaling and runtime_ready
+        manager = app.state.runtime_manager
+        recovery_state = getattr(manager, "recovery_state", "completed") if manager is not None else "completed"
+        now = time.monotonic()
+        readiness_task = app.state.readiness_task
+        if readiness_task is not None and readiness_task.done():
+            try:
+                app.state.readiness_cache = readiness_task.result()
+            except Exception as exc:
+                app.state.readiness_cache = {
+                    "ready": False,
+                    "checks": {},
+                    "failed": ["readiness_probe"],
+                    "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+                }
+            app.state.readiness_cache_at = now
+            app.state.readiness_task = None
+        if enable_signaling and app.state.readiness_task is None and (
+            app.state.readiness_cache is None or (now - app.state.readiness_cache_at) >= 300.0
+        ):
+            app.state.readiness_task = asyncio.create_task(asyncio.to_thread(readiness_probe))
+        chain = dict(app.state.readiness_cache or {
+            "ready": False,
+            "checks": {},
+            "failed": ["readiness_probe_running" if enable_signaling else "signaling_disabled"],
+        })
+        pairing_ready = bool(signaling and runtime_ready and recovery_state == "completed")
+        ai_ready = bool(pairing_ready and chain.get("ready"))
         payload = {
-            "status": "ready" if ready else "unavailable",
-            "ready": ready,
+            "status": "full_ready" if ai_ready else ("pairing_ready" if pairing_ready else "unavailable"),
+            # Backward-compatible field: ``ready`` means safe to pair/offer, not
+            # that every optional/AI dependency is healthy.
+            "ready": pairing_ready,
+            "pairing_ready": pairing_ready,
+            "ai_ready": ai_ready,
             "sessions": hub.session_count,
             "signaling": signaling,
             "runtime": runtime_ready,
+            "startup_recovery": recovery_state,
+            "chain": chain,
         }
-        if not ready:
+        if not pairing_ready:
             from fastapi.responses import JSONResponse
             return JSONResponse(status_code=503, content=payload)
         return payload
+
+    @app.get("/ready")
+    async def full_ready():
+        result = await health()
+        if hasattr(result, "body"):
+            return result
+        if not result.get("ai_ready"):
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=503, content=result)
+        return result
 
     @app.get("/metrics")
     async def metrics() -> dict[str, Any]:

@@ -57,6 +57,14 @@ if ($LivePhone) {
   if (-not $Python) { Write-Host "[FAIL] Aucun interpreteur Python." -ForegroundColor Red; exit 1 }
   & $Python -c "import aiortc, aiohttp, av, fastapi, uvicorn, numpy, python_multipart, dotenv, faster_whisper, webrtcvad, onnxruntime, rapidocr_onnxruntime"
   if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] Dependances live manquantes dans $Python" -ForegroundColor Red; exit 2 }
+  Write-Host "[..] Preflight strict PhoneOnly (DB, modeles, CUDA, ASR, TTS, Ollama, Qdrant, disque, CloseDay)..." -ForegroundColor Cyan
+  & $Python (Join-Path $ProjectRoot "scripts\check_phoneonly_readiness.py") --person-id $PersonId --deep
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "[FAIL] FirstTry refuse de demarrer avec une chaine IA incomplete." -ForegroundColor Red
+    Write-Host "       Demarre Ollama (ollama serve) et Qdrant (docker compose up -d qdrant)," -ForegroundColor Yellow
+    Write-Host "       puis relance DOCTOR_MLOMEGA_V19.ps1 -Vision et cette commande." -ForegroundColor Yellow
+    exit 4
+  }
   $addresses = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
     Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" } |
     Select-Object -ExpandProperty IPAddress -Unique
@@ -64,6 +72,7 @@ if ($LivePhone) {
   foreach ($address in $addresses) {
     Write-Host "     Android: http://${address}:$Port" -ForegroundColor Cyan
     Write-Host "     Health : http://${address}:$Port/health"
+    Write-Host "     Ready  : http://${address}:$Port/ready"
     Write-Host "     Metrics: http://${address}:$Port/metrics"
   }
   Write-Host "[INFO] Ce lancement ne prouve pas le build Unity/Gradle ni le flux materiel Android." -ForegroundColor Yellow

@@ -332,6 +332,7 @@ class AiortcIngress:
         self._audio_pts_origin_s: float | None = None
         self._audio_wall_origin_s: float | None = None
         self._audio_last_pts_s: float | None = None
+        self.last_media_monotonic = time.monotonic()
 
     def send_ui_intent(self, intent_json: str) -> int:
         """Send a UIIntent (JSON string) to every open downlink DataChannel.
@@ -500,6 +501,7 @@ class AiortcIngress:
                 break
             try:
                 frame = await track.recv()
+                self.last_media_monotonic = time.monotonic()
             except MediaStreamError:
                 break
             # recv() returns an already-H.264-decoded PyAV frame; the pure decode
@@ -562,6 +564,7 @@ class AiortcIngress:
                 break
             try:
                 frame = await track.recv()
+                self.last_media_monotonic = time.monotonic()
             except MediaStreamError:
                 break
             try:
@@ -693,6 +696,7 @@ class AiortcIngress:
             "audio_queue_peak": self.audio_queue_peak,
             "audio_inflight": self._audio_inflight,
             "accepting_media": self._accepting_media,
+            "media_idle_seconds": max(0.0, time.monotonic() - self.last_media_monotonic),
         }
 
     async def _teardown(self, pc: Any) -> None:

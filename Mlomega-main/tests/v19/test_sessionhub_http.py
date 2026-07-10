@@ -74,6 +74,52 @@ def test_health_ok(client):
     assert live.json()["status"] == "alive"
 
 
+def test_health_distinguishes_pairing_from_full_ai_readiness():
+    class _Manager:
+        recovery_state = "completed"
+
+        def metrics(self):
+            return {}
+
+    app = sessionhub_http.create_app(
+        sessionhub.SessionHub(),
+        enable_signaling=True,
+        runtime_manager=_Manager(),
+        readiness_probe=lambda: {
+            "ready": False,
+            "checks": {"ollama": {"ok": False}, "qdrant": {"ok": False}},
+            "failed": ["ollama", "qdrant"],
+        },
+    )
+    with TestClient(app) as c:
+        health = c.get("/health")
+        assert health.status_code == 200
+        assert health.json()["status"] == "pairing_ready"
+        assert health.json()["pairing_ready"] is True
+        assert health.json()["ai_ready"] is False
+        assert c.get("/ready").status_code == 503
+
+
+def test_health_blocks_pairing_while_startup_recovery_is_running():
+    class _Manager:
+        recovery_state = "running"
+
+        def metrics(self):
+            return {}
+
+    app = sessionhub_http.create_app(
+        sessionhub.SessionHub(),
+        enable_signaling=True,
+        runtime_manager=_Manager(),
+        readiness_probe=lambda: {"ready": True, "checks": {}, "failed": []},
+    )
+    with TestClient(app) as c:
+        health = c.get("/health")
+        assert health.status_code == 503
+        assert health.json()["startup_recovery"] == "running"
+        assert health.json()["pairing_ready"] is False
+
+
 def test_create_returns_session_token_and_stamp(client):
     r = client.post("/session/create", json={"device_id": "s25-a"})
     assert r.status_code == 200

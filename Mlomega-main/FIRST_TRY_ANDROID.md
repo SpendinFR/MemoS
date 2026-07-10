@@ -15,11 +15,15 @@ powershell -ExecutionPolicy Bypass -File scripts\START_QDRANT.ps1
 .\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -BindHost 0.0.0.0 -Port 8710
 ```
 
-La 3ᵉ commande lance TOUT (SessionHub + pipeline vision/audio + identité + delivery) en un
+La 3ᵉ commande exécute d'abord un préflight strict (DB, environnement CloseDay, modèles
+device, vraie session YOLOX CUDA, Whisper GPU, TTS, Ollama, Qdrant, ffmpeg et disque).
+Elle **refuse de lancer** SessionHub si une brique manque, avec la liste exacte. Quand le
+préflight passe, elle lance SessionHub + pipeline vision/audio + identité + delivery en un
 seul process. Laisse la fenêtre ouverte : c'est aussi ton journal en direct.
 
-**Pré-vols :** `http://localhost:6333/healthz` → ok ; première fois : Windows demande
-d'autoriser Python sur le réseau **privé** → accepte (port 8710 entrant).
+**Pré-vols :** `http://localhost:8710/health` distingue `pairing_ready` de la chaîne IA ;
+`http://localhost:8710/ready` ne répond 200 que si la chaîne complète est prête. Première
+fois : Windows demande d'autoriser Python sur le réseau **privé** → accepte (port 8710 entrant).
 
 ## 2. Lancement — côté téléphone
 
@@ -125,7 +129,8 @@ tu peux rouvrir et reprendre la même session). Seul le bouton clôt et consolid
 - App bloquée sur Pairing → PC lancé ? `http://192.168.1.199:8710/health` depuis le
   navigateur du téléphone. Pare-feu Windows → autoriser Python (privé).
 - Pas de réponse aux commandes → fenêtre PC : les transcripts défilent ? Sinon micro/permission.
-- « c'est quoi ça » répond « indisponible » → Ollama éteint (`ollama serve`) — le reste marche.
+- RUN refuse de démarrer et cite `ollama`/`qdrant` → lance `ollama serve` et
+  `powershell -ExecutionPolicy Bypass -File scripts\START_QDRANT.ps1`, puis relance RUN.
 - Close-day en erreur → il est repris automatiquement au prochain déclenchement (stages checkpointés) ;
   garde la sortie PC, on lira ensemble.
 

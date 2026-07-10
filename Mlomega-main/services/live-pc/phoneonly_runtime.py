@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
+import os
+import subprocess
 import sys
 import time
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -32,7 +37,9 @@ clip_recorder_mod = _load("v19_clip_recorder_runtime", "clip_recorder.py")
 gpu_arbiter_mod = _load("v19_gpu_arbiter_runtime", "gpu_arbiter.py")
 
 
-def _completed_close_day_exists(*, person_id: str, db_path: Any = None) -> bool:
+def _completed_close_day_exists(
+    *, person_id: str, package_date: str | None = None, db_path: Any = None
+) -> bool:
     """Read today's durable CloseDay state instead of trusting process memory."""
     from mlomega_audio_elite.db import connect
     from mlomega_audio_elite.v18_close_day import _package_day
@@ -46,9 +53,203 @@ def _completed_close_day_exists(*, person_id: str, db_path: Any = None) -> bool:
             return False
         row = con.execute(
             "SELECT status FROM v18_close_day_runs WHERE person_id=? AND package_date=?",
-            (str(person_id or "me"), _package_day(None)),
+            (str(person_id or "me"), _package_day(package_date)),
         ).fetchone()
     return row is not None and str(row["status"] or "") == "completed"
+
+
+_RECOVERY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS phoneonly_session_recovery_v19(
+  live_session_id TEXT PRIMARY KEY,
+  person_id TEXT NOT NULL,
+  package_date TEXT NOT NULL,
+  state TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  error_text TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_phoneonly_recovery_state
+  ON phoneonly_session_recovery_v19(state, updated_at);
+"""
+
+
+def _session_package_date(started_at: str) -> str:
+    text = str(started_at).replace("Z", "+00:00")
+    dt = datetime.fromisoformat(text)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    try:
+        local_tz = ZoneInfo(os.environ.get("MLOMEGA_LOCAL_TZ", "Europe/Paris"))
+    except Exception:
+        local_tz = timezone.utc
+    return dt.astimezone(local_tz).date().isoformat()
+
+
+def _close_day_covers_session(
+    *, person_id: str, package_date: str, live_session_id: str, db_path: Any = None
+) -> bool:
+    from mlomega_audio_elite.db import connect
+
+    path = Path(db_path) if db_path is not None else None
+    with connect(path) as con:
+        table = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='v18_close_day_runs'"
+        ).fetchone()
+        if table is None:
+            return False
+        row = con.execute(
+            """SELECT 1 FROM v18_close_day_runs
+               WHERE person_id=? AND package_date=? AND live_session_id=? AND status='completed'""",
+            (person_id, package_date, live_session_id),
+        ).fetchone()
+    return row is not None
+
+
+def _run_close_day_subprocess(
+    *,
+    person_id: str,
+    live_session_id: str,
+    allow_rerun: bool = False,
+    package_date: str | None = None,
+    db_path: Any = None,
+) -> dict[str, Any]:
+    python = ROOT / ".venv" / "Scripts" / "python.exe"
+    if not python.exists():
+        raise RuntimeError(f"core Python environment missing: {python}")
+    command = [
+        str(python),
+        str(ROOT / "scripts" / "run_phoneonly_close_day.py"),
+        "--person-id", str(person_id),
+        "--live-session-id", str(live_session_id),
+    ]
+    if package_date:
+        command.extend(["--package-date", str(package_date)])
+    if allow_rerun:
+        command.append("--allow-rerun")
+    env = os.environ.copy()
+    if db_path is not None:
+        env["MLOMEGA_DB"] = str(Path(db_path).resolve())
+    proc = subprocess.run(
+        command, cwd=ROOT, env=env, text=True, capture_output=True, check=False
+    )
+    lines = [line for line in proc.stdout.splitlines() if line.strip()]
+    if lines:
+        try:
+            result = json.loads(lines[-1])
+            if getattr(proc, "returncode", 0) == 0:
+                return result
+        except json.JSONDecodeError:
+            pass
+    raise RuntimeError((proc.stderr or proc.stdout or "CloseDay subprocess failed")[-2000:])
+
+
+def recover_abandoned_phoneonly_sessions(
+    *,
+    person_id: str,
+    db_path: Any = None,
+    close_day_runner: Callable[..., dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Durably end and consolidate PhoneOnly sessions left active by a crash."""
+    from mlomega_audio_elite.db import connect, write_transaction
+    from mlomega_audio_elite.utils import now_iso
+
+    path = Path(db_path) if db_path is not None else None
+    runner = close_day_runner or _run_close_day_subprocess
+    seeded: list[str] = []
+    now = now_iso()
+    with connect(path) as con, write_transaction(con):
+        con.executescript(_RECOVERY_SCHEMA)
+        has_sessions = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='brainlive_sessions'"
+        ).fetchone()
+        active = [] if has_sessions is None else con.execute(
+            """SELECT live_session_id,person_id,started_at FROM brainlive_sessions
+               WHERE person_id=? AND status='active' AND current_mode='live_xr'
+               ORDER BY started_at""",
+            (person_id,),
+        ).fetchall()
+        for row in active:
+            live_id = str(row["live_session_id"])
+            package_date = _session_package_date(str(row["started_at"]))
+            con.execute(
+                """INSERT OR IGNORE INTO phoneonly_session_recovery_v19(
+                     live_session_id,person_id,package_date,state,attempts,error_text,
+                     created_at,updated_at,completed_at)
+                   VALUES(?,?,?,'pending',0,NULL,?,?,NULL)""",
+                (live_id, person_id, package_date, now, now),
+            )
+            con.execute(
+                """UPDATE brainlive_sessions
+                   SET status='ended', ended_at=COALESCE(ended_at,?), updated_at=?
+                   WHERE live_session_id=?""",
+                (now, now, live_id),
+            )
+            seeded.append(live_id)
+
+    with connect(path) as con:
+        pending = [dict(row) for row in con.execute(
+            """SELECT * FROM phoneonly_session_recovery_v19
+               WHERE person_id=? AND state!='completed' ORDER BY package_date,created_at""",
+            (person_id,),
+        ).fetchall()]
+
+    recovered: list[str] = []
+    errors: list[dict[str, str]] = []
+    for row in pending:
+        live_id = str(row["live_session_id"])
+        day = str(row["package_date"])
+        if _close_day_covers_session(
+            person_id=person_id, package_date=day, live_session_id=live_id, db_path=path
+        ):
+            result: dict[str, Any] = {"status": "completed", "already_covered": True}
+        else:
+            started = now_iso()
+            with connect(path) as con, write_transaction(con):
+                con.execute(
+                    """UPDATE phoneonly_session_recovery_v19
+                       SET state='running', attempts=attempts+1, error_text=NULL, updated_at=?
+                       WHERE live_session_id=?""",
+                    (started, live_id),
+                )
+            try:
+                result = runner(
+                    person_id=person_id,
+                    live_session_id=live_id,
+                    package_date=day,
+                    allow_rerun=_completed_close_day_exists(
+                        person_id=person_id, package_date=day, db_path=path
+                    ),
+                    db_path=path,
+                )
+            except Exception as exc:
+                result = {"status": "error", "error": str(exc)[:1000]}
+        completed = str(result.get("status") or "") == "completed"
+        finished = now_iso()
+        with connect(path) as con, write_transaction(con):
+            con.execute(
+                """UPDATE phoneonly_session_recovery_v19
+                   SET state=?, error_text=?, updated_at=?, completed_at=?
+                   WHERE live_session_id=?""",
+                (
+                    "completed" if completed else "error",
+                    None if completed else str(result.get("error") or result)[:1000],
+                    finished,
+                    finished if completed else None,
+                    live_id,
+                ),
+            )
+        if completed:
+            recovered.append(live_id)
+        else:
+            errors.append({"live_session_id": live_id, "error": str(result.get("error") or result)[:500]})
+    return {
+        "status": "completed" if not errors else "error",
+        "seeded": seeded,
+        "recovered": recovered,
+        "errors": errors,
+    }
 
 
 class DataChannelRenderer(delivery_adapter.RendererHub):
@@ -82,6 +283,7 @@ class PhoneOnlyRuntime:
     ) -> None:
         self.session_id = session_id
         self.person_id = person_id
+        self.db_path = db_path
         self.recent_errors: deque[str] = deque(maxlen=20)
         # E47-C livrable 6: when this is a SECOND (or later) live session on the
         # same day, its close-day must REOPEN the day's already-completed close-day
@@ -391,28 +593,12 @@ class PhoneOnlyRuntime:
     def _run_close_day(self, **kwargs: Any) -> dict[str, Any]:
         if self._close_day is not None:
             return self._close_day(**kwargs)
-        import json
-        import subprocess
-
-        python = ROOT / ".venv" / "Scripts" / "python.exe"
-        if not python.exists():
-            raise RuntimeError(f"core Python environment missing: {python}")
-        command = [
-            str(python), str(ROOT / "scripts" / "run_phoneonly_close_day.py"),
-            "--person-id", str(kwargs["person_id"]),
-            "--live-session-id", str(kwargs["live_session_id"]),
-        ]
-        # E47-C livrable 6: a second same-day session reopens the completed day.
-        if self.allow_rerun:
-            command.append("--allow-rerun")
-        proc = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
-        lines = [line for line in proc.stdout.splitlines() if line.strip()]
-        if lines:
-            try:
-                return json.loads(lines[-1])
-            except json.JSONDecodeError:
-                pass
-        raise RuntimeError((proc.stderr or proc.stdout or "CloseDay subprocess failed")[-2000:])
+        return _run_close_day_subprocess(
+            person_id=str(kwargs["person_id"]),
+            live_session_id=str(kwargs["live_session_id"]),
+            allow_rerun=self.allow_rerun,
+            db_path=self.db_path,
+        )
 
     @staticmethod
     def _release_core_live_caches() -> None:
@@ -473,9 +659,20 @@ class PhoneOnlyRuntime:
 class SinglePhoneRuntimeManager:
     """Explicit mono-device policy: never overwrite a different live session."""
 
-    def __init__(self, *, runtime_factory: Callable[..., PhoneOnlyRuntime] = PhoneOnlyRuntime, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *,
+        runtime_factory: Callable[..., PhoneOnlyRuntime] = PhoneOnlyRuntime,
+        recovery_close_day: Callable[..., dict[str, Any]] | None = None,
+        inactivity_timeout_s: float = 300.0,
+        watchdog_interval_s: float = 15.0,
+        **kwargs: Any,
+    ) -> None:
         self.runtime_factory = runtime_factory
         self.runtime_kwargs = kwargs
+        self.recovery_close_day = recovery_close_day
+        self.inactivity_timeout_s = max(5.0, float(inactivity_timeout_s))
+        self.watchdog_interval_s = max(0.1, float(watchdog_interval_s))
         self.active: PhoneOnlyRuntime | None = None
         self._lock = asyncio.Lock()
         self._close_tasks: dict[str, asyncio.Task[Any]] = {}
@@ -484,9 +681,67 @@ class SinglePhoneRuntimeManager:
         # session/day). Persisted-across-restart safety is provided anyway by the
         # script's own reopen check (a no-op if the day is not completed).
         self._completed_close_days = 0
+        self.recovery_state = "not_started"
+        self.recovery_report: dict[str, Any] | None = None
+        self.watchdog_closures = 0
+        self._watchdog_task: asyncio.Task[Any] | None = None
+
+    async def startup_recovery(self) -> dict[str, Any]:
+        if self.recovery_state == "running":
+            raise RuntimeError("PhoneOnly startup recovery already running")
+        if self.recovery_state == "completed":
+            return self.recovery_report or {"status": "completed"}
+        self.recovery_state = "running"
+        try:
+            report = await asyncio.to_thread(
+                recover_abandoned_phoneonly_sessions,
+                person_id=str(self.runtime_kwargs.get("person_id") or "me"),
+                db_path=self.runtime_kwargs.get("db_path"),
+                close_day_runner=self.recovery_close_day,
+            )
+            self.recovery_report = report
+            self.recovery_state = "completed" if report.get("status") == "completed" else "error"
+        except Exception as exc:
+            self.recovery_report = {"status": "error", "errors": [{"error": str(exc)[:1000]}]}
+            self.recovery_state = "error"
+        return self.recovery_report
+
+    def start_watchdog(self) -> asyncio.Task[Any]:
+        if self._watchdog_task is None or self._watchdog_task.done():
+            self._watchdog_task = asyncio.create_task(self._watchdog_loop())
+        return self._watchdog_task
+
+    async def _watchdog_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self.watchdog_interval_s)
+            runtime = self.active
+            if runtime is None or runtime.ended:
+                continue
+            stats = runtime.ingress.stats() if hasattr(runtime.ingress, "stats") else {}
+            idle = float((stats or {}).get("media_idle_seconds", 0.0) or 0.0)
+            if idle < self.inactivity_timeout_s:
+                continue
+            await runtime.end_and_close_day(drain_timeout_s=30.0)
+            if runtime.end_status == "completed" and runtime.close_day_status == "completed":
+                self.watchdog_closures += 1
+
+    async def shutdown(self) -> None:
+        task = self._watchdog_task
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self._watchdog_task = None
+        runtime = self.active
+        if runtime is not None and not runtime.ended:
+            await runtime.end_and_close_day(drain_timeout_s=30.0)
+        pending = [task for task in self._close_tasks.values() if not task.done()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def get_or_create(self, session_id: str) -> PhoneOnlyRuntime:
         async with self._lock:
+            if self.recovery_state in {"running", "error"}:
+                raise RuntimeError(f"PhoneOnly startup recovery is {self.recovery_state}")
             if self.active is not None and self.active.session_id != session_id:
                 if self.active.ended and self.active.close_day_status == "completed":
                     self._completed_close_days += 1
@@ -513,7 +768,13 @@ class SinglePhoneRuntimeManager:
         return self.active if self.active is not None and self.active.session_id == session_id else None
 
     def metrics(self) -> dict[str, Any]:
-        return {"mode": "single_phone", "active": self.active.status() if self.active else None}
+        return {
+            "mode": "single_phone",
+            "active": self.active.status() if self.active else None,
+            "startup_recovery": self.recovery_state,
+            "startup_recovery_report": self.recovery_report,
+            "watchdog_closures": self.watchdog_closures,
+        }
 
     def start_close_day(self, session_id: str) -> asyncio.Task[Any]:
         runtime = self.get(session_id)

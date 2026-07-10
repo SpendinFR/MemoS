@@ -180,7 +180,12 @@ def test_offer_creates_runtime_and_end_is_authenticated():
     with TestClient(app) as client:
         health = client.get("/health")
         assert health.status_code == 200
-        assert health.json()["status"] == "ready"
+        assert health.json()["status"] in {"pairing_ready", "full_ready"}
+        assert health.json()["pairing_ready"] is True
+        # Full AI readiness is a distinct strict endpoint; stopped Ollama/Qdrant
+        # must not be disguised as a successful whole-chain probe.
+        if not health.json()["ai_ready"]:
+            assert client.get("/ready").status_code == 503
         creds = client.post("/session/create", json={"device_id": "android"}).json()
         bad = client.post("/session/end", json={"session_id": creds["session_id"], "token": "bad"})
         assert bad.status_code == 401
@@ -450,6 +455,92 @@ def test_live_discourse_close_joins_and_drains_every_batch():
     turns = [turn["text"] for batch in ingested for turn in batch["turns"]]
     assert turns == ["premier", "deuxieme"]
     assert discourse._worker is None
+
+
+def test_abandoned_session_recovery_is_durable_and_retryable(tmp_path, monkeypatch):
+    db = tmp_path / "abandoned.db"
+    monkeypatch.setenv("MLOMEGA_DB", str(db))
+    from mlomega_audio_elite.brainlive_v15 import start_live_session
+    from mlomega_audio_elite.db import connect
+
+    session = start_live_session(person_id="owner", mode="live_xr", title="abandoned")
+    live_id = session["live_session_id"]
+    calls = []
+
+    def runner(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise RuntimeError("night service unavailable")
+        return {"status": "completed"}
+
+    first = runtime_mod.recover_abandoned_phoneonly_sessions(
+        person_id="owner", db_path=db, close_day_runner=runner
+    )
+    assert first["status"] == "error"
+    with connect(db) as con:
+        brain = con.execute(
+            "SELECT status FROM brainlive_sessions WHERE live_session_id=?", (live_id,)
+        ).fetchone()
+        recovery = con.execute(
+            "SELECT state,attempts FROM phoneonly_session_recovery_v19 WHERE live_session_id=?",
+            (live_id,),
+        ).fetchone()
+    assert brain["status"] == "ended"
+    assert tuple(recovery) == ("error", 1)
+
+    # A fresh process finds the persisted recovery row even though BrainLive is
+    # already ended, retries the same session, then seals the marker.
+    second = runtime_mod.recover_abandoned_phoneonly_sessions(
+        person_id="owner", db_path=db, close_day_runner=runner
+    )
+    assert second["status"] == "completed"
+    assert second["recovered"] == [live_id]
+    with connect(db) as con:
+        recovery = con.execute(
+            "SELECT state,attempts,completed_at FROM phoneonly_session_recovery_v19 WHERE live_session_id=?",
+            (live_id,),
+        ).fetchone()
+    assert recovery["state"] == "completed"
+    assert recovery["attempts"] == 2
+    assert recovery["completed_at"]
+
+
+def test_inactivity_watchdog_closes_and_runs_close_day():
+    class _IdleIngress:
+        def stats(self):
+            return {"media_idle_seconds": 10.0}
+
+    class _AbandonedRuntime:
+        def __init__(self):
+            self.ended = False
+            self.ingress = _IdleIngress()
+            self.end_status = "active"
+            self.close_day_status = "not_started"
+            self.calls = 0
+
+        async def end_and_close_day(self, **_kwargs):
+            self.calls += 1
+            self.ended = True
+            self.end_status = "completed"
+            self.close_day_status = "completed"
+            return {}
+
+    async def scenario():
+        manager = runtime_mod.SinglePhoneRuntimeManager(
+            inactivity_timeout_s=5.0, watchdog_interval_s=0.01
+        )
+        abandoned = _AbandonedRuntime()
+        manager.active = abandoned
+        manager.start_watchdog()
+        for _ in range(50):
+            if abandoned.ended:
+                break
+            await asyncio.sleep(0.01)
+        assert abandoned.calls == 1
+        assert manager.watchdog_closures == 1
+        await manager.shutdown()
+
+    asyncio.run(scenario())
 
 
 def test_vad_segment_is_archived_when_asr_unavailable():
