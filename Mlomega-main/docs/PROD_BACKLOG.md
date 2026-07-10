@@ -324,6 +324,16 @@ Constat : paume (menu) / balayage (cacher) / pincement (zoom) existaient, mais p
 - [x] Budget §9.4 tenu (pipeline gestes on-demand, zéro alloc/frame). Tests : 8 nouveaux EditMode, **suite complète 76/76**, zéro régression. ADR §E59.
 - Restes : MenuPanel (surface logique sans géométrie propre — trivial quand il portera un GlassPanel) ; halo visuel pendant le drag (polish UI séparé) ; validation device.
 
+## E61 — Distribution des APK via WELCOME (téléchargement + build lunettes assisté) (À FAIRE)
+
+Constat (2026-07-10) : les APK sont git-ignorées (artefacts locaux, ~90+191 Mo) → un utilisateur qui CLONE le repo n'a aucun APK ; WELCOME affiche un chemin vide et l'utilisateur devrait builder lui-même (Unity + licence = irréaliste pour un non-dev). Solution long terme, tout passe par WELCOME :
+
+- [ ] **APK PhoneOnly = GitHub Release** : publier `mlomega-phoneonly.apk` en asset de Release (PAS dans git) à chaque build significatif, avec SHA-256 dans les notes. WELCOME (étape téléphone) : si l'APK locale est absente → `Invoke-WebRequest` de la dernière Release (même mécanique que le download Qdrant), vérif SHA-256, puis guide `adb install -r`/copie. Nuance endpoint : l'APK publiée embarque un endpoint LAN par défaut — documenter que le pairing sonde la liste d'endpoints du profil (et/ou publier une APK « generic » dont l'endpoint est configurable au premier lancement — à trancher à l'implémentation).
+- [ ] **APK lunettes = JAMAIS publiée** (SDK XREAL propriétaire embarqué). À la place, WELCOME branche lunettes = **build assisté local** : (1) guider le dépôt de `com.xreal.xr.tar.gz` dans `Packages/xreal-sdk/` (lien compte dev XREAL), (2) vérifier Unity 6000.0.23f1 + licence (détecter, guider l'activation Hub sinon), (3) lancer lui-même les 2 passes (`AndroidBuildXreal.PrepareDefines` puis `BuildApk`) avec suivi de progression et messages d'erreur clairs, (4) installer l'APK produite. L'utilisateur ne tape aucune commande Unity.
+- [ ] **Config XREAL par WELCOME** : les choix lunettes (endpoints, wake word, profil display xreal) déjà posés par l'assistant doivent alimenter le build assisté (endpoint injecté via `MLOMEGA_PC_HOST/PORT`, asset MLOmegaConfig) — zéro édition manuelle d'asset.
+- [ ] Idempotent + dégradé honnête : pas de réseau → chemin local seulement ; pas d'Unity → PhoneOnly Release proposée, lunettes expliquées comme nécessitant Unity ; jamais de demi-échec silencieux.
+- Test : dry-run WELCOME sur checkout SANS APK → propose le download Release (phone) / le build assisté (lunettes) sans erreur.
+
 ## E53 — Mode aide universel « Viki mode aide » (ARCHI VALIDÉE 2026-07-09 — à implémenter par phases)
 
 « Aide-moi à faire X » (cuisiner, monter un meuble, réparer…) fait BIEN. **Périmètre : tâches PHYSIQUES au niveau OBJET+GESTE.** Les tâches écran/logiciel sont écartées (décision utilisateur : trop long) ; le geste sub-objet fin (« LA vis B4 ») reste la frontière (Phase C, plus tard).
