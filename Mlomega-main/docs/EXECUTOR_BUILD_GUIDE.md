@@ -18,6 +18,12 @@ Le runtime PhoneOnly possède désormais un producteur réel de signaux baseline
 
 Validation disponible : compilation Roslyn directe des `.rsp` Unity dans l'ordre Transport → UI → Reflex → Editor → Tests, **tous OK** ; tests E60 ajoutés pour les baselines ASR/gestures et la vraie surface menu. Le runner Unity n'a pas pu démarrer : le client répond mais indique `No ULF license found` / `No valid Unity Editor license`. Ce blocage d'environnement ne vaut ni échec code ni test vert ; régénération scène, EditMode effectif, APK et S25 restent à faire après réactivation Unity Hub/manual ULF.
 
+### E60 — Lot audio B (code branché, validation device ouverte)
+
+`PhoneOnlyRuntime` construit désormais TTS et pousse le wake word dès l'ouverture du DataChannel. La commande porte un ID ; Unity renvoie `device_command_result` et le PC ne marque le mot livré qu'après ack positif. Le gating route le `device_transcript` exact et dédupliqué, jamais le tour PC suivant. `TtsAudioPlayer` décode uniquement RIFF PCM16 borné et joue via `AudioSource`. `AsrBridge` choisit `ownMicrophone=true` hors transport, redémarre proprement vers le fan-out WebRTC connecté, conserve son sink et appelle `DetachPcmFeed` avant libération.
+
+Preuves : `test_wake_word_gating.py` + `test_e35_outputs.py` = **26 passed** ; build Gradle complet réussi et `mlomega-reflexvision.aar` reconstruit ; compilation Roslyn des assemblies Editor et Android réussie. L'AAR ONNX retouché mécaniquement par le build a été restauré et n'entre pas dans le commit. Lecture audio, switch micro et reconnexion/ack restent à valider sur S25.
+
 ---
 
 ## E39 - Invariant temporel V18 `turns` restaure (2026-07-06)

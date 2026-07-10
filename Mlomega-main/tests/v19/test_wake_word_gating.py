@@ -114,6 +114,28 @@ def test_gated_turn_without_flag_is_open_compatible():
     assert pipe.conversation.ingested == ["menu"]
 
 
+def test_current_phone_gate_makes_untagged_pc_asr_memory_only():
+    pipe = _pipeline("gated")
+    pipe.set_device_gate_authoritative(True)
+    pipe._handle_audio_intents([_final_intent("conversation ambiante")])
+    assert pipe.intents.routed == []
+    assert pipe.conversation.ingested == ["conversation ambiante"]
+
+
+def test_device_transcript_routes_exact_command_once_not_next_pc_turn():
+    pipe = _pipeline("gated")
+    payload = {
+        "type": "device_transcript", "segment_id": "dev-1",
+        "text": "ouvre le menu", "is_final": True, "is_command": True,
+        "start_ms": 100, "end_ms": 900,
+    }
+    pipe.on_device_transcript(payload)
+    pipe.on_device_transcript(payload)
+    pipe._handle_audio_intents([_final_intent("ouvre le menu")])
+    assert pipe.intents.routed == ["ouvre le menu"]
+    assert pipe.conversation.ingested == ["ouvre le menu"]
+
+
 def test_gated_command_window_latch_routes_next_turn():
     """arm_command_window() (wake word fired) routes exactly the next turn — it
     overrides an explicit is_command=False, and is consumed after one command."""
@@ -187,7 +209,7 @@ def test_runtime_control_message_arms_command_window():
     assert armed["n"] == 1
 
 
-def test_push_wake_word_sends_set_wake_word_command_once():
+def test_push_wake_word_retries_until_matching_device_ack():
     """E58: the PC pushes the owner-chosen wake word to the device as a
     set_wake_word device_command, once per session (idempotent), so it can be
     changed without an APK rebuild."""
@@ -198,16 +220,148 @@ def test_push_wake_word_sends_set_wake_word_command_once():
     sent: list[str] = []
 
     class _Ingress:
+        open = False
+
         def send_ui_intent(self, payload):
             sent.append(payload)
-            return 0
+            return 1 if self.open else 0
 
-    pipe.ingress = _Ingress()
-    pipe.push_wake_word()
-    pipe.push_wake_word()  # idempotent — must not send twice
+    ingress = _Ingress()
+    pipe.ingress = ingress
+    assert pipe.push_wake_word() is False
+    assert pipe.push_wake_word() is False
+    ingress.open = True
+    assert pipe.push_wake_word() is True
 
     cmds = [_json.loads(s) for s in sent]
     set_words = [c for c in cmds if c.get("action") == "set_wake_word"]
-    assert len(set_words) == 1
-    assert set_words[0]["type"] == "device_command"
-    assert set_words[0]["word"] == "viki"
+    assert len(set_words) == 3
+    delivered = set_words[-1]
+    assert delivered["type"] == "device_command"
+    assert delivered["word"] == "viki"
+    assert delivered["command_id"]
+    assert pipe.confirm_wake_word("wrong", True) is False
+    assert pipe.confirm_wake_word(delivered["command_id"], True) is True
+    assert pipe.push_wake_word() is True
+    assert len(sent) == 3
+
+
+def test_runtime_open_pushes_wake_word_enables_gate_and_tts():
+    import asyncio
+
+    calls = []
+
+    class FakeIngress:
+        def __init__(self, **_):
+            self.on_audio_chunk = None
+            self.on_receipt = None
+            self.on_datachannel_open = None
+
+        def send_ui_intent(self, _):
+            return 1
+
+        async def close(self):
+            return None
+
+    class FakePipeline:
+        def __init__(self, *, ingress, **kwargs):
+            self.ingress = ingress
+            self.conversation = SpyConversation()
+            calls.append(("enable_tts", kwargs.get("enable_tts")))
+
+        def set_device_gate_authoritative(self, value):
+            calls.append(("gate", value))
+
+        def push_wake_word(self):
+            calls.append(("wake", True))
+            return True
+
+        def deliver_morning_briefing(self):
+            calls.append(("briefing", True))
+
+        def metrics(self):
+            return {"conversation_turns": 0}
+
+        def on_audio_chunk(self, *_):
+            return []
+
+    rt = runtime_mod.PhoneOnlyRuntime(
+        "s", ingress_factory=FakeIngress, pipeline_factory=FakePipeline,
+        close_day=lambda **_: {"status": "completed"},
+    )
+
+    async def empty_dispatch():
+        return []
+
+    rt._dispatch_deliveries = empty_dispatch
+    asyncio.run(rt._on_datachannel_open())
+    assert ("enable_tts", True) in calls
+    assert ("gate", True) in calls
+    assert ("wake", True) in calls
+
+
+def test_runtime_routes_wake_ack_and_exact_device_transcript():
+    calls = []
+
+    class FakeIngress:
+        def __init__(self, **_):
+            self.on_audio_chunk = None
+            self.on_receipt = None
+            self.on_datachannel_open = None
+
+        def send_ui_intent(self, _):
+            return 1
+
+        async def close(self):
+            return None
+
+    class FakePipeline:
+        def __init__(self, *, ingress, **_):
+            self.ingress = ingress
+            self.conversation = SpyConversation()
+
+        def confirm_wake_word(self, command_id, ok):
+            calls.append(("ack", command_id, ok))
+
+        def on_device_transcript(self, payload):
+            calls.append(("transcript", payload["segment_id"], payload["text"]))
+
+        def metrics(self):
+            return {"conversation_turns": 0}
+
+        def on_audio_chunk(self, *_):
+            return []
+
+    rt = runtime_mod.PhoneOnlyRuntime(
+        "s", ingress_factory=FakeIngress, pipeline_factory=FakePipeline,
+        close_day=lambda **_: {"status": "completed"},
+    )
+    rt._on_receipt('{"type":"device_command_result","command_id":"w1",'
+                   '"action":"set_wake_word","ok":true}')
+    rt._on_receipt('{"type":"device_transcript","segment_id":"d1",'
+                   '"text":"menu","is_command":true,"is_final":true}')
+    assert calls == [("ack", "w1", True), ("transcript", "d1", "menu")]
+
+
+def test_routed_short_text_reply_emits_tts_audio():
+    sent = []
+    pipe = _pipeline("open")
+    pipe.enable_tts = True
+    pipe._tts_on = True
+
+    class FakeTts:
+        def speak(self, text, lang="fr"):
+            assert text == "Bonjour"
+            return b"RIFF-valid-enough-for-contract"
+
+    class FakeIngress:
+        def send_ui_intent(self, payload):
+            sent.append(payload)
+            return 1
+
+    pipe.tts = FakeTts()
+    pipe.ingress = FakeIngress()
+    pipe._speak_routed_reply({
+        "ui_intent": {"content": {"text": "Bonjour"}}
+    })
+    assert any('"type": "tts_audio"' in payload for payload in sent)

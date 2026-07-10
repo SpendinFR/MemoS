@@ -27,13 +27,14 @@ object AsrKwsConfigFactory {
         kwsModelDir: String,
         wakeWord: String,
         commandWindowMs: Long,
+        ownMicrophone: Boolean,
     ): AsrKwsConfig = AsrKwsConfig(
         language = language,
         asrModelDir = asrModelDir,
         vadModelPath = vadModelPath,
         kwsModelDir = kwsModelDir,
         wakeWords = listOf(wakeWord),
-        ownMicrophone = false,
+        ownMicrophone = ownMicrophone,
         commandWindowMs = commandWindowMs,
     )
 }

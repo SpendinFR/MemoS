@@ -85,6 +85,8 @@ namespace MLOmega.XR.Reflex
 #if UNITY_ANDROID && !UNITY_EDITOR
         private AndroidJavaObject _service;
         private AsrProxy _proxy;
+        private AndroidJavaObject _pcmSink;
+        private bool _usingOwnMicrophone;
 #endif
 
         // E58: the PC-pushed wake word override (runtime, no rebuild). Stored so it is
@@ -103,6 +105,11 @@ namespace MLOmega.XR.Reflex
         private void OnDestroy()
         {
             if (_commands != null) _commands.SetWakeWordRequested -= SetWakeWord;
+        }
+
+        private void OnEnable()
+        {
+            if (_transport != null) _transport.StateChanged += OnTransportStateChanged;
         }
 
         /// <summary>
@@ -144,6 +151,7 @@ namespace MLOmega.XR.Reflex
             }
             catch (Exception ex)
             {
+                StopAndroid();
                 IsRunning = false;
                 Debug.LogWarning($"[AsrBridge] activation deferred (models not ready?): {ex.Message}");
             }
@@ -158,7 +166,7 @@ namespace MLOmega.XR.Reflex
             if (!IsRunning) return;
             IsRunning = false;
 #if UNITY_ANDROID && !UNITY_EDITOR
-            _service?.Call("stop");
+            StopAndroid();
 #else
             StopEditorMic();
 #endif
@@ -174,7 +182,23 @@ namespace MLOmega.XR.Reflex
 #endif
         }
 
-        private void OnDisable() => Deactivate();
+        private void OnDisable()
+        {
+            if (_transport != null) _transport.StateChanged -= OnTransportStateChanged;
+            Deactivate();
+        }
+
+        private void OnTransportStateChanged(MLOmega.XR.Transport.LiveTransportState state, string _)
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (!IsRunning) return;
+            bool shouldOwn = state != MLOmega.XR.Transport.LiveTransportState.Connected &&
+                             state != MLOmega.XR.Transport.LiveTransportState.Degraded;
+            if (shouldOwn == _usingOwnMicrophone) return;
+            Deactivate();
+            Activate();
+#endif
+        }
 
         // --- native plumbing ------------------------------------------------------
 
@@ -197,6 +221,9 @@ namespace MLOmega.XR.Reflex
             string asrDir = isFr ? _asrModelDirFr : _asrModelDirEn;
             string wake = _config != null ? _config.WakeWord : "omega";
             long commandWindowMs = (long)((_config != null ? _config.CommandWindowSeconds : 6f) * 1000f);
+            bool ownMicrophone = _transport == null ||
+                (_transport.State != MLOmega.XR.Transport.LiveTransportState.Connected &&
+                 _transport.State != MLOmega.XR.Transport.LiveTransportState.Degraded);
             using var langEnum = new AndroidJavaClass("com.mlomega.xr.reflexvision.AsrLanguage")
                 .CallStatic<AndroidJavaObject>("valueOf", lang);
 
@@ -210,21 +237,46 @@ namespace MLOmega.XR.Reflex
                     filesDir + "/" + _vadRelativePath,
                     filesDir + "/" + _kwsModelRelativeDir,
                     wake,
-                    commandWindowMs);
+                    commandWindowMs,
+                    ownMicrophone);
 
             _proxy = new AsrProxy(this);
             _service = new AndroidJavaObject(
                 "com.mlomega.xr.reflexvision.AsrKwsService", ctx, cfg, _proxy);
             _service.Call("start");
+            _usingOwnMicrophone = ownMicrophone;
             // E58: apply a wake word the PC pushed before the service was up.
             if (!string.IsNullOrEmpty(_pendingWakeWord)) _service.Call("setWakeWord", _pendingWakeWord);
 
             // E47-A single-mic arbitration: hand the transport's WebRTC-captured
             // PCM to sherpa. asPcmSink() returns a livetransport-shaped PcmFeed the
             // plugin's JavaAudioDeviceModule fan-out pushes into.
-            using var sink = _service.Call<AndroidJavaObject>("asPcmSink");
-            if (_transport != null) _transport.AttachPcmFeed(sink);
-            else Debug.LogWarning("[AsrBridge] no LiveTransportBridge — sherpa has no mic feed (E47-A).");
+            if (!ownMicrophone)
+            {
+                _pcmSink = _service.Call<AndroidJavaObject>("asPcmSink");
+                if (_transport == null || !_transport.AttachPcmFeed(_pcmSink))
+                    throw new InvalidOperationException("transport PCM fan-out unavailable");
+            }
+        }
+
+        private void StopAndroid()
+        {
+            try
+            {
+                if (_pcmSink != null && _transport != null)
+                    _transport.DetachPcmFeed(_pcmSink);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning("[AsrBridge] PCM detach failed: " + ex.Message);
+            }
+            try { _pcmSink?.Dispose(); } catch { }
+            _pcmSink = null;
+            try { _service?.Call("stop"); } catch { }
+            try { _service?.Dispose(); } catch { }
+            _service = null;
+            _proxy = null;
+            _usingOwnMicrophone = false;
         }
 #endif
 

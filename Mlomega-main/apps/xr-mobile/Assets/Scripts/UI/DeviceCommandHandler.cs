@@ -39,6 +39,7 @@ namespace MLOmega.XR.UI
         [JsonProperty("on")] public bool? On { get; set; }
         /// <summary>E58: the new wake word for the set_wake_word command (PC push, no rebuild).</summary>
         [JsonProperty("word")] public string Word { get; set; }
+        [JsonProperty("command_id")] public string CommandId { get; set; }
 
         public static bool IsDeviceCommand(string json)
         {
@@ -106,8 +107,25 @@ namespace MLOmega.XR.UI
             DeviceCommand cmd;
             try { cmd = ContractJson.Deserialize<DeviceCommand>(json); }
             catch (Exception ex) { Debug.LogWarning($"[DeviceCommand] bad json: {ex.Message}"); return true; }
-            if (cmd != null) Execute(cmd);
+            if (cmd != null)
+            {
+                bool ok = Execute(cmd);
+                SendCommandResult(cmd, ok);
+            }
             return true;
+        }
+
+        private void SendCommandResult(DeviceCommand cmd, bool ok)
+        {
+            if (_transport == null || cmd == null) return;
+            string json = ContractJson.Serialize(new
+            {
+                type = "device_command_result",
+                command_id = cmd.CommandId,
+                action = cmd.Action,
+                ok,
+            });
+            _transport.SendContractMessage(json);
         }
 
         /// <summary>Execute a parsed device command. Idempotent and null-safe.</summary>

@@ -92,6 +92,7 @@ class PhoneOnlyRuntime:
             enable_intents=True,
             enable_proactivity=True,
             enable_replay=True,
+            enable_tts=True,
             enable_stranger_profiles=True,
             enable_fine_intel=True,
         )
@@ -138,6 +139,10 @@ class PhoneOnlyRuntime:
 
     async def _on_datachannel_open(self) -> None:
         try:
+            if hasattr(self.pipeline, "set_device_gate_authoritative"):
+                self.pipeline.set_device_gate_authoritative(True)
+            if hasattr(self.pipeline, "push_wake_word") and not self.pipeline.push_wake_word():
+                self.recent_errors.append("wake_word: no open DataChannel")
             self.pipeline.deliver_morning_briefing()
             await self._dispatch_deliveries()
         except ConnectionError:
@@ -150,12 +155,6 @@ class PhoneOnlyRuntime:
             return await self.delivery_adapter.dispatch_once()
 
     def _on_receipt(self, raw: str) -> None:
-        # E58: the first inbound DataChannel message means the device is connected —
-        # push the owner-chosen wake word once (idempotent, best-effort). No rebuild.
-        try:
-            self.pipeline.push_wake_word()
-        except Exception:
-            pass
         # E47-C §4: an additive DataChannel control message from the device (agent A)
         # arms a wake-word command window. It is NOT a UIReceipt — route it first,
         # then fall through to receipt handling for everything else. Shape:
@@ -166,6 +165,20 @@ class PhoneOnlyRuntime:
             payload = _json.loads(raw)
         except Exception:
             payload = None
+        if isinstance(payload, dict) and payload.get("type") == "device_command_result":
+            if payload.get("action") == "set_wake_word" and hasattr(self.pipeline, "confirm_wake_word"):
+                try:
+                    self.pipeline.confirm_wake_word(payload.get("command_id"), bool(payload.get("ok")))
+                except Exception as exc:
+                    self.recent_errors.append(("wake_ack: " + str(exc))[:500])
+            return
+        if isinstance(payload, dict) and payload.get("type") == "device_transcript":
+            if hasattr(self.pipeline, "on_device_transcript"):
+                try:
+                    self.pipeline.on_device_transcript(payload)
+                except Exception as exc:
+                    self.recent_errors.append(("device_transcript: " + str(exc))[:500])
+            return
         if isinstance(payload, dict) and (
             payload.get("type") == "control" or "is_command" in payload
         ):

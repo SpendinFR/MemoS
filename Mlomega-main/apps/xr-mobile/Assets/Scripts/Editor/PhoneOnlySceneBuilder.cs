@@ -67,6 +67,7 @@ namespace MLOmega.XR.Editor
             var sceneDelta = root.AddComponent<SceneDeltaTransportHandler>();
             var appLauncher = root.AddComponent<AppLauncherBridge>();
             var commands = root.AddComponent<DeviceCommandHandler>();
+            var ttsPlayer = root.AddComponent<TtsAudioPlayer>();
 
             // E48-A: the Ultra-Live reflex layer (E26/E47). GAP FIX — these components
             // were never added to the PhoneOnly scene, so the E47 device gates (wake
@@ -142,6 +143,7 @@ namespace MLOmega.XR.Editor
             Assign(commands, "_statusBar", statusBar);
             Assign(commands, "_appLauncher", appLauncher);
             Assign(commands, "_transport", transport);
+            Assign(ttsPlayer, "_transport", transport);
             // E48-A reflex wiring (the rest self-finds in Awake at scene load).
             Assign(translate, "_commands", commands);
             Assign(translate, "_statusBar", statusBar);

@@ -160,10 +160,17 @@ namespace MLOmega.XR.Transport
         public bool SendReceipt(UIReceipt receipt)
         {
             string json = ContractJson.Serialize(receipt);
+            return SendContractMessage(json);
+        }
+
+        /// <summary>Send any bounded contracts message over the reliable channel.</summary>
+        public bool SendContractMessage(string json)
+        {
+            if (string.IsNullOrEmpty(json)) return false;
 #if UNITY_ANDROID && !UNITY_EDITOR
             return _plugin != null && _plugin.Call<bool>("sendContractMessage", json);
 #else
-            Debug.Log($"[LiveTransport] (editor) would send receipt: {json}");
+            Debug.Log($"[LiveTransport] (editor) would send contract message: {json}");
             return false;
 #endif
         }
@@ -178,14 +185,15 @@ namespace MLOmega.XR.Transport
         /// <c>AsrKwsService.asPcmSink()</c>. No-op in editor / before StartTransport.
         /// </summary>
 #if UNITY_ANDROID && !UNITY_EDITOR
-        public void AttachPcmFeed(AndroidJavaObject feed)
+        public bool AttachPcmFeed(AndroidJavaObject feed)
         {
             if (_plugin == null || feed == null)
             {
                 Debug.LogWarning("[LiveTransport] AttachPcmFeed: transport not started; feed dropped.");
-                return;
+                return false;
             }
             _plugin.Call("attachPcmFeed", feed);
+            return true;
         }
 
         /// <summary>Detach a previously attached PCM feed.</summary>
@@ -195,8 +203,11 @@ namespace MLOmega.XR.Transport
             _plugin.Call("detachPcmFeed", feed);
         }
 #else
-        public void AttachPcmFeed(object feed) =>
+        public bool AttachPcmFeed(object feed)
+        {
             Debug.Log("[LiveTransport] (editor) AttachPcmFeed no-op (DIRECT_PYTHON).");
+            return false;
+        }
 
         public void DetachPcmFeed(object feed) { }
 #endif
@@ -214,6 +225,7 @@ namespace MLOmega.XR.Transport
             // ui_intent_id so OnNativeMessage's UIIntent path never claims it.
             string json =
                 "{\"type\":\"device_transcript\"," +
+                "\"segment_id\":" + JsonConvert.ToString($"device:{startMs}:{endMs}") + "," +
                 "\"text\":" + JsonConvert.ToString(text ?? string.Empty) + "," +
                 "\"language\":" + JsonConvert.ToString(language ?? string.Empty) + "," +
                 "\"start_ms\":" + startMs + "," +

@@ -497,7 +497,11 @@ class LivePipeline:
             or "viki"
         ).strip()
         self._wake_word_pushed = False
+        self._wake_word_command_id: str | None = None
         self._command_window_until: float = 0.0
+        self._device_gate_authoritative = False
+        self._routed_device_segments: set[str] = set()
+        self._routed_device_segment_order: list[str] = []
         # How long a wake-word arm stays valid for the following command turn.
         self._command_window_s = 8.0
         self.wake_word_metrics: dict[str, int] = {
@@ -662,7 +666,7 @@ class LivePipeline:
             except Exception:
                 pass
 
-    def _push_device_command(self, cmd: dict[str, Any]) -> None:
+    def _push_device_command(self, cmd: dict[str, Any]) -> bool:
         """Push a device_command message to Unity over the same DataChannel (E33 §4).
 
         E35 §1: a ``set_tts`` command is a LOCAL toggle (voice on/off) — applied here
@@ -671,25 +675,72 @@ class LivePipeline:
             self.set_tts(bool(cmd.get("tts")))
         if self.ingress is not None and hasattr(self.ingress, "send_ui_intent"):
             try:
-                self.ingress.send_ui_intent(json.dumps(cmd))
+                return int(self.ingress.send_ui_intent(json.dumps(cmd))) > 0
             except Exception:
-                pass
+                return False
+        return False
 
-    def push_wake_word(self, *, force: bool = False) -> None:
+    def push_wake_word(self, *, force: bool = False) -> bool:
         """E58: push the owner-chosen wake word to the device (once per session).
 
         Sent as a ``set_wake_word`` device_command over the same DataChannel; the
         device re-points its ASR-transcript wake matcher — no APK rebuild. Idempotent
         per session unless ``force``. Best-effort: a closed channel is a no-op."""
         if self._wake_word_pushed and not force:
-            return
+            return True
         word = (self.wake_word or "").strip()
         if not word:
-            return
-        self._wake_word_pushed = True
-        self._push_device_command(
-            {"type": "device_command", "action": "set_wake_word", "word": word}
-        )
+            return False
+        import uuid as _uuid
+
+        command_id = f"wake-{_uuid.uuid4()}"
+        sent = self._push_device_command({
+            "type": "device_command", "command_id": command_id,
+            "action": "set_wake_word", "word": word,
+        })
+        if sent:
+            self._wake_word_command_id = command_id
+        return sent
+
+    def confirm_wake_word(self, command_id: str | None, ok: bool) -> bool:
+        """Mark E58 delivered only after the device executed the matching command."""
+        if not command_id or command_id != self._wake_word_command_id:
+            return False
+        self._wake_word_pushed = bool(ok)
+        if not ok:
+            self._wake_word_command_id = None
+        return bool(ok)
+
+    def set_device_gate_authoritative(self, enabled: bool = True) -> None:
+        """Declare that this PhoneOnly app sends exact command-tagged transcripts."""
+        self._device_gate_authoritative = bool(enabled)
+
+    def on_device_transcript(self, payload: dict[str, Any]) -> Any:
+        """Route the exact Android command transcript, never a later PC ASR turn."""
+        self._device_gate_authoritative = True
+        if not payload.get("is_final", True) or not payload.get("is_command"):
+            return None
+        if self.wake_word_policy != "gated" or self.intents is None:
+            return None
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            return None
+        segment_id = str(payload.get("segment_id") or
+                         f"device:{payload.get('start_ms')}:{payload.get('end_ms')}:{text}")
+        if segment_id in self._routed_device_segments:
+            return None
+        self._routed_device_segments.add(segment_id)
+        self._routed_device_segment_order.append(segment_id)
+        if len(self._routed_device_segment_order) > 64:
+            old = self._routed_device_segment_order.pop(0)
+            self._routed_device_segments.discard(old)
+        try:
+            routed = self.intents.on_transcript(text)
+            self.wake_word_metrics["turns_routed"] += 1
+            self._speak_routed_reply(routed)
+            return routed
+        except Exception:
+            return None
 
     # ------------------------------------------------------ wake-word gating (E47-C §4)
     def set_wake_word_policy(self, policy: str) -> None:
@@ -741,6 +792,10 @@ class LivePipeline:
         if flag is not None:
             # Explicit device decision (True routes, False gates out).
             return bool(flag)
+        # The current PhoneOnly app routes its exact tagged device transcript via
+        # on_device_transcript(). Its separate PC ASR turn is memory-only.
+        if self._device_gate_authoritative:
+            return False
         # Gated policy but the turn carries no gate signal at all → open-compat, so
         # a device that never emits is_command is never silenced.
         return True
@@ -773,6 +828,20 @@ class LivePipeline:
             return None
         self._push_intent(msg)
         return msg
+
+    def _speak_routed_reply(self, routed: Any) -> None:
+        """Speak the short text card produced by an explicitly routed command."""
+        if not isinstance(routed, dict):
+            return
+        ui = routed.get("ui_intent")
+        if not isinstance(ui, dict):
+            return
+        content = ui.get("content")
+        if not isinstance(content, dict):
+            return
+        reply = content.get("text") or content.get("message") or content.get("title")
+        if isinstance(reply, str) and 0 < len(reply.strip()) <= 300:
+            self.speak_reply(reply.strip())
 
     def _route_vision_focus(self, request: dict[str, Any]) -> Any:
         """Bridge a router vision intent (what_is/find/ocr/zoom) to the vision handler.
@@ -1184,7 +1253,8 @@ class LivePipeline:
                 self.wake_word_metrics["turns_gated_out"] += 1
             if route_intent and self.intents is not None:
                 try:
-                    self.intents.on_transcript(text)
+                    routed = self.intents.on_transcript(text)
+                    self._speak_routed_reply(routed)
                 except Exception:
                     pass
             elif route_intent and self.enrollment is not None:
