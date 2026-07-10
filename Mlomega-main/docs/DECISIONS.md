@@ -1,5 +1,9 @@
 # DECISIONS
 
+## 2026-07-10 — E59 : window management gestuel (grab/resize/close/minimise à la main) (ADR)
+
+Le flux de position du pincement existait déjà (`GestureCallbacks.screenX/screenY` sur begin/update/end, projection des landmarks MediaPipe) : aucun changement Kotlin, la manipulation est purement Unity. Un `PanelManipulator` (assembly Reflex, comme MenuGestureController — Reflex→UI une seule direction, pas de cycle asmdef) consomme le même stream pinch que LensWindow. Désambiguïsation par hit-test world-space au `PINCH_BEGIN` contre un registre opt-in `IManipulablePanel` : hit sur un panneau = grab/resize/bouton **et le pincement est « claimé »** ; hit sur rien = non-claimé = le zoom LensWindow existant n'est jamais volé (le ReflexScheduler exécute le manipulator avant le lens et coupe le zoom si `HasClaim` — propriétaire unique, indépendant de l'ordre de souscription). Opt-in explicite : VirtualScreen (cible prioritaire, aspect ratio verrouillé, placement restauré à la réouverture) et les cards flaggées ; les éléments ancrés-objet n'implémentent pas l'interface et suivent le monde. Clamp de resize **proportionnel** sous aspect-lock (le bord ne distord pas la fenêtre vidéo). Placement mémorisé par type via `PanelPlacementStore` (session courante — délibérément PAS le `ui_state` du SceneCache, qui impose un TTL et ne stocke pas de transforms). Budget §9.4 tenu (pipeline gestes on-demand inchangé, pas d'alloc par frame). EditMode 8/8 nouveaux, suite complète 76/76.
+
 ## 2026-07-10 — E53 Phase A : « Viki mode aide » (moteur PC + UI bank Unity) (ADR)
 
 **Plan = MICRO-ACTIONS (décision utilisateur).** Chaque step du TaskPlan est UNE action atomique = UN geste affichable (« verse la farine dans le bol »), jamais une étape composite — imposé par `_PLAN_SYSTEM`/`_DOC_PROMPT`. Un plan d'une seule action est légitime (aide ponctuelle en pleine activité).

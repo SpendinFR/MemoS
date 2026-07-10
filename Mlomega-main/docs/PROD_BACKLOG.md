@@ -313,16 +313,16 @@ Constat : le KWS sherpa est entraîné en **anglais** → « viki » matché « 
 - [x] APK v4 rebuild (embarque le matcher). **Change le mot n'importe quand** : édite `wake_word:` dans `configs/user_profile.yaml` → poussé à la prochaine session, zéro rebuild.
 - [ ] Validation S25 : dire « viki » → fenêtre de commande s'ouvre ; changer le mot dans le profil → nouvelle session le prend. ADR §E58.
 
-## E59 — Manipulation des fenêtres/panneaux à la main (window management gestuel) (À FAIRE)
+## E59 — Manipulation des fenêtres/panneaux à la main (FAIT — 2026-07-10, commit 2f86ddc ; validation device en attente)
 
-Constat (2026-07-09) : les gestes actuels (E47-B) = paume (menu) / balayage (cacher tout) / pincement (zoom LensWindow). Il MANQUE la manipulation directe des affichages — l'utilisateur doit pouvoir **placer, dimensionner et gérer** ce qu'il affiche (cards, menu, et surtout une **fenêtre vidéo** YouTube/replay) n'importe où dans son champ. Le tracking des mains (MediaPipe landmarks on-device, 12 fps) tourne déjà — c'est une nouvelle skill d'interaction, pas un chantier lourd.
+Constat : paume (menu) / balayage (cacher) / pincement (zoom) existaient, mais pas la manipulation directe des affichages. Découverte : la POSITION du pincement était déjà exposée par le Kotlin (`GestureCallbacks.screenX/screenY` sur begin/update/end) → **zéro changement natif**, tout est Unity.
 
-- [ ] **Grab-drag** : pincer (pouce-index) sur un panneau → il « colle » à la main → le déplacer où on veut dans le champ ; relâcher = poser. Ancrage stable (world-locked ou head-locked selon préférence).
-- [ ] **Pinch-scale** : deux mains (ou pincement + éloignement) → redimensionner la fenêtre (surtout la fenêtre vidéo).
-- [ ] **Fermer / réduire** : geste dédié (ex. balayage sur le panneau ciblé, ou bouton glass au coin) → fermer ou minimiser en pastille rappelable.
-- [ ] Cible prioritaire : la **fenêtre vidéo** (VirtualScreen/replay/YouTube) — déplaçable + resizable librement. Puis généraliser aux cards/menu.
-- [ ] Feedback visuel (halo/ombre glass pendant le drag), et respect du budget geste (MediaPipe on-demand, §9.4). Fonctionne PhoneOnly et lunettes.
-- Note : à câbler sur `GesturePipeline`/`MenuGestureController` existants + le broker UI (les panneaux doivent exposer position/taille manipulables).
+- [x] **Grab-drag** : `PINCH_BEGIN` sur un panneau manipulable (hit-test contre le registre opt-in `IManipulablePanel`) → le pincement est « claimé », le panneau colle au point de pincement et suit la main ; relâcher = posé. Pincement AILLEURS = non-claimé → le zoom LensWindow existant n'est JAMAIS volé (le ReflexScheduler exécute le manipulator avant le lens et coupe le zoom sur claim).
+- [x] **Resize** : pincement sur un coin → redimensionne, clamp min/max **proportionnel** (l'aspect ratio de la fenêtre vidéo survit, pas de distorsion).
+- [x] **Fermer / réduire** : boutons glass ✕ / – au coin (pinch-tap) ; – réduit en **pastille rappelable** (pinch-tap = restaurer). Balayage global « cache tout » inchangé.
+- [x] **Cible prioritaire** : `VirtualScreen` (vidéo/replay — aspect verrouillé, placement restauré à la réouverture) ; `ContextCard` en opt-in ; les éléments **ancrés-objet** (task_anchor, PersonTag) ne sont jamais manipulables (ils suivent le monde). Placement/taille persistés par type (`PanelPlacementStore`, session).
+- [x] Budget §9.4 tenu (pipeline gestes on-demand, zéro alloc/frame). Tests : 8 nouveaux EditMode, **suite complète 76/76**, zéro régression. ADR §E59.
+- Restes : MenuPanel (surface logique sans géométrie propre — trivial quand il portera un GlassPanel) ; halo visuel pendant le drag (polish UI séparé) ; validation device.
 
 ## E53 — Mode aide universel « Viki mode aide » (ARCHI VALIDÉE 2026-07-09 — à implémenter par phases)
 

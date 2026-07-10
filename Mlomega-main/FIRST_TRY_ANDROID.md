@@ -204,6 +204,31 @@ Tu peux maintenant faire 2-3 sessions dans la journée : chaque « Terminer la s
 18. ☐ Tailscale actif sur le tél, Wi-Fi coupé (4G) → `http://100.113.42.19:8710/health` répond → session dehors OK (`active_endpoint = tailscale` sur `/metrics`)
 19. ☐ Quitte une pièce, déplace un objet, reviens → cue « quelque chose a changé »
 
+---
+
+# MISE À JOUR — APK v5 (E53 mode aide + E59 fenêtres à la main)
+
+**Nouvel APK** : même fichier `mlomega-phoneonly.apk` — réinstalle par-dessus (`adb install -r ...`). SHA-256 : `A_COMPLETER_AU_BUILD`.
+
+## 🆕 « Viki, mode aide » (E53) — l'assistant de tâche pas-à-pas
+- Dis « **viki… mode aide** » (ou « **aide-moi à faire des crêpes** » directement). Viki jette UN coup d'œil à la scène (elle devine le contexte), te demande la tâche si besoin, puis génère un **plan de micro-actions** (1 action = 1 geste).
+- À l'écran : le **panneau de tâche** (fait ✓ / en cours / suivant en fantôme) + des **ancres sur les objets** (anneau qui SUIT l'objet même si tu le déplaces, **trajectoire animée du geste** : verser=arc, visser=cercle, essuyer=va-et-vient, appuyer=pulse), minuteur, quantités, « prends celui-là » si plusieurs candidats, flèche si l'objet est hors-champ.
+- Avance à la voix : « **c'est fait** », « **étape suivante** », « **répète** », « **pause la tâche** », « **reprends la tâche** », « **termine la tâche** ». Si tu n'avances plus, Viki propose un indice toute seule.
+- **Cloud opt-in** : avec ta clé OpenAI dans `.env` + « mode payant », le plan et les indices visuels passent par gpt-5.4-mini (coût affiché). Sans clé : LLM local, honnête.
+
+## 🆕 Fenêtres à la main (E59)
+- **Pince SUR un panneau** (fenêtre vidéo/replay en premier) → il colle à ta main → déplace-le où tu veux, relâche pour poser.
+- **Pince sur un COIN** → redimensionne (la vidéo garde ses proportions).
+- Boutons glass au coin : **✕** ferme, **–** réduit en pastille (re-pince la pastille pour restaurer). Position/taille mémorisées.
+- Le pincement AILLEURS que sur un panneau = zoom, comme avant. Les éléments collés aux objets (tags personnes, ancres de tâche) ne se déplacent pas — ils suivent le monde.
+
+## Checklist ajoutée (v5)
+20. ☐ « viki… aide-moi à [tâche simple] » → coup d'œil scène → plan de micro-actions → panneau + ancre/geste sur l'objet
+21. ☐ « c'est fait » → l'étape suivante s'affiche instantanément (fantôme pré-calculé)
+22. ☐ Ne rien faire ~90 s pendant une tâche → un indice arrive tout seul
+23. ☐ « rejoue 14h » → pince la fenêtre vidéo → déplace-la ; pince un coin → redimensionne ; « – » → pastille → re-pince → restaurée
+24. ☐ Pince hors panneau → le zoom marche comme avant
+
 ## 👓 Lunettes XREAL (E49 — à valider sur matériel)
 
 L'app lunettes est une **APK séparée** : `mlomega-xreal-g1.apk` (~191 Mo), à builder toi-même
