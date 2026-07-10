@@ -354,6 +354,30 @@ def test_explicit_end_waits_inflight_audio_before_flush_and_pipeline_end(monkeyp
     asyncio.run(scenario())
 
 
+def test_runtime_surfaces_best_effort_close_day_maintenance_warning():
+    async def scenario():
+        rt = runtime_mod.PhoneOnlyRuntime(
+            "transport-maintenance",
+            ingress_factory=FakeIngress,
+            pipeline_factory=FakePipeline,
+            close_day=lambda **_: {
+                "status": "completed",
+                "maintenance": {
+                    "status": "warning",
+                    "errors": [],
+                    "warnings": ["referenced media exceeds quota"],
+                },
+            },
+        )
+        await rt.start()
+        status = await rt.end_and_close_day()
+        assert status["close_day"] == "completed"
+        assert status["close_day_maintenance"] == "warning"
+        assert any("maintenance.warning" in error for error in status["recent_errors"])
+
+    asyncio.run(scenario())
+
+
 def test_product_clip_recorder_is_passed_to_ingress_and_stopped():
     recorders = []
 

@@ -390,6 +390,8 @@ class PhoneOnlyRuntime:
         self.ended = False
         self.close_day_started = False
         self.close_day_status = "not_started"
+        self.close_day_result: dict[str, Any] = {}
+        self.close_day_maintenance_status = "not_started"
         self.end_status = "active"
         self._end_lock = asyncio.Lock()
         self._delivery_lock = asyncio.Lock()
@@ -578,10 +580,21 @@ class PhoneOnlyRuntime:
             result = await asyncio.to_thread(
                 self._run_close_day, person_id=self.person_id, live_session_id=self.live_session_id,
             )
+            self.close_day_result = dict(result or {})
             self.close_day_status = str((result or {}).get("status") or "completed")
+            maintenance = (result or {}).get("maintenance") or {}
+            self.close_day_maintenance_status = str(
+                maintenance.get("status") or "not_run"
+            )
+            if self.close_day_maintenance_status in {"error", "warning"}:
+                details = maintenance.get("errors") or maintenance.get("warnings") or []
+                self.recent_errors.append(
+                    f"close_day.maintenance.{self.close_day_maintenance_status}: {details}"[:500]
+                )
         except Exception as exc:
             self.recent_errors.append(str(exc)[:500])
             self.close_day_status = "error"
+            self.close_day_maintenance_status = "not_run"
         return self.status()
 
     async def end_and_close_day(self, *, drain_timeout_s: float = 5.0) -> dict[str, Any]:
@@ -644,6 +657,7 @@ class PhoneOnlyRuntime:
                 "speech_segments_archived": getattr(archive, "metrics", {}).get("segments_archived", 0) if archive else 0,
                 "end_session": self.end_status,
                 "close_day": self.close_day_status,
+                "close_day_maintenance": self.close_day_maintenance_status,
                 "recent_errors": list(self.recent_errors),
                 "ui_intents_delivered": len(self.delivery_adapter.renderer.sent),
                 "clip_recording": dict(self.clip_metrics) if self.clip_metrics else (

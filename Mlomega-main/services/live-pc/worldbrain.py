@@ -288,10 +288,10 @@ class WorldBrain:
         self.relations: list[Relation] = []
         self.change_events: list[ChangeEvent] = []
         self._obs_seq = 0
-        self._entity_seq = 0
 
         # Light service-local SQLite for session persistence (never a core table).
         self._svc_db = self._init_service_db(service_db_path)
+        self._init_entity_registry()
 
         self.metrics = {
             "scene_deltas": 0,
@@ -338,15 +338,130 @@ class WorldBrain:
             ),
         )
         self._svc_db.commit()
+        self._persist_registry_entity(e)
+
+    def _init_entity_registry(self) -> None:
+        """Install the owner-scoped registry used across PhoneOnly sessions."""
+        from mlomega_audio_elite.db import connect, write_transaction  # type: ignore
+
+        with connect(self.db_path) as con, write_transaction(con):
+            con.execute(
+                """CREATE TABLE IF NOT EXISTS worldbrain_entity_registry_v19(
+                     entity_id TEXT PRIMARY KEY,
+                     person_id TEXT NOT NULL,
+                     kind TEXT NOT NULL,
+                     normalized_label TEXT NOT NULL,
+                     display_label TEXT NOT NULL,
+                     entity_slot INTEGER NOT NULL,
+                     first_seen TEXT NOT NULL,
+                     last_seen TEXT NOT NULL,
+                     last_session_id TEXT NOT NULL,
+                     last_track_id TEXT,
+                     last_bbox_json TEXT,
+                     observation_count INTEGER NOT NULL DEFAULT 0,
+                     confidence REAL NOT NULL DEFAULT 0.0,
+                     UNIQUE(person_id,kind,normalized_label,entity_slot))"""
+            )
+            con.execute(
+                """CREATE INDEX IF NOT EXISTS idx_worldbrain_registry_owner_label
+                   ON worldbrain_entity_registry_v19(
+                     person_id,kind,normalized_label,last_seen)"""
+            )
+
+    @staticmethod
+    def _identity_label(label: str) -> str:
+        return " ".join(str(label or "object").strip().lower().split()) or "object"
+
+    def _claim_entity_id(self, obs: Observation) -> str:
+        """Reuse a durable slot while keeping raw tracker ids session-scoped.
+
+        A lone prior object with the same detector class is reused.  With several
+        homonymous objects, bbox overlap/centre proximity chooses among slots not
+        already claimed in this session, so simultaneous tracks stay distinct.
+        This is a continuity heuristic, not biometric object re-identification.
+        """
+        from mlomega_audio_elite.db import connect  # type: ignore
+        from mlomega_audio_elite.utils import stable_id  # type: ignore
+
+        normalized = self._identity_label(obs.label)
+        with connect(self.db_path) as con:
+            rows = [dict(row) for row in con.execute(
+                """SELECT * FROM worldbrain_entity_registry_v19
+                   WHERE person_id=? AND kind=? AND normalized_label=?
+                   ORDER BY last_seen DESC,entity_slot ASC""",
+                (self.person_id, obs.kind, normalized),
+            ).fetchall()]
+        claimed = set(self.entities)
+        available = [row for row in rows if str(row["entity_id"]) not in claimed]
+        if available:
+            import json as _json
+
+            def score(row: dict[str, Any]) -> tuple[float, float]:
+                try:
+                    prior = tuple(float(v) for v in (_json.loads(row.get("last_bbox_json") or "null") or ()))
+                    if len(prior) != 4:
+                        raise ValueError("missing bbox")
+                    overlap = _iou(prior, obs.bbox)
+                    pa, pb = _center(prior), _center(obs.bbox)
+                    distance = ((pa[0] - pb[0]) ** 2 + (pa[1] - pb[1]) ** 2) ** 0.5
+                    return overlap, -distance
+                except Exception:
+                    return 0.0, float("-inf")
+
+            chosen = available[0] if len(available) == 1 else max(available, key=score)
+            return str(chosen["entity_id"])
+
+        next_slot = 1 + max((int(row.get("entity_slot") or 0) for row in rows), default=0)
+        return stable_id("worldentity", self.person_id, obs.kind, normalized, next_slot)
+
+    def _persist_registry_entity(self, e: WorldEntity) -> None:
+        import json as _json
+        from mlomega_audio_elite.db import connect, write_transaction  # type: ignore
+
+        normalized = self._identity_label(e.label)
+        with connect(self.db_path) as con, write_transaction(con):
+            existing = con.execute(
+                "SELECT entity_slot,first_seen FROM worldbrain_entity_registry_v19 WHERE entity_id=?",
+                (e.entity_id,),
+            ).fetchone()
+            if existing is None:
+                slot_row = con.execute(
+                    """SELECT COALESCE(MAX(entity_slot),0)+1 AS next_slot
+                       FROM worldbrain_entity_registry_v19
+                       WHERE person_id=? AND kind=? AND normalized_label=?""",
+                    (self.person_id, e.kind, normalized),
+                ).fetchone()
+                slot = int(slot_row["next_slot"] if slot_row else 1)
+                first_seen = e.first_seen
+            else:
+                slot = int(existing["entity_slot"])
+                first_seen = str(existing["first_seen"])
+            con.execute(
+                """INSERT INTO worldbrain_entity_registry_v19(
+                     entity_id,person_id,kind,normalized_label,display_label,
+                     entity_slot,first_seen,last_seen,last_session_id,last_track_id,
+                     last_bbox_json,observation_count,confidence)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(entity_id) DO UPDATE SET
+                     display_label=excluded.display_label,
+                     last_seen=excluded.last_seen,
+                     last_session_id=excluded.last_session_id,
+                     last_track_id=excluded.last_track_id,
+                     last_bbox_json=excluded.last_bbox_json,
+                     observation_count=worldbrain_entity_registry_v19.observation_count+1,
+                     confidence=MAX(worldbrain_entity_registry_v19.confidence,excluded.confidence)""",
+                (
+                    e.entity_id, self.person_id, e.kind, normalized, e.label, slot,
+                    first_seen, e.last_seen, self.live_session_id, e.track_id,
+                    _json.dumps(list(e.last_bbox) if e.last_bbox else None),
+                    max(1, int(e.observation_count)), float(e.confidence),
+                ),
+            )
 
     # --------------------------------------------------------------- ingest
     def _next_obs_id(self) -> str:
         self._obs_seq += 1
         return f"obs-{self.live_session_id}-{self._obs_seq}"
-
-    def _next_entity_id(self, label: str) -> str:
-        self._entity_seq += 1
-        return f"ent-{self.live_session_id}-{label}-{self._entity_seq}"
 
     def ingest_scene_delta(self, delta: Mapping[str, Any]) -> dict[str, Any]:
         """Consume one SceneDelta; return promoted/changed entities for this frame."""
@@ -436,7 +551,7 @@ class WorldBrain:
         }
 
     def _promote(self, track_id: str, obs: Observation, now_iso: str, ev: str) -> str:
-        entity_id = self._next_entity_id(obs.label)
+        entity_id = self._claim_entity_id(obs)
         e = WorldEntity(
             entity_id=entity_id, kind=obs.kind, label=obs.label,
             confidence=obs.confidence, lifecycle="confirmed", track_id=track_id,

@@ -287,6 +287,30 @@ def test_manager_reads_completed_close_day_after_service_restart(tmp_path, monke
     asyncio.run(scenario())
 
 
+def test_retention_failure_is_persisted_without_reclassifying_close_day(tmp_path, monkeypatch):
+    db_path = tmp_path / "maintenance.db"
+    monkeypatch.setenv("MLOMEGA_DB", str(db_path))
+    report = close_day_script._record_maintenance_report(
+        run_id="close-run",
+        person_id="owner",
+        package_date="2026-07-10",
+        live_session_id="live-one",
+        clip_tiering={"status": "ok", "warnings": []},
+        media_retention={"status": "error", "error": "disk locked", "warnings": []},
+    )
+    assert report["status"] == "error"
+    from mlomega_audio_elite.db import connect
+
+    with connect(db_path) as con:
+        row = con.execute(
+            """SELECT status,errors_json FROM phoneonly_close_day_maintenance_v19
+               WHERE run_id=? AND live_session_id=?""",
+            ("close-run", "live-one"),
+        ).fetchone()
+    assert row["status"] == "error"
+    assert "disk locked" in row["errors_json"]
+
+
 def test_close_day_subprocess_command_carries_allow_rerun(monkeypatch):
     """The subprocess CloseDay command includes --allow-rerun for a rerun session,
     and omits it otherwise (verified without spawning a real process)."""

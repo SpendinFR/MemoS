@@ -16,7 +16,10 @@ All writes stay owner-scoped and append-only where the target is immutable.
 """
 from __future__ import annotations
 
+import os
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .db import connect, insert_only, upsert, write_transaction
 from .utils import json_dumps, json_loads, now_iso, stable_id
@@ -45,14 +48,39 @@ def _place_key(event: dict[str, Any]) -> str | None:
     return None
 
 
+def _local_zone() -> ZoneInfo:
+    try:
+        return ZoneInfo(os.environ.get("MLOMEGA_LOCAL_TZ", "Europe/Paris"))
+    except Exception:
+        return ZoneInfo("Europe/Paris")
+
+
+def _parse_instant(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _local_day_utc_bounds(package_date: str) -> tuple[str, str]:
+    """Return the local civil day's exact half-open bounds expressed in UTC."""
+    local_day = date.fromisoformat(str(package_date)[:10])
+    local_start = datetime.combine(local_day, time.min, tzinfo=_local_zone())
+    local_end = local_start + timedelta(days=1)
+    return local_start.astimezone(timezone.utc).isoformat(), local_end.astimezone(timezone.utc).isoformat()
+
+
 def _time_slot(occurred_at: str | None) -> str:
-    """Coarse time-slot bucket derived from the ISO hour (no external deps)."""
+    """Coarse time slot in the configured local civil timezone."""
     if not occurred_at:
         return "unknown"
-    try:
-        hour = int(str(occurred_at)[11:13])
-    except Exception:
+    parsed = _parse_instant(occurred_at)
+    if parsed is None:
         return "unknown"
+    hour = parsed.astimezone(_local_zone()).hour
     if hour < 6:
         return "night"
     if hour < 12:
@@ -71,11 +99,10 @@ def run_visual_consolidation(
 ) -> dict[str, Any]:
     ensure_v19_visual_schema(db_path)
     now = now_iso()
-    day_start = f"{package_date}T00:00:00+00:00"
-    day_end = f"{package_date}T23:59:59+00:00"
+    day_start, day_end = _local_day_utc_bounds(package_date)
 
     with connect(db_path) as con:
-        q = "SELECT * FROM visual_events_v19 WHERE person_id=? AND occurred_at BETWEEN ? AND ?"
+        q = "SELECT * FROM visual_events_v19 WHERE person_id=? AND occurred_at>=? AND occurred_at<?"
         params: list[Any] = [person_id, day_start, day_end]
         if live_session_id:
             q += " AND live_session_id=?"

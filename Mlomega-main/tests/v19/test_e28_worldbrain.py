@@ -89,6 +89,60 @@ def test_track_promoted_after_confirmed_observations(tmp_path, monkeypatch):
     assert e.label == "cup" and e.lifecycle == "confirmed"
 
 
+def test_entity_id_survives_live_session_restart(tmp_path, monkeypatch):
+    db_path = tmp_path / "memory.db"
+    monkeypatch.setenv("MLOMEGA_DB", str(db_path))
+    monkeypatch.setenv("MLOMEGA_HOME", str(tmp_path))
+    config = worldbrain.WorldBrainConfig(
+        promote_min_observations=1, promote_min_confidence=0.3
+    )
+    first = worldbrain.WorldBrain(
+        person_id="me", live_session_id="session-one", db_path=db_path,
+        config=config, publish_world_state=False,
+    )
+    first_id = first.ingest_scene_delta(
+        _delta("one", [_ent("tracker-a", "mug", [10, 10, 30, 30])])
+    )["promoted"][0]
+
+    second = worldbrain.WorldBrain(
+        person_id="me", live_session_id="session-two", db_path=db_path,
+        config=config, publish_world_state=False,
+    )
+    second_id = second.ingest_scene_delta(
+        _delta("two", [_ent("tracker-z", "mug", [12, 11, 32, 31])])
+    )["promoted"][0]
+
+    assert second_id == first_id
+    assert "session-one" not in first_id and "session-two" not in second_id
+
+
+def test_homonymous_objects_keep_distinct_durable_slots(tmp_path, monkeypatch):
+    db_path = tmp_path / "memory.db"
+    monkeypatch.setenv("MLOMEGA_DB", str(db_path))
+    config = worldbrain.WorldBrainConfig(
+        promote_min_observations=1, promote_min_confidence=0.3
+    )
+    first = worldbrain.WorldBrain(
+        person_id="me", live_session_id="s1", db_path=db_path,
+        config=config, publish_world_state=False,
+    )
+    ids_first = first.ingest_scene_delta(_delta("f", [
+        _ent("left", "cup", [0, 0, 20, 20]),
+        _ent("right", "cup", [200, 0, 220, 20]),
+    ]))["promoted"]
+    assert len(set(ids_first)) == 2
+
+    second = worldbrain.WorldBrain(
+        person_id="me", live_session_id="s2", db_path=db_path,
+        config=config, publish_world_state=False,
+    )
+    ids_second = second.ingest_scene_delta(_delta("g", [
+        _ent("new-right", "cup", [198, 0, 218, 20]),
+        _ent("new-left", "cup", [2, 0, 22, 20]),
+    ]))["promoted"]
+    assert set(ids_second) == set(ids_first)
+
+
 def test_single_weak_bbox_never_promotes(tmp_path, monkeypatch):
     wb, _ = _wb(tmp_path, monkeypatch, publish_world_state=False)
     # A single low-confidence bbox seen many times stays below the floor.

@@ -138,6 +138,116 @@ def _stage_identifier(name: str, result: dict[str, Any]) -> str:
     raise StageGateError(f"close-day {name} returned no durable identifier")
 
 
+_CLOSE_DAY_REQUIRED_STAGES = (
+    "post_stop",
+    "visual_consolidation",
+    "longitudinal",
+    "coordination",
+    "life_model",
+    "outcome_resolution",
+    "life_model_v19",
+    "prediction_emission",
+    "self_schema",
+    "live_ready",
+)
+
+
+def _stage_artifacts(name: str, result: dict[str, Any]) -> list[tuple[str, str, str, str]]:
+    """Return (manifest id, table, pk column, pk value) for actual outputs."""
+    artifacts: list[tuple[str, str, str, str]] = []
+
+    def add(table: str, column: str, value: Any) -> None:
+        if value:
+            text = str(value)
+            artifacts.append((f"{name}:{text}", table, column, text))
+
+    if name == "post_stop":
+        add("v18_pipeline_runs", "run_id", result.get("run_id"))
+    elif name == "visual_consolidation":
+        add("scene_session_summaries_v19", "scene_summary_id", result.get("summary_id"))
+    elif name == "longitudinal":
+        day = result.get("day") if isinstance(result.get("day"), dict) else result
+        add("brain2_longitudinal_runs_v17", "run_id", day.get("run_id"))
+    elif name == "coordination":
+        add("brain2_brainlive_coordination_runs", "run_id", result.get("run_id"))
+    elif name == "life_model":
+        add("brain2_life_model_patch_runs", "patch_run_id", result.get("patch_run_id"))
+        bootstrap = result.get("bootstrap") or {}
+        if isinstance(bootstrap, dict):
+            add("brain2_life_model_exports", "export_id", bootstrap.get("export_id"))
+    elif name == "outcome_resolution":
+        for value in result.get("outcome_ids") or []:
+            add("prediction_outcomes_v19", "outcome_id", value)
+    elif name == "life_model_v19":
+        for key in ("confirmed", "contradicted", "weakened"):
+            for value in result.get(key) or []:
+                add("life_model_entries_v19", "entry_id", value)
+    elif name == "prediction_emission":
+        for value in result.get("prediction_ids") or []:
+            add("predictions_v19", "prediction_id", value)
+    elif name == "self_schema":
+        for value in result.get("schema_entry_ids") or []:
+            add("self_schema_v19", "schema_entry_id", value)
+    elif name == "live_ready":
+        add("brainlive_personal_model_exports", "export_id", result.get("export_id"))
+    # One target can be present in two result buckets (for example an entry
+    # weakened then confirmed during a resumed day); it is still one artifact.
+    return list(dict.fromkeys(artifacts))
+
+
+def _verified_close_day_outputs(
+    *, run_id: str, person_id: str, stage_results: dict[str, dict[str, Any]]
+) -> tuple[list[str], list[str]]:
+    """Build expected outputs and independently observe their durable rows.
+
+    Stage markers are a static contract.  They are observed only by re-reading a
+    completed, semantically valid checkpoint.  Every concrete id returned by a
+    stage is additionally looked up in its owning table and owner scope.  This
+    prevents the former ``observed=list(expected)`` circular proof.
+    """
+    expected = [f"stage:{name}" for name in _CLOSE_DAY_REQUIRED_STAGES]
+    observed: list[str] = []
+    artifact_specs: list[tuple[str, str, str, str]] = []
+    for name in _CLOSE_DAY_REQUIRED_STAGES:
+        artifact_specs.extend(_stage_artifacts(name, stage_results[name]))
+    expected.extend(identifier for identifier, _, _, _ in artifact_specs)
+    expected = list(dict.fromkeys(expected))
+
+    with connect() as con:
+        checkpoints = {
+            str(row["stage_name"]): dict(row)
+            for row in con.execute(
+                """SELECT stage_name,status,result_json FROM v18_pipeline_stages
+                   WHERE run_id=?""",
+                (run_id,),
+            ).fetchall()
+        }
+        for name in _CLOSE_DAY_REQUIRED_STAGES:
+            row = checkpoints.get(name)
+            cached = json_loads(row.get("result_json"), {}) if row else {}
+            if (
+                row
+                and str(row.get("status")) == "completed"
+                and isinstance(cached, dict)
+                and _status_ok(cached, stage_name=name)
+            ):
+                observed.append(f"stage:{name}")
+
+        for identifier, table, column, value in artifact_specs:
+            table_exists = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ).fetchone()
+            if table_exists is None:
+                continue
+            row = con.execute(
+                f"SELECT 1 FROM {table} WHERE {column}=? AND person_id=? LIMIT 1",
+                (value, person_id),
+            ).fetchone()
+            if row is not None:
+                observed.append(identifier)
+    return expected, list(dict.fromkeys(observed))
+
+
 def _package_day(value: str | None) -> str:
     from .brainlive_poststop_deep_flow_v15_15 import _package_day as post_stop_day
     return post_stop_day(value)
@@ -461,6 +571,16 @@ def close_brainlive_day(
                     person_id=person_id, period=period, run_date=day,
                     use_llm=use_llm, run_periodic_mirror_layer=True, force_cases=False)
             out["periods_run"] = ["day", *(_due_longitudinal_periods(day))]
+            period_statuses = {
+                period: str((out.get(period) or {}).get("status") or "missing").lower()
+                for period in out["periods_run"]
+            }
+            out["period_statuses"] = period_statuses
+            out["status"] = (
+                "completed"
+                if all(status in {"ok", "completed"} for status in period_statuses.values())
+                else "failed"
+            )
             return out
         heartbeat_execution_lease(execution_lease)
         longitudinal = _run_stage(run_id=run_id, name="longitudinal", fn=do_longitudinal)
@@ -525,10 +645,38 @@ def close_brainlive_day(
         live_ready = _run_stage(run_id=run_id, name="live_ready", fn=do_live_ready)
         result["stages"]["live_ready"] = live_ready
 
-        expected = [_stage_identifier("post_stop", post), _stage_identifier("visual_consolidation", visual_consolidation), _stage_identifier("longitudinal", longitudinal), _stage_identifier("coordination", coordination), _stage_identifier("life_model", life), _stage_identifier("outcome_resolution", outcome_resolution), _stage_identifier("life_model_v19", life_model_v19), _stage_identifier("prediction_emission", prediction_emission), _stage_identifier("self_schema", self_schema), _stage_identifier("live_ready", live_ready)]
-        output = record_output_manifest(run_id=run_id, person_id=person_id, expected=expected, observed=list(expected), reason="close_day_retention_and_live_ready_check_v18_7")
+        expected, observed = _verified_close_day_outputs(
+            run_id=run_id,
+            person_id=person_id,
+            stage_results={
+                "post_stop": post,
+                "visual_consolidation": visual_consolidation,
+                "longitudinal": longitudinal,
+                "coordination": coordination,
+                "life_model": life,
+                "outcome_resolution": outcome_resolution,
+                "life_model_v19": life_model_v19,
+                "prediction_emission": prediction_emission,
+                "self_schema": self_schema,
+                "live_ready": live_ready,
+            },
+        )
+        output = record_output_manifest(
+            run_id=run_id,
+            person_id=person_id,
+            expected=expected,
+            observed=observed,
+            reason="close_day_durable_output_verification_v18_7",
+        )
+        if not output["complete"]:
+            missing = sorted(set(expected) - set(observed))
+            raise StageGateError(f"close-day durable output manifest is incomplete: {missing}")
         update_run(run_id, status="completed")
-        cleanup = assert_cleanup_eligible(run_id=run_id, person_id=person_id, required_stages=["post_stop", "visual_consolidation", "longitudinal", "coordination", "life_model", "outcome_resolution", "life_model_v19", "prediction_emission", "self_schema", "live_ready"])
+        cleanup = assert_cleanup_eligible(
+            run_id=run_id,
+            person_id=person_id,
+            required_stages=list(_CLOSE_DAY_REQUIRED_STAGES),
+        )
         result.update(status="completed", output_manifest=output, cleanup={**cleanup, "post_stop_run_id": post_stop_run_id})
         _save_close_day(close_day_id=run_id, ctx=ctx, status="completed", post_stop_run_id=post_stop_run_id, cleanup_eligible=True, result=result)
     except Exception as exc:

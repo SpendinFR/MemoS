@@ -99,6 +99,7 @@ def resolve_prediction_outcomes(*, person_id: str, package_date: str, db_path=No
     resolved_at = now_iso()
     now_dt = _parse_dt(resolved_at) or datetime.now(timezone.utc)
     results: list[dict[str, Any]] = []
+    outcome_ids: list[str] = []
     pending_calibrations: list[tuple[str, str, str]] = []
     conversation_auto = _call_conversation_auto_verifier(person_id=person_id)
     with connect(db_path) as con, write_transaction(con):
@@ -138,6 +139,7 @@ def resolve_prediction_outcomes(*, person_id: str, package_date: str, db_path=No
             else:
                 calibration = {"status": "skipped", "reason": status}
             oid = stable_id("outv19", pred["prediction_id"], status, json_dumps(evidence_refs))
+            outcome_ids.append(oid)
             if status in {"verified", "refuted"}:
                 pending_calibrations.append((oid, pred["prediction_id"], status))
             insert_only(
@@ -175,4 +177,10 @@ def resolve_prediction_outcomes(*, person_id: str, package_date: str, db_path=No
                     "UPDATE prediction_outcomes_v19 SET audit_json=? WHERE outcome_id=?",
                     (json_dumps(audit), oid),
                 )
-    return {"status": "completed", "resolved": results, "count": len(results), "conversation_auto_verifier": conversation_auto}
+    return {
+        "status": "completed",
+        "resolved": results,
+        "outcome_ids": outcome_ids,
+        "count": len(results),
+        "conversation_auto_verifier": conversation_auto,
+    }

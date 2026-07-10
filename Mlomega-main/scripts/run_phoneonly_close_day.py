@@ -119,7 +119,29 @@ def main() -> int:
         # applies age-purge/budget on what remains. Both are best-effort.
         clip_tiering = _run_clip_tiering(person_id=args.person_id)
         retention = _run_media_retention(person_id=args.person_id)
-        result = {**result, "clip_tiering": clip_tiering, "media_retention": retention}
+        try:
+            maintenance = _record_maintenance_report(
+                run_id=str(result.get("run_id") or ""),
+                person_id=args.person_id,
+                package_date=str(result.get("package_date") or args.package_date or ""),
+                live_session_id=args.live_session_id,
+                clip_tiering=clip_tiering,
+                media_retention=retention,
+            )
+        except Exception as exc:
+            # The valid CloseDay remains completed even if its secondary status
+            # row cannot be written; the parent runtime still receives the error.
+            maintenance = {
+                "status": "error",
+                "errors": [f"maintenance_report: {str(exc)[:300]}"],
+                "warnings": [],
+            }
+        result = {
+            **result,
+            "clip_tiering": clip_tiering,
+            "media_retention": retention,
+            "maintenance": maintenance,
+        }
 
     print(json.dumps(result, ensure_ascii=False))
     return 0 if str(result.get("status")) == "completed" else 2
@@ -164,6 +186,87 @@ def _run_clip_tiering(*, person_id: str) -> dict:
         return module.tier_clips_close_day(person_id=person_id)
     except Exception as exc:
         return {"status": "error", "error": str(exc)[:160]}
+
+
+def _record_maintenance_report(
+    *,
+    run_id: str,
+    person_id: str,
+    package_date: str,
+    live_session_id: str,
+    clip_tiering: dict,
+    media_retention: dict,
+) -> dict:
+    """Persist best-effort maintenance separately from CloseDay completion.
+
+    Retention must never destroy a valid CloseDay, but an error or warning must
+    remain visible after the worker process exits.  This row is the durable
+    operational status consumed by the PhoneOnly runtime/Doctor.
+    """
+    from mlomega_audio_elite.db import connect, write_transaction
+    from mlomega_audio_elite.utils import json_dumps, now_iso, stable_id
+
+    reports = {"clip_tiering": clip_tiering, "media_retention": media_retention}
+    errors = [
+        f"{name}: {report.get('error') or report.get('status')}"
+        for name, report in reports.items()
+        if str((report or {}).get("status") or "error") not in {"ok", "completed", "disabled"}
+    ]
+    warnings = [
+        f"{name}: {warning}"
+        for name, report in reports.items()
+        for warning in ((report or {}).get("warnings") or [])
+    ]
+    status = "error" if errors else ("warning" if warnings else "completed")
+    maintenance_id = stable_id("phoneonly_maintenance", run_id, live_session_id)
+    now = now_iso()
+    with connect() as con, write_transaction(con):
+        con.execute(
+            """CREATE TABLE IF NOT EXISTS phoneonly_close_day_maintenance_v19(
+                 maintenance_id TEXT PRIMARY KEY,
+                 run_id TEXT NOT NULL,
+                 person_id TEXT NOT NULL,
+                 package_date TEXT NOT NULL,
+                 live_session_id TEXT NOT NULL,
+                 status TEXT NOT NULL,
+                 clip_tiering_json TEXT NOT NULL,
+                 media_retention_json TEXT NOT NULL,
+                 errors_json TEXT NOT NULL,
+                 warnings_json TEXT NOT NULL,
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL,
+                 UNIQUE(run_id,live_session_id))"""
+        )
+        prior = con.execute(
+            "SELECT created_at FROM phoneonly_close_day_maintenance_v19 WHERE maintenance_id=?",
+            (maintenance_id,),
+        ).fetchone()
+        con.execute(
+            """INSERT INTO phoneonly_close_day_maintenance_v19(
+                 maintenance_id,run_id,person_id,package_date,live_session_id,
+                 status,clip_tiering_json,media_retention_json,errors_json,
+                 warnings_json,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(maintenance_id) DO UPDATE SET
+                 status=excluded.status,
+                 clip_tiering_json=excluded.clip_tiering_json,
+                 media_retention_json=excluded.media_retention_json,
+                 errors_json=excluded.errors_json,
+                 warnings_json=excluded.warnings_json,
+                 updated_at=excluded.updated_at""",
+            (
+                maintenance_id, run_id, person_id, package_date, live_session_id,
+                status, json_dumps(clip_tiering), json_dumps(media_retention),
+                json_dumps(errors), json_dumps(warnings),
+                str(prior["created_at"]) if prior else now, now,
+            ),
+        )
+    return {
+        "maintenance_id": maintenance_id,
+        "status": status,
+        "errors": errors,
+        "warnings": warnings,
+    }
 
 
 if __name__ == "__main__":
