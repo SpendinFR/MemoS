@@ -12,17 +12,17 @@ La checklist canonique des **32 corrections** se trouve dans `docs/PROD_BACKLOG.
 
 Décision utilisateur E60 : le pairing initial **reste sans secret préalable** (réseau personnel LAN/Tailscale + token de session). Aucun durcissement par code/PIN n'est à implémenter dans ce lot.
 
-### E60 — Lot Android A (code branché, validation Unity/device ouverte)
+### E60 — Lot Android A (code branché, validation Unity verte, device ouvert)
 
 Le runtime PhoneOnly possède désormais un producteur réel de signaux baseline (`PhoneOnlyReflexSignalSource`) : ASR/wake/subtitle et détection gestes sont chauffés pendant `XrSessionState.Running`, puis restent soumis au scheduler/budget. Le builder instancie aussi le menu réel sur un GameObject enfant (pour que sa fermeture ne désactive jamais la racine), son contrôleur geste/commande, sa surface `GlassPanel` manipulable et `OrientationGuard`. `AndroidBuild` force `com.mlomega.xr.phoneonly`, `runInBackground`, et régénère systématiquement la scène au lieu de réutiliser un YAML ancien. `PhoneOnlySessionCoordinator` conserve une URL immuable pour end/status, refuse proprement une clôture sans endpoint et tient `NeverSleep` seulement pendant Running/Suspended.
 
-Validation disponible : compilation Roslyn directe des `.rsp` Unity dans l'ordre Transport → UI → Reflex → Editor → Tests, **tous OK** ; tests E60 ajoutés pour les baselines ASR/gestures et la vraie surface menu. Le runner Unity n'a pas pu démarrer : le client répond mais indique `No ULF license found` / `No valid Unity Editor license`. Ce blocage d'environnement ne vaut ni échec code ni test vert ; régénération scène, EditMode effectif, APK et S25 restent à faire après réactivation Unity Hub/manual ULF.
+Validation : compilation Roslyn directe des `.rsp` Unity dans l'ordre Transport → UI → Reflex → Editor → Tests, **tous OK** ; tests E60 ajoutés pour les baselines ASR/gestures et la vraie surface menu. Après rafraîchissement de la licence Personal via Unity Hub, le runner réel termine à **80/80 EditMode**. Le premier passage 79/80 a seulement détecté que le test baseline ouvrait le micro Windows ; `_editorMicrophoneEnabled` reste vrai par défaut et n'est coupé que dans ce test. Les lignes de bruit ULF/licensing ne sont pas utilisées comme verdict : fin de processus et XML NUnit le sont. Régénération scène, APK et S25 restent à faire après les autres raccords E60.
 
 ### E60 — Lot audio B (code branché, validation device ouverte)
 
 `PhoneOnlyRuntime` construit désormais TTS et pousse le wake word dès l'ouverture du DataChannel. La commande porte un ID ; Unity renvoie `device_command_result` et le PC ne marque le mot livré qu'après ack positif. Le gating route le `device_transcript` exact et dédupliqué, jamais le tour PC suivant. `TtsAudioPlayer` décode uniquement RIFF PCM16 borné et joue via `AudioSource`. `AsrBridge` choisit `ownMicrophone=true` hors transport, redémarre proprement vers le fan-out WebRTC connecté, conserve son sink et appelle `DetachPcmFeed` avant libération.
 
-Preuves : `test_wake_word_gating.py` + `test_e35_outputs.py` = **26 passed** ; build Gradle complet réussi et `mlomega-reflexvision.aar` reconstruit ; compilation Roslyn des assemblies Editor et Android réussie. L'AAR ONNX retouché mécaniquement par le build a été restauré et n'entre pas dans le commit. Lecture audio, switch micro et reconnexion/ack restent à valider sur S25.
+Preuves : `test_wake_word_gating.py` + `test_e35_outputs.py` = **26 passed** ; build Gradle complet réussi et `mlomega-reflexvision.aar` reconstruit ; compilation Roslyn des assemblies Editor et Android réussie ; suite Unity globale **80/80 EditMode**. L'AAR ONNX retouché mécaniquement par le build a été restauré et n'entre pas dans le commit. Lecture audio, switch micro et reconnexion/ack restent à valider sur S25.
 
 ---
 

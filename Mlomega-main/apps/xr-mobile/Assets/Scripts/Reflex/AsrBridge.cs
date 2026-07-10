@@ -50,6 +50,10 @@ namespace MLOmega.XR.Reflex
     {
         [SerializeField] private MLOmegaConfig _config;
 
+#if UNITY_EDITOR
+        [SerializeField] private bool _editorMicrophoneEnabled = true;
+#endif
+
         [Tooltip("E48-A: relative dir (under getExternalFilesDir()/models/) of the EN " +
                  "streaming ASR model. Matches the provisioned/extracted sherpa dir.")]
         [SerializeField] private string _asrModelDirEn = "models/sherpa-onnx-streaming-zipformer-en-2023-06-26";
@@ -156,7 +160,7 @@ namespace MLOmega.XR.Reflex
                 Debug.LogWarning($"[AsrBridge] activation deferred (models not ready?): {ex.Message}");
             }
 #else
-            StartEditorMic();
+            if (_editorMicrophoneEnabled) StartEditorMic();
 #endif
         }
 

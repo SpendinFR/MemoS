@@ -280,6 +280,7 @@ namespace MLOmega.XR.Tests
             ReflexScheduler sched = BuildScheduler(src, reflex, budget: 5);
             var asr = Make<AsrBridge>("baseline_asr");
             var gestures = Make<GestureBridge>("baseline_gestures");
+            SetField(asr, "_editorMicrophoneEnabled", false);
             SetField(sched, "_asrBridge", asr);
             SetField(sched, "_gestureBridge", gestures);
 
