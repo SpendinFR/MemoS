@@ -979,3 +979,15 @@ risks if modified:
 - Keep `-SimOnly` and `-LivePhone` separated; fake device must not be launched by the PhoneOnly hardware path.
 - Onboarding must not claim Unity/Android validation unless APK/AAR build and real phone test have run.
 
+
+---
+
+## 17. Delta 2026-07-10 — nouveaux appels réels (E53/E58/E59/E60)
+
+- **help mode** : `intent_router._do_help_start` → `HelpTaskEngine.start_from_description` → (`_guess_scene_context` VLM 1x) → `llm_router.complete_json` → `_adopt_plan` → `scene_adapter._enqueue(task_panel)` + `_emit_hot(task_anchor)` ; contrôles actifs pré-routés dans `on_transcript`. Écrit `help_mode_tasks`. Unity : `UIComponentRegistry[task_panel|task_anchor]` → `TaskPanelComponent`/`TaskAnchorComponent` (suivent `SceneCache.Tracks`). **proven** (tests) / rendu device **to_verify**.
+- **wake word runtime** : device final FR → `WakeWordMatcher.matches` → `openCommandWindow` + `onWakeWord`. PC→device : `PhoneOnlyRuntime` (datachannel) → `LivePipeline.push_wake_word()` → `_push_device_command({set_wake_word, word, command_id})` → Unity `DeviceCommandHandler.Execute` → event `SetWakeWordRequested` → `AsrBridge.SetWakeWord` → JNI `setWakeWord`. Ack montant `device_command_result` → retry PC. **proven** unit / device **to_verify**.
+- **reflex activation (fix majeur)** : `PhoneOnlyReflexSignalSource` (prod) → `ReflexScheduler.RaiseSignal` → skills/ASR/gestes. Avant E60 : AUCUN appelant prod (flow mort). **proven** unit / device **to_verify**.
+- **TTS connecté** : `LivePipeline(enable_tts=True)` → message `tts_audio` DataChannel → Unity `TtsAudioPlayer` (NOUVEAU consommateur). **to_verify** device.
+- **pose** : `FrameEnvelope.pose_valid` (nouveau champ contrat) sérialisé Unity → gate `live_pipeline` (pose neutre jamais spatialisée). **proven** unit.
+- **panel manipulation (E59)** : `GestureBridge` pinch(x,y) → `PanelManipulator` claim/hit-test → `IManipulablePanel.MoveTo/Resize/Close/Minimise` ; sinon fallback zoom `LensWindowSkill` inchangé. **proven** EditMode.
+- **Mismatch maintenus** : `ClipRecorder` non instancié en prod (aucun edge réel `gateway→ClipRecorder.offer` actif) ; `GpuArbiter` non construit. **mismatch**.

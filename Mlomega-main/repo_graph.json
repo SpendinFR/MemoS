@@ -22100,5 +22100,90 @@
     "fallback CPU is not proof of GPU nominal path",
     "fake/sim/companion-web is not hardware PhoneOnly validation"
   ],
-  "module_count": 146
+  "module_count": 146,
+  "session_delta_2026_07_10": {
+    "date": "2026-07-10",
+    "note": "Structural delta E53/E58/E59/E60 appended post-scan; see REPO_MAP.md / CALL_TRACE_PROOF.md sections 'Delta 2026-07-10'. Device paths remain to_verify until the real S25 matrix (E60 final gate).",
+    "new_modules": [
+      {
+        "path": "services/live-pc/help_mode.py",
+        "role": "E53 HelpTaskEngine (micro-action plans, VLM scene glance, ghost N+1, grounding, watchdog)",
+        "table": "help_mode_tasks",
+        "status": "proven_unit"
+      },
+      {
+        "path": "apps/xr-mobile/Assets/Scripts/UI/Components/TaskAtoms/",
+        "role": "E53 UI bank (12 atoms) + task_panel/task_anchor registry components",
+        "status": "proven_editmode"
+      },
+      {
+        "path": "apps/xr-mobile/android/reflexvision/src/main/java/com/mlomega/xr/reflexvision/WakeWordMatcher.kt",
+        "role": "E58 wake word matched in FR ASR finals",
+        "status": "proven_jvm"
+      },
+      {
+        "path": "apps/xr-mobile/Assets/Scripts/Reflex/PanelManipulator.cs",
+        "role": "E59 pinch grab/resize/close/minimise (claim-based, no network)",
+        "status": "proven_editmode"
+      },
+      {
+        "path": "apps/xr-mobile/Assets/Scripts/Reflex/PhoneOnlyReflexSignalSource.cs",
+        "role": "E60 production RaiseSignal source (reflex flow was dead before)",
+        "status": "proven_unit_device_to_verify"
+      },
+      {
+        "path": "apps/xr-mobile/Assets/Scripts/UI/TtsAudioPlayer.cs",
+        "role": "E60 Unity consumer of tts_audio DataChannel message",
+        "status": "to_verify"
+      }
+    ],
+    "contract_changes": [
+      {
+        "kind": "device_command",
+        "name": "set_wake_word",
+        "payload": {
+          "word": "str",
+          "command_id": "str"
+        },
+        "direction": "pc_to_unity"
+      },
+      {
+        "kind": "datachannel_up",
+        "name": "device_command_result",
+        "payload": {
+          "command_id": "str",
+          "action": "str",
+          "ok": "bool"
+        },
+        "direction": "unity_to_pc"
+      },
+      {
+        "kind": "ui_intent_components",
+        "names": [
+          "task_panel",
+          "task_anchor"
+        ]
+      },
+      {
+        "kind": "contract_field",
+        "name": "FrameEnvelope.pose_valid",
+        "effect": "PC gates spatialisation on it"
+      }
+    ],
+    "flow_fixes_e60": [
+      "reflex_activation",
+      "tts_connected",
+      "close_day_rerun_db_lookup",
+      "close_day_watchdog",
+      "entity_id_stable_cross_session",
+      "visual_consolidation_europe_paris",
+      "close_day_manifest_rereads_tables",
+      "vision_to_thread",
+      "apk_appid_and_scene_regen"
+    ],
+    "persisting_mismatch": [
+      "ClipRecorder never constructed in production (E55 wiring absent)",
+      "GpuArbiter never constructed"
+    ]
+  }
 }

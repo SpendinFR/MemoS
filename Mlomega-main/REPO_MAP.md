@@ -3288,3 +3288,15 @@ risques si modifié:
   - secrets `.env` logués.
   - modèles live/deep/VLM incohérents.
 ```
+
+---
+
+## Delta 2026-07-10 — E53 / E58 / E59 / E60 (post-scan V3)
+
+Changements STRUCTURELS depuis la génération de cette carte (code = source de vérité ; device non validé = to_verify) :
+
+- **Mode aide (E53)** — NOUVEAU flow. `services/live-pc/help_mode.py` (`HelpTaskEngine`) : plan LLM de micro-actions (+1 coup d'œil VLM scène au start), machine à états, ghost N+1, grounding tracks par `label_en`, watchdog indices ; table sqlite additive `help_mode_tasks` (persistance/reprise). Émet les UIIntents `task_panel` (queue H1) et `task_anchor` (canal hot). Intents routeur : `help_start` + contrôles actifs (« c'est fait », « répète »…) via pré-routeur dans `intent_router.py`. Unity : `Assets/Scripts/UI/Components/TaskAtoms/` (12 atomes) + clés `task_panel`/`task_anchor` dans `UIComponentRegistry`. Statut : proven (tests PC 62 + EditMode 9) ; rendu device to_verify.
+- **Wake word runtime (E58)** — le mot d'éveil est détecté dans la transcription ASR FR device (`WakeWordMatcher.kt`, branch dans `AsrKwsService.decodeSegment`), plus par le KWS anglais. NOUVEAU contrat DataChannel : `device_command set_wake_word {word}` PC→Unity (poussé par `LivePipeline.push_wake_word()`), appliqué par `AsrBridge.SetWakeWord` → JNI `setWakeWord`. NOUVEAU message montant `device_command_result {command_id, action, ok}` (ack, ajouté E60). Source de vérité du mot : `configs/user_profile.yaml wake_word` (défaut « viki »). Statut : proven unit ; device to_verify.
+- **Window management (E59)** — Unity only : `Reflex/PanelManipulator.cs` + `UI/Components/IManipulablePanel.cs`/`ManipulablePanelRegistry.cs`. Pinch « claimé » par hit-test (sinon zoom LensWindow inchangé). Aucun nouveau message réseau. Statut : proven EditMode (76/76) ; device to_verify.
+- **Corrections d'intégration (E60, audit)** — `Reflex/PhoneOnlyReflexSignalSource.cs` (les signaux Reflex sont ENFIN levés en prod → ASR/gestes/sous-titres offline démarrent) ; MenuPanel + OrientationGuard ajoutés à la scène ; TTS connecté activé (`enable_tts=True` runtime + NOUVEAU consommateur Unity `UI/TtsAudioPlayer.cs` du message `tts_audio`) ; contrat `FrameEnvelope` : champ `pose_valid` ajouté (gate spatialisation PC) ; multi-session/jour : `_completed_close_day_exists()` lit la DB (plus de compteur mémoire) ; watchdog close-day de secours (`phoneonly_runtime`) ; `DetachPcmFeed` + fallback `ownMicrophone` (AsrBridge) ; `worldbrain` : entity_id stable inter-sessions (`stable_id` sans session) ; consolidation visuelle en Europe/Paris ; manifest CloseDay relit les tables réelles ; vision déportée en `asyncio.to_thread` ; `AndroidBuild` force `com.mlomega.xr.phoneonly` + régénère toujours la scène. Statut : proven unit ; matrice device S25 to_verify (gate final E60).
+- **Mismatch persistants** : `ClipRecorder` (E55) et `GpuArbiter` ne sont TOUJOURS PAS construits en production (code présent, non branché).

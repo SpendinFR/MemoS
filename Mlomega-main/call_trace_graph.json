@@ -16,369 +16,1611 @@
     {
       "id": "phoneonly_pairing",
       "status": "partially_proven",
-      "entry": {"file": "apps/xr-mobile/Assets/Scripts/Core/SessionPairing.cs", "line": 77, "symbol": "SessionPairing.OnEnable"},
+      "entry": {
+        "file": "apps/xr-mobile/Assets/Scripts/Core/SessionPairing.cs",
+        "line": 77,
+        "symbol": "SessionPairing.OnEnable"
+      },
       "edges": [
-        {"from": "SessionPairing.OnEnable", "to": "SessionPairing.Lifecycle", "file": "apps/xr-mobile/Assets/Scripts/Core/SessionPairing.cs", "line": 88, "proof": "static_direct", "payload": "MLOmegaConfig"},
-        {"from": "SessionPairing.Lifecycle", "to": "SessionPairing.ResolveActiveEndpoint", "file": "apps/xr-mobile/Assets/Scripts/Core/SessionPairing.cs", "line": 169, "proof": "static_direct", "payload": "ResolvedEndpoints"},
-        {"from": "SessionPairing.ResolveActiveEndpoint", "to": "GET ep.HealthUrl", "file": "apps/xr-mobile/Assets/Scripts/Core/SessionPairing.cs", "line": 125, "proof": "http_boundary", "route": "GET /health"},
-        {"from": "SessionHubClient.CreateSession", "to": "POST /session/create", "file": "apps/xr-mobile/Assets/Scripts/Core/SessionHubClient.cs", "line": 63, "proof": "http_boundary", "payload": "{device_id}"},
-        {"from": "sessionhub_http.create_session", "to": "SessionHub.create_session", "file": "services/live-pc/sessionhub_http.py", "line": 302, "proof": "static_direct", "payload": "device_id"},
-        {"from": "SessionHubClient.RenewToken", "to": "POST /session/renew", "file": "apps/xr-mobile/Assets/Scripts/Core/SessionHubClient.cs", "line": 81, "proof": "http_boundary", "payload": "{session_id, token}"},
-        {"from": "SessionHubClient.ClockSync", "to": "POST /session/clock-sync", "file": "apps/xr-mobile/Assets/Scripts/Core/SessionHubClient.cs", "line": 185, "proof": "http_boundary", "payload": "{session_id, token, client_send_ns}"}
+        {
+          "from": "SessionPairing.OnEnable",
+          "to": "SessionPairing.Lifecycle",
+          "file": "apps/xr-mobile/Assets/Scripts/Core/SessionPairing.cs",
+          "line": 88,
+          "proof": "static_direct",
+          "payload": "MLOmegaConfig"
+        },
+        {
+          "from": "SessionPairing.Lifecycle",
+          "to": "SessionPairing.ResolveActiveEndpoint",
+          "file": "apps/xr-mobile/Assets/Scripts/Core/SessionPairing.cs",
+          "line": 169,
+          "proof": "static_direct",
+          "payload": "ResolvedEndpoints"
+        },
+        {
+          "from": "SessionPairing.ResolveActiveEndpoint",
+          "to": "GET ep.HealthUrl",
+          "file": "apps/xr-mobile/Assets/Scripts/Core/SessionPairing.cs",
+          "line": 125,
+          "proof": "http_boundary",
+          "route": "GET /health"
+        },
+        {
+          "from": "SessionHubClient.CreateSession",
+          "to": "POST /session/create",
+          "file": "apps/xr-mobile/Assets/Scripts/Core/SessionHubClient.cs",
+          "line": 63,
+          "proof": "http_boundary",
+          "payload": "{device_id}"
+        },
+        {
+          "from": "sessionhub_http.create_session",
+          "to": "SessionHub.create_session",
+          "file": "services/live-pc/sessionhub_http.py",
+          "line": 302,
+          "proof": "static_direct",
+          "payload": "device_id"
+        },
+        {
+          "from": "SessionHubClient.RenewToken",
+          "to": "POST /session/renew",
+          "file": "apps/xr-mobile/Assets/Scripts/Core/SessionHubClient.cs",
+          "line": 81,
+          "proof": "http_boundary",
+          "payload": "{session_id, token}"
+        },
+        {
+          "from": "SessionHubClient.ClockSync",
+          "to": "POST /session/clock-sync",
+          "file": "apps/xr-mobile/Assets/Scripts/Core/SessionHubClient.cs",
+          "line": 185,
+          "proof": "http_boundary",
+          "payload": "{session_id, token, client_send_ns}"
+        }
       ],
-      "tables": {"read": [], "write": []},
-      "tests": ["tests/v19/test_sessionhub_http.py", "tests/v19/test_sessionhub.py", "apps/xr-mobile/Assets/Tests/EditMode/ClockSyncTests.cs"],
-      "missing_tests": ["Android LAN/Tailscale endpoint failover on device"],
+      "tables": {
+        "read": [],
+        "write": []
+      },
+      "tests": [
+        "tests/v19/test_sessionhub_http.py",
+        "tests/v19/test_sessionhub.py",
+        "apps/xr-mobile/Assets/Tests/EditMode/ClockSyncTests.cs"
+      ],
+      "missing_tests": [
+        "Android LAN/Tailscale endpoint failover on device"
+      ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_sessionhub_http.py tests/v19/test_sessionhub.py",
-      "risks": ["Unity health probe depends on PC returning non-200 when not ready.", "Do not alter V18 turns created_at invariant."]
+      "risks": [
+        "Unity health probe depends on PC returning non-200 when not ready.",
+        "Do not alter V18 turns created_at invariant."
+      ]
     },
     {
       "id": "webrtc_setup",
       "status": "partially_proven",
-      "entry": {"file": "apps/xr-mobile/Assets/Scripts/Transport/PhoneOnlySessionCoordinator.cs", "line": 49, "symbol": "PhoneOnlySessionCoordinator.OnPairingStateChanged"},
+      "entry": {
+        "file": "apps/xr-mobile/Assets/Scripts/Transport/PhoneOnlySessionCoordinator.cs",
+        "line": 49,
+        "symbol": "PhoneOnlySessionCoordinator.OnPairingStateChanged"
+      },
       "edges": [
-        {"from": "PhoneOnlySessionCoordinator.OnPairingStateChanged", "to": "PhoneOnlySessionCoordinator.TryStartTransport", "file": "apps/xr-mobile/Assets/Scripts/Transport/PhoneOnlySessionCoordinator.cs", "line": 51, "proof": "static_direct"},
-        {"from": "PhoneOnlySessionCoordinator.TryStartTransport", "to": "LiveTransportBridge.StartTransport", "file": "apps/xr-mobile/Assets/Scripts/Transport/PhoneOnlySessionCoordinator.cs", "line": 72, "proof": "static_direct"},
-        {"from": "LiveTransportBridge.StartTransport", "to": "LiveTransportBridge.StartAndroid", "file": "apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs", "line": 134, "proof": "jni_boundary"},
-        {"from": "LiveTransportBridge.StartAndroid", "to": "LiveTransportPlugin.start", "file": "apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs", "line": 282, "proof": "jni_boundary"},
-        {"from": "LiveTransportPlugin.establish", "to": "SignalingClient.exchangeOffer", "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/LiveTransportPlugin.kt", "line": 331, "proof": "static_direct", "payload": "{sdp,type,session_id,token}"},
-        {"from": "SignalingClient.exchangeOffer", "to": "POST ep.webrtcOfferUrl", "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/SignalingClient.kt", "line": 112, "proof": "http_boundary", "route": "POST /webrtc/offer"},
-        {"from": "sessionhub_http.webrtc_offer", "to": "SinglePhoneRuntimeManager.get_or_create", "file": "services/live-pc/sessionhub_http.py", "line": 390, "proof": "static_direct"},
-        {"from": "sessionhub_http.webrtc_offer", "to": "AiortcIngress.handle_offer_sdp", "file": "services/live-pc/sessionhub_http.py", "line": 401, "proof": "webrtc_boundary"}
+        {
+          "from": "PhoneOnlySessionCoordinator.OnPairingStateChanged",
+          "to": "PhoneOnlySessionCoordinator.TryStartTransport",
+          "file": "apps/xr-mobile/Assets/Scripts/Transport/PhoneOnlySessionCoordinator.cs",
+          "line": 51,
+          "proof": "static_direct"
+        },
+        {
+          "from": "PhoneOnlySessionCoordinator.TryStartTransport",
+          "to": "LiveTransportBridge.StartTransport",
+          "file": "apps/xr-mobile/Assets/Scripts/Transport/PhoneOnlySessionCoordinator.cs",
+          "line": 72,
+          "proof": "static_direct"
+        },
+        {
+          "from": "LiveTransportBridge.StartTransport",
+          "to": "LiveTransportBridge.StartAndroid",
+          "file": "apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs",
+          "line": 134,
+          "proof": "jni_boundary"
+        },
+        {
+          "from": "LiveTransportBridge.StartAndroid",
+          "to": "LiveTransportPlugin.start",
+          "file": "apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs",
+          "line": 282,
+          "proof": "jni_boundary"
+        },
+        {
+          "from": "LiveTransportPlugin.establish",
+          "to": "SignalingClient.exchangeOffer",
+          "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/LiveTransportPlugin.kt",
+          "line": 331,
+          "proof": "static_direct",
+          "payload": "{sdp,type,session_id,token}"
+        },
+        {
+          "from": "SignalingClient.exchangeOffer",
+          "to": "POST ep.webrtcOfferUrl",
+          "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/SignalingClient.kt",
+          "line": 112,
+          "proof": "http_boundary",
+          "route": "POST /webrtc/offer"
+        },
+        {
+          "from": "sessionhub_http.webrtc_offer",
+          "to": "SinglePhoneRuntimeManager.get_or_create",
+          "file": "services/live-pc/sessionhub_http.py",
+          "line": 390,
+          "proof": "static_direct"
+        },
+        {
+          "from": "sessionhub_http.webrtc_offer",
+          "to": "AiortcIngress.handle_offer_sdp",
+          "file": "services/live-pc/sessionhub_http.py",
+          "line": 401,
+          "proof": "webrtc_boundary"
+        }
       ],
-      "tables": {"read": [], "write": []},
-      "tests": ["tests/v19/test_phoneonly_runtime.py::test_offer_creates_runtime_and_end_is_authenticated", "tests/v19/test_transport_webrtc.py::test_webrtc_offer_through_sessionhub_http_delivers_frames"],
-      "missing_tests": ["Real Android Kotlin offer to PC SessionHub"],
+      "tables": {
+        "read": [],
+        "write": []
+      },
+      "tests": [
+        "tests/v19/test_phoneonly_runtime.py::test_offer_creates_runtime_and_end_is_authenticated",
+        "tests/v19/test_transport_webrtc.py::test_webrtc_offer_through_sessionhub_http_delivers_frames"
+      ],
+      "missing_tests": [
+        "Real Android Kotlin offer to PC SessionHub"
+      ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_phoneonly_runtime.py::test_offer_creates_runtime_and_end_is_authenticated tests/v19/test_transport_webrtc.py::test_webrtc_offer_through_sessionhub_http_delivers_frames",
-      "risks": ["Must keep offer URL based on ActiveBaseUrl.", "Must not overwrite active session with second phone."]
+      "risks": [
+        "Must keep offer URL based on ActiveBaseUrl.",
+        "Must not overwrite active session with second phone."
+      ]
     },
     {
       "id": "live_audio",
       "status": "partially_proven",
-      "entry": {"file": "services/live-pc/gateway.py", "line": 467, "symbol": "AiortcIngress.@pc.on_track audio"},
+      "entry": {
+        "file": "services/live-pc/gateway.py",
+        "line": 467,
+        "symbol": "AiortcIngress.@pc.on_track audio"
+      },
       "edges": [
-        {"from": "LiveTransportPlugin.addAudioTrack", "to": "PeerConnection.addTrack(audio)", "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/LiveTransportPlugin.kt", "line": 375, "proof": "webrtc_boundary", "payload": "mic0 track"},
-        {"from": "JavaAudioDeviceModule.samplesReadyCallback", "to": "MicAudioFanout.dispatch", "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/LiveTransportPlugin.kt", "line": 183, "proof": "static_direct", "payload": "PCM16 bytes/sampleRate/channels"},
-        {"from": "AiortcIngress._on_track", "to": "AiortcIngress._consume_audio_track", "file": "services/live-pc/gateway.py", "line": 470, "proof": "webrtc_boundary", "payload": "aiortc audio track"},
-        {"from": "AiortcIngress._consume_audio_track", "to": "_audio_frame_to_mono", "file": "services/live-pc/gateway.py", "line": 551, "proof": "static_direct", "payload": "PyAV AudioFrame"},
-        {"from": "AiortcIngress._drain_audio", "to": "PhoneOnlyRuntime._on_audio_chunk", "file": "services/live-pc/gateway.py", "line": 577, "proof": "static_direct", "payload": "(pcm, rate)"},
-        {"from": "PhoneOnlyRuntime._on_audio_chunk", "to": "LivePipeline.on_audio_chunk", "file": "services/live-pc/phoneonly_runtime.py", "line": 187, "proof": "static_direct", "payload": "samples, src_rate"},
-        {"from": "LivePipeline.on_audio_chunk", "to": "AudioRT.push_audio", "file": "services/live-pc/live_pipeline.py", "line": 1081, "proof": "static_direct"},
-        {"from": "AudioRT._handle_segment", "to": "LivePipeline._on_audio_segment", "file": "services/live-pc/audiort.py", "line": 427, "proof": "static_direct", "payload": "final VAD segment metadata"},
-        {"from": "LivePipeline._handle_audio_intents", "to": "ConversationBridge.ingest_segment", "file": "services/live-pc/live_pipeline.py", "line": 1164, "proof": "static_direct", "payload": "final transcript"}
+        {
+          "from": "LiveTransportPlugin.addAudioTrack",
+          "to": "PeerConnection.addTrack(audio)",
+          "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/LiveTransportPlugin.kt",
+          "line": 375,
+          "proof": "webrtc_boundary",
+          "payload": "mic0 track"
+        },
+        {
+          "from": "JavaAudioDeviceModule.samplesReadyCallback",
+          "to": "MicAudioFanout.dispatch",
+          "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/LiveTransportPlugin.kt",
+          "line": 183,
+          "proof": "static_direct",
+          "payload": "PCM16 bytes/sampleRate/channels"
+        },
+        {
+          "from": "AiortcIngress._on_track",
+          "to": "AiortcIngress._consume_audio_track",
+          "file": "services/live-pc/gateway.py",
+          "line": 470,
+          "proof": "webrtc_boundary",
+          "payload": "aiortc audio track"
+        },
+        {
+          "from": "AiortcIngress._consume_audio_track",
+          "to": "_audio_frame_to_mono",
+          "file": "services/live-pc/gateway.py",
+          "line": 551,
+          "proof": "static_direct",
+          "payload": "PyAV AudioFrame"
+        },
+        {
+          "from": "AiortcIngress._drain_audio",
+          "to": "PhoneOnlyRuntime._on_audio_chunk",
+          "file": "services/live-pc/gateway.py",
+          "line": 577,
+          "proof": "static_direct",
+          "payload": "(pcm, rate)"
+        },
+        {
+          "from": "PhoneOnlyRuntime._on_audio_chunk",
+          "to": "LivePipeline.on_audio_chunk",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "line": 187,
+          "proof": "static_direct",
+          "payload": "samples, src_rate"
+        },
+        {
+          "from": "LivePipeline.on_audio_chunk",
+          "to": "AudioRT.push_audio",
+          "file": "services/live-pc/live_pipeline.py",
+          "line": 1081,
+          "proof": "static_direct"
+        },
+        {
+          "from": "AudioRT._handle_segment",
+          "to": "LivePipeline._on_audio_segment",
+          "file": "services/live-pc/audiort.py",
+          "line": 427,
+          "proof": "static_direct",
+          "payload": "final VAD segment metadata"
+        },
+        {
+          "from": "LivePipeline._handle_audio_intents",
+          "to": "ConversationBridge.ingest_segment",
+          "file": "services/live-pc/live_pipeline.py",
+          "line": 1164,
+          "proof": "static_direct",
+          "payload": "final transcript"
+        }
       ],
-      "tables": {"read": [], "write": ["brainlive_sensor_events", "brainlive_audio_segments_v154", "brainlive turns via ingest_live_turn"]},
-      "tests": ["tests/v19/test_phoneonly_runtime.py::test_audio_frame_conversion_reaches_pcm_callback", "tests/v19/test_phoneonly_runtime.py::test_vad_segment_is_archived_when_asr_unavailable", "tests/v19/test_e31_conversation.py::test_wiring_final_segment_reaches_core_turn_buffer", "apps/xr-mobile/android/livetransport/src/test/java/com/mlomega/xr/livetransport/MicAudioFanoutTest.kt"],
-      "missing_tests": ["Real Android mic -> Opus -> aiortc -> AudioRT -> BrainLive/WAV"],
+      "tables": {
+        "read": [],
+        "write": [
+          "brainlive_sensor_events",
+          "brainlive_audio_segments_v154",
+          "brainlive turns via ingest_live_turn"
+        ]
+      },
+      "tests": [
+        "tests/v19/test_phoneonly_runtime.py::test_audio_frame_conversion_reaches_pcm_callback",
+        "tests/v19/test_phoneonly_runtime.py::test_vad_segment_is_archived_when_asr_unavailable",
+        "tests/v19/test_e31_conversation.py::test_wiring_final_segment_reaches_core_turn_buffer",
+        "apps/xr-mobile/android/livetransport/src/test/java/com/mlomega/xr/livetransport/MicAudioFanoutTest.kt"
+      ],
+      "missing_tests": [
+        "Real Android mic -> Opus -> aiortc -> AudioRT -> BrainLive/WAV"
+      ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_phoneonly_runtime.py::test_audio_frame_conversion_reaches_pcm_callback tests/v19/test_phoneonly_runtime.py::test_vad_segment_is_archived_when_asr_unavailable tests/v19/test_e31_conversation.py::test_wiring_final_segment_reaches_core_turn_buffer",
-      "risks": ["Audio queue must remain bounded/drop-oldest.", "End drain must precede flush and pipeline end."]
+      "risks": [
+        "Audio queue must remain bounded/drop-oldest.",
+        "End drain must precede flush and pipeline end."
+      ]
     },
     {
       "id": "live_video",
       "status": "partially_proven",
-      "entry": {"file": "services/live-pc/gateway.py", "line": 465, "symbol": "AiortcIngress.@pc.on_track video"},
+      "entry": {
+        "file": "services/live-pc/gateway.py",
+        "line": 465,
+        "symbol": "AiortcIngress.@pc.on_track video"
+      },
       "edges": [
-        {"from": "LiveTransportBridge.OnEnable", "to": "EyeCaptureSource.OnFrame += HandleFrame", "file": "apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs", "line": 91, "proof": "static_direct"},
-        {"from": "LiveTransportPlugin.addVideoTrack", "to": "PeerConnection.addTrack(video)", "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/LiveTransportPlugin.kt", "line": 389, "proof": "webrtc_boundary", "payload": "cam0 track"},
-        {"from": "AiortcIngress._on_track", "to": "AiortcIngress._consume_track", "file": "services/live-pc/gateway.py", "line": 466, "proof": "webrtc_boundary"},
-        {"from": "AiortcIngress._consume_track", "to": "queue latest frame", "file": "services/live-pc/gateway.py", "line": 531, "proof": "static_direct", "payload": "bgr24 frame + FrameEnvelope"},
-        {"from": "PhoneOnlyRuntime.start", "to": "LivePipeline.run_video", "file": "services/live-pc/phoneonly_runtime.py", "line": 123, "proof": "static_direct"},
-        {"from": "LivePipeline.run_video", "to": "LivePipeline.on_video_frame", "file": "services/live-pc/live_pipeline.py", "line": 1242, "proof": "static_direct"},
-        {"from": "LivePipeline.on_video_frame", "to": "VisionRT.process_frame", "file": "services/live-pc/live_pipeline.py", "line": 833, "proof": "static_direct"},
-        {"from": "LivePipeline._on_scene_delta", "to": "WorldBrain.ingest_scene_delta", "file": "services/live-pc/live_pipeline.py", "line": 766, "proof": "static_direct"}
+        {
+          "from": "LiveTransportBridge.OnEnable",
+          "to": "EyeCaptureSource.OnFrame += HandleFrame",
+          "file": "apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs",
+          "line": 91,
+          "proof": "static_direct"
+        },
+        {
+          "from": "LiveTransportPlugin.addVideoTrack",
+          "to": "PeerConnection.addTrack(video)",
+          "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/LiveTransportPlugin.kt",
+          "line": 389,
+          "proof": "webrtc_boundary",
+          "payload": "cam0 track"
+        },
+        {
+          "from": "AiortcIngress._on_track",
+          "to": "AiortcIngress._consume_track",
+          "file": "services/live-pc/gateway.py",
+          "line": 466,
+          "proof": "webrtc_boundary"
+        },
+        {
+          "from": "AiortcIngress._consume_track",
+          "to": "queue latest frame",
+          "file": "services/live-pc/gateway.py",
+          "line": 531,
+          "proof": "static_direct",
+          "payload": "bgr24 frame + FrameEnvelope"
+        },
+        {
+          "from": "PhoneOnlyRuntime.start",
+          "to": "LivePipeline.run_video",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "line": 123,
+          "proof": "static_direct"
+        },
+        {
+          "from": "LivePipeline.run_video",
+          "to": "LivePipeline.on_video_frame",
+          "file": "services/live-pc/live_pipeline.py",
+          "line": 1242,
+          "proof": "static_direct"
+        },
+        {
+          "from": "LivePipeline.on_video_frame",
+          "to": "VisionRT.process_frame",
+          "file": "services/live-pc/live_pipeline.py",
+          "line": 833,
+          "proof": "static_direct"
+        },
+        {
+          "from": "LivePipeline._on_scene_delta",
+          "to": "WorldBrain.ingest_scene_delta",
+          "file": "services/live-pc/live_pipeline.py",
+          "line": 766,
+          "proof": "static_direct"
+        }
       ],
-      "tables": {"read": [], "write": ["vision_frames", "raw_assets", "visual_events_v19", "scene_session_summaries_v19"]},
-      "tests": ["tests/v19/test_transport_webrtc.py", "tests/v19/test_visionrt.py", "tests/v19/test_e28_worldbrain.py"],
-      "missing_tests": ["Real Android rear camera -> PC run_video"],
+      "tables": {
+        "read": [],
+        "write": [
+          "vision_frames",
+          "raw_assets",
+          "visual_events_v19",
+          "scene_session_summaries_v19"
+        ]
+      },
+      "tests": [
+        "tests/v19/test_transport_webrtc.py",
+        "tests/v19/test_visionrt.py",
+        "tests/v19/test_e28_worldbrain.py"
+      ],
+      "missing_tests": [
+        "Real Android rear camera -> PC run_video"
+      ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_transport_webrtc.py tests/v19/test_visionrt.py tests/v19/test_e28_worldbrain.py",
-      "risks": ["Do not block live loop with clip/keyframe IO.", "FrameEnvelope shape changes break async matching."]
+      "risks": [
+        "Do not block live loop with clip/keyframe IO.",
+        "FrameEnvelope shape changes break async matching."
+      ]
     },
     {
       "id": "wake_word_command_routing",
       "status": "partially_proven",
-      "entry": {"file": "apps/xr-mobile/Assets/Scripts/Reflex/AsrBridge.cs", "line": 231, "symbol": "AsrBridge.OnNativeTranscript"},
+      "entry": {
+        "file": "apps/xr-mobile/Assets/Scripts/Reflex/AsrBridge.cs",
+        "line": 231,
+        "symbol": "AsrBridge.OnNativeTranscript"
+      },
       "edges": [
-        {"from": "AsrBridge.OnNativeTranscript", "to": "LiveTransportBridge.SendTranscriptSegment", "file": "apps/xr-mobile/Assets/Scripts/Reflex/AsrBridge.cs", "line": 238, "proof": "static_direct", "payload": "text/lang/start/end/isCommand"},
-        {"from": "LiveTransportBridge.SendTranscriptSegment", "to": "LiveTransportPlugin.sendContractMessage", "file": "apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs", "line": 224, "proof": "datachannel_boundary", "payload": "device_transcript JSON"},
-        {"from": "AiortcIngress._on_message", "to": "PhoneOnlyRuntime._on_receipt", "file": "services/live-pc/gateway.py", "line": 459, "proof": "datachannel_boundary"},
-        {"from": "PhoneOnlyRuntime._on_receipt", "to": "LivePipeline.arm_command_window", "file": "services/live-pc/phoneonly_runtime.py", "line": 174, "proof": "static_direct"},
-        {"from": "LivePipeline._handle_audio_intents", "to": "IntentRouter.on_transcript", "file": "services/live-pc/live_pipeline.py", "line": 1148, "proof": "static_direct"},
-        {"from": "LivePipeline._handle_audio_intents", "to": "ConversationBridge.ingest_segment", "file": "services/live-pc/live_pipeline.py", "line": 1164, "proof": "static_direct"}
+        {
+          "from": "AsrBridge.OnNativeTranscript",
+          "to": "LiveTransportBridge.SendTranscriptSegment",
+          "file": "apps/xr-mobile/Assets/Scripts/Reflex/AsrBridge.cs",
+          "line": 238,
+          "proof": "static_direct",
+          "payload": "text/lang/start/end/isCommand"
+        },
+        {
+          "from": "LiveTransportBridge.SendTranscriptSegment",
+          "to": "LiveTransportPlugin.sendContractMessage",
+          "file": "apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs",
+          "line": 224,
+          "proof": "datachannel_boundary",
+          "payload": "device_transcript JSON"
+        },
+        {
+          "from": "AiortcIngress._on_message",
+          "to": "PhoneOnlyRuntime._on_receipt",
+          "file": "services/live-pc/gateway.py",
+          "line": 459,
+          "proof": "datachannel_boundary"
+        },
+        {
+          "from": "PhoneOnlyRuntime._on_receipt",
+          "to": "LivePipeline.arm_command_window",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "line": 174,
+          "proof": "static_direct"
+        },
+        {
+          "from": "LivePipeline._handle_audio_intents",
+          "to": "IntentRouter.on_transcript",
+          "file": "services/live-pc/live_pipeline.py",
+          "line": 1148,
+          "proof": "static_direct"
+        },
+        {
+          "from": "LivePipeline._handle_audio_intents",
+          "to": "ConversationBridge.ingest_segment",
+          "file": "services/live-pc/live_pipeline.py",
+          "line": 1164,
+          "proof": "static_direct"
+        }
       ],
-      "tables": {"read": [], "write": ["BrainLive turns", "delivery queue when commands emit UIIntent"]},
-      "tests": ["tests/v19/test_wake_word_gating.py", "tests/v19/test_e33_intents.py", "apps/xr-mobile/android/reflexvision/src/test/java/com/mlomega/xr/reflexvision/WakeWordMatcherTest.kt"],
-      "missing_tests": ["Real Android KWS -> Unity -> PC command window"],
+      "tables": {
+        "read": [],
+        "write": [
+          "BrainLive turns",
+          "delivery queue when commands emit UIIntent"
+        ]
+      },
+      "tests": [
+        "tests/v19/test_wake_word_gating.py",
+        "tests/v19/test_e33_intents.py",
+        "apps/xr-mobile/android/reflexvision/src/test/java/com/mlomega/xr/reflexvision/WakeWordMatcherTest.kt"
+      ],
+      "missing_tests": [
+        "Real Android KWS -> Unity -> PC command window"
+      ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_wake_word_gating.py tests/v19/test_e33_intents.py",
-      "risks": ["Gating must suppress command routing only, not memory ingestion."]
+      "risks": [
+        "Gating must suppress command routing only, not memory ingestion."
+      ]
     },
     {
       "id": "uiintent_delivery",
       "status": "partially_proven",
-      "entry": {"file": "services/live-pc/phoneonly_runtime.py", "line": 127, "symbol": "PhoneOnlyRuntime._delivery_loop"},
+      "entry": {
+        "file": "services/live-pc/phoneonly_runtime.py",
+        "line": 127,
+        "symbol": "PhoneOnlyRuntime._delivery_loop"
+      },
       "edges": [
-        {"from": "PhoneOnlyRuntime._delivery_loop", "to": "DeliveryAdapter.dispatch_once", "file": "services/live-pc/phoneonly_runtime.py", "line": 150, "proof": "static_direct"},
-        {"from": "DeliveryAdapter.dispatch_once", "to": "DeliveryAdapter.poll_queued", "file": "services/live-pc/delivery_adapter.py", "line": 96, "proof": "db_boundary", "tables_read": ["brainlive_intervention_delivery_queue"]},
-        {"from": "DeliveryAdapter.dispatch_once", "to": "DataChannelRenderer.push", "file": "services/live-pc/delivery_adapter.py", "line": 98, "proof": "static_direct"},
-        {"from": "DataChannelRenderer.push", "to": "AiortcIngress.send_ui_intent", "file": "services/live-pc/phoneonly_runtime.py", "line": 39, "proof": "datachannel_boundary"},
-        {"from": "LiveTransportBridge.OnNativeMessage", "to": "UiIntentReceived", "file": "apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs", "line": 383, "proof": "jni_boundary"},
-        {"from": "TransportIntentSource.Forward", "to": "UIIntentBroker", "file": "apps/xr-mobile/Assets/Scripts/UI/TransportIntentSource.cs", "line": 36, "proof": "static_direct"},
-        {"from": "UIRuntime.OnAdmitted", "to": "UIComponentBase.Admit", "file": "apps/xr-mobile/Assets/Scripts/UI/UIRuntime.cs", "line": 110, "proof": "static_direct"}
+        {
+          "from": "PhoneOnlyRuntime._delivery_loop",
+          "to": "DeliveryAdapter.dispatch_once",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "line": 150,
+          "proof": "static_direct"
+        },
+        {
+          "from": "DeliveryAdapter.dispatch_once",
+          "to": "DeliveryAdapter.poll_queued",
+          "file": "services/live-pc/delivery_adapter.py",
+          "line": 96,
+          "proof": "db_boundary",
+          "tables_read": [
+            "brainlive_intervention_delivery_queue"
+          ]
+        },
+        {
+          "from": "DeliveryAdapter.dispatch_once",
+          "to": "DataChannelRenderer.push",
+          "file": "services/live-pc/delivery_adapter.py",
+          "line": 98,
+          "proof": "static_direct"
+        },
+        {
+          "from": "DataChannelRenderer.push",
+          "to": "AiortcIngress.send_ui_intent",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "line": 39,
+          "proof": "datachannel_boundary"
+        },
+        {
+          "from": "LiveTransportBridge.OnNativeMessage",
+          "to": "UiIntentReceived",
+          "file": "apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs",
+          "line": 383,
+          "proof": "jni_boundary"
+        },
+        {
+          "from": "TransportIntentSource.Forward",
+          "to": "UIIntentBroker",
+          "file": "apps/xr-mobile/Assets/Scripts/UI/TransportIntentSource.cs",
+          "line": 36,
+          "proof": "static_direct"
+        },
+        {
+          "from": "UIRuntime.OnAdmitted",
+          "to": "UIComponentBase.Admit",
+          "file": "apps/xr-mobile/Assets/Scripts/UI/UIRuntime.cs",
+          "line": 110,
+          "proof": "static_direct"
+        }
       ],
-      "tables": {"read": ["brainlive_intervention_delivery_queue"], "write": ["brainlive_intervention_feedback_events_v188 delivered"]},
-      "tests": ["tests/v19/test_phoneonly_runtime.py::test_brainlive_delivery_queue_reaches_phone_datachannel", "tests/v19/test_delivery_adapter.py", "tests/v19/test_phoneonly_android_wiring.py"],
-      "missing_tests": ["Real Android DataChannel UIIntent rendered on phone"],
+      "tables": {
+        "read": [
+          "brainlive_intervention_delivery_queue"
+        ],
+        "write": [
+          "brainlive_intervention_feedback_events_v188 delivered"
+        ]
+      },
+      "tests": [
+        "tests/v19/test_phoneonly_runtime.py::test_brainlive_delivery_queue_reaches_phone_datachannel",
+        "tests/v19/test_delivery_adapter.py",
+        "tests/v19/test_phoneonly_android_wiring.py"
+      ],
+      "missing_tests": [
+        "Real Android DataChannel UIIntent rendered on phone"
+      ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_phoneonly_runtime.py::test_brainlive_delivery_queue_reaches_phone_datachannel tests/v19/test_delivery_adapter.py",
-      "risks": ["Component name drift can deliver valid JSON but render nothing."]
+      "risks": [
+        "Component name drift can deliver valid JSON but render nothing."
+      ]
     },
     {
       "id": "uireceipt_feedback",
       "status": "partially_proven",
-      "entry": {"file": "apps/xr-mobile/Assets/Scripts/UI/Components/UIComponentBase.cs", "line": 299, "symbol": "UIComponentBase.EmitReceipt"},
+      "entry": {
+        "file": "apps/xr-mobile/Assets/Scripts/UI/Components/UIComponentBase.cs",
+        "line": 299,
+        "symbol": "UIComponentBase.EmitReceipt"
+      },
       "edges": [
-        {"from": "UIComponentBase.EmitReceipt", "to": "IReceiptSink.Send", "file": "apps/xr-mobile/Assets/Scripts/UI/Components/UIComponentBase.cs", "line": 312, "proof": "static_direct"},
-        {"from": "UIReceiptTransportSink.TrySendOverBridge", "to": "LiveTransportBridge.SendReceipt", "file": "apps/xr-mobile/Assets/Scripts/UI/UIReceiptTransportSink.cs", "line": 149, "proof": "static_direct"},
-        {"from": "LiveTransportBridge.SendReceipt", "to": "LiveTransportPlugin.sendContractMessage", "file": "apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs", "line": 164, "proof": "jni_boundary"},
-        {"from": "LiveTransportPlugin.sendContractMessage", "to": "DataChannel.send", "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/LiveTransportPlugin.kt", "line": 135, "proof": "datachannel_boundary"},
-        {"from": "AiortcIngress._on_message", "to": "PhoneOnlyRuntime._on_receipt", "file": "services/live-pc/gateway.py", "line": 459, "proof": "datachannel_boundary"},
-        {"from": "PhoneOnlyRuntime._on_receipt", "to": "DeliveryAdapter.record_receipt", "file": "services/live-pc/phoneonly_runtime.py", "line": 180, "proof": "static_direct"},
-        {"from": "DeliveryAdapter.record_receipt", "to": "record_delivery_feedback", "file": "services/live-pc/delivery_adapter.py", "line": 106, "proof": "db_boundary", "tables_write": ["brainlive_intervention_feedback_events_v188"]}
+        {
+          "from": "UIComponentBase.EmitReceipt",
+          "to": "IReceiptSink.Send",
+          "file": "apps/xr-mobile/Assets/Scripts/UI/Components/UIComponentBase.cs",
+          "line": 312,
+          "proof": "static_direct"
+        },
+        {
+          "from": "UIReceiptTransportSink.TrySendOverBridge",
+          "to": "LiveTransportBridge.SendReceipt",
+          "file": "apps/xr-mobile/Assets/Scripts/UI/UIReceiptTransportSink.cs",
+          "line": 149,
+          "proof": "static_direct"
+        },
+        {
+          "from": "LiveTransportBridge.SendReceipt",
+          "to": "LiveTransportPlugin.sendContractMessage",
+          "file": "apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs",
+          "line": 164,
+          "proof": "jni_boundary"
+        },
+        {
+          "from": "LiveTransportPlugin.sendContractMessage",
+          "to": "DataChannel.send",
+          "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/LiveTransportPlugin.kt",
+          "line": 135,
+          "proof": "datachannel_boundary"
+        },
+        {
+          "from": "AiortcIngress._on_message",
+          "to": "PhoneOnlyRuntime._on_receipt",
+          "file": "services/live-pc/gateway.py",
+          "line": 459,
+          "proof": "datachannel_boundary"
+        },
+        {
+          "from": "PhoneOnlyRuntime._on_receipt",
+          "to": "DeliveryAdapter.record_receipt",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "line": 180,
+          "proof": "static_direct"
+        },
+        {
+          "from": "DeliveryAdapter.record_receipt",
+          "to": "record_delivery_feedback",
+          "file": "services/live-pc/delivery_adapter.py",
+          "line": 106,
+          "proof": "db_boundary",
+          "tables_write": [
+            "brainlive_intervention_feedback_events_v188"
+          ]
+        }
       ],
-      "tables": {"read": [], "write": ["brainlive_intervention_feedback_events_v188"]},
-      "tests": ["tests/v19/test_e24_roundtrip.py", "apps/xr-mobile/Assets/Tests/EditMode/UIReceiptLifecycleTests.cs", "apps/xr-mobile/Assets/Tests/EditMode/UIReceiptOutboxTests.cs"],
-      "missing_tests": ["Real Android UI action receipt over WebRTC"],
+      "tables": {
+        "read": [],
+        "write": [
+          "brainlive_intervention_feedback_events_v188"
+        ]
+      },
+      "tests": [
+        "tests/v19/test_e24_roundtrip.py",
+        "apps/xr-mobile/Assets/Tests/EditMode/UIReceiptLifecycleTests.cs",
+        "apps/xr-mobile/Assets/Tests/EditMode/UIReceiptOutboxTests.cs"
+      ],
+      "missing_tests": [
+        "Real Android UI action receipt over WebRTC"
+      ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_e24_roundtrip.py",
-      "risks": ["Receipts without delivery_id are ignored by record_receipt."]
+      "risks": [
+        "Receipts without delivery_id are ignored by record_receipt."
+      ]
     },
     {
       "id": "explicit_end_session",
       "status": "partially_proven",
-      "entry": {"file": "apps/xr-mobile/Assets/Scripts/Transport/PhoneOnlySessionCoordinator.cs", "line": 156, "symbol": "GUI button EndSessionAndCloseDay"},
+      "entry": {
+        "file": "apps/xr-mobile/Assets/Scripts/Transport/PhoneOnlySessionCoordinator.cs",
+        "line": 156,
+        "symbol": "GUI button EndSessionAndCloseDay"
+      },
       "edges": [
-        {"from": "PhoneOnlySessionCoordinator.EndSessionAndCloseDay", "to": "PhoneOnlySessionCoordinator.EndExplicitly", "file": "apps/xr-mobile/Assets/Scripts/Transport/PhoneOnlySessionCoordinator.cs", "line": 82, "proof": "static_direct", "payload": "session_id, token"},
-        {"from": "EndExplicitly", "to": "POST /session/end", "file": "apps/xr-mobile/Assets/Scripts/Transport/PhoneOnlySessionCoordinator.cs", "line": 90, "proof": "http_boundary"},
-        {"from": "sessionhub_http.end_session", "to": "_authenticate", "file": "services/live-pc/sessionhub_http.py", "line": 411, "proof": "static_direct"},
-        {"from": "sessionhub_http.end_session", "to": "PhoneOnlyRuntime.end_session_only", "file": "services/live-pc/sessionhub_http.py", "line": 418, "proof": "static_direct"},
-        {"from": "PhoneOnlyRuntime.end_session_only", "to": "AiortcIngress.drain_audio", "file": "services/live-pc/phoneonly_runtime.py", "line": 205, "proof": "static_direct"},
-        {"from": "PhoneOnlyRuntime.end_session_only", "to": "LivePipeline.end_session", "file": "services/live-pc/phoneonly_runtime.py", "line": 210, "proof": "static_direct"},
-        {"from": "PhoneOnlyRuntime.end_session_only", "to": "ConversationBridge.end_session", "file": "services/live-pc/phoneonly_runtime.py", "line": 214, "proof": "static_direct"}
+        {
+          "from": "PhoneOnlySessionCoordinator.EndSessionAndCloseDay",
+          "to": "PhoneOnlySessionCoordinator.EndExplicitly",
+          "file": "apps/xr-mobile/Assets/Scripts/Transport/PhoneOnlySessionCoordinator.cs",
+          "line": 82,
+          "proof": "static_direct",
+          "payload": "session_id, token"
+        },
+        {
+          "from": "EndExplicitly",
+          "to": "POST /session/end",
+          "file": "apps/xr-mobile/Assets/Scripts/Transport/PhoneOnlySessionCoordinator.cs",
+          "line": 90,
+          "proof": "http_boundary"
+        },
+        {
+          "from": "sessionhub_http.end_session",
+          "to": "_authenticate",
+          "file": "services/live-pc/sessionhub_http.py",
+          "line": 411,
+          "proof": "static_direct"
+        },
+        {
+          "from": "sessionhub_http.end_session",
+          "to": "PhoneOnlyRuntime.end_session_only",
+          "file": "services/live-pc/sessionhub_http.py",
+          "line": 418,
+          "proof": "static_direct"
+        },
+        {
+          "from": "PhoneOnlyRuntime.end_session_only",
+          "to": "AiortcIngress.drain_audio",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "line": 205,
+          "proof": "static_direct"
+        },
+        {
+          "from": "PhoneOnlyRuntime.end_session_only",
+          "to": "LivePipeline.end_session",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "line": 210,
+          "proof": "static_direct"
+        },
+        {
+          "from": "PhoneOnlyRuntime.end_session_only",
+          "to": "ConversationBridge.end_session",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "line": 214,
+          "proof": "static_direct"
+        }
       ],
-      "tables": {"read": [], "write": ["scene_session_summaries_v19", "BrainLive session ended"]},
-      "tests": ["tests/v19/test_phoneonly_runtime.py::test_runtime_starts_pipeline_audio_and_explicit_close_day_once", "tests/v19/test_phoneonly_runtime.py::test_disconnect_teardown_does_not_end_or_close_day", "tests/v19/test_phoneonly_runtime.py::test_explicit_end_waits_inflight_audio_before_flush_and_pipeline_end"],
-      "missing_tests": ["Real Android button -> /session/end -> status polling"],
+      "tables": {
+        "read": [],
+        "write": [
+          "scene_session_summaries_v19",
+          "BrainLive session ended"
+        ]
+      },
+      "tests": [
+        "tests/v19/test_phoneonly_runtime.py::test_runtime_starts_pipeline_audio_and_explicit_close_day_once",
+        "tests/v19/test_phoneonly_runtime.py::test_disconnect_teardown_does_not_end_or_close_day",
+        "tests/v19/test_phoneonly_runtime.py::test_explicit_end_waits_inflight_audio_before_flush_and_pipeline_end"
+      ],
+      "missing_tests": [
+        "Real Android button -> /session/end -> status polling"
+      ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_phoneonly_runtime.py::test_runtime_starts_pipeline_audio_and_explicit_close_day_once tests/v19/test_phoneonly_runtime.py::test_disconnect_teardown_does_not_end_or_close_day tests/v19/test_phoneonly_runtime.py::test_explicit_end_waits_inflight_audio_before_flush_and_pipeline_end",
-      "risks": ["Never end/CloseDay on WebRTC disconnect alone.", "Drain audio before pipeline end."]
+      "risks": [
+        "Never end/CloseDay on WebRTC disconnect alone.",
+        "Drain audio before pipeline end."
+      ]
     },
     {
       "id": "close_day",
       "status": "partially_proven",
-      "entry": {"file": "services/live-pc/sessionhub_http.py", "line": 421, "symbol": "manager.start_close_day"},
+      "entry": {
+        "file": "services/live-pc/sessionhub_http.py",
+        "line": 421,
+        "symbol": "manager.start_close_day"
+      },
       "edges": [
-        {"from": "sessionhub_http.end_session", "to": "SinglePhoneRuntimeManager.start_close_day", "file": "services/live-pc/sessionhub_http.py", "line": 421, "proof": "static_direct"},
-        {"from": "SinglePhoneRuntimeManager.start_close_day", "to": "PhoneOnlyRuntime.run_close_day", "file": "services/live-pc/phoneonly_runtime.py", "line": 369, "proof": "static_direct"},
-        {"from": "PhoneOnlyRuntime.end_session_only", "to": "ConversationBridge.live_session_id capture", "file": "services/live-pc/phoneonly_runtime.py", "line": 212, "proof": "static_direct"},
-        {"from": "PhoneOnlyRuntime.run_close_day", "to": "PhoneOnlyRuntime._run_close_day", "file": "services/live-pc/phoneonly_runtime.py", "line": 239, "proof": "static_direct", "payload": "person_id, live_session_id"},
-        {"from": "PhoneOnlyRuntime._run_close_day", "to": "scripts/run_phoneonly_close_day.py", "file": "services/live-pc/phoneonly_runtime.py", "line": 263, "proof": "subprocess_boundary", "payload": "--person-id --live-session-id"},
-        {"from": "run_phoneonly_close_day.main", "to": "close_brainlive_day", "file": "scripts/run_phoneonly_close_day.py", "line": 99, "proof": "static_direct"},
-        {"from": "close_brainlive_day", "to": "run_brainlive_post_stop_deep_flow", "file": "src/mlomega_audio_elite/v18_close_day.py", "line": 419, "proof": "static_direct"},
-        {"from": "close_brainlive_day", "to": "run_life_model_v19_stage", "file": "src/mlomega_audio_elite/v18_close_day.py", "line": 500, "proof": "static_direct"}
+        {
+          "from": "sessionhub_http.end_session",
+          "to": "SinglePhoneRuntimeManager.start_close_day",
+          "file": "services/live-pc/sessionhub_http.py",
+          "line": 421,
+          "proof": "static_direct"
+        },
+        {
+          "from": "SinglePhoneRuntimeManager.start_close_day",
+          "to": "PhoneOnlyRuntime.run_close_day",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "line": 369,
+          "proof": "static_direct"
+        },
+        {
+          "from": "PhoneOnlyRuntime.end_session_only",
+          "to": "ConversationBridge.live_session_id capture",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "line": 212,
+          "proof": "static_direct"
+        },
+        {
+          "from": "PhoneOnlyRuntime.run_close_day",
+          "to": "PhoneOnlyRuntime._run_close_day",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "line": 239,
+          "proof": "static_direct",
+          "payload": "person_id, live_session_id"
+        },
+        {
+          "from": "PhoneOnlyRuntime._run_close_day",
+          "to": "scripts/run_phoneonly_close_day.py",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "line": 263,
+          "proof": "subprocess_boundary",
+          "payload": "--person-id --live-session-id"
+        },
+        {
+          "from": "run_phoneonly_close_day.main",
+          "to": "close_brainlive_day",
+          "file": "scripts/run_phoneonly_close_day.py",
+          "line": 99,
+          "proof": "static_direct"
+        },
+        {
+          "from": "close_brainlive_day",
+          "to": "run_brainlive_post_stop_deep_flow",
+          "file": "src/mlomega_audio_elite/v18_close_day.py",
+          "line": 419,
+          "proof": "static_direct"
+        },
+        {
+          "from": "close_brainlive_day",
+          "to": "run_life_model_v19_stage",
+          "file": "src/mlomega_audio_elite/v18_close_day.py",
+          "line": 500,
+          "proof": "static_direct"
+        }
       ],
-      "tables": {"read": ["v18_close_day_runs", "BrainLive/live session tables"], "write": ["v18_close_day_runs", "post-stop/visual/life/vector outputs"]},
-      "tests": ["tests/v19/test_phoneonly_runtime.py", "tests/v19/test_multi_session_close_day.py", "tests/v19/test_ollama_context_budget.py"],
-      "missing_tests": ["Full heavy CloseDay on real PhoneOnly session"],
+      "tables": {
+        "read": [
+          "v18_close_day_runs",
+          "BrainLive/live session tables"
+        ],
+        "write": [
+          "v18_close_day_runs",
+          "post-stop/visual/life/vector outputs"
+        ]
+      },
+      "tests": [
+        "tests/v19/test_phoneonly_runtime.py",
+        "tests/v19/test_multi_session_close_day.py",
+        "tests/v19/test_ollama_context_budget.py"
+      ],
+      "missing_tests": [
+        "Full heavy CloseDay on real PhoneOnly session"
+      ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_phoneonly_runtime.py tests/v19/test_multi_session_close_day.py tests/v19/test_ollama_context_budget.py",
-      "risks": ["Must pass BrainLive live_session_id, not transport session_id.", "Task and DB idempotence must both hold."]
+      "risks": [
+        "Must pass BrainLive live_session_id, not transport session_id.",
+        "Task and DB idempotence must both hold."
+      ]
     },
     {
       "id": "visual_evidence_clips",
       "status": "partially_proven",
-      "entry": {"file": "services/live-pc/visionrt.py", "line": 517, "symbol": "VisionRT.process_frame keyframe"},
+      "entry": {
+        "file": "services/live-pc/visionrt.py",
+        "line": 517,
+        "symbol": "VisionRT.process_frame keyframe"
+      },
       "edges": [
-        {"from": "AiortcIngress._consume_track", "to": "ClipRecorder.offer", "file": "services/live-pc/gateway.py", "line": 517, "proof": "static_direct"},
-        {"from": "VisionRT.process_frame", "to": "VisionRT._record_keyframe", "file": "services/live-pc/visionrt.py", "line": 518, "proof": "static_direct"},
-        {"from": "VisionRT._record_keyframe", "to": "keyframe_sink", "file": "services/live-pc/visionrt.py", "line": 576, "proof": "static_direct"},
-        {"from": "default_keyframe_sink", "to": "register_xr_keyframe", "file": "services/live-pc/visionrt.py", "line": 758, "proof": "db_boundary", "tables_write": ["raw_assets", "vision_frames"]},
-        {"from": "WorldBrain.ingest_scene_delta", "to": "evidence_ref frame:<frame_id>", "file": "services/live-pc/worldbrain.py", "line": 357, "proof": "static_direct"}
+        {
+          "from": "AiortcIngress._consume_track",
+          "to": "ClipRecorder.offer",
+          "file": "services/live-pc/gateway.py",
+          "line": 517,
+          "proof": "static_direct"
+        },
+        {
+          "from": "VisionRT.process_frame",
+          "to": "VisionRT._record_keyframe",
+          "file": "services/live-pc/visionrt.py",
+          "line": 518,
+          "proof": "static_direct"
+        },
+        {
+          "from": "VisionRT._record_keyframe",
+          "to": "keyframe_sink",
+          "file": "services/live-pc/visionrt.py",
+          "line": 576,
+          "proof": "static_direct"
+        },
+        {
+          "from": "default_keyframe_sink",
+          "to": "register_xr_keyframe",
+          "file": "services/live-pc/visionrt.py",
+          "line": 758,
+          "proof": "db_boundary",
+          "tables_write": [
+            "raw_assets",
+            "vision_frames"
+          ]
+        },
+        {
+          "from": "WorldBrain.ingest_scene_delta",
+          "to": "evidence_ref frame:<frame_id>",
+          "file": "services/live-pc/worldbrain.py",
+          "line": 357,
+          "proof": "static_direct"
+        }
       ],
-      "tables": {"read": [], "write": ["raw_assets", "vision_frames", "visual_events_v19"]},
-      "tests": ["tests/v19/test_visionrt.py::test_keyframe_recorded_via_v19_keyframes", "tests/v19/test_clip_recorder.py", "tests/v19/test_media_retention.py"],
-      "missing_tests": ["Real live clip from Android WebRTC video"],
+      "tables": {
+        "read": [],
+        "write": [
+          "raw_assets",
+          "vision_frames",
+          "visual_events_v19"
+        ]
+      },
+      "tests": [
+        "tests/v19/test_visionrt.py::test_keyframe_recorded_via_v19_keyframes",
+        "tests/v19/test_clip_recorder.py",
+        "tests/v19/test_media_retention.py"
+      ],
+      "missing_tests": [
+        "Real live clip from Android WebRTC video"
+      ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_visionrt.py::test_keyframe_recorded_via_v19_keyframes tests/v19/test_clip_recorder.py tests/v19/test_media_retention.py",
-      "risks": ["Managed media path must not revert to tempfile.", "Clip recorder must stay non-blocking."]
+      "risks": [
+        "Managed media path must not revert to tempfile.",
+        "Clip recorder must stay non-blocking."
+      ]
     },
     {
       "id": "model_provisioning",
       "status": "partially_proven",
-      "entry": {"file": "apps/xr-mobile/Assets/Scripts/Core/ModelProvisioningBridge.cs", "line": 126, "symbol": "ModelProvisioningBridge.TryStart"},
+      "entry": {
+        "file": "apps/xr-mobile/Assets/Scripts/Core/ModelProvisioningBridge.cs",
+        "line": 126,
+        "symbol": "ModelProvisioningBridge.TryStart"
+      },
       "edges": [
-        {"from": "ModelProvisioningBridge.TryStart", "to": "ModelProvisioningBridge.StartAndroid", "file": "apps/xr-mobile/Assets/Scripts/Core/ModelProvisioningBridge.cs", "line": 140, "proof": "jni_boundary", "payload": "baseUrl, sessionId, token"},
-        {"from": "ModelProvisioningBridge.StartAndroid", "to": "ModelProvisioner.start", "file": "apps/xr-mobile/Assets/Scripts/Core/ModelProvisioningBridge.cs", "line": 160, "proof": "jni_boundary"},
-        {"from": "ModelProvisioner.provision", "to": "fetchManifest", "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/ModelProvisioner.kt", "line": 101, "proof": "http_boundary", "route": "GET /models/device/manifest"},
-        {"from": "ModelProvisioner.provision", "to": "downloadOne", "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/ModelProvisioner.kt", "line": 110, "proof": "http_boundary", "route": "GET /models/device/{name}"},
-        {"from": "ModelProvisioner.downloadOne", "to": "installVerified", "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/ModelProvisioner.kt", "line": 158, "proof": "static_direct"},
-        {"from": "sessionhub_http.device_manifest", "to": "_device_manifest", "file": "services/live-pc/sessionhub_http.py", "line": 257, "proof": "http_boundary"},
-        {"from": "sessionhub_http.device_model", "to": "FileResponse/model bytes", "file": "services/live-pc/sessionhub_http.py", "line": 268, "proof": "http_boundary"}
+        {
+          "from": "ModelProvisioningBridge.TryStart",
+          "to": "ModelProvisioningBridge.StartAndroid",
+          "file": "apps/xr-mobile/Assets/Scripts/Core/ModelProvisioningBridge.cs",
+          "line": 140,
+          "proof": "jni_boundary",
+          "payload": "baseUrl, sessionId, token"
+        },
+        {
+          "from": "ModelProvisioningBridge.StartAndroid",
+          "to": "ModelProvisioner.start",
+          "file": "apps/xr-mobile/Assets/Scripts/Core/ModelProvisioningBridge.cs",
+          "line": 160,
+          "proof": "jni_boundary"
+        },
+        {
+          "from": "ModelProvisioner.provision",
+          "to": "fetchManifest",
+          "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/ModelProvisioner.kt",
+          "line": 101,
+          "proof": "http_boundary",
+          "route": "GET /models/device/manifest"
+        },
+        {
+          "from": "ModelProvisioner.provision",
+          "to": "downloadOne",
+          "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/ModelProvisioner.kt",
+          "line": 110,
+          "proof": "http_boundary",
+          "route": "GET /models/device/{name}"
+        },
+        {
+          "from": "ModelProvisioner.downloadOne",
+          "to": "installVerified",
+          "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/ModelProvisioner.kt",
+          "line": 158,
+          "proof": "static_direct"
+        },
+        {
+          "from": "sessionhub_http.device_manifest",
+          "to": "_device_manifest",
+          "file": "services/live-pc/sessionhub_http.py",
+          "line": 257,
+          "proof": "http_boundary"
+        },
+        {
+          "from": "sessionhub_http.device_model",
+          "to": "FileResponse/model bytes",
+          "file": "services/live-pc/sessionhub_http.py",
+          "line": 268,
+          "proof": "http_boundary"
+        }
       ],
-      "tables": {"read": [], "write": []},
-      "tests": ["tests/v19/test_device_provisioning.py", "apps/xr-mobile/android/livetransport/src/test/java/com/mlomega/xr/livetransport/ModelProvisionerCoreTest.kt", "apps/xr-mobile/android/livetransport/src/test/java/com/mlomega/xr/livetransport/DeviceModelManifestTest.kt"],
-      "missing_tests": ["Actual Android device model provisioning"],
+      "tables": {
+        "read": [],
+        "write": []
+      },
+      "tests": [
+        "tests/v19/test_device_provisioning.py",
+        "apps/xr-mobile/android/livetransport/src/test/java/com/mlomega/xr/livetransport/ModelProvisionerCoreTest.kt",
+        "apps/xr-mobile/android/livetransport/src/test/java/com/mlomega/xr/livetransport/DeviceModelManifestTest.kt"
+      ],
+      "missing_tests": [
+        "Actual Android device model provisioning"
+      ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_device_provisioning.py",
-      "risks": ["Keep token auth on GET routes.", "Hash mismatch must fail before install."]
+      "risks": [
+        "Keep token auth on GET routes.",
+        "Hash mismatch must fail before install."
+      ]
     },
     {
       "id": "memory_query",
       "status": "partially_proven",
-      "entry": {"file": "services/live-pc/live_pipeline.py", "line": 1148, "symbol": "LivePipeline._handle_audio_intents -> IntentRouter"},
+      "entry": {
+        "file": "services/live-pc/live_pipeline.py",
+        "line": 1148,
+        "symbol": "LivePipeline._handle_audio_intents -> IntentRouter"
+      },
       "edges": [
-        {"from": "LivePipeline._handle_audio_intents", "to": "IntentRouter.on_transcript", "file": "services/live-pc/live_pipeline.py", "line": 1148, "proof": "static_direct"},
-        {"from": "IntentRouter.on_transcript", "to": "IntentRouter._do_ask_memory", "file": "services/live-pc/intent_router.py", "line": 498, "proof": "static_direct"},
-        {"from": "IntentRouter._do_ask_memory", "to": "MemoryQuery.ask", "file": "services/live-pc/intent_router.py", "line": 596, "proof": "static_direct", "payload": "question"},
-        {"from": "MemoryQuery.ask", "to": "MemoryQuery._ask_brain2", "file": "services/live-pc/memory_query.py", "line": 99, "proof": "static_direct"},
-        {"from": "MemoryQuery.ask", "to": "MemoryQuery._retrieval_only", "file": "services/live-pc/memory_query.py", "line": 110, "proof": "fallback"}
+        {
+          "from": "LivePipeline._handle_audio_intents",
+          "to": "IntentRouter.on_transcript",
+          "file": "services/live-pc/live_pipeline.py",
+          "line": 1148,
+          "proof": "static_direct"
+        },
+        {
+          "from": "IntentRouter.on_transcript",
+          "to": "IntentRouter._do_ask_memory",
+          "file": "services/live-pc/intent_router.py",
+          "line": 498,
+          "proof": "static_direct"
+        },
+        {
+          "from": "IntentRouter._do_ask_memory",
+          "to": "MemoryQuery.ask",
+          "file": "services/live-pc/intent_router.py",
+          "line": 596,
+          "proof": "static_direct",
+          "payload": "question"
+        },
+        {
+          "from": "MemoryQuery.ask",
+          "to": "MemoryQuery._ask_brain2",
+          "file": "services/live-pc/memory_query.py",
+          "line": 99,
+          "proof": "static_direct"
+        },
+        {
+          "from": "MemoryQuery.ask",
+          "to": "MemoryQuery._retrieval_only",
+          "file": "services/live-pc/memory_query.py",
+          "line": 110,
+          "proof": "fallback"
+        }
       ],
-      "tables": {"read": ["unknown/to_verify specific memory tables"], "write": []},
-      "tests": ["tests/v19/test_e33_intents.py::test_ask_memory_calls_ask_brain2", "tests/v19/test_e33_intents.py::test_ask_memory_degraded_without_llm"],
-      "missing_tests": ["Real voice question through AudioRT to phone ContextCard"],
+      "tables": {
+        "read": [
+          "unknown/to_verify specific memory tables"
+        ],
+        "write": []
+      },
+      "tests": [
+        "tests/v19/test_e33_intents.py::test_ask_memory_calls_ask_brain2",
+        "tests/v19/test_e33_intents.py::test_ask_memory_degraded_without_llm"
+      ],
+      "missing_tests": [
+        "Real voice question through AudioRT to phone ContextCard"
+      ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_e33_intents.py::test_ask_memory_calls_ask_brain2 tests/v19/test_e33_intents.py::test_ask_memory_degraded_without_llm",
-      "risks": ["Do not drop evidence/truth_level when answering."]
+      "risks": [
+        "Do not drop evidence/truth_level when answering."
+      ]
     },
     {
       "id": "contracts_python_csharp_kotlin",
       "status": "partially_proven",
-      "entry": {"file": "packages/contracts/python/models.py", "line": 14, "symbol": "FrameEnvelope/UIIntent/UIReceipt models"},
+      "entry": {
+        "file": "packages/contracts/python/models.py",
+        "line": 14,
+        "symbol": "FrameEnvelope/UIIntent/UIReceipt models"
+      },
       "edges": [
-        {"from": "LiveTransportBridge.HandleFrame", "to": "ContractJson.Serialize(FrameEnvelope)", "file": "apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs", "line": 238, "proof": "static_direct"},
-        {"from": "AiortcIngress._on_message", "to": "FrameEnvelope.model_validate", "file": "services/live-pc/gateway.py", "line": 451, "proof": "static_direct"},
-        {"from": "LivePipeline._push_intent", "to": "AiortcIngress.send_ui_intent", "file": "services/live-pc/live_pipeline.py", "line": 629, "proof": "static_direct"},
-        {"from": "LiveTransportBridge.OnNativeMessage", "to": "ContractJson.Deserialize<UIIntent>", "file": "apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs", "line": 382, "proof": "static_direct"},
-        {"from": "LiveTransportBridge.SendReceipt", "to": "ContractJson.Serialize(UIReceipt)", "file": "apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs", "line": 162, "proof": "static_direct"},
-        {"from": "PhoneOnlyRuntime._on_receipt", "to": "UIReceipt.model_validate_json", "file": "services/live-pc/phoneonly_runtime.py", "line": 179, "proof": "static_direct"},
-        {"from": "SignalingClient.exchangeOffer", "to": "JSONObject(sdp,type,session_id,token)", "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/SignalingClient.kt", "line": 93, "proof": "static_direct"}
+        {
+          "from": "LiveTransportBridge.HandleFrame",
+          "to": "ContractJson.Serialize(FrameEnvelope)",
+          "file": "apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs",
+          "line": 238,
+          "proof": "static_direct"
+        },
+        {
+          "from": "AiortcIngress._on_message",
+          "to": "FrameEnvelope.model_validate",
+          "file": "services/live-pc/gateway.py",
+          "line": 451,
+          "proof": "static_direct"
+        },
+        {
+          "from": "LivePipeline._push_intent",
+          "to": "AiortcIngress.send_ui_intent",
+          "file": "services/live-pc/live_pipeline.py",
+          "line": 629,
+          "proof": "static_direct"
+        },
+        {
+          "from": "LiveTransportBridge.OnNativeMessage",
+          "to": "ContractJson.Deserialize<UIIntent>",
+          "file": "apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs",
+          "line": 382,
+          "proof": "static_direct"
+        },
+        {
+          "from": "LiveTransportBridge.SendReceipt",
+          "to": "ContractJson.Serialize(UIReceipt)",
+          "file": "apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs",
+          "line": 162,
+          "proof": "static_direct"
+        },
+        {
+          "from": "PhoneOnlyRuntime._on_receipt",
+          "to": "UIReceipt.model_validate_json",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "line": 179,
+          "proof": "static_direct"
+        },
+        {
+          "from": "SignalingClient.exchangeOffer",
+          "to": "JSONObject(sdp,type,session_id,token)",
+          "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/SignalingClient.kt",
+          "line": 93,
+          "proof": "static_direct"
+        }
       ],
-      "tables": {"read": [], "write": []},
-      "tests": ["tests/v19/test_contracts.py", "tests/v19/test_csharp_generator.py", "apps/xr-mobile/Assets/Tests/EditMode/ContractSerializationTests.cs", "tests/v19/test_phoneonly_android_wiring.py::test_raw_scene_messages_are_not_misparsed_as_ui_intents"],
-      "missing_tests": ["Kotlin JSON contract validation against schema for all live-only messages"],
+      "tables": {
+        "read": [],
+        "write": []
+      },
+      "tests": [
+        "tests/v19/test_contracts.py",
+        "tests/v19/test_csharp_generator.py",
+        "apps/xr-mobile/Assets/Tests/EditMode/ContractSerializationTests.cs",
+        "tests/v19/test_phoneonly_android_wiring.py::test_raw_scene_messages_are_not_misparsed_as_ui_intents"
+      ],
+      "missing_tests": [
+        "Kotlin JSON contract validation against schema for all live-only messages"
+      ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_contracts.py tests/v19/test_csharp_generator.py tests/v19/test_phoneonly_android_wiring.py",
-      "risks": ["Live-only JSON messages are shape-routed and need explicit tests."]
+      "risks": [
+        "Live-only JSON messages are shape-routed and need explicit tests."
+      ]
     },
     {
       "id": "sessionhub_auth_token_renew",
       "status": "proven",
-      "entry": {"file": "services/live-pc/sessionhub.py", "line": 45, "symbol": "SessionHub.create_session"},
+      "entry": {
+        "file": "services/live-pc/sessionhub.py",
+        "line": 45,
+        "symbol": "SessionHub.create_session"
+      },
       "edges": [
-        {"from": "SessionHub.create_session", "to": "_sessions/_tokens write", "file": "services/live-pc/sessionhub.py", "line": 60, "proof": "static_direct"},
-        {"from": "SessionHub.create_session", "to": "token expiry stamp", "file": "services/live-pc/sessionhub.py", "line": 57, "proof": "static_direct"},
-        {"from": "SessionHub.renew_token", "to": "_rotate_token_locked", "file": "services/live-pc/sessionhub.py", "line": 89, "proof": "static_direct"},
-        {"from": "_rotate_token_locked", "to": "old token pop/new token set", "file": "services/live-pc/sessionhub.py", "line": 84, "proof": "static_direct"},
-        {"from": "_purge_expired_locked", "to": "expire/retire session", "file": "services/live-pc/sessionhub.py", "line": 104, "proof": "static_direct"},
-        {"from": "sessionhub_http._authenticate", "to": "HTTP 401 invalid session token", "file": "services/live-pc/sessionhub_http.py", "line": 219, "proof": "http_boundary"}
+        {
+          "from": "SessionHub.create_session",
+          "to": "_sessions/_tokens write",
+          "file": "services/live-pc/sessionhub.py",
+          "line": 60,
+          "proof": "static_direct"
+        },
+        {
+          "from": "SessionHub.create_session",
+          "to": "token expiry stamp",
+          "file": "services/live-pc/sessionhub.py",
+          "line": 57,
+          "proof": "static_direct"
+        },
+        {
+          "from": "SessionHub.renew_token",
+          "to": "_rotate_token_locked",
+          "file": "services/live-pc/sessionhub.py",
+          "line": 89,
+          "proof": "static_direct"
+        },
+        {
+          "from": "_rotate_token_locked",
+          "to": "old token pop/new token set",
+          "file": "services/live-pc/sessionhub.py",
+          "line": 84,
+          "proof": "static_direct"
+        },
+        {
+          "from": "_purge_expired_locked",
+          "to": "expire/retire session",
+          "file": "services/live-pc/sessionhub.py",
+          "line": 104,
+          "proof": "static_direct"
+        },
+        {
+          "from": "sessionhub_http._authenticate",
+          "to": "HTTP 401 invalid session token",
+          "file": "services/live-pc/sessionhub_http.py",
+          "line": 219,
+          "proof": "http_boundary"
+        }
       ],
-      "tables": {"read": [], "write": []},
-      "tests": ["tests/v19/test_sessionhub_http.py::test_renew_rotates_token_and_revokes_old", "tests/v19/test_sessionhub_http.py::test_expired_token_and_session_are_purged", "tests/v19/test_phoneonly_runtime.py::test_offer_creates_runtime_and_end_is_authenticated"],
-      "missing_tests": ["Real long-running Android renewal"],
+      "tables": {
+        "read": [],
+        "write": []
+      },
+      "tests": [
+        "tests/v19/test_sessionhub_http.py::test_renew_rotates_token_and_revokes_old",
+        "tests/v19/test_sessionhub_http.py::test_expired_token_and_session_are_purged",
+        "tests/v19/test_phoneonly_runtime.py::test_offer_creates_runtime_and_end_is_authenticated"
+      ],
+      "missing_tests": [
+        "Real long-running Android renewal"
+      ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_sessionhub_http.py::test_renew_rotates_token_and_revokes_old tests/v19/test_sessionhub_http.py::test_expired_token_and_session_are_purged",
-      "risks": ["Persistence would require replay/logout semantics."]
+      "risks": [
+        "Persistence would require replay/logout semantics."
+      ]
     },
     {
       "id": "datachannel_delivery",
       "status": "partially_proven",
-      "entry": {"file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/LiveTransportPlugin.kt", "line": 307, "symbol": "createDataChannel contracts"},
+      "entry": {
+        "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/LiveTransportPlugin.kt",
+        "line": 307,
+        "symbol": "createDataChannel contracts"
+      },
       "edges": [
-        {"from": "LiveTransportPlugin.establish", "to": "PeerConnection.createDataChannel", "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/LiveTransportPlugin.kt", "line": 307, "proof": "datachannel_boundary"},
-        {"from": "AiortcIngress.handle_offer_sdp", "to": "@pc.on(datachannel)", "file": "services/live-pc/gateway.py", "line": 419, "proof": "datachannel_boundary"},
-        {"from": "AiortcIngress._on_message", "to": "FrameEnvelope.matcher.add", "file": "services/live-pc/gateway.py", "line": 451, "proof": "static_direct"},
-        {"from": "AiortcIngress._on_message", "to": "on_receipt", "file": "services/live-pc/gateway.py", "line": 459, "proof": "static_direct"},
-        {"from": "AiortcIngress._send_ui_intent_now", "to": "channel.send", "file": "services/live-pc/gateway.py", "line": 347, "proof": "datachannel_boundary"},
-        {"from": "LivePipeline._push_device_command", "to": "AiortcIngress.send_ui_intent", "file": "services/live-pc/live_pipeline.py", "line": 642, "proof": "datachannel_boundary"},
-        {"from": "LivePipeline._on_scene_delta", "to": "AiortcIngress.send_ui_intent", "file": "services/live-pc/live_pipeline.py", "line": 761, "proof": "datachannel_boundary"}
+        {
+          "from": "LiveTransportPlugin.establish",
+          "to": "PeerConnection.createDataChannel",
+          "file": "apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/LiveTransportPlugin.kt",
+          "line": 307,
+          "proof": "datachannel_boundary"
+        },
+        {
+          "from": "AiortcIngress.handle_offer_sdp",
+          "to": "@pc.on(datachannel)",
+          "file": "services/live-pc/gateway.py",
+          "line": 419,
+          "proof": "datachannel_boundary"
+        },
+        {
+          "from": "AiortcIngress._on_message",
+          "to": "FrameEnvelope.matcher.add",
+          "file": "services/live-pc/gateway.py",
+          "line": 451,
+          "proof": "static_direct"
+        },
+        {
+          "from": "AiortcIngress._on_message",
+          "to": "on_receipt",
+          "file": "services/live-pc/gateway.py",
+          "line": 459,
+          "proof": "static_direct"
+        },
+        {
+          "from": "AiortcIngress._send_ui_intent_now",
+          "to": "channel.send",
+          "file": "services/live-pc/gateway.py",
+          "line": 347,
+          "proof": "datachannel_boundary"
+        },
+        {
+          "from": "LivePipeline._push_device_command",
+          "to": "AiortcIngress.send_ui_intent",
+          "file": "services/live-pc/live_pipeline.py",
+          "line": 642,
+          "proof": "datachannel_boundary"
+        },
+        {
+          "from": "LivePipeline._on_scene_delta",
+          "to": "AiortcIngress.send_ui_intent",
+          "file": "services/live-pc/live_pipeline.py",
+          "line": 761,
+          "proof": "datachannel_boundary"
+        }
       ],
-      "tables": {"read": [], "write": ["feedback tables via receipt/delivered events"]},
-      "tests": ["tests/v19/test_phoneonly_runtime.py::test_datachannel_send_from_audio_worker_is_marshaled_to_owner_loop", "tests/v19/test_e24_roundtrip.py", "tests/v19/test_phoneonly_android_wiring.py::test_raw_scene_messages_are_not_misparsed_as_ui_intents"],
-      "missing_tests": ["Real Android bidirectional DataChannel"],
+      "tables": {
+        "read": [],
+        "write": [
+          "feedback tables via receipt/delivered events"
+        ]
+      },
+      "tests": [
+        "tests/v19/test_phoneonly_runtime.py::test_datachannel_send_from_audio_worker_is_marshaled_to_owner_loop",
+        "tests/v19/test_e24_roundtrip.py",
+        "tests/v19/test_phoneonly_android_wiring.py::test_raw_scene_messages_are_not_misparsed_as_ui_intents"
+      ],
+      "missing_tests": [
+        "Real Android bidirectional DataChannel"
+      ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_phoneonly_runtime.py::test_datachannel_send_from_audio_worker_is_marshaled_to_owner_loop tests/v19/test_e24_roundtrip.py",
-      "risks": ["One shared channel requires strict shape routing."]
+      "risks": [
+        "One shared channel requires strict shape routing."
+      ]
     },
     {
       "id": "media_retention_no_purge_referenced",
       "status": "proven",
-      "entry": {"file": "scripts/run_phoneonly_close_day.py", "line": 116, "symbol": "cleanup eligible retention gate"},
+      "entry": {
+        "file": "scripts/run_phoneonly_close_day.py",
+        "line": 116,
+        "symbol": "cleanup eligible retention gate"
+      },
       "edges": [
-        {"from": "run_phoneonly_close_day.main", "to": "_run_media_retention", "file": "scripts/run_phoneonly_close_day.py", "line": 121, "proof": "static_direct"},
-        {"from": "_run_media_retention", "to": "media_retention.run_media_retention", "file": "scripts/run_phoneonly_close_day.py", "line": 144, "proof": "dynamic_import"},
-        {"from": "MediaRetention.list_media", "to": "_referenced_blob/_clip_fk_referenced/_audio_referenced_paths", "file": "services/live-pc/media_retention.py", "line": 351, "proof": "db_boundary"},
-        {"from": "MediaRetention.purge_unreferenced", "to": "skip referenced", "file": "services/live-pc/media_retention.py", "line": 532, "proof": "static_direct"},
-        {"from": "MediaRetention.enforce_budget", "to": "oldest unreferenced only", "file": "services/live-pc/media_retention.py", "line": 560, "proof": "static_direct"}
+        {
+          "from": "run_phoneonly_close_day.main",
+          "to": "_run_media_retention",
+          "file": "scripts/run_phoneonly_close_day.py",
+          "line": 121,
+          "proof": "static_direct"
+        },
+        {
+          "from": "_run_media_retention",
+          "to": "media_retention.run_media_retention",
+          "file": "scripts/run_phoneonly_close_day.py",
+          "line": 144,
+          "proof": "dynamic_import"
+        },
+        {
+          "from": "MediaRetention.list_media",
+          "to": "_referenced_blob/_clip_fk_referenced/_audio_referenced_paths",
+          "file": "services/live-pc/media_retention.py",
+          "line": 351,
+          "proof": "db_boundary"
+        },
+        {
+          "from": "MediaRetention.purge_unreferenced",
+          "to": "skip referenced",
+          "file": "services/live-pc/media_retention.py",
+          "line": 532,
+          "proof": "static_direct"
+        },
+        {
+          "from": "MediaRetention.enforce_budget",
+          "to": "oldest unreferenced only",
+          "file": "services/live-pc/media_retention.py",
+          "line": 560,
+          "proof": "static_direct"
+        }
       ],
-      "tables": {"read": ["visual_events_v19", "scene_session_summaries_v19", "world_entity_links_v19", "life_model_entries_v19", "predictions_v19", "prediction_outcomes_v19", "brainlive_sensor_events"], "write": ["unreferenced media owner rows only"]},
-      "tests": ["tests/v19/test_media_retention.py"],
-      "missing_tests": ["Production-sized DB retention pass after real CloseDay"],
+      "tables": {
+        "read": [
+          "visual_events_v19",
+          "scene_session_summaries_v19",
+          "world_entity_links_v19",
+          "life_model_entries_v19",
+          "predictions_v19",
+          "prediction_outcomes_v19",
+          "brainlive_sensor_events"
+        ],
+        "write": [
+          "unreferenced media owner rows only"
+        ]
+      },
+      "tests": [
+        "tests/v19/test_media_retention.py"
+      ],
+      "missing_tests": [
+        "Production-sized DB retention pass after real CloseDay"
+      ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_media_retention.py",
-      "risks": ["New evidence tables must be added to evidence scan."]
+      "risks": [
+        "New evidence tables must be added to evidence scan."
+      ]
     },
     {
       "id": "qdrant_vector_sync",
       "status": "partially_proven",
-      "entry": {"file": "src/mlomega_audio_elite/brainlive_poststop_deep_flow_v15_15.py", "line": 146, "symbol": "_sync_secondary_memory_for_conversation"},
+      "entry": {
+        "file": "src/mlomega_audio_elite/brainlive_poststop_deep_flow_v15_15.py",
+        "line": 146,
+        "symbol": "_sync_secondary_memory_for_conversation"
+      },
       "edges": [
-        {"from": "close_brainlive_day.do_post_stop", "to": "run_brainlive_post_stop_deep_flow", "file": "src/mlomega_audio_elite/v18_close_day.py", "line": 419, "proof": "static_direct"},
-        {"from": "_sync_secondary_memory_for_conversation", "to": "sync_vectors", "file": "src/mlomega_audio_elite/brainlive_poststop_deep_flow_v15_15.py", "line": 164, "proof": "static_direct"},
-        {"from": "sync_vectors", "to": "run_or_create_sync_job", "file": "src/mlomega_audio_elite/vector_sync.py", "line": 584, "proof": "static_direct"},
-        {"from": "_sync_vectors_untracked.flush", "to": "store.upsert", "file": "src/mlomega_audio_elite/vector_sync.py", "line": 523, "proof": "external_vector_boundary"},
-        {"from": "_sync_vectors_untracked.flush", "to": "upsert vector_sync_manifest", "file": "src/mlomega_audio_elite/vector_sync.py", "line": 526, "proof": "db_boundary"}
+        {
+          "from": "close_brainlive_day.do_post_stop",
+          "to": "run_brainlive_post_stop_deep_flow",
+          "file": "src/mlomega_audio_elite/v18_close_day.py",
+          "line": 419,
+          "proof": "static_direct"
+        },
+        {
+          "from": "_sync_secondary_memory_for_conversation",
+          "to": "sync_vectors",
+          "file": "src/mlomega_audio_elite/brainlive_poststop_deep_flow_v15_15.py",
+          "line": 164,
+          "proof": "static_direct"
+        },
+        {
+          "from": "sync_vectors",
+          "to": "run_or_create_sync_job",
+          "file": "src/mlomega_audio_elite/vector_sync.py",
+          "line": 584,
+          "proof": "static_direct"
+        },
+        {
+          "from": "_sync_vectors_untracked.flush",
+          "to": "store.upsert",
+          "file": "src/mlomega_audio_elite/vector_sync.py",
+          "line": 523,
+          "proof": "external_vector_boundary"
+        },
+        {
+          "from": "_sync_vectors_untracked.flush",
+          "to": "upsert vector_sync_manifest",
+          "file": "src/mlomega_audio_elite/vector_sync.py",
+          "line": 526,
+          "proof": "db_boundary"
+        }
       ],
-      "tables": {"read": ["memory rows via _iter_memory_rows to_verify"], "write": ["vector_sync_manifest", "Qdrant/LanceDB collection"]},
+      "tables": {
+        "read": [
+          "memory rows via _iter_memory_rows to_verify"
+        ],
+        "write": [
+          "vector_sync_manifest",
+          "Qdrant/LanceDB collection"
+        ]
+      },
       "tests": [],
-      "missing_tests": ["Real vector backend upsert smoke"],
+      "missing_tests": [
+        "Real vector backend upsert smoke"
+      ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19 -k \"vector or sync\"",
-      "risks": ["Avoid full re-embedding from post-stop incremental path."]
+      "risks": [
+        "Avoid full re-embedding from post-stop incremental path."
+      ]
     },
     {
       "id": "life_model_update",
       "status": "proven",
-      "entry": {"file": "src/mlomega_audio_elite/v18_close_day.py", "line": 497, "symbol": "close_brainlive_day.do_life"},
+      "entry": {
+        "file": "src/mlomega_audio_elite/v18_close_day.py",
+        "line": 497,
+        "symbol": "close_brainlive_day.do_life"
+      },
       "edges": [
-        {"from": "close_brainlive_day", "to": "run_life_model_v19_stage", "file": "src/mlomega_audio_elite/v18_close_day.py", "line": 500, "proof": "static_direct"},
-        {"from": "run_life_model_v19_stage", "to": "SELECT visual_events_v19", "file": "src/mlomega_audio_elite/v19_life_model_store.py", "line": 211, "proof": "db_boundary"},
-        {"from": "run_life_model_v19_stage", "to": "SELECT life_model_entries_v19", "file": "src/mlomega_audio_elite/v19_life_model_store.py", "line": 218, "proof": "db_boundary"},
-        {"from": "run_life_model_v19_stage", "to": "SELECT prediction_outcomes_v19", "file": "src/mlomega_audio_elite/v19_life_model_store.py", "line": 226, "proof": "db_boundary"},
-        {"from": "apply_life_model_delta", "to": "upsert life_model_entries_v19", "file": "src/mlomega_audio_elite/v19_life_model_store.py", "line": 63, "proof": "db_boundary"}
+        {
+          "from": "close_brainlive_day",
+          "to": "run_life_model_v19_stage",
+          "file": "src/mlomega_audio_elite/v18_close_day.py",
+          "line": 500,
+          "proof": "static_direct"
+        },
+        {
+          "from": "run_life_model_v19_stage",
+          "to": "SELECT visual_events_v19",
+          "file": "src/mlomega_audio_elite/v19_life_model_store.py",
+          "line": 211,
+          "proof": "db_boundary"
+        },
+        {
+          "from": "run_life_model_v19_stage",
+          "to": "SELECT life_model_entries_v19",
+          "file": "src/mlomega_audio_elite/v19_life_model_store.py",
+          "line": 218,
+          "proof": "db_boundary"
+        },
+        {
+          "from": "run_life_model_v19_stage",
+          "to": "SELECT prediction_outcomes_v19",
+          "file": "src/mlomega_audio_elite/v19_life_model_store.py",
+          "line": 226,
+          "proof": "db_boundary"
+        },
+        {
+          "from": "apply_life_model_delta",
+          "to": "upsert life_model_entries_v19",
+          "file": "src/mlomega_audio_elite/v19_life_model_store.py",
+          "line": 63,
+          "proof": "db_boundary"
+        }
       ],
-      "tables": {"read": ["visual_events_v19", "life_model_entries_v19", "prediction_outcomes_v19", "predictions_v19"], "write": ["life_model_entries_v19"]},
-      "tests": ["tests/v19/test_life_model_v19.py", "tests/v19/test_life_model_empty_day.py"],
-      "missing_tests": ["Full production CloseDay Life Model run"],
+      "tables": {
+        "read": [
+          "visual_events_v19",
+          "life_model_entries_v19",
+          "prediction_outcomes_v19",
+          "predictions_v19"
+        ],
+        "write": [
+          "life_model_entries_v19"
+        ]
+      },
+      "tests": [
+        "tests/v19/test_life_model_v19.py",
+        "tests/v19/test_life_model_empty_day.py"
+      ],
+      "missing_tests": [
+        "Full production CloseDay Life Model run"
+      ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_life_model_v19.py tests/v19/test_life_model_empty_day.py",
-      "risks": ["Must remain incremental/no delete."]
+      "risks": [
+        "Must remain incremental/no delete."
+      ]
     },
     {
       "id": "dashboard_read_only",
       "status": "partially_proven",
-      "entry": {"file": "apps/memory-dashboard/app.py", "line": 476, "symbol": "connect_readonly"},
+      "entry": {
+        "file": "apps/memory-dashboard/app.py",
+        "line": 476,
+        "symbol": "connect_readonly"
+      },
       "edges": [
-        {"from": "RUN_DASHBOARD.ps1", "to": "streamlit run apps/memory-dashboard/app.py", "file": "scripts/RUN_DASHBOARD.ps1", "line": 32, "proof": "process_boundary"},
-        {"from": "connect_readonly", "to": "sqlite3.connect(mode=ro)", "file": "apps/memory-dashboard/app.py", "line": 481, "proof": "db_boundary"},
-        {"from": "list_tables_cached", "to": "connect_readonly", "file": "apps/memory-dashboard/app.py", "line": 488, "proof": "static_direct"},
-        {"from": "list_tables_cached", "to": "SELECT sqlite_master", "file": "apps/memory-dashboard/app.py", "line": 490, "proof": "db_boundary"}
+        {
+          "from": "RUN_DASHBOARD.ps1",
+          "to": "streamlit run apps/memory-dashboard/app.py",
+          "file": "scripts/RUN_DASHBOARD.ps1",
+          "line": 32,
+          "proof": "process_boundary"
+        },
+        {
+          "from": "connect_readonly",
+          "to": "sqlite3.connect(mode=ro)",
+          "file": "apps/memory-dashboard/app.py",
+          "line": 481,
+          "proof": "db_boundary"
+        },
+        {
+          "from": "list_tables_cached",
+          "to": "connect_readonly",
+          "file": "apps/memory-dashboard/app.py",
+          "line": 488,
+          "proof": "static_direct"
+        },
+        {
+          "from": "list_tables_cached",
+          "to": "SELECT sqlite_master",
+          "file": "apps/memory-dashboard/app.py",
+          "line": 490,
+          "proof": "db_boundary"
+        }
       ],
-      "tables": {"read": ["many dashboard-selected tables"], "write": []},
+      "tables": {
+        "read": [
+          "many dashboard-selected tables"
+        ],
+        "write": []
+      },
       "tests": [],
-      "missing_tests": ["Dashboard readonly smoke test rejecting writes"],
+      "missing_tests": [
+        "Dashboard readonly smoke test rejecting writes"
+      ],
       "command": "rg -n \"connect_readonly|mode=ro|INSERT|UPDATE|DELETE\" apps/memory-dashboard/app.py scripts/RUN_DASHBOARD.ps1",
-      "risks": ["Do not add writes to dashboard connection."]
+      "risks": [
+        "Do not add writes to dashboard connection."
+      ]
     },
     {
       "id": "installer_onboarding",
       "status": "partially_proven",
-      "entry": {"file": "scripts/RUN_MLOMEGA_V19.ps1", "line": 12, "symbol": "launcher params"},
+      "entry": {
+        "file": "scripts/RUN_MLOMEGA_V19.ps1",
+        "line": 12,
+        "symbol": "launcher params"
+      },
       "edges": [
-        {"from": "RUN_MLOMEGA_V19.ps1 -LivePhone", "to": "dependency preflight", "file": "scripts/RUN_MLOMEGA_V19.ps1", "line": 58, "proof": "static_direct"},
-        {"from": "RUN_MLOMEGA_V19.ps1 -LivePhone", "to": "sessionhub_http.py", "file": "scripts/RUN_MLOMEGA_V19.ps1", "line": 70, "proof": "process_boundary"},
-        {"from": "PhoneOnlySceneBuilder.BuildScene", "to": "PhoneOnly runtime components", "file": "apps/xr-mobile/Assets/Scripts/Editor/PhoneOnlySceneBuilder.cs", "line": 38, "proof": "static_direct"},
-        {"from": "AndroidBuild", "to": "PhoneOnlySceneBuilder.BuildScene", "file": "apps/xr-mobile/Assets/Scripts/Editor/AndroidBuild.cs", "line": 156, "proof": "static_direct"}
+        {
+          "from": "RUN_MLOMEGA_V19.ps1 -LivePhone",
+          "to": "dependency preflight",
+          "file": "scripts/RUN_MLOMEGA_V19.ps1",
+          "line": 58,
+          "proof": "static_direct"
+        },
+        {
+          "from": "RUN_MLOMEGA_V19.ps1 -LivePhone",
+          "to": "sessionhub_http.py",
+          "file": "scripts/RUN_MLOMEGA_V19.ps1",
+          "line": 70,
+          "proof": "process_boundary"
+        },
+        {
+          "from": "PhoneOnlySceneBuilder.BuildScene",
+          "to": "PhoneOnly runtime components",
+          "file": "apps/xr-mobile/Assets/Scripts/Editor/PhoneOnlySceneBuilder.cs",
+          "line": 38,
+          "proof": "static_direct"
+        },
+        {
+          "from": "AndroidBuild",
+          "to": "PhoneOnlySceneBuilder.BuildScene",
+          "file": "apps/xr-mobile/Assets/Scripts/Editor/AndroidBuild.cs",
+          "line": 156,
+          "proof": "static_direct"
+        }
       ],
-      "tables": {"read": [], "write": []},
-      "tests": ["tests/v19/test_scripts_profile.py", "tests/v19/test_phoneonly_android_wiring.py"],
-      "missing_tests": ["Actual Windows LivePhone run", "Unity APK build/install on Android"],
+      "tables": {
+        "read": [],
+        "write": []
+      },
+      "tests": [
+        "tests/v19/test_scripts_profile.py",
+        "tests/v19/test_phoneonly_android_wiring.py"
+      ],
+      "missing_tests": [
+        "Actual Windows LivePhone run",
+        "Unity APK build/install on Android"
+      ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_scripts_profile.py tests/v19/test_phoneonly_android_wiring.py",
-      "risks": ["Keep SimOnly and LivePhone separate.", "Do not claim hardware validation from launcher alone."]
+      "risks": [
+        "Keep SimOnly and LivePhone separate.",
+        "Do not claim hardware validation from launcher alone."
+      ]
     }
-  ]
+  ],
+  "session_delta_2026_07_10": {
+    "date": "2026-07-10",
+    "note": "Structural delta E53/E58/E59/E60 appended post-scan; see REPO_MAP.md / CALL_TRACE_PROOF.md sections 'Delta 2026-07-10'. Device paths remain to_verify until the real S25 matrix (E60 final gate).",
+    "new_modules": [
+      {
+        "path": "services/live-pc/help_mode.py",
+        "role": "E53 HelpTaskEngine (micro-action plans, VLM scene glance, ghost N+1, grounding, watchdog)",
+        "table": "help_mode_tasks",
+        "status": "proven_unit"
+      },
+      {
+        "path": "apps/xr-mobile/Assets/Scripts/UI/Components/TaskAtoms/",
+        "role": "E53 UI bank (12 atoms) + task_panel/task_anchor registry components",
+        "status": "proven_editmode"
+      },
+      {
+        "path": "apps/xr-mobile/android/reflexvision/src/main/java/com/mlomega/xr/reflexvision/WakeWordMatcher.kt",
+        "role": "E58 wake word matched in FR ASR finals",
+        "status": "proven_jvm"
+      },
+      {
+        "path": "apps/xr-mobile/Assets/Scripts/Reflex/PanelManipulator.cs",
+        "role": "E59 pinch grab/resize/close/minimise (claim-based, no network)",
+        "status": "proven_editmode"
+      },
+      {
+        "path": "apps/xr-mobile/Assets/Scripts/Reflex/PhoneOnlyReflexSignalSource.cs",
+        "role": "E60 production RaiseSignal source (reflex flow was dead before)",
+        "status": "proven_unit_device_to_verify"
+      },
+      {
+        "path": "apps/xr-mobile/Assets/Scripts/UI/TtsAudioPlayer.cs",
+        "role": "E60 Unity consumer of tts_audio DataChannel message",
+        "status": "to_verify"
+      }
+    ],
+    "contract_changes": [
+      {
+        "kind": "device_command",
+        "name": "set_wake_word",
+        "payload": {
+          "word": "str",
+          "command_id": "str"
+        },
+        "direction": "pc_to_unity"
+      },
+      {
+        "kind": "datachannel_up",
+        "name": "device_command_result",
+        "payload": {
+          "command_id": "str",
+          "action": "str",
+          "ok": "bool"
+        },
+        "direction": "unity_to_pc"
+      },
+      {
+        "kind": "ui_intent_components",
+        "names": [
+          "task_panel",
+          "task_anchor"
+        ]
+      },
+      {
+        "kind": "contract_field",
+        "name": "FrameEnvelope.pose_valid",
+        "effect": "PC gates spatialisation on it"
+      }
+    ],
+    "flow_fixes_e60": [
+      "reflex_activation",
+      "tts_connected",
+      "close_day_rerun_db_lookup",
+      "close_day_watchdog",
+      "entity_id_stable_cross_session",
+      "visual_consolidation_europe_paris",
+      "close_day_manifest_rereads_tables",
+      "vision_to_thread",
+      "apk_appid_and_scene_regen"
+    ],
+    "persisting_mismatch": [
+      "ClipRecorder never constructed in production (E55 wiring absent)",
+      "GpuArbiter never constructed"
+    ]
+  }
 }
