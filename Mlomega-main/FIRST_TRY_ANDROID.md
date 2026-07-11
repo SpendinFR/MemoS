@@ -213,7 +213,7 @@ Tu peux maintenant faire 2-3 sessions dans la journée : chaque « Terminer la s
 
 # MISE À JOUR — APK v5 (E53 mode aide + E59 fenêtres à la main)
 
-**Nouvel APK** : même fichier `mlomega-phoneonly.apk` (90.2 Mo, rebuild E60) — réinstalle par-dessus (`adb install -r ...`). SHA-256 : `C2354B8BA8881C86622705C06474877BC05D2AC9924773637631E25F3472020B`. (APK lunettes v3 rebuildée aussi : `mlomega-xreal-g1.apk`, 191,5 Mo — mêmes nouveautés.)
+**Nouvel APK E61** : même fichier `mlomega-phoneonly.apk` (94 759 838 octets) — réinstalle par-dessus (`adb install -r ...`). SHA-256 : `C569EE4596B7E47B755FB8AA027E242577F48C140F6EBD1378C84DCE0EFB975B`. WELCOME la télécharge depuis la GitHub Release avec vérification SHA-256 si elle manque localement. L'APK lunettes produit séparée est `mlomega-xreal.apk` (SHA-256 `945F5D38AC9E3FB72A905B371A5BF20BA2144672D2AB61111A31EB774D360DDF`) ; l'ancien `-g1` reste diagnostic.
 
 ## 🆕 « Viki, mode aide » (E53) — l'assistant de tâche pas-à-pas
 - Dis « **viki… mode aide** » (ou « **aide-moi à faire des crêpes** » directement). Viki jette UN coup d'œil à la scène (elle devine le contexte), te demande la tâche si besoin, puis génère un **plan de micro-actions** (1 action = 1 geste).

@@ -1,5 +1,11 @@
 # DECISIONS
 
+## 2026-07-11 — E61-F : APK téléphone vérifiée, SDK lunettes jamais redistribué (ADR)
+
+**Deux distributions, deux contraintes.** PhoneOnly est un artefact redistribuable : WELCOME le récupère depuis la dernière GitHub Release uniquement si le clone n'en possède pas, exige un sidecar SHA-256 et effectue une bascule atomique après vérification. L'APK publiée conserve le profil cible `192.168.1.199:8710`; une IP différente exige un build local explicitement injecté, elle n'est pas cachée derrière un pairing prétendument générique. XREAL embarque un SDK propriétaire et ne doit jamais être uploadée : WELCOME appelle un build local assisté en deux passes et restaure les artefacts projet sans dépendre de `git checkout`.
+
+**Un build est une preuve de dépendances.** Le rebuild E61 a échoué avant IL2CPP sur les modules builtin Video et UnityWebRequestTexture absents, bien que les types existent dans le code et l'asmdef. Ils sont maintenant déclarés dans manifest/lock/asmdef. Les hashes ne sont documentés qu'après deux exits Unity réels à zéro ; le vieux `mlomega-xreal-g1.apk` reste diagnostic et n'est jamais renommé en produit.
+
 ## 2026-07-11 — E61-E : une installation n'est validée qu'après le vrai cœur nocturne (ADR)
 
 **FAIL atomique, chemins explicites.** L'existence de `.venv\Scripts\python.exe` ne prouve ni WhisperX/pyannote, ni le token HF, ni la DB réellement utilisée. Le readiness profond et `DOCTOR -Full` exécutent donc la même sonde bornée dans `.venv`; cette sonde ouvre SQLite en lecture seule et ne crée aucun fichier pour s'auto-valider. `.env` est la source des chemins produit, les overrides process restent prioritaires et aucun fallback `data/*` n'est autorisé. Evidence brute et médias replay sont deux racines distinctes.

@@ -592,11 +592,41 @@ Step "6/9" "Telephone (APK, install, permissions, pairing)"
 # E49/E58 : l'APK depend du choix materiel (lunettes vs telephone).
 if ($display -eq "xreal_one_pro") {
   $apkPath = "apps\xr-mobile\build\android\mlomega-xreal.apk"
+  $apkFullPath = Join-Path $ProjectRoot $apkPath
+  $defaultPcHost = if ($env:MLOMEGA_PC_HOST) { $env:MLOMEGA_PC_HOST } else { '192.168.1.199' }
+  $xrealPcHost = Ask "IP LAN/Tailscale du PC a injecter dans l'APK XREAL" $defaultPcHost
+  if (-not (Test-Path $apkFullPath)) {
+    $xrealBuilder = Join-Path $ScriptDir 'BUILD_XREAL_ASSISTED.ps1'
+    if (-not (Test-Path $xrealBuilder)) { FailWelcome "Builder XREAL assiste introuvable: $xrealBuilder" }
+    if ($DryRun) {
+      & $xrealBuilder -PcHost $xrealPcHost -PcPort 8710 -DryRun
+    } else {
+      Info "APK XREAL absente : build local assiste en deux passes (SDK proprietaire jamais publie)."
+      & $xrealBuilder -PcHost $xrealPcHost -PcPort 8710
+      if ($LASTEXITCODE -ne 0) { FailWelcome "Build XREAL assiste echoue (code $LASTEXITCODE)." $LASTEXITCODE }
+    }
+  }
   Say  "APK LUNETTES (XREAL) : $apkPath"
-  Hint "(a builder via AndroidBuildXreal si absente — SDK dans Packages\xreal-sdk\)"
 } else {
   $apkPath = "apps\xr-mobile\build\android\mlomega-phoneonly.apk"
+  $apkFullPath = Join-Path $ProjectRoot $apkPath
+  if (-not (Test-Path $apkFullPath)) {
+    $phoneDownloader = Join-Path $ScriptDir 'GET_PHONEONLY_APK.ps1'
+    if (-not (Test-Path $phoneDownloader)) { FailWelcome "Downloader PhoneOnly introuvable: $phoneDownloader" }
+    if ($DryRun) { & $phoneDownloader -Destination $apkFullPath -DryRun }
+    else {
+      Info "APK PhoneOnly absente : telechargement de la derniere GitHub Release + verification SHA-256."
+      & $phoneDownloader -Destination $apkFullPath
+      if ($LASTEXITCODE -ne 0) { FailWelcome "Aucune APK PhoneOnly locale ou telechargeable." $LASTEXITCODE }
+    }
+  }
   Say  "APK PhoneOnly : $apkPath"
+  Hint "La Release officielle porte l'endpoint cible 192.168.1.199:8710 ; si l'IP du PC change, utilise un build local avec MLOMEGA_PC_HOST."
+}
+if (-not $DryRun -and -not (Test-Path $apkFullPath)) { FailWelcome "APK finale absente: $apkFullPath" }
+if (-not $DryRun) {
+  $apkHash = (Get-FileHash -LiteralPath $apkFullPath -Algorithm SHA256).Hash
+  Ok "APK verifiee localement : SHA-256 $apkHash"
 }
 Say  "Deux facons d'installer :"
 Hint "A) Avec un cable + adb (developpeur) :  adb install -r `"$apkPath`""

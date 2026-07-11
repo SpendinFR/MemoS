@@ -62,7 +62,7 @@ Règle d'or : une frame ne devient **jamais** un souvenir directement — elle p
 
 | Cible | État | Note |
 |---|---|---|
-| **PhoneOnly** (Android, S25 / OnePlus…) | ✅ APK v3 livré | le premier vrai terrain |
+| **PhoneOnly** (Android, S25 / OnePlus…) | ✅ APK E61 + téléchargement Release | le premier vrai terrain ; WELCOME vérifie le SHA-256 |
 | **Lunettes XREAL** | ✅ scène produit + builder, validation matériel en attente | même chaîne pairing/WebRTC/UI/Reflex, rendu stéréo + caméra Eye ; APK `mlomega-xreal.apk` (builder soi-même, SDK propriétaire). `G1Gate` reste un diagnostic séparé |
 | **Capture-only + viewer iPhone** | ✅ | lunettes/caméra capturent, tu vérifies dans Safari (`apps/companion-web/`) |
 | Snap Spectacles / autres | ⏳ futur | contrats indépendants du matériel, prévus pour ça |
@@ -78,8 +78,8 @@ Règle d'or : une frame ne devient **jamais** un souvenir directement — elle p
 > #  -DryRun pour voir le déroulé sans rien installer · -Defaults pour non interactif
 > ```
 > Prérequis qu'il ne peut pas poser à ta place : **Python 3.11 64-bit** et l'**appli Ollama**
-> (il les détecte et te guide). Aucun **Unity** requis pour utiliser l'app — Unity ne sert
-> qu'à *recompiler* l'APK (§7).
+> (il les détecte et te guide). Aucun **Unity** requis pour PhoneOnly : WELCOME télécharge
+> l'APK vérifiée. XREAL exige Unity localement car son SDK propriétaire n'est jamais publié.
 
 Ou l'installation **manuelle**, étape par étape :
 
@@ -179,10 +179,10 @@ langage naturel multi-tour ; wake word (mode `open`/`gated`) ; gestes ; sous-tit
 live offline** ; proactivité ; replay ; mode dehors (Tailscale) ; **téléchargement auto des modèles**
 dans l'app ; **cue de changement** (E48-B) ; **dashboard mémoire** (E50) ; **rétention médias + budget
 disque 100 Go** et rollups jour/semaine/mois (E54) ; **enregistrement de clips vidéo** pour le replay,
-sans jamais ralentir le live (E55). APK v3 : `mlomega-phoneonly.apk` (IL2CPP/ARM64).
+sans jamais ralentir le live (E55). APK E61 : `mlomega-phoneonly.apk` (IL2CPP/ARM64, SHA-256 vérifié par WELCOME).
 Tests : Python + Unity EditMode 59/59 + JVM verts (re-exécutés au fil des étapes).
 
-**En attente de validation** : première **session réelle S25** (installer l'APK v3, une vraie session,
+**En attente de validation** : première **session réelle S25** (installer l'APK E61, une vraie session,
 un vrai close-day) — c'est le prochain jalon, tout le reste est prêt pour ça.
 
 **Roadmap** : E49 lunettes XREAL (déposer le SDK) · E51 installateur guidé 2 clics ·
