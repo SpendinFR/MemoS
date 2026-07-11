@@ -61,6 +61,41 @@ function Warn([string]$m)     { Write-Host "[WARN] $m" -ForegroundColor Yellow }
 function Info([string]$m)     { Write-Host "[INFO] $m" -ForegroundColor Gray }
 function DryNote([string]$m)  { Write-Host "[DRY]  $m" -ForegroundColor Magenta }
 function Hint([string]$m)     { Write-Host "       $m" -ForegroundColor DarkGray }
+function FailWelcome([string]$m, [int]$Code = 1) {
+  if (Get-Command Restore-LiveVenv -ErrorAction SilentlyContinue) { Restore-LiveVenv }
+  Write-Host "[FAIL] $m" -ForegroundColor Red
+  exit $Code
+}
+
+function Resolve-Python311 {
+  $candidate = $null
+  if (Get-Command py -ErrorAction SilentlyContinue) {
+    $candidate = (& py -3.11 -c "import sys; print(sys.executable)" 2>$null | Select-Object -First 1)
+    if ($LASTEXITCODE -ne 0) { $candidate = $null }
+  }
+  if (-not $candidate -and (Get-Command python -ErrorAction SilentlyContinue)) {
+    $direct = (& python -c "import sys; print(sys.executable if sys.version_info[:2] == (3,11) else '')" 2>$null | Select-Object -First 1)
+    if ($LASTEXITCODE -eq 0 -and $direct) { $candidate = $direct }
+  }
+  if (-not $candidate) { return $null }
+  $candidate = $candidate.Trim()
+  $identity = (& $candidate -c "import struct,sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}:{struct.calcsize(chr(80))*8}')" 2>$null | Select-Object -First 1)
+  if ($LASTEXITCODE -ne 0 -or $identity -ne '3.11:64') { return $null }
+  return $candidate
+}
+
+function Restore-LiveVenv {
+  $live = Join-Path $ProjectRoot '.venv-live'
+  $previous = Join-Path $ProjectRoot '.venv-live.previous'
+  if (-not (Test-Path $previous)) { return }
+  try {
+    if (Test-Path $live) { Remove-Item -Recurse -Force $live }
+    Rename-Item -Path $previous -NewName '.venv-live'
+    Warn "Ancien .venv-live restaure apres echec du gate final."
+  } catch {
+    Write-Host "[FAIL] Restauration de .venv-live impossible: $($_.Exception.Message)" -ForegroundColor Red
+  }
+}
 
 function Ask([string]$Question, [string]$Default, [string[]]$Choices) {
   if ($Defaults) { return $Default }
@@ -94,9 +129,28 @@ function Set-EnvValue([string]$EnvPath, [string]$Key, [string]$Value) {
   if (-not $found) { $out = @($out) + "$Key=$Value" }
   Set-Content -LiteralPath $EnvPath -Value $out -Encoding UTF8
 }
+function Ensure-EnvValue([string]$EnvPath, [string]$Key, [string]$Value) {
+  if (-not (Test-Path $EnvPath)) { return }
+  if (-not (Select-String -LiteralPath $EnvPath -Pattern "^\s*$([regex]::Escape($Key))\s*=" -Quiet)) {
+    Add-Content -LiteralPath $EnvPath -Value "$Key=$Value" -Encoding UTF8
+  }
+}
+function Get-EnvValue([string]$EnvPath, [string]$Key) {
+  if (-not (Test-Path $EnvPath)) { return $null }
+  $line = Get-Content -LiteralPath $EnvPath | Where-Object { $_ -match "^\s*$([regex]::Escape($Key))\s*=" } | Select-Object -Last 1
+  if (-not $line) { return $null }
+  return (($line -split '=', 2)[1]).Trim().Trim('"').Trim("'")
+}
 
 $script:Notes = @()
 function Remember([string]$m) { $script:Notes += $m }
+
+trap {
+  $message = $_.Exception.Message
+  Restore-LiveVenv
+  Write-Host "[FAIL] Installation interrompue: $message" -ForegroundColor Red
+  exit 1
+}
 
 # ------------------------------------------------------------------------
 Title "Bienvenue dans MLOmega V19 — assistant d'installation et de demarrage"
@@ -118,7 +172,7 @@ if ($glasses -eq "oui") {
     $display = "xreal_one_pro"
     $capture = "xreal_eye"
     Ok "Support XREAL disponible (E49 : adaptateur cable au SDK 3.1.0 + build lunettes prets)."
-    Hint "L'APK lunettes (mlomega-xreal-g1.apk) se BUILDE toi-meme : le SDK XREAL est"
+    Hint "L'APK lunettes (mlomega-xreal.apk) se BUILDE toi-meme : le SDK XREAL est"
     Hint "proprietaire (non redistribue dans le repo). Depose com.xreal.xr.tar.gz dans"
     Hint "apps/xr-mobile/Packages/xreal-sdk/ puis lance le build lunettes (menu Unity"
     Hint "MLOmega > XREAL > 2, ou -executeMethod MLOmega.XR.Editor.AndroidBuildXreal.BuildApk)."
@@ -261,18 +315,20 @@ $corePip  = Join-Path $coreVenv "Scripts\pip.exe"
 if (Test-Path (Join-Path $coreVenv "Scripts\python.exe")) {
   Ok ".venv coeur deja present : conserve tel quel (aucune reinstallation)."
 } elseif (-not (Test-Path $coreLock)) {
-  Warn "Lock coeur introuvable ($coreLock) : je ne peux pas creer .venv. Le close-day nocturne sera indisponible."
-  Remember ".venv coeur non cree (lock absent) : la consolidation de nuit ne tournera pas."
+  FailWelcome "Lock coeur introuvable ($coreLock) : installation CloseDay impossible."
 } elseif ($DryRun) {
-  DryNote "Creerait .venv coeur : python -m venv .venv  puis  .venv\Scripts\pip install -r requirements-v18_8-windows.lock.txt  (long : torch cu121/whisperx/pyannote)."
+  DryNote "Resoudrait Python 3.11 64-bit (py -3.11), creerait .venv puis installerait requirements-v18_8-windows.lock.txt."
 } else {
+  $python311 = Resolve-Python311
+  if (-not $python311) { FailWelcome "Python 3.11 64-bit introuvable. Installe-le puis relance (py -3.11 doit fonctionner)." }
   Warn "Creation du .venv coeur : c'est l'etape LA PLUS LONGUE (torch cu121, whisperx, pyannote — plusieurs minutes / gros telechargement)."
-  & python -m venv $coreVenv
-  if ($LASTEXITCODE -ne 0) { Warn "Creation .venv coeur echouee. Verifie que Python 3.11 64-bit est installe (python --version)." ; Remember ".venv coeur : creation echouee, relance apres avoir installe Python 3.11." }
+  & $python311 -m venv $coreVenv
+  if ($LASTEXITCODE -ne 0) { FailWelcome "Creation du .venv coeur echouee avec $python311 (code $LASTEXITCODE)." }
   else {
     & $corePip install --upgrade pip
+    if ($LASTEXITCODE -ne 0) { FailWelcome "Mise a niveau pip du coeur echouee (code $LASTEXITCODE)." }
     & $corePip install -r $coreLock
-    if ($LASTEXITCODE -ne 0) { Warn "pip install (coeur) a signale un souci. Relance : .venv\Scripts\pip install -r requirements-v18_8-windows.lock.txt" ; Remember ".venv coeur : pip install a echoue en partie, relance la commande ci-dessus." }
+    if ($LASTEXITCODE -ne 0) { FailWelcome "Installation des dependances coeur echouee (code $LASTEXITCODE)." }
     else { Ok ".venv coeur installe (moteur close-day pret)." }
   }
 }
@@ -314,14 +370,14 @@ if ((Test-Path $qdrantExe) -and -not (Test-Path $qdrantCfg) -and -not $DryRun) {
 
 # --- 4a. Environnement live .venv-live (via l'installateur transactionnel) ---
 $installer = Join-Path $ScriptDir "INSTALL_MLOMEGA_V19_WINDOWS.ps1"
-if (-not (Test-Path $installer)) { Warn "Introuvable : $installer — impossible d'installer .venv-live." }
+if (-not (Test-Path $installer)) { FailWelcome "Introuvable : $installer — impossible d'installer .venv-live." }
 else {
   Info "Sous-etape 4a : .venv-live (env live, cree transactionnellement ; .venv coeur intact)."
   if ($DryRun) {
     DryNote "Appellerait : $installer -SkipDoctor  (le DOCTOR final est lance en 4g)"
   } else {
     & $installer -SkipDoctor
-    if ($LASTEXITCODE -ne 0) { Warn "L'installateur a signale un souci (code $LASTEXITCODE). Relis sa sortie ci-dessus; tu peux relancer $installer seul." }
+    if ($LASTEXITCODE -ne 0) { FailWelcome "L'installateur live a echoue (code $LASTEXITCODE)." $LASTEXITCODE }
     else { Ok ".venv-live installe." }
   }
 }
@@ -384,7 +440,7 @@ if ($DryRun) {
   if (Test-Path $envPath) { DryNote ".env existe deja : mettrait a jour HF_TOKEN / cles cloud sans ecraser le reste." }
   else { DryNote "Genererait .env depuis $envTemplate (substitue __PROJECT_ROOT__, __HF_TOKEN__, __PHONE_TOKEN__)." }
 } elseif (-not (Test-Path $envTemplate)) {
-  Warn "Template .env introuvable : $envTemplate — je saute la generation .env."
+  FailWelcome "Template .env introuvable : $envTemplate"
 } else {
   if (Test-Path $envPath) {
     Ok ".env deja present : je le conserve et ne mets a jour que les cles fournies."
@@ -400,6 +456,8 @@ if ($DryRun) {
   }
   # Toujours (re)poser les valeurs sensibles fournies, sans stacktrace ni echo de la cle.
   if (-not [string]::IsNullOrWhiteSpace($hfToken)) { Set-EnvValue $envPath "MLOMEGA_HF_TOKEN" $hfToken; Ok "MLOMEGA_HF_TOKEN ecrit dans .env." }
+  Ensure-EnvValue $envPath "MLOMEGA_EVIDENCE" (Join-Path $ProjectRoot '.mlomega_audio_elite\raw\evidence')
+  Ensure-EnvValue $envPath "MLOMEGA_MEDIA" (Join-Path $ProjectRoot 'storage\media')
   if (-not [string]::IsNullOrWhiteSpace($openaiKey)) { Set-EnvValue $envPath "OPENAI_API_KEY" $openaiKey; Ok "OPENAI_API_KEY ecrit dans .env." }
   if (-not [string]::IsNullOrWhiteSpace($geminiKey)) { Set-EnvValue $envPath "GEMINI_API_KEY" $geminiKey; Ok "GEMINI_API_KEY ecrit dans .env." }
   # E56 : VLM live (leger) + VLM nuit (lourd). Le template par defaut vise qwen3-vl:8b ;
@@ -415,6 +473,22 @@ if ($DryRun) {
     Set-EnvValue $envPath "MLOMEGA_VLM_HEAVY_MODEL" $vlmLight
     Warn "Profil degrade : VLM nuit ramene sur $vlmLight (le VLM lourd risque de ne pas tenir)."
   }
+}
+
+# Materialise the exact configured storage roots and initialise the real SQLite
+# schema before the final Doctor. This avoids both a false green on guessed paths
+# and an impossible first install where the strict preflight sees no database.
+if (-not $DryRun) {
+  $corePython = Join-Path $coreVenv 'Scripts\python.exe'
+  if (-not (Test-Path $corePython)) { FailWelcome ".venv coeur absent avant initialisation de la base produit." }
+  $mediaRoot = Get-EnvValue $envPath 'MLOMEGA_MEDIA'
+  $evidenceRoot = Get-EnvValue $envPath 'MLOMEGA_EVIDENCE'
+  if (-not $mediaRoot -or -not $evidenceRoot) { FailWelcome "MLOMEGA_MEDIA/MLOMEGA_EVIDENCE absents de .env." }
+  New-Item -ItemType Directory -Path $mediaRoot -Force | Out-Null
+  New-Item -ItemType Directory -Path $evidenceRoot -Force | Out-Null
+  & $corePython -c "import sys; sys.path.insert(0, r'$ProjectRoot\src'); from mlomega_audio_elite.db import init_db; print(init_db())"
+  if ($LASTEXITCODE -ne 0) { FailWelcome "Initialisation de la base produit MLOMEGA_DB echouee (code $LASTEXITCODE)." }
+  Ok "Base et racines media/evidence produit initialisees depuis .env."
 }
 
 # --- 4f. setup_profile.ps1 alimente par les reponses ---
@@ -464,13 +538,23 @@ Remember "Mot d'eveil = '$wake' : change-le quand tu veux dans configs\user_prof
 # --- 4g. DOCTOR -Full en garde-fou final ---
 Info "Sous-etape 4g : DOCTOR -Full (garde-fou : rien ne doit etre casse)."
 $doctor = Join-Path $ScriptDir "DOCTOR_MLOMEGA_V19.ps1"
-if (-not (Test-Path $doctor)) { Warn "Introuvable : $doctor" }
+if (-not (Test-Path $doctor)) {
+  if (-not $DryRun) { Restore-LiveVenv }
+  FailWelcome "Introuvable : $doctor"
+}
 elseif ($DryRun) {
   DryNote "Lancerait : $doctor -Full  (WARN toleres, un FAIL indique quoi corriger)."
 } else {
   & $doctor -Full
-  if ($LASTEXITCODE -ne 0) { Warn "DOCTOR a signale au moins un FAIL. Corrige le point indique ci-dessus puis relance : $doctor -Full" }
-  else { Ok "DOCTOR -Full : installation saine (WARN eventuels non bloquants)." }
+  if ($LASTEXITCODE -ne 0) {
+    $doctorCode = $LASTEXITCODE
+    Restore-LiveVenv
+    FailWelcome "DOCTOR a signale un FAIL critique. Installation non validee ; corrige puis relance : $doctor -Full" $doctorCode
+  } else {
+    $previous = Join-Path $ProjectRoot '.venv-live.previous'
+    if (Test-Path $previous) { Remove-Item -Recurse -Force $previous }
+    Ok "DOCTOR -Full : installation saine (WARN eventuels non bloquants)."
+  }
 }
 
 # ========================================================================
@@ -507,7 +591,7 @@ Remember "Pare-feu : ouvre le port 8710 (profil reseau prive) et garde PC+teleph
 Step "6/9" "Telephone (APK, install, permissions, pairing)"
 # E49/E58 : l'APK depend du choix materiel (lunettes vs telephone).
 if ($display -eq "xreal_one_pro") {
-  $apkPath = "apps\xr-mobile\build\android\mlomega-xreal-g1.apk"
+  $apkPath = "apps\xr-mobile\build\android\mlomega-xreal.apk"
   Say  "APK LUNETTES (XREAL) : $apkPath"
   Hint "(a builder via AndroidBuildXreal si absente — SDK dans Packages\xreal-sdk\)"
 } else {

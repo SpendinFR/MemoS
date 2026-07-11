@@ -8,7 +8,8 @@ def test_v19_scripts_and_profiles_exist():
     for path in [
         'scripts/INSTALL_MLOMEGA_V19_WINDOWS.ps1','scripts/setup_profile.ps1','scripts/RUN_MLOMEGA_V19.ps1',
         'scripts/DOCTOR_MLOMEGA_V19.ps1','scripts/BENCH_V19.ps1',
-        'scripts/check_phoneonly_readiness.py','configs/MODEL_MANIFEST.yaml','configs/profiles/rtx3070.yaml'
+        'scripts/check_phoneonly_readiness.py','scripts/check_close_day_preflight.py',
+        'configs/MODEL_MANIFEST.yaml','configs/profiles/rtx3070.yaml'
     ]:
         assert Path(path).exists(), path
 

@@ -42,6 +42,12 @@ Validation ciblée : **33 passed**, parse PowerShell et py_compile verts. Unity 
 
 `mlomega_audio_elite.api` est une compatibilité V18, pas un serveur V19. Son startup exige maintenant `MLOMEGA_ENABLE_LEGACY_API=1`, son titre/health déclarent la dépréciation et orientent vers SessionHub :8710, dashboard :8720 et CLI. Validation : **65 passed** sur runtime/recovery, replay, rétention, API, VisionRT et nightly E37.
 
+### E61-E — Installation, Doctor et builders hermétiques (code clos)
+
+Le gate nocturne n'est plus une présence de fichier. `scripts/check_close_day_preflight.py`, lancé par Doctor et par le `/ready` profond avec `.venv`, importe la chaîne deep réelle et vérifie token HF, ffmpeg, entrypoint, DB configurée en lecture seule et racine `MLOMEGA_MEDIA` existante/inscriptible. Il ne crée aucun chemin pour rendre son propre test vert. Doctor importe `.env` sans remplacer les variables opérateur, réserve `.venv-live` aux contrats/live et `.venv` aux contrôles mémoire/CloseDay, et n'utilise plus `data/memory.db`/`data/evidence`. Les snippets SQL Windows sont passés avec des guillemets préservés : la table delivery et l'enrôlement owner ne sont plus des WARN vides.
+
+`INSTALL_MLOMEGA_V19_WINDOWS.ps1` conserve `.venv-live.previous` après la bascule. En autonome, seul un `DOCTOR -Full` vert autorise sa suppression et le message final ; en orchestration `-SkipDoctor`, WELCOME en devient le propriétaire. WELCOME résout et valide un Python **3.11 64-bit** avant de créer `.venv`, complète les chemins media/evidence, initialise la DB configurée, restaure le venv précédent sur erreur/FAIL et sort non-zéro. PhoneOnly retire toujours `XREAL_SDK_PRESENT`; XREAL retire toujours `MLOMEGA_PHONE_ONLY`. Validation : parse PowerShell vert, **41 tests ciblés**, préflight réel `ready=true`, `DOCTOR -Full` **0 FAIL / 4 WARN** explicites. Les APK existantes ne sont pas revendiquées comme rebâties par ce lot ; elles restent soumises au gate matériel transversal.
+
 ## E60 — Corrections d'intégration pré-production (EN COURS — 2026-07-10)
 
 La checklist canonique des **32 corrections** se trouve dans `docs/PROD_BACKLOG.md` §E60. Une case y représente la correction code/test ciblé ; la matrice S25 reste un gate transversal unique. Exécution imposée : petit lot cohérent → appel produit prouvé → tests ciblés du bon arbre → mise à jour simultanée du guide et du backlog → commit.

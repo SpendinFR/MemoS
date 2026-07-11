@@ -1,5 +1,11 @@
 # DECISIONS
 
+## 2026-07-11 — E61-E : une installation n'est validée qu'après le vrai cœur nocturne (ADR)
+
+**FAIL atomique, chemins explicites.** L'existence de `.venv\Scripts\python.exe` ne prouve ni WhisperX/pyannote, ni le token HF, ni la DB réellement utilisée. Le readiness profond et `DOCTOR -Full` exécutent donc la même sonde bornée dans `.venv`; cette sonde ouvre SQLite en lecture seule et ne crée aucun fichier pour s'auto-valider. `.env` est la source des chemins produit, les overrides process restent prioritaires et aucun fallback `data/*` n'est autorisé. Evidence brute et médias replay sont deux racines distinctes.
+
+**Rollback jusqu'au dernier gate.** `.venv-live.previous` est une sauvegarde transactionnelle, pas un déchet de swap : elle reste présente jusqu'à la fin de WELCOME/Doctor, est restaurée sur erreur, puis supprimée uniquement après zéro FAIL. WARN reste non bloquant ; FAIL interdit tout message de succès et impose un code non-zéro. WELCOME crée le cœur avec un interpréteur explicitement vérifié 3.11/64-bit et initialise les chemins/DB configurés avant Doctor. Les builders Unity nettoient symétriquement le define de la cible opposée afin que PhoneOnly et XREAL ne dépendent plus de reverts Git manuels.
+
 ## 2026-07-11 — E61-D : recovery écrit avant la fin, média propriétaire par schéma (ADR)
 
 **Le job précède l'état ended.** Écrire un marqueur seulement au prochain démarrage ne couvre pas une session déjà marquée ended. PhoneOnly persiste donc son recovery CloseDay avant toute mutation de fin BrainLive ; la fin normale et la reprise manipulent la même ligne durable.

@@ -142,7 +142,6 @@ try {
   Rename-Item -Path $VenvLiveNew -NewName ".venv-live"
   $script:VenvSwapped = $true
   Write-Ok ".venv-live active."
-  if (Test-Path $VenvLiveOld) { Remove-Item -Recurse -Force $VenvLiveOld -ErrorAction SilentlyContinue }
 
   # --- MODEL_MANIFEST.yaml (write/complete; do not clobber existing entries) ---
   Write-Step "Ecriture/completion de configs/MODEL_MANIFEST.yaml"
@@ -179,10 +178,14 @@ models:
   # --- Final doctor ---
   if (-not $SkipDoctor) {
     Write-Step "Doctor V19 final"
-    & (Join-Path $ScriptDir "DOCTOR_MLOMEGA_V19.ps1")
+    & (Join-Path $ScriptDir "DOCTOR_MLOMEGA_V19.ps1") -Full
     if ($LASTEXITCODE -ne 0) {
-      Write-Warn2 "Le doctor a signale des avertissements/erreurs (code $LASTEXITCODE). Consulte sa sortie ci-dessus."
+      Fail "Doctor V19 final en echec (code $LASTEXITCODE). La version precedente va etre restauree."
     }
+    if (Test-Path $VenvLiveOld) { Remove-Item -Recurse -Force $VenvLiveOld }
+    $script:VenvSwapped = $false
+  } elseif (Test-Path $VenvLiveOld) {
+    Write-Warn2 ".venv-live.previous conserve jusqu'au Doctor final de l'orchestrateur."
   }
 
   Write-Host "`nINSTALLATION V19 TERMINEE. Lance: .\scripts\RUN_MLOMEGA_V19.ps1 -SimOnly" -ForegroundColor Green

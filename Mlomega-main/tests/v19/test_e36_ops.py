@@ -418,16 +418,19 @@ def test_doctor_quota_section_runs_and_reports_sizes(tmp_path, monkeypatch):
     script = ROOT / "scripts" / "DOCTOR_MLOMEGA_V19.ps1"
     # Point the evidence root + DB at a seeded temp dir so the sizes are real.
     ev = tmp_path / "evidence"
-    (ev / "keyframes").mkdir(parents=True)
     (ev / "day_buffer").mkdir(parents=True)
-    (ev / "keyframes" / "k1.jpg").write_bytes(b"x" * 4096)
     (ev / "day_buffer" / "b1.bin").write_bytes(b"y" * 8192)
+    media = tmp_path / "media"
+    (media / "keyframes").mkdir(parents=True)
+    (media / "clips").mkdir(parents=True)
+    (media / "keyframes" / "k1.jpg").write_bytes(b"x" * 4096)
     db = tmp_path / "memory.db"
     db.write_bytes(b"z" * 2048)
 
     env = dict(**__import__("os").environ)
     env["MLOMEGA_DB"] = str(db)
     env["MLOMEGA_EVIDENCE"] = str(ev)
+    env["MLOMEGA_MEDIA"] = str(media)
     proc = subprocess.run(
         [pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-Quota"],
         capture_output=True, text=True, cwd=str(ROOT), env=env, timeout=180,

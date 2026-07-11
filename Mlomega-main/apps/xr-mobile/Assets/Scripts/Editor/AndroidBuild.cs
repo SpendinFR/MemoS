@@ -137,13 +137,17 @@ namespace MLOmega.XR.Editor
             // PhoneOnly profile: no XREAL SDK. The proprietary tarball define stays
             // absent so the guarded adapters compile without it.
             string defines = PlayerSettings.GetScriptingDefineSymbolsForGroup(BuildTargetGroup.Android);
+            defines = defines.Replace(";XREAL_SDK_PRESENT", "")
+                .Replace("XREAL_SDK_PRESENT;", "")
+                .Replace("XREAL_SDK_PRESENT", "")
+                .Trim(';');
             if (!defines.Contains("MLOMEGA_PHONE_ONLY"))
             {
                 defines = string.IsNullOrEmpty(defines)
                     ? "MLOMEGA_PHONE_ONLY"
                     : defines + ";MLOMEGA_PHONE_ONLY";
-                PlayerSettings.SetScriptingDefineSymbolsForGroup(BuildTargetGroup.Android, defines);
             }
+            PlayerSettings.SetScriptingDefineSymbolsForGroup(BuildTargetGroup.Android, defines);
         }
 
         private static void EnsureScene()

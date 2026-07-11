@@ -368,14 +368,16 @@ Source de vérité : audit statique transversal du checkout réel, relu et class
 
 **Avancement E61-D (2026-07-11 — code clos)** : le job `phoneonly_session_recovery_v19` est désormais committé avant le premier appel capable de passer BrainLive à `ended`; le CloseDay normal le clôt et le recovery de démarrage reprend aussi une session déjà ended. `vision_frames` migre avec `person_id`, backfillé via `brainlive_sessions` et isolé en `unscoped_legacy` sinon ; tous les writers, replay bundle et route média utilisent cet owner. MediaRetention filtre inventaire, evidence, FK clips, audio, transcodage, purge et quota par owner, de sorte qu'un autre propriétaire ne protège ni ne perd les médias courants. Enfin `mlomega_audio_elite.api` émet une dépréciation et refuse son startup sans `MLOMEGA_ENABLE_LEGACY_API=1`; SessionHub/dashboard/CLI sont indiqués comme remplaçants. Validation ciblée : **65 passed**.
 
-### E61-E — Installation, Doctor et builds reproductibles
+### E61-E — Installation, Doctor et builds reproductibles (code clos)
 
-- [ ] **20 — Préflight CloseDay réel** : exécuter avec `.venv` une sonde bornée des imports/configs nocturnes, WhisperX/pyannote/token HF et entrypoint `run_phoneonly_close_day`, pas seulement tester l'existence de `python.exe`.
-- [ ] **21 — Doctor sur le vrai env et la vraie base** : charger `.env`, utiliser `MLOMEGA_DB/MLOMEGA_MEDIA`, exécuter les contrôles cœur avec `.venv` et refuser les fallbacks silencieux vers `data/memory.db`/`data/evidence`.
-- [ ] **22 — Rollback `.venv-live` réellement disponible** : conserver `.venv-live.previous` jusqu'à la fin de toutes les étapes critiques/Doctor, restaurer sur échec, puis seulement supprimer la sauvegarde.
-- [ ] **23 — FAIL Doctor bloquant** : distinguer WARN acceptés et FAIL critiques ; un FAIL final doit rendre INSTALL/WELCOME non-zéro et interdire le message « installation terminée ».
-- [ ] **24 — Python 3.11 explicite dans WELCOME** : créer `.venv` avec l'interpréteur 3.11 64-bit résolu (`py -3.11`/chemin vérifié), jamais le premier `python` du PATH.
-- [ ] **25 — Builders Unity hermétiques** : le build PhoneOnly retire `XREAL_SDK_PRESENT`, le build XREAL retire `MLOMEGA_PHONE_ONLY`, et chaque cible reconstruit sans dépendre d'un revert Git préalable.
+- [x] **20 — Préflight CloseDay réel** : exécuter avec `.venv` une sonde bornée des imports/configs nocturnes, WhisperX/pyannote/token HF et entrypoint `run_phoneonly_close_day`, pas seulement tester l'existence de `python.exe`.
+- [x] **21 — Doctor sur le vrai env et la vraie base** : charger `.env`, utiliser `MLOMEGA_DB/MLOMEGA_MEDIA`, exécuter les contrôles cœur avec `.venv` et refuser les fallbacks silencieux vers `data/memory.db`/`data/evidence`.
+- [x] **22 — Rollback `.venv-live` réellement disponible** : conserver `.venv-live.previous` jusqu'à la fin de toutes les étapes critiques/Doctor, restaurer sur échec, puis seulement supprimer la sauvegarde.
+- [x] **23 — FAIL Doctor bloquant** : distinguer WARN acceptés et FAIL critiques ; un FAIL final doit rendre INSTALL/WELCOME non-zéro et interdire le message « installation terminée ».
+- [x] **24 — Python 3.11 explicite dans WELCOME** : créer `.venv` avec l'interpréteur 3.11 64-bit résolu (`py -3.11`/chemin vérifié), jamais le premier `python` du PATH.
+- [x] **25 — Builders Unity hermétiques** : le build PhoneOnly retire `XREAL_SDK_PRESENT`, le build XREAL retire `MLOMEGA_PHONE_ONLY`, et chaque cible reconstruit sans dépendre d'un revert Git préalable.
+
+**Avancement E61-E (2026-07-11 — code clos)** : `check_close_day_preflight.py` tourne dans le vrai `.venv` et refuse toute création/fallback implicite ; il vérifie Python 3.11/64-bit, dépendances deep audio, imports CloseDay, token HF, entrypoint, ffmpeg, SQLite en lecture seule et racine média configurée. `/ready` exécute cette sonde bornée au lieu de regarder seulement `python.exe`. Doctor charge `.env` sans écraser les overrides, sépare interpréteurs live/cœur et chemins evidence/media, et ses requêtes SQLite conservent désormais leurs guillemets sous Windows. WELCOME résout explicitement Python 3.11, initialise les vraies racines/DB, garde le venv précédent jusqu'au Doctor et restaure sur toute erreur ; INSTALL/WELCOME sortent non-zéro au premier FAIL. Les deux builders retirent le define de l'autre cible. Validation : parse PowerShell des trois scripts, **41 passed**, préflight cœur réel `ready=true`, puis `DOCTOR -Full` **0 FAIL / 4 WARN** (Qdrant/Ollama volontairement arrêtés, voix owner à enrôler, XR matériel non branché). Aucun APK n'est rebâti dans ce lot de scripts/builders ; le gate S25 reste transversal.
 
 ### E61-F — Distribution APK via WELCOME
 

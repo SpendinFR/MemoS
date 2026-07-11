@@ -25,12 +25,39 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 Set-Location $ProjectRoot
 
+# The production launchers consume the repository .env. Doctor must inspect the
+# same paths/configuration, while preserving variables explicitly supplied by the
+# caller (CI, one-shot diagnostics, or an operator override).
+function Import-DotEnv([string]$Path) {
+  if (-not (Test-Path $Path)) { return $false }
+  foreach ($line in Get-Content -LiteralPath $Path) {
+    if ($line -match '^\s*(?:#|$)') { continue }
+    if ($line -notmatch '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$') { continue }
+    $key = $matches[1]
+    $value = $matches[2].Trim()
+    if (($value.StartsWith('"') -and $value.EndsWith('"')) -or
+        ($value.StartsWith("'") -and $value.EndsWith("'"))) {
+      $value = $value.Substring(1, $value.Length - 2)
+    }
+    if ([string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($key, 'Process'))) {
+      [Environment]::SetEnvironmentVariable($key, $value, 'Process')
+    }
+  }
+  return $true
+}
+$DotEnvLoaded = Import-DotEnv (Join-Path $ProjectRoot '.env')
+
 $script:Failures = 0
 $script:Warnings = 0
 function Check-Ok([string]$m)   { Write-Host "[OK]   $m" -ForegroundColor Green }
 function Check-Warn([string]$m) { Write-Host "[WARN] $m" -ForegroundColor Yellow; $script:Warnings++ }
 function Check-Fail([string]$m) { Write-Host "[FAIL] $m" -ForegroundColor Red; $script:Failures++ }
 function Section([string]$m)    { Write-Host "`n== $m ==" -ForegroundColor Cyan }
+function Invoke-PythonCode([string]$Exe, [string]$Code) {
+  # Windows' native argv parser removes quotes from a direct here-string passed
+  # to python -c. Escape them once so SQL/string literals reach Python intact.
+  & $Exe -c ($Code.Replace('"', '\"')) 2>$null
+}
 
 $runAll = $Full
 $doVision  = $Full -or $Vision
@@ -39,7 +66,8 @@ $doDelivery = $Full -or $Delivery -or $Memory
 $doXr      = $Full -or $Xr
 $doQuota   = $Full -or $Quota
 
-# Resolve the python interpreter: prefer .venv-live, else .venv, else PATH.
+# Live contracts use .venv-live. Memory/CloseDay checks use the distinct core
+# .venv and never silently claim that a PATH interpreter proves the night chain.
 $LivePython = Join-Path $ProjectRoot ".venv-live\Scripts\python.exe"
 $CorePython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 $Python = $null
@@ -47,6 +75,9 @@ if (Test-Path $LivePython) { $Python = $LivePython }
 elseif (Get-Command python -ErrorAction SilentlyContinue) { $Python = "python" }
 
 Section "Base"
+if ($DotEnvLoaded) { Check-Ok ".env charge (variables explicites conservees)" }
+elseif ($Full) { Check-Fail ".env absent: impossible de verifier les chemins/configs produit" }
+else { Check-Warn ".env absent: les controles partiels utilisent seulement l'environnement explicite" }
 
 # --- Python + version ---
 if ($Python) {
@@ -85,6 +116,24 @@ if (Test-Path $LivePython) {
   }
 } else {
   Check-Warn ".venv-live absent: lance scripts\INSTALL_MLOMEGA_V19_WINDOWS.ps1 (checks contrats via python systeme)."
+}
+
+# --- Real bounded CloseDay preflight in the core environment ---
+if ($Full -or $Memory) {
+  $preflight = Join-Path $ScriptDir 'check_close_day_preflight.py'
+  if (-not (Test-Path $CorePython)) {
+    Check-Fail ".venv coeur absent: CloseDay nocturne indisponible"
+  } elseif (-not (Test-Path $preflight)) {
+    Check-Fail "Preflight CloseDay introuvable: $preflight"
+  } else {
+    $preflightOutput = @(& $CorePython $preflight --json 2>$null)
+    if ($LASTEXITCODE -eq 0) {
+      Check-Ok "CloseDay reel: imports profonds, token HF, DB/media et ffmpeg prets"
+    } else {
+      $detail = ($preflightOutput | Select-Object -Last 1)
+      Check-Fail "CloseDay reel non pret: $detail"
+    }
+  }
 }
 
 # --- Contracts round-trip (8 schemas) ---
@@ -145,8 +194,11 @@ if ($doVision) {
 # --- Delivery / Memory subset ---
 if ($doMemory -or $doDelivery) {
   Section "Delivery / Memory"
-  if ($Python) {
-    $dbProbe = & $Python -c @"
+  $MemoryPython = $null
+  if (Test-Path $CorePython) { $MemoryPython = $CorePython }
+  elseif ($Python) { $MemoryPython = $Python }
+  if ($MemoryPython) {
+    $dbCode = @"
 import os, sqlite3, sys
 db = os.environ.get('MLOMEGA_DB')
 if not db or not os.path.exists(db):
@@ -157,7 +209,8 @@ try:
     print('TABLE_OK' if row else 'TABLE_MISSING')
 except Exception as e:
     print('ERR:'+str(e))
-"@ 2>$null
+"@
+    $dbProbe = Invoke-PythonCode $MemoryPython $dbCode
     if ($dbProbe -like "TABLE_OK*") { Check-Ok "Table brainlive_intervention_delivery_queue accessible" }
     elseif ($dbProbe -like "NODB*") { Check-Warn "MLOMEGA_DB absent/non initialise: table delivery non verifiable (normal avant premiere capture)" }
     elseif ($dbProbe -like "TABLE_MISSING*") { Check-Warn "DB presente mais table delivery absente (sera creee par ensure_delivery_schema au premier usage)" }
@@ -165,7 +218,7 @@ except Exception as e:
 
     # E37 §3: owner (wearer) voice enrolled? The night + live speaker attribution need
     # an is_user=1 speaker with a voice embedding. WARN (not FAIL) with the command.
-    $ownerProbe = & $Python -c @"
+    $ownerCode = @"
 import os, sqlite3, sys
 db = os.environ.get('MLOMEGA_DB')
 if not db or not os.path.exists(db):
@@ -180,7 +233,8 @@ try:
     print('OWNER_OK' if row else 'OWNER_MISSING')
 except Exception as e:
     print('ERR:'+str(e))
-"@ 2>$null
+"@
+    $ownerProbe = Invoke-PythonCode $MemoryPython $ownerCode
     if ($ownerProbe -like "OWNER_OK*") { Check-Ok "Voix du porteur enrolee (is_user=1) - attribution owner active" }
     elseif ($ownerProbe -like "NODB*" -or $ownerProbe -like "NO_VOICE_TABLES*") { Check-Warn "Voix du porteur non verifiable (DB/voix pas encore initialisee). Dis « configure ma voix » a la premiere session." }
     elseif ($ownerProbe -like "OWNER_MISSING*") { Check-Warn "Voix du porteur NON enrolee. Dis « configure ma voix » (ou menu -> Ma voix) pour l'attribution owner (nuit + live)." }
@@ -249,10 +303,13 @@ print('BUF_FAIL_GB=' + g('day_buffer_fail_gb', 5))
   }
   function Fmt-Gb([long]$b) { if ($b -lt 0) { return 'absent' } return ('{0:N2} Go' -f ($b / 1GB)) }
 
-  # DB size (MLOMEGA_DB, else the default core memory.db location).
+  # Use only configured production roots. A guessed fallback can make Doctor
+  # inspect an unrelated empty database/tree and produce a false green.
   $dbPath = $env:MLOMEGA_DB
-  if (-not $dbPath) { $dbPath = Join-Path $ProjectRoot 'data\memory.db' }
-  if (Test-Path $dbPath) {
+  if (-not $dbPath) {
+    Check-Fail "MLOMEGA_DB absent de l'environnement/.env"
+    $dbBytes = 0
+  } elseif (Test-Path $dbPath) {
     $dbBytes = (Get-Item -LiteralPath $dbPath).Length
     Check-Ok "DB SQLite: $(Fmt-Gb $dbBytes) ($dbPath)"
   } else {
@@ -265,17 +322,19 @@ print('BUF_FAIL_GB=' + g('day_buffer_fail_gb', 5))
   if ($modelsBytes -ge 0) { Check-Ok "models/: $(Fmt-Gb $modelsBytes)" }
   else { Check-Warn "models/ absent (lance scripts\fetch_models_v19.py)" }
 
-  # evidence root (keyframes + clips). MLOMEGA_RAW/evidence, else data\evidence.
+  # Raw audio/day buffer and media assets are deliberately distinct roots.
   $evRoot = $env:MLOMEGA_EVIDENCE
   if (-not $evRoot) {
     if ($env:MLOMEGA_RAW) { $evRoot = Join-Path $env:MLOMEGA_RAW 'evidence' }
-    else { $evRoot = Join-Path $ProjectRoot 'data\evidence' }
+    else { Check-Fail "MLOMEGA_EVIDENCE/MLOMEGA_RAW absent de l'environnement/.env" }
   }
-  $kfBytes = Dir-SizeBytes (Join-Path $evRoot 'keyframes')
-  $clipBytes = Dir-SizeBytes (Join-Path $evRoot 'clips')
+  $mediaRoot = $env:MLOMEGA_MEDIA
+  if (-not $mediaRoot) { Check-Fail "MLOMEGA_MEDIA absent de l'environnement/.env" }
+  $kfBytes = if ($mediaRoot) { Dir-SizeBytes (Join-Path $mediaRoot 'keyframes') } else { -1 }
+  $clipBytes = if ($mediaRoot) { Dir-SizeBytes (Join-Path $mediaRoot 'clips') } else { -1 }
   # E37 §1: archived live speech segments (WAV) feeding the nightly deep-audio pass.
-  $audBytes = Dir-SizeBytes (Join-Path $evRoot 'audio')
-  $bufBytes = Dir-SizeBytes (Join-Path $evRoot 'day_buffer')
+  $audBytes = if ($evRoot) { Dir-SizeBytes (Join-Path $evRoot 'audio') } else { -1 }
+  $bufBytes = if ($evRoot) { Dir-SizeBytes (Join-Path $evRoot 'day_buffer') } else { -1 }
   $kf = if ($kfBytes -lt 0) { 0 } else { $kfBytes }
   $cl = if ($clipBytes -lt 0) { 0 } else { $clipBytes }
   $au = if ($audBytes -lt 0) { 0 } else { $audBytes }

@@ -46,7 +46,9 @@ import sys
 import time
 import asyncio
 import json
+import os
 import shutil
+import subprocess
 import urllib.request
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -234,7 +236,31 @@ def _probe_ai_chain(*, person_id: str = "me", deep: bool = False) -> dict[str, A
         record("db", False, f"{type(exc).__name__}: {str(exc)[:160]}")
 
     core_python = _ROOT / ".venv" / "Scripts" / "python.exe"
-    record("close_day_env", core_python.exists(), str(core_python))
+    close_day_preflight = _ROOT / "scripts" / "check_close_day_preflight.py"
+    if not core_python.exists() or not close_day_preflight.exists():
+        record(
+            "close_day_env",
+            False,
+            {"python": str(core_python), "preflight": str(close_day_preflight)},
+        )
+    elif deep:
+        try:
+            proc = subprocess.run(
+                [str(core_python), str(close_day_preflight), "--json"],
+                cwd=str(_ROOT),
+                env=os.environ.copy(),
+                capture_output=True,
+                text=True,
+                timeout=45,
+                check=False,
+            )
+            raw = (proc.stdout or "").strip().splitlines()
+            detail: Any = json.loads(raw[-1]) if raw else {"stderr": (proc.stderr or "")[-500:]}
+            record("close_day_env", proc.returncode == 0, detail)
+        except Exception as exc:
+            record("close_day_env", False, f"{type(exc).__name__}: {str(exc)[:300]}")
+    else:
+        record("close_day_env", True, str(core_python))
     detector = _ROOT / "models" / "yolox_nano.onnx"
     record("detector_model", detector.exists(), str(detector))
     record("ffmpeg", shutil.which("ffmpeg") is not None, shutil.which("ffmpeg"))
