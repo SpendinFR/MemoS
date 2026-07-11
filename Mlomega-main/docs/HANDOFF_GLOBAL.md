@@ -1255,3 +1255,33 @@ Trucs spécifiques à CE repo qu'un nouveau dev ne peut pas deviner. Vérifié s
 
 ## Discipline documentaire (le contrat du repo)
 Chaque étape close = case cochée dans `docs/PROD_BACKLOG.md` + ADR dans `docs/DECISIONS.md` + section dans `docs/EXECUTOR_BUILD_GUIDE.md` (+ delta dans REPO_MAP/CALL_TRACE si contrat/flow/table change). `Oldconversation/MLOmega_V19_reconstitution_complete.md` : JAMAIS en entier, grep ciblé uniquement. Le début de `PROD_BACKLOG.md` a un mojibake historique : ne pas « réparer » en masse (diff illisible).
+
+## Debugging live (les URLs qui sauvent)
+- `http://<PC>:8710/health` = pairing_ready · `/ready` = chaîne IA complète · `/metrics` = compteurs live (conversation_turns, h1_candidates, wake_word_policy, turns_gated_out, drops clips…) · `/session/status` = état session/close-day.
+- Dashboard mémoire lecture seule : `scripts\RUN_DASHBOARD.ps1` → http://localhost:8720 (SQLite mode=ro, jamais d'écriture).
+- La fenêtre de `RUN_MLOMEGA_V19.ps1` EST le journal live — la laisser ouverte.
+- Base : chemin dans `MLOMEGA_DB` (.env) ; timezone produit via `MLOMEGA_LOCAL_TZ` (défaut Europe/Paris).
+
+## LLM/VLM — subtilités
+- `num_predict` ≠ fenêtre de contexte : Ollama live = `num_ctx 4096`, post-stop = `16384` ; toute sortie `done_reason=length` est REJETÉE atomiquement (jamais de JSON partiel promu).
+- Le routeur LLM parle en JSON strict via `complete_json(system, user, schema_hint=…)` — nouveau intent = enum du schema + few-shot + règle grammaire.
+- **Ordre des règles grammaire du routeur = piège récurrent** : les règles spécifiques AVANT les génériques (« traduis en direct » avant « traduis », « aide-moi à » avant find/what_is, owner_enroll avant set_tts). Les contrôles de tâche active (« c'est fait », « répète ») passent par un PRÉ-routeur actif seulement si une tâche help tourne.
+
+## Device/Kotlin — subtilités
+- Les modules `services/live-pc/*.py` se chargent ENTRE EUX par chemin de fichier (`_load("nom", "fichier.py")`) — pas de package : imports relatifs interdits.
+- L'AAR sherpa embarque `libonnxruntime.so` mais PAS l'API Java → l'API vient de `mlomega-onnxruntime.aar` (version alignée 1.17.1). Ne pas monter la version d'un seul côté.
+- KWS sherpa = anglais → le wake word est détecté dans la TRANSCRIPTION ASR FR (`WakeWordMatcher.kt`), pas par le KWS. Traduction offline = OPUS-MT int8 via le provisioning (6 entrées manifest).
+- aiortc DÉCODE les frames (pas de passthrough H.264) : l'enregistreur de clips ré-encode en CPU libx264 (subprocess priorité basse, file drop-on-full — le live ne doit JAMAIS être bloqué par l'encode).
+- Un seul micro : `JavaAudioDeviceModule` fan-out → sherpa consomme `asPcmSink()` ; ne JAMAIS ouvrir un 2ᵉ AudioRecord en présence WebRTC.
+
+## Close-day / mémoire — règles
+- Fin de session = LE BOUTON « Terminer » (une déconnexion ne consolide pas) ; recovery durable via `phoneonly_session_recovery_v19` + watchdog.
+- `cleanup_eligible` = AUTORISATION de purge, jamais une action. La purge réelle = `media_retention` (budget 100 Go, un média référencé par une preuve n'est JAMAIS supprimé ; WAV→Opus après re-transcription).
+- 2ᵉ session du même jour : reopen via `--allow-rerun` (état lu en DB, pas en mémoire process).
+- Invariants non négociables : mémoire continue (le wake word ne gate QUE le routage) ; frame→observation→preuve→événement→mémoire ; truth_level partout ; pas de démo en dur ; dégradé honnête.
+
+## Pièges d'audit déjà vécus (ne pas re-tomber dedans)
+- Un composant « testé » n'est pas « branché » : vérifier le CONSTRUCTEUR en prod (ClipRecorder/GpuArbiter l'ont appris) et l'appelant réel (RaiseSignal).
+- La scène commitée ≠ le builder : `AndroidBuild.EnsureScene` régénère désormais TOUJOURS la scène — ne pas revenir en arrière.
+- Vérifier l'`applicationIdentifier` de l'APK produite (`com.mlomega.xr.phoneonly`) — l'héritage d'un vieux ProjectSettings a déjà produit un mauvais package.
+- Grep « pattern factory » : chercher `X(` rate `factory = mod.X` — chercher aussi le nom nu.
