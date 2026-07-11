@@ -124,7 +124,8 @@ def _seed_replay_window(db_path, *, person_id="me", day="2026-07-05", hour="14",
     at = f"{day}T{hour}:{minute}:00+00:00"
     with connect(db_path) as con, write_transaction(con):
         insert_only(con, "vision_frames", {
-            "frame_id": "kf1", "live_session_id": "s-e35", "captured_at": at,
+            "frame_id": "kf1", "person_id": person_id,
+            "live_session_id": "s-e35", "captured_at": at,
             "image_path": "/raw/kf1.jpg", "image_sha256": "aa", "created_at": now_iso(),
         }, on_conflict="ignore")
     store_visual_event({
@@ -178,6 +179,24 @@ def test_replay_media_reference_resolves_to_real_file(tmp_path, monkeypatch):
     svc = replay_service.ReplayService(person_id="me", live_session_id="s-e35", db_path=db_path)
     assert svc.resolve_media_path("frame", "kf1") == image.resolve()
     assert svc.resolve_media_path("frame", "missing") is None
+
+
+def test_replay_keyframes_are_owner_scoped(tmp_path, monkeypatch):
+    db_path = _env(tmp_path, monkeypatch)
+    from mlomega_audio_elite.v19_keyframes import register_xr_keyframe
+    for owner in ("me", "other"):
+        image = tmp_path / f"{owner}.jpg"
+        image.write_bytes(owner.encode())
+        register_xr_keyframe(
+            person_id=owner, live_session_id=f"s-{owner}", image_path=str(image),
+            captured_at="2026-07-05T14:31:00+00:00", frame_id=f"kf-{owner}", db_path=db_path,
+        )
+    svc = replay_service.ReplayService(person_id="me", live_session_id="s-me", db_path=db_path)
+    bundle = svc.assemble_bundle(
+        start="2026-07-05T14:30:00+00:00", end="2026-07-05T14:45:00+00:00"
+    )
+    assert [row["frame_id"] for row in bundle["keyframes"]] == ["kf-me"]
+    assert svc.resolve_media_path("frame", "kf-other") is None
 
 
 def test_replay_via_router_llm_frontier_mocked(tmp_path, monkeypatch):

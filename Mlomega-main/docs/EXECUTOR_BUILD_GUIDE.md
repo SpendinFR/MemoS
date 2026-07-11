@@ -34,6 +34,14 @@ Le build lunettes ne livre plus la scène de gate. `PhoneOnlySceneBuilder.BuildX
 
 Validation ciblée : **33 passed**, parse PowerShell et py_compile verts. Unity n'est pas relancé car la licence Hub a déjà échoué avant import au lot B ; après reconnexion, exécuter les deux passes XREAL puis les gates matériel.
 
+### E61-D — Atomicité, ownership média et API historique (code clos)
+
+`end_session_only` crée le marqueur durable `phoneonly_session_recovery_v19` alors que la ligne BrainLive est encore active, avant `pipeline.end_session` et `ConversationBridge.end_session`. Un kill après le passage à `ended` laisse donc déjà un job pending que `startup_recovery` sait reprendre. Le CloseDay normal marque ce même job completed/error ; il n'existe plus de fenêtre « ended mais invisible au recovery ».
+
+`vision_frames.person_id` est une migration additive : owner de la session pour l'historique live, `unscoped_legacy` pour les lignes impossibles à attribuer. Les writers core/V19 le remplissent explicitement. Replay filtre et résout par cet owner. `MediaRetention` applique le même filtre aux colonnes de preuve, keyframes, assets clips, FK visuelles, segments/sensor events audio, transcodage et suppressions : le budget est celui du propriétaire demandé, pas celui de toute la base.
+
+`mlomega_audio_elite.api` est une compatibilité V18, pas un serveur V19. Son startup exige maintenant `MLOMEGA_ENABLE_LEGACY_API=1`, son titre/health déclarent la dépréciation et orientent vers SessionHub :8710, dashboard :8720 et CLI. Validation : **65 passed** sur runtime/recovery, replay, rétention, API, VisionRT et nightly E37.
+
 ## E60 — Corrections d'intégration pré-production (EN COURS — 2026-07-10)
 
 La checklist canonique des **32 corrections** se trouve dans `docs/PROD_BACKLOG.md` §E60. Une case y représente la correction code/test ciblé ; la matrice S25 reste un gate transversal unique. Exécution imposée : petit lot cohérent → appel produit prouvé → tests ciblés du bon arbre → mise à jour simultanée du guide et du backlog → commit.

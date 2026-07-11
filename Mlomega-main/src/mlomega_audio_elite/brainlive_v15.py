@@ -73,6 +73,7 @@ BRAINLIVE_TABLES = {
 BRAINLIVE_SCHEMA = r"""
 CREATE TABLE IF NOT EXISTS vision_frames(
   frame_id TEXT PRIMARY KEY,
+  person_id TEXT NOT NULL,
   source_asset_id TEXT,
   conversation_id TEXT,
   live_session_id TEXT,
@@ -688,6 +689,23 @@ def ensure_brainlive_schema() -> None:
     init_db()
     with connect() as con:
         con.executescript(BRAINLIVE_SCHEMA)
+        columns = {str(row["name"]) for row in con.execute("PRAGMA table_info(vision_frames)")}
+        if "person_id" not in columns:
+            con.execute("ALTER TABLE vision_frames ADD COLUMN person_id TEXT")
+        # Existing live frames inherit the explicit owner of their durable session.
+        con.execute(
+            """UPDATE vision_frames
+               SET person_id=(SELECT s.person_id FROM brainlive_sessions s
+                              WHERE s.live_session_id=vision_frames.live_session_id)
+               WHERE person_id IS NULL AND live_session_id IS NOT NULL"""
+        )
+        # Legacy/manual frames remain isolated instead of leaking into any owner.
+        con.execute(
+            "UPDATE vision_frames SET person_id='unscoped_legacy' WHERE person_id IS NULL"
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_vision_frames_owner_time ON vision_frames(person_id,captured_at)"
+        )
         now = now_iso()
         for table in sorted(BRAINLIVE_TABLES):
             upsert(con, "brainlive_contract_checks", {
@@ -956,7 +974,8 @@ def ingest_vision_frame(
             "created_at": now,
         }, on_conflict="error")
         insert_only(tx, "vision_frames", {
-            "frame_id": frame_id, "source_asset_id": asset_id, "conversation_id": conversation_id,
+            "frame_id": frame_id, "person_id": owner,
+            "source_asset_id": asset_id, "conversation_id": conversation_id,
             "live_session_id": live_session_id, "captured_at": captured_at, "image_path": str(p),
             "image_sha256": sha, "width": None, "height": None, "device_source": device_source,
             "capture_mode": "source_event", "metadata_json": json_dumps({"source_asset_id": asset_id, "source_event_id": source_event_id, "occurrence_key": occurrence_key}),

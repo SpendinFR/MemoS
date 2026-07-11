@@ -361,10 +361,12 @@ Source de vérité : audit statique transversal du checkout réel, relu et class
 
 ### E61-D — Durabilité, ownership et surfaces historiques
 
-- [ ] **09 — Reprise atomique end-session → CloseDay** : créer durablement le marqueur/job de recovery avant ou dans la même transaction que le passage BrainLive à `ended`, afin qu'un kill dans cette fenêtre soit repris.
-- [ ] **16 — Replay keyframes owner-scopé** : rattacher `vision_frames` à la personne/session avant sélection ; aucune image d'un autre owner dans un bundle.
-- [ ] **17 — MediaRetention owner-scopée** : filtrer inventaire, références, transcodage, tiering, purge et quota par propriétaire/session malgré le mode `me` actuel.
-- [ ] **26 — API V18 historique explicitement dépréciée** : marquer `mlomega_audio_elite.api` comme surface legacy non lancée, documenter les remplaçants CLI/dashboard/SessionHub et empêcher qu'une route dormante soit prise pour un chemin produit.
+- [x] **09 — Reprise atomique end-session → CloseDay** : créer durablement le marqueur/job de recovery avant ou dans la même transaction que le passage BrainLive à `ended`, afin qu'un kill dans cette fenêtre soit repris.
+- [x] **16 — Replay keyframes owner-scopé** : rattacher `vision_frames` à la personne/session avant sélection ; aucune image d'un autre owner dans un bundle.
+- [x] **17 — MediaRetention owner-scopée** : filtrer inventaire, références, transcodage, tiering, purge et quota par propriétaire/session malgré le mode `me` actuel.
+- [x] **26 — API V18 historique explicitement dépréciée** : marquer `mlomega_audio_elite.api` comme surface legacy non lancée, documenter les remplaçants CLI/dashboard/SessionHub et empêcher qu'une route dormante soit prise pour un chemin produit.
+
+**Avancement E61-D (2026-07-11 — code clos)** : le job `phoneonly_session_recovery_v19` est désormais committé avant le premier appel capable de passer BrainLive à `ended`; le CloseDay normal le clôt et le recovery de démarrage reprend aussi une session déjà ended. `vision_frames` migre avec `person_id`, backfillé via `brainlive_sessions` et isolé en `unscoped_legacy` sinon ; tous les writers, replay bundle et route média utilisent cet owner. MediaRetention filtre inventaire, evidence, FK clips, audio, transcodage, purge et quota par owner, de sorte qu'un autre propriétaire ne protège ni ne perd les médias courants. Enfin `mlomega_audio_elite.api` émet une dépréciation et refuse son startup sans `MLOMEGA_ENABLE_LEGACY_API=1`; SessionHub/dashboard/CLI sont indiqués comme remplaçants. Validation ciblée : **65 passed**.
 
 ### E61-E — Installation, Doctor et builds reproductibles
 

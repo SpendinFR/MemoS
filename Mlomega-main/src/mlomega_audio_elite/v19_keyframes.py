@@ -24,5 +24,5 @@ def register_xr_keyframe(*, person_id: str, live_session_id: str, image_path: st
     meta={**dict(metadata or {}), 'person_id':person_id}  # person_id last: never nulled by metadata
     with connect(db_path) as con, write_transaction(con):
         insert_only(con,'raw_assets',{'asset_id':asset_id,'type':'image','path':str(p),'sha256':sha,'captured_at':captured_at,'source':'xr_keyframe','metadata_json':json_dumps(meta),'created_at':now}, on_conflict='ignore')
-        insert_only(con,'vision_frames',{'frame_id':frame_id,'source_asset_id':asset_id,'conversation_id':None,'live_session_id':live_session_id,'captured_at':captured_at,'image_path':str(p),'image_sha256':sha,'width':None,'height':None,'device_source':'xr','capture_mode':'xr_keyframe','metadata_json':json_dumps(meta),'created_at':now}, on_conflict='ignore')
+        insert_only(con,'vision_frames',{'frame_id':frame_id,'person_id':person_id,'source_asset_id':asset_id,'conversation_id':None,'live_session_id':live_session_id,'captured_at':captured_at,'image_path':str(p),'image_sha256':sha,'width':None,'height':None,'device_source':'xr','capture_mode':'xr_keyframe','metadata_json':json_dumps(meta),'created_at':now}, on_conflict='ignore')
     return frame_id

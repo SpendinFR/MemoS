@@ -372,6 +372,39 @@ def test_device_privacy_and_structured_intent_reach_runtime_controls():
     assert rt.pipeline.intents.calls[0][0] == "owner_enroll"
 
 
+def test_recovery_job_exists_before_brainlive_can_be_marked_ended(tmp_path, monkeypatch):
+    db_path = tmp_path / "recovery.db"
+    monkeypatch.setenv("MLOMEGA_DB", str(db_path))
+    from mlomega_audio_elite.brainlive_v15 import (
+        ensure_brainlive_schema, start_live_session, end_live_session,
+    )
+    from mlomega_audio_elite.db import connect
+
+    ensure_brainlive_schema()
+    live = start_live_session(person_id="owner", title="atomic recovery", mode="live_xr")
+    live_id = live["live_session_id"]
+    runtime_mod._ensure_recovery_job(
+        person_id="owner", live_session_id=live_id, db_path=db_path,
+    )
+    # This is the historical kill window: BrainLive is ended, but CloseDay has not
+    # started. The durable pending job must already exist.
+    end_live_session(live_id, notes="simulate kill after end")
+    with connect(db_path) as con:
+        row = con.execute(
+            "SELECT state FROM phoneonly_session_recovery_v19 WHERE live_session_id=?",
+            (live_id,),
+        ).fetchone()
+    assert row["state"] == "pending"
+
+    calls = []
+    report = runtime_mod.recover_abandoned_phoneonly_sessions(
+        person_id="owner", db_path=db_path,
+        close_day_runner=lambda **kw: calls.append(kw) or {"status": "completed"},
+    )
+    assert calls and calls[0]["live_session_id"] == live_id
+    assert live_id in report["recovered"]
+
+
 def test_runtime_surfaces_best_effort_close_day_maintenance_warning():
     async def scenario():
         rt = runtime_mod.PhoneOnlyRuntime(

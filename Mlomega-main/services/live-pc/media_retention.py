@@ -192,6 +192,11 @@ class MediaRetention:
         ).fetchone()
         return row is not None
 
+    def _has_column(self, con, table: str, column: str) -> bool:
+        if not self._table_exists(con, table):
+            return False
+        return column in {str(row["name"]) for row in con.execute(f"PRAGMA table_info({table})")}
+
     # ------------------------------------------------------------------ referenced
     def _referenced_blob(self, con) -> str:
         """One big lowercased text blob of every evidence column present.
@@ -205,8 +210,10 @@ class MediaRetention:
             if not self._table_exists(con, table):
                 continue
             try:
+                owner_clause = " AND person_id=?" if self._has_column(con, table, "person_id") else ""
+                params = (self.person_id,) if owner_clause else ()
                 for (val,) in con.execute(
-                    f"SELECT {column} FROM {table} WHERE {column} IS NOT NULL"
+                    f"SELECT {column} FROM {table} WHERE {column} IS NOT NULL{owner_clause}", params
                 ):
                     if val:
                         parts.append(str(val))
@@ -237,7 +244,8 @@ class MediaRetention:
             return items
         rows = con.execute(
             """SELECT frame_id, source_asset_id, image_path, image_sha256, captured_at
-               FROM vision_frames WHERE image_path IS NOT NULL"""
+               FROM vision_frames WHERE person_id=? AND image_path IS NOT NULL""",
+            (self.person_id,),
         ).fetchall()
         for r in rows:
             path = r["image_path"]
@@ -265,7 +273,8 @@ class MediaRetention:
         rows = con.execute(
             """SELECT visual_asset_id, uri, sha256, frame_id, captured_at, asset_kind
                FROM visual_evidence_assets_v19
-               WHERE asset_kind IN ('clip','video','gif') AND uri IS NOT NULL"""
+               WHERE person_id=? AND asset_kind IN ('clip','video','gif') AND uri IS NOT NULL""",
+            (self.person_id,),
         ).fetchall()
         for r in rows:
             uri = r["uri"]
@@ -291,7 +300,9 @@ class MediaRetention:
             return out
         try:
             for (aid,) in con.execute(
-                "SELECT DISTINCT asset_id FROM visual_events_v19 WHERE asset_id IS NOT NULL"
+                """SELECT DISTINCT asset_id FROM visual_events_v19
+                   WHERE person_id=? AND asset_id IS NOT NULL""",
+                (self.person_id,),
             ):
                 if aid:
                     out.add(str(aid))
@@ -310,7 +321,8 @@ class MediaRetention:
         rows = con.execute(
             """SELECT segment_id, source_event_id, chunk_path, source_path, absolute_start
                FROM brainlive_audio_segments_v154
-               WHERE chunk_path IS NOT NULL"""
+               WHERE person_id=? AND chunk_path IS NOT NULL""",
+            (self.person_id,),
         ).fetchall()
         for r in rows:
             path = r["chunk_path"] or r["source_path"]
@@ -338,8 +350,9 @@ class MediaRetention:
         try:
             for (sp,) in con.execute(
                 """SELECT source_path FROM brainlive_sensor_events
-                   WHERE modality='audio' AND event_type='speech_segment'
+                   WHERE person_id=? AND modality='audio' AND event_type='speech_segment'
                      AND source_path IS NOT NULL"""
+                , (self.person_id,)
             ):
                 if sp:
                     out.add(str(sp))
@@ -390,9 +403,9 @@ class MediaRetention:
                 if item.media_kind == "audio" and self._table_exists(con, "brainlive_sensor_events"):
                     con.execute(
                         """DELETE FROM brainlive_sensor_events
-                           WHERE source_path=? AND modality='audio'
+                           WHERE person_id=? AND source_path=? AND modality='audio'
                              AND event_type='speech_segment'""",
-                        (item.path,),
+                        (self.person_id, item.path),
                     )
         except Exception:
             return 0
@@ -427,7 +440,8 @@ class MediaRetention:
                 """SELECT segment_id, source_event_id, chunk_path, source_path,
                           speaker_json
                    FROM brainlive_audio_segments_v154
-                   WHERE chunk_path LIKE '%.wav'"""
+                   WHERE person_id=? AND chunk_path LIKE '%.wav'""",
+                (self.person_id,),
             ).fetchall()]
             # The original sha lives on the sensor event (segments table has none);
             # index it by source_path so the transcode can preserve it as metadata.
@@ -435,8 +449,9 @@ class MediaRetention:
             if self._table_exists(con, "brainlive_sensor_events"):
                 for r in con.execute(
                     """SELECT source_path, source_sha256 FROM brainlive_sensor_events
-                       WHERE modality='audio' AND event_type='speech_segment'
+                       WHERE person_id=? AND modality='audio' AND event_type='speech_segment'
                          AND source_path IS NOT NULL"""
+                    , (self.person_id,)
                 ):
                     if r["source_path"]:
                         sha_by_path[str(r["source_path"])] = r["source_sha256"]
@@ -491,9 +506,9 @@ class MediaRetention:
                         con.execute(
                             """UPDATE brainlive_sensor_events
                                SET source_path=?
-                               WHERE source_path=? AND modality='audio'
+                               WHERE person_id=? AND source_path=? AND modality='audio'
                                  AND event_type='speech_segment'""",
-                            (new_path, str(wav.resolve())),
+                            (new_path, self.person_id, str(wav.resolve())),
                         )
             except Exception as exc:
                 report.warnings.append(f"transcode db repoint failed {wav.name}: {exc}"[:120])

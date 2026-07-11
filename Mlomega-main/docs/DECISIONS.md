@@ -1,5 +1,11 @@
 # DECISIONS
 
+## 2026-07-11 — E61-D : recovery écrit avant la fin, média propriétaire par schéma (ADR)
+
+**Le job précède l'état ended.** Écrire un marqueur seulement au prochain démarrage ne couvre pas une session déjà marquée ended. PhoneOnly persiste donc son recovery CloseDay avant toute mutation de fin BrainLive ; la fin normale et la reprise manipulent la même ligne durable.
+
+**L'owner d'une frame n'est plus caché dans JSON.** `vision_frames.person_id` est la clé requêtable commune aux writers, replay et rétention. Les lignes historiques liées à une session héritent de son owner ; l'inattribuable est isolé, jamais attribué implicitement à `me`. La rétention ne scanne ni ne supprime les preuves d'un autre owner. L'ancienne FastAPI `mlomega_audio_elite.api` reste importable pour tests/migrations mais ne démarre qu'avec un opt-in legacy explicite ; elle n'est jamais un fallback de SessionHub.
+
 ## 2026-07-11 — E61-C : G1 est un diagnostic, l'APK XREAL porte le produit (ADR)
 
 **Une APK de gate ne peut pas être annoncée comme produit.** `G1Gate.unity` reste la surface minimale pour diagnostiquer loader, Eye, pose et stéréo. Le builder distribué cible désormais `XrealProduct.unity`, générée depuis le même graphe que PhoneOnly mais avec `XrAdapterKind.Xreal`, sans preview plate. Elle embarque pairing, transport, UI, Reflex, menu, aide, replay et modèles device. Le nom `mlomega-xreal.apk` évite de confondre ce produit avec l'ancien artefact historique `-g1`.

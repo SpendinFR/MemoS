@@ -75,6 +75,62 @@ CREATE INDEX IF NOT EXISTS idx_phoneonly_recovery_state
 """
 
 
+def _ensure_recovery_job(
+    *, person_id: str, live_session_id: str, db_path: Any = None
+) -> str:
+    """Durably create the CloseDay recovery boundary before BrainLive is ended."""
+    from mlomega_audio_elite.db import connect, write_transaction
+    from mlomega_audio_elite.utils import now_iso
+
+    path = Path(db_path) if db_path is not None else None
+    now = now_iso()
+    with connect(path) as con, write_transaction(con):
+        con.executescript(_RECOVERY_SCHEMA)
+        row = con.execute(
+            "SELECT person_id,started_at FROM brainlive_sessions WHERE live_session_id=?",
+            (live_session_id,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(f"BrainLive session missing before recovery job: {live_session_id}")
+        owner = str(row["person_id"] or "")
+        if owner != str(person_id):
+            raise RuntimeError("BrainLive/recovery owner mismatch")
+        package_date = _session_package_date(str(row["started_at"]))
+        con.execute(
+            """INSERT INTO phoneonly_session_recovery_v19(
+                   live_session_id,person_id,package_date,state,attempts,error_text,
+                   created_at,updated_at,completed_at)
+               VALUES(?,?,?,'pending',0,NULL,?,?,NULL)
+               ON CONFLICT(live_session_id) DO UPDATE SET
+                   person_id=excluded.person_id,
+                   package_date=excluded.package_date,
+                   state=CASE WHEN phoneonly_session_recovery_v19.state='completed'
+                              THEN 'completed' ELSE 'pending' END,
+                   error_text=NULL,
+                   updated_at=excluded.updated_at""",
+            (live_session_id, owner, package_date, now, now),
+        )
+    return package_date
+
+
+def _mark_recovery_job(
+    *, live_session_id: str, state: str, error_text: str | None = None, db_path: Any = None
+) -> None:
+    from mlomega_audio_elite.db import connect, write_transaction
+    from mlomega_audio_elite.utils import now_iso
+
+    now = now_iso()
+    path = Path(db_path) if db_path is not None else None
+    with connect(path) as con, write_transaction(con):
+        con.executescript(_RECOVERY_SCHEMA)
+        con.execute(
+            """UPDATE phoneonly_session_recovery_v19
+               SET state=?, error_text=?, updated_at=?, completed_at=?
+               WHERE live_session_id=?""",
+            (state, error_text, now, now if state == "completed" else None, live_session_id),
+        )
+
+
 def _session_package_date(started_at: str) -> str:
     text = str(started_at).replace("Z", "+00:00")
     dt = datetime.fromisoformat(text)
@@ -292,6 +348,7 @@ class PhoneOnlyRuntime:
         # already completed.
         self.allow_rerun = bool(allow_rerun)
         product_pipeline = pipeline_factory is None
+        self._product_pipeline = product_pipeline
         conversation = None
         keyframe_sink = None
         live_session_id: str | None = None
@@ -566,8 +623,22 @@ class PhoneOnlyRuntime:
                     await asyncio.to_thread(self.pipeline.flush_audio)
                 await self.close_transport()
                 self.end_status = "ending_pipeline"
-                await asyncio.to_thread(self.pipeline.end_session, strict=True)
                 conversation = getattr(self.pipeline, "conversation", None)
+                self.live_session_id = self.live_session_id or getattr(
+                    conversation, "live_session_id", None
+                )
+                if not self.live_session_id:
+                    raise RuntimeError("BrainLive live_session_id was never created")
+                # Commit the recovery job BEFORE either end_session call can mark
+                # BrainLive ended. A kill in the historical gap is now recoverable.
+                if self._product_pipeline:
+                    await asyncio.to_thread(
+                        _ensure_recovery_job,
+                        person_id=self.person_id,
+                        live_session_id=self.live_session_id,
+                        db_path=self.db_path,
+                    )
+                await asyncio.to_thread(self.pipeline.end_session, strict=True)
                 self.live_session_id = getattr(conversation, "live_session_id", None)
                 if conversation is not None:
                     await asyncio.to_thread(
@@ -600,6 +671,14 @@ class PhoneOnlyRuntime:
             )
             self.close_day_result = dict(result or {})
             self.close_day_status = str((result or {}).get("status") or "completed")
+            if self._product_pipeline and self.live_session_id:
+                await asyncio.to_thread(
+                    _mark_recovery_job,
+                    live_session_id=self.live_session_id,
+                    state="completed" if self.close_day_status == "completed" else "error",
+                    error_text=None if self.close_day_status == "completed" else str(result)[:1000],
+                    db_path=self.db_path,
+                )
             maintenance = (result or {}).get("maintenance") or {}
             self.close_day_maintenance_status = str(
                 maintenance.get("status") or "not_run"
@@ -613,6 +692,14 @@ class PhoneOnlyRuntime:
             self.recent_errors.append(str(exc)[:500])
             self.close_day_status = "error"
             self.close_day_maintenance_status = "not_run"
+            if self._product_pipeline and self.live_session_id:
+                try:
+                    await asyncio.to_thread(
+                        _mark_recovery_job, live_session_id=self.live_session_id,
+                        state="error", error_text=str(exc)[:1000], db_path=self.db_path,
+                    )
+                except Exception as marker_exc:
+                    self.recent_errors.append(("recovery marker: " + str(marker_exc))[:500])
         return self.status()
 
     async def end_and_close_day(self, *, drain_timeout_s: float = 5.0) -> dict[str, Any]:

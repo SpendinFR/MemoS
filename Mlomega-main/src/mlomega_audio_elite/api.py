@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+"""Deprecated V18 compatibility API.
+
+This module is not a MLOmega V19 product entrypoint. Live device traffic uses
+``services/live-pc/sessionhub_http.py``; memory reading uses the dashboard/CLI.
+Serving this app requires the explicit ``MLOMEGA_ENABLE_LEGACY_API=1`` opt-in.
+"""
+
+import os
+import warnings
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
@@ -17,6 +26,12 @@ from .voice_identity import enroll_voice, match_voice
 from .v19_visual_store import store_scene_summary, store_ui_outcome, store_visual_event
 from .v19_self_schema import get_self_schema
 
+warnings.warn(
+    "mlomega_audio_elite.api is deprecated; use SessionHub, dashboard or CLI",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
 
 def _v19_store_response(fn, payload: dict, key: str, **extra):
     try:
@@ -26,15 +41,29 @@ def _v19_store_response(fn, payload: dict, key: str, **extra):
     return {key: value, **extra}
 
 if FastAPI is not None:
-    app = FastAPI(title="MemoryLight Omega Audio Elite V3.1 Strict")
+    app = FastAPI(
+        title="[DEPRECATED] MemoryLight Omega Audio Elite V18 compatibility API",
+        description="Not a V19 product entrypoint. Requires MLOMEGA_ENABLE_LEGACY_API=1.",
+    )
 
     @app.on_event("startup")
     def _startup():
+        if os.environ.get("MLOMEGA_ENABLE_LEGACY_API", "").lower() not in {"1", "true", "yes"}:
+            raise RuntimeError(
+                "Legacy API disabled. Use services/live-pc/sessionhub_http.py, "
+                "scripts/RUN_DASHBOARD.ps1 or the mlomega CLI. Set "
+                "MLOMEGA_ENABLE_LEGACY_API=1 only for explicit compatibility work."
+            )
         init_db()
 
     @app.get("/health")
     def health():
-        return {"ok": True, "system": "MemoryLight Omega Audio Elite V3.1 Strict"}
+        return {
+            "ok": True,
+            "deprecated": True,
+            "system": "MemoryLight Omega Audio Elite V18 compatibility API",
+            "replacements": ["SessionHub :8710", "RUN_DASHBOARD.ps1 :8720", "mlomega CLI"],
+        }
 
     @app.post("/ingest/transcript")
     async def upload_transcript(file: UploadFile = File(...)):

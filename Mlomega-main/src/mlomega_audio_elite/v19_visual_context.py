@@ -93,13 +93,14 @@ def _ensure_session(con, *, person_id: str, live_session_id: str, now: str) -> N
     )
 
 
-def _ensure_frame(con, *, frame_id: str, live_session_id: str, obs: dict[str, Any], now: str) -> None:
+def _ensure_frame(con, *, frame_id: str, person_id: str, live_session_id: str, obs: dict[str, Any], now: str) -> None:
     """Guarantee a parent ``vision_frames`` row for the FK (insert-only/immutable)."""
     insert_only(
         con,
         "vision_frames",
         {
             "frame_id": frame_id,
+            "person_id": person_id,
             "source_asset_id": obs.get("source_asset_id"),
             "conversation_id": obs.get("conversation_id"),
             "live_session_id": live_session_id,
@@ -165,7 +166,8 @@ def publish_visual_context(
 
         for obs in observations or []:
             frame_id = str(obs.get("frame_id") or stable_id("v19frame", person_id, live_session_id, obs.get("image_sha256") or obs.get("sha256") or now, obs.get("model") or ""))
-            _ensure_frame(con, frame_id=frame_id, live_session_id=live_session_id, obs=obs, now=now)
+            _ensure_frame(con, frame_id=frame_id, person_id=person_id,
+                          live_session_id=live_session_id, obs=obs, now=now)
             oid = str(obs.get("observation_id") or stable_id("obs", person_id, live_session_id, frame_id, obs.get("model") or "", now))
             insert_only(
                 con,

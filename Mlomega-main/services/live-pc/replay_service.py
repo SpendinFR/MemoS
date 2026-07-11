@@ -166,9 +166,9 @@ class ReplayService:
                 rows = [dict(r) for r in con.execute(
                     """SELECT frame_id, image_path, image_sha256, captured_at
                        FROM vision_frames
-                       WHERE captured_at >= ? AND captured_at <= ?
+                       WHERE person_id=? AND captured_at >= ? AND captured_at <= ?
                        ORDER BY captured_at LIMIT ?""",
-                    (start, end, self.max_keyframes),
+                    (self.person_id, start, end, self.max_keyframes),
                 ).fetchall()]
         except Exception:
             return []
@@ -300,8 +300,8 @@ class ReplayService:
             with self._connect() as con:
                 if kind == "frame":
                     row = con.execute(
-                        "SELECT image_path FROM vision_frames WHERE frame_id=? LIMIT 1",
-                        (asset_id,),
+                        "SELECT image_path FROM vision_frames WHERE frame_id=? AND person_id=? LIMIT 1",
+                        (asset_id, self.person_id),
                     ).fetchone()
                     raw = row[0] if row else None
                 elif kind == "clip":

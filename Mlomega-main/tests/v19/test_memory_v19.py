@@ -6,6 +6,13 @@ import pytest
 pytestmark = pytest.mark.memory
 
 
+def test_legacy_api_refuses_start_without_explicit_opt_in(monkeypatch):
+    monkeypatch.delenv("MLOMEGA_ENABLE_LEGACY_API", raising=False)
+    from mlomega_audio_elite import api
+    with pytest.raises(RuntimeError, match="Legacy API disabled"):
+        api._startup()
+
+
 def test_v19_visual_schema_and_direct_evidence_source(tmp_path, monkeypatch):
     db_path = tmp_path / "memory.db"
     monkeypatch.setenv("MLOMEGA_DB", str(db_path))
@@ -55,6 +62,7 @@ def test_v19_api_endpoints_persist_owner_scoped_payloads(tmp_path, monkeypatch):
     monkeypatch.setenv("MLOMEGA_DB", str(db_path))
     monkeypatch.setenv("MLOMEGA_RAW", str(tmp_path / "raw"))
     monkeypatch.setenv("MLOMEGA_HOME", str(tmp_path))
+    monkeypatch.setenv("MLOMEGA_ENABLE_LEGACY_API", "1")
 
     from fastapi.testclient import TestClient
     from mlomega_audio_elite.api import app

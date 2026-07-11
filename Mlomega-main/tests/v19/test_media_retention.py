@@ -177,6 +177,36 @@ def test_noop_under_quota(tmp_path, monkeypatch):
     assert report["evicted_budget"] == 0
 
 
+def test_inventory_and_evidence_are_strictly_owner_scoped(tmp_path, monkeypatch):
+    _env(tmp_path, monkeypatch)
+    mine = _make_keyframe(tmp_path, frame_id="kf-mine", captured_day="2000-01-01")
+    from mlomega_audio_elite.v19_keyframes import register_xr_keyframe
+    other = tmp_path / "media" / "other.jpg"
+    other.parent.mkdir(parents=True, exist_ok=True)
+    other.write_bytes(b"other")
+    register_xr_keyframe(
+        person_id="other", live_session_id="other-session", image_path=str(other),
+        captured_at=_iso("2000-01-01"), frame_id="kf-other",
+    )
+    # Another owner citing our token must neither protect nor expose our media.
+    from mlomega_audio_elite.v19_visual_store import store_visual_event
+    store_visual_event({
+        "memory_owner_id": "other", "live_session_id": "other-session",
+        "event_type": "object_seen", "occurred_at": _iso("2000-01-01"),
+        "truth_level": "observed", "confidence": 1.0,
+        "evidence": ["frame:kf-mine"],
+    })
+    ret = mr.MediaRetention(
+        person_id="me",
+        config=mr.RetentionConfig(total_gb=100, retention_days=1, transcode_audio=False),
+    )
+    inventory = ret.inventory()
+    assert {item.path for item in inventory} == {str(mine)}
+    ret.run(transcode=False)
+    assert not mine.exists(), "other-owner evidence must not protect this owner's unreferenced media"
+    assert other.exists(), "a retention pass must not touch another owner's file"
+
+
 # ===================================================== 5. transcode reversible
 def _archive_wav(tmp_path):
     import numpy as np
