@@ -100,6 +100,12 @@ def test_default_probe_requires_phoneonly_readiness(monkeypatch):
         lambda *args, **kwargs: Response({"status": "ready", "ready": True}),
     )
     assert endpoint_resolver.default_health_probe(endpoint) is True
+    monkeypatch.setattr(
+        endpoint_resolver.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: Response({"status": "pairing_ready", "ready": True, "pairing_ready": True}),
+    )
+    assert endpoint_resolver.default_health_probe(endpoint) is True
 
 
 def test_lan_up_lan_chosen():

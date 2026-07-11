@@ -89,7 +89,7 @@ namespace MLOmega.XR.Core
         private void OnEnable()
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
-            if (Adapter is PhoneOnlyAdapter)
+            if (Adapter != null)
             {
                 if (_permissions == null) _permissions = FindAnyObjectByType<PermissionGate>();
                 if (_permissions != null && !_permissions.AllPermissionsGranted)

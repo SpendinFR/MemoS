@@ -4,6 +4,7 @@ import asyncio
 import json
 import sqlite3
 import uuid
+from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -147,6 +148,7 @@ def create_app(adapter: DeliveryAdapter | None = None):
     app_adapter = adapter or DeliveryAdapter(renderer=renderer)
     app_adapter.renderer = renderer
     app = FastAPI(title="MLOmega V19 delivery adapter")
+    dispatch_task: asyncio.Task[Any] | None = None
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -164,6 +166,36 @@ def create_app(adapter: DeliveryAdapter | None = None):
         except WebSocketDisconnect:
             renderer.disconnect(websocket)
 
+    async def _continuous_dispatch() -> None:
+        while True:
+            try:
+                await app_adapter.dispatch_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A transient DB/renderer error must not kill the product loop.
+                pass
+            await asyncio.sleep(0.5)
+
+    @app.on_event("startup")
+    async def _startup() -> None:
+        nonlocal dispatch_task
+        dispatch_task = asyncio.create_task(_continuous_dispatch())
+
+    @app.on_event("shutdown")
+    async def _shutdown() -> None:
+        nonlocal dispatch_task
+        if dispatch_task is not None:
+            dispatch_task.cancel()
+            await asyncio.gather(dispatch_task, return_exceptions=True)
+            dispatch_task = None
+
+    # Serve the real browser viewer from the same process/port as its WebSocket.
+    web_root = Path(__file__).resolve().parents[2] / "apps" / "companion-web"
+    if web_root.is_dir():
+        from fastapi.staticfiles import StaticFiles
+        app.mount("/", StaticFiles(directory=str(web_root), html=True), name="companion-web")
+
     app.state.delivery_adapter = app_adapter
     app.state.renderer = renderer
     return app
@@ -177,5 +209,10 @@ async def main_loop(interval_s: float = 0.5, adapter: DeliveryAdapter | None = N
 
 
 if __name__ == "__main__":
+    import argparse
     import uvicorn
-    uvicorn.run(create_app(), host="0.0.0.0", port=8706)
+    parser = argparse.ArgumentParser(description="MLOmega companion-web delivery server")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8706)
+    args = parser.parse_args()
+    uvicorn.run(create_app(), host=args.host, port=args.port)

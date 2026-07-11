@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,44 @@ skip_no_aiortc = pytest.mark.skipif(aiortc_missing, reason="aiortc/av not instal
 
 SCENARIO_MP4 = ROOT / "simulators" / "scenarios" / "test_scene.mp4"
 SCENARIO_POSE = ROOT / "simulators" / "scenarios" / "test_scene_pose.jsonl"
+
+
+@skip_no_aiortc
+def test_reoffer_closes_previous_peer_before_installing_replacement(monkeypatch):
+    peers = []
+
+    class FakePeer:
+        def __init__(self):
+            self.handlers = {}
+            self.closed = False
+            self.connectionState = "new"
+            self.localDescription = None
+            peers.append(self)
+
+        def on(self, name):
+            def register(fn):
+                self.handlers[name] = fn
+                return fn
+            return register
+
+        async def setRemoteDescription(self, _offer): pass
+        async def createAnswer(self): return SimpleNamespace(sdp="answer", type="answer")
+        async def setLocalDescription(self, answer): self.localDescription = answer
+        async def close(self): self.closed = True; self.connectionState = "closed"
+
+    monkeypatch.setattr(gateway, "RTCPeerConnection", FakePeer)
+
+    async def run():
+        ingress = gateway.AiortcIngress(session_id="reoffer", standalone_signaling=False)
+        await ingress.handle_offer_sdp("offer-1", "offer")
+        first = peers[0]
+        await ingress.handle_offer_sdp("offer-2", "offer")
+        assert first.closed is True
+        assert len(ingress._pcs) == 1
+        assert peers[-1] in ingress._pcs
+        await ingress.close()
+
+    asyncio.run(run())
 
 
 async def _run_loop(*, frames: int, loss: float, port: int, use_scenario: bool):

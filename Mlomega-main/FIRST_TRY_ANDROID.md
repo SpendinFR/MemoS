@@ -236,13 +236,13 @@ Tu peux maintenant faire 2-3 sessions dans la journée : chaque « Terminer la s
 
 ## 👓 Lunettes XREAL (E49 — à valider sur matériel)
 
-L'app lunettes est une **APK séparée** : `mlomega-xreal-g1.apk` (~191 Mo), à builder toi-même
+L'app lunettes est une **APK séparée** : `mlomega-xreal.apk`, à builder toi-même
 (le SDK XREAL est propriétaire, non redistribué). Build : dépose `com.xreal.xr.tar.gz` dans
 `apps\xr-mobile\Packages\xreal-sdk\`, puis le menu Unity **MLOmega > XREAL** (ou
 `-executeMethod MLOmega.XR.Editor.AndroidBuildXreal.BuildApk`).
 
 Utilisation (flux prévu — à confirmer sur tes vraies lunettes) :
-1. Installe l'APK lunettes sur le **téléphone** : `adb install -r apps\xr-mobile\build\android\mlomega-xreal-g1.apk`.
+1. Installe l'APK lunettes sur le **téléphone** : `adb install -r apps\xr-mobile\build\android\mlomega-xreal.apk`.
 2. **Branche les lunettes XREAL en USB-C** au téléphone (les lunettes = écran + caméra Eye ;
    le calcul reste sur le téléphone). Le téléphone doit sortir la vidéo en USB-C (DisplayPort).
 3. Lance l'app → **rendu stéréo** dans les lunettes, la **caméra Eye** devient la source vidéo.
@@ -251,8 +251,10 @@ Utilisation (flux prévu — à confirmer sur tes vraies lunettes) :
    (pas de capture vidéo lunettes) sans planter — c'est le plan B intégré.
 
 ⚠️ Non encore validé sur lunettes physiques : affichage stéréo réel, caméra Eye, pose 6DoF,
-batterie sur session longue. Le code compile et l'APK est produite ; la validation terrain
-se fera quand tu auras les lunettes.
+batterie sur session longue. Le builder produit désormais la scène produit complète
+(pairing, WebRTC, UI, Reflex, menu, replay, aide), et non plus `G1Gate.unity`. L'ancien
+`mlomega-xreal-g1.apk` reste uniquement un diagnostic matériel historique ; rebuild la
+nouvelle APK après avoir rafraîchi la licence Unity, puis valide-la sur les lunettes.
 
 ## 📊 Après le close-day : LIS ta mémoire (dashboard)
 ```powershell

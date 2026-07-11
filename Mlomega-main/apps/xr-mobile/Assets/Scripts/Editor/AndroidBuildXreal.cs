@@ -13,7 +13,8 @@
 //     the committed manifest stays XREAL-free and a PhoneOnly clone without the SDK
 //     keeps building);
 //   * activates the XREAL XR loader for Android (XR Plug-in Management);
-//   * builds the G1 gate scene (stereo + Eye capture validation).
+//   * builds the full product scene with XrealDeviceAdapter. G1Gate remains a
+//     separate hardware diagnostic scene, never the shipped product APK.
 //
 // PrepareDefines is a separate entry point so a first pass can set the define + import
 // the SDK before the compile that exercises the real adapter path.
@@ -28,7 +29,7 @@ namespace MLOmega.XR.Editor
 {
     public static class AndroidBuildXreal
     {
-        private const string ScenePath = "Assets/Scenes/G1Gate.unity";
+        private const string ScenePath = PhoneOnlySceneBuilder.XrealScenePath;
         private const string ManifestPath = "Packages/manifest.json";
         private const string TarballRel = "Packages/xreal-sdk/com.xreal.xr.tar.gz";
         private const string XrealDep = "\"com.xreal.xr\": \"file:xreal-sdk/com.xreal.xr.tar.gz\"";
@@ -56,9 +57,11 @@ namespace MLOmega.XR.Editor
             ConfigurePlayerSettings();
             EnableXrealLoader();
             EnsureScene();
+            AndroidBuild.EmbedSmallDeviceModels();
+            AndroidBuild.ApplyEndpointOverride(PhoneOnlySceneBuilder.XrealConfigPath);
 
             string outPath = Env("MLOMEGA_APK_OUT",
-                Path.GetFullPath(Path.Combine("build", "android", "mlomega-xreal-g1.apk")));
+                Path.GetFullPath(Path.Combine("build", "android", "mlomega-xreal.apk")));
             Directory.CreateDirectory(Path.GetDirectoryName(outPath));
 
             var options = new BuildPlayerOptions
@@ -78,7 +81,7 @@ namespace MLOmega.XR.Editor
                     $"[AndroidBuildXreal] Glasses APK build failed: {summary.result} " +
                     $"({summary.totalErrors} errors) -> {outPath}");
             }
-            Debug.Log($"[AndroidBuildXreal] Glasses APK OK: {outPath} ({summary.totalSize} bytes)");
+            Debug.Log($"[AndroidBuildXreal] Glasses PRODUCT APK OK: {outPath} ({summary.totalSize} bytes)");
         }
 
         // --- SDK package injection (keeps the committed manifest XREAL-free) -------
@@ -209,15 +212,15 @@ namespace MLOmega.XR.Editor
             PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
             PlayerSettings.Android.minSdkVersion = AndroidSdkVersions.AndroidApiLevel29;
             PlayerSettings.Android.targetSdkVersion = AndroidSdkVersions.AndroidApiLevel34;
+            PlayerSettings.runInBackground = true;
             PlayerSettings.SetApplicationIdentifier(BuildTargetGroup.Android, "com.mlomega.xr.glasses");
         }
 
         private static void EnsureScene()
         {
-            if (File.Exists(ScenePath)) return;
-            G1SceneBuilder.BuildScene();
+            PhoneOnlySceneBuilder.BuildXrealScene();
             if (!File.Exists(ScenePath))
-                throw new Exception($"[AndroidBuildXreal] G1 gate scene missing after build: {ScenePath}");
+                throw new Exception($"[AndroidBuildXreal] XREAL product scene missing after build: {ScenePath}");
         }
 
         private static string Env(string key, string fallback)

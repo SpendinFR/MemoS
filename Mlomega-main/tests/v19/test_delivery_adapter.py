@@ -64,3 +64,26 @@ def test_websocket_renderer_hub_broadcasts_uiintent_json():
         assert intent in hub.sent
 
     asyncio.run(run_case())
+
+
+def test_product_app_serves_real_companion_assets_and_runs_continuous_dispatch(monkeypatch):
+    from fastapi.testclient import TestClient
+    calls = []
+    hub = delivery_adapter.WebSocketRendererHub()
+    adapter = delivery_adapter.DeliveryAdapter(renderer=hub)
+
+    async def dispatch():
+        calls.append(1)
+        return []
+
+    monkeypatch.setattr(adapter, "dispatch_once", dispatch)
+    app = delivery_adapter.create_app(adapter)
+    with TestClient(app) as client:
+        page = client.get("/")
+        assert page.status_code == 200
+        assert "MLOmega V19 Companion" in page.text
+        import time
+        deadline = time.time() + 1.2
+        while len(calls) < 2 and time.time() < deadline:
+            time.sleep(0.05)
+    assert len(calls) >= 2, "dispatch must continue without a reconnect"

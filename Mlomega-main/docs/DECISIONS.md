@@ -1,5 +1,11 @@
 # DECISIONS
 
+## 2026-07-11 — E61-C : G1 est un diagnostic, l'APK XREAL porte le produit (ADR)
+
+**Une APK de gate ne peut pas être annoncée comme produit.** `G1Gate.unity` reste la surface minimale pour diagnostiquer loader, Eye, pose et stéréo. Le builder distribué cible désormais `XrealProduct.unity`, générée depuis le même graphe que PhoneOnly mais avec `XrAdapterKind.Xreal`, sans preview plate. Elle embarque pairing, transport, UI, Reflex, menu, aide, replay et modèles device. Le nom `mlomega-xreal.apk` évite de confondre ce produit avec l'ancien artefact historique `-g1`.
+
+**Un transport session = un peer courant.** Une re-offer ferme d'abord le peer précédent sous lock, retire ses DataChannels et remet l'origine PTS à zéro. Garder deux peers pour « faciliter » la reconnexion mélangeait audio et timestamps. Companion-web est, lui, un vrai second renderer : process lancé par RUN, assets servis par le serveur WS et dispatch continu ; SimOnly n'est plus son seul appelant.
+
 ## 2026-07-11 — E61-B : média hors DataChannel, actions structurées et privacy dure (ADR)
 
 **Les octets replay restent en HTTP authentifié.** Le DataChannel ne porte que les refs bornées du bundle. SessionHub vérifie session+token, le service replay résout l'ID durable et Unity séquence les textures/vidéos dans le composant déjà admis. Le zoom local n'attend pas un crop PC : `RawImage.uvRect` recadre la texture adapter sur GPU à partir du centre/facteur Reflex.

@@ -56,6 +56,19 @@ def test_phoneonly_scene_is_separate_from_xreal_g1_gate():
         assert component in phone
 
 
+def test_xreal_shipping_builder_uses_full_product_scene_not_g1_gate():
+    product = read("Assets/Scripts/Editor/PhoneOnlySceneBuilder.cs")
+    build = read("Assets/Scripts/Editor/AndroidBuildXreal.cs")
+    assert 'XrealScenePath = "Assets/Scenes/XrealProduct.unity"' in product
+    assert "BuildXrealScene" in product
+    assert "XrAdapterKind.Xreal" in product
+    assert "ScenePath = PhoneOnlySceneBuilder.XrealScenePath" in build
+    assert "PhoneOnlySceneBuilder.BuildXrealScene()" in build
+    assert "G1SceneBuilder.BuildScene()" not in build
+    assert "AndroidBuild.EmbedSmallDeviceModels()" in build
+    assert "mlomega-xreal.apk" in build
+
+
 def test_raw_scene_messages_are_not_misparsed_as_ui_intents():
     bridge = read("Assets/Scripts/Transport/LiveTransportBridge.cs")
     handler = read("Assets/Scripts/UI/SceneDeltaTransportHandler.cs")

@@ -26,6 +26,14 @@ Le menu calcule sa ligne réelle par intersection viewport→plan→`RectTransfo
 
 Validation : **66 passed, 1 deselected** sur IntentRouter/replay/runtime. Le test cloud réel a été exclu car la clé présente tente le proxy de test fermé `127.0.0.1:9`. Unity CLI n'a pas atteint l'import : licence Hub absente/périmée (`No valid Unity Editor license found`, exit 1). Après reconnexion Hub, relancer uniquement `E33MenuDeviceTests`, puis les builds/gates S25 globaux.
 
+### E61-C — Companion, XREAL produit et reconnexion (code clos)
+
+`delivery_adapter.create_app` sert `apps/companion-web` et possède sa propre boucle de dispatch 500 ms, liée au lifespan. `RUN -LivePhone` démarre ce serveur caché sur 8706, vérifie `/health`, publie son URL et le tue dans le `finally` du SessionHub. Le resolver JS comprend le health E60 et SessionHub autorise uniquement les GET cross-origin nécessaires. Le resolver Python accepte `ready`, `pairing_ready` et `full_ready` tant que le booléen pairing est vrai.
+
+Le build lunettes ne livre plus la scène de gate. `PhoneOnlySceneBuilder.BuildXrealScene` construit `XrealProduct.unity` depuis le même graphe produit, avec config/adaptateur XREAL et sans preview téléphone. Le coordinateur transport accepte tout adapter réel ; les permissions Android sont demandées avant capture XREAL. `AndroidBuildXreal` régénère cette scène, embarque les modèles Reflex, injecte l'endpoint dans `MLOmegaXreal.asset` et sort `mlomega-xreal.apk`. `G1Gate.unity` reste disponible pour isoler Eye/pose/stéréo. Sur le PC, `AiortcIngress.handle_offer_sdp` est protégé par un lock : ancien peer fermé, canaux/PTS remis à zéro, puis seulement nouveau peer installé.
+
+Validation ciblée : **33 passed**, parse PowerShell et py_compile verts. Unity n'est pas relancé car la licence Hub a déjà échoué avant import au lot B ; après reconnexion, exécuter les deux passes XREAL puis les gates matériel.
+
 ## E60 — Corrections d'intégration pré-production (EN COURS — 2026-07-10)
 
 La checklist canonique des **32 corrections** se trouve dans `docs/PROD_BACKLOG.md` §E60. Une case y représente la correction code/test ciblé ; la matrice S25 reste un gate transversal unique. Exécution imposée : petit lot cohérent → appel produit prouvé → tests ciblés du bon arbre → mise à jour simultanée du guide et du backlog → commit.

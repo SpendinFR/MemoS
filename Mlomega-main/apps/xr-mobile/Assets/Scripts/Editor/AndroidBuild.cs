@@ -162,7 +162,7 @@ namespace MLOmega.XR.Editor
         // before the ModelProvisioner computes what is still missing (see
         // StreamingAssetsModelInstaller). Absent source = skip + warn (never fail
         // the build — the background fetch tolerates their absence).
-        private static void EmbedSmallDeviceModels()
+        internal static void EmbedSmallDeviceModels()
         {
             // Repo root is two levels above the Unity project (apps/xr-mobile).
             string repoRoot = Path.GetFullPath(Path.Combine(
@@ -239,13 +239,13 @@ namespace MLOmega.XR.Editor
         }
 
         // --- endpoint injection ---------------------------------------------
-        private static void ApplyEndpointOverride()
+        internal static void ApplyEndpointOverride(string configPath = ConfigPath)
         {
             string host = Environment.GetEnvironmentVariable("MLOMEGA_PC_HOST");
             string port = Environment.GetEnvironmentVariable("MLOMEGA_PC_PORT");
             if (string.IsNullOrEmpty(host) && string.IsNullOrEmpty(port)) return;
 
-            var config = AssetDatabase.LoadAssetAtPath<MLOmegaConfig>(ConfigPath);
+            var config = AssetDatabase.LoadAssetAtPath<MLOmegaConfig>(configPath);
             if (config == null) return;
             var so = new SerializedObject(config);
             if (!string.IsNullOrEmpty(host)) so.FindProperty("_pcHost").stringValue = host;

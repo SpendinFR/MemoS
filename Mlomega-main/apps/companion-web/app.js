@@ -25,7 +25,7 @@ async function resolveEndpoint() {
       clearTimeout(t);
       if (resp.ok) {
         const body = await resp.json().catch(() => ({}));
-        if (body.status === 'ok') {
+        if (body.ready === true || body.pairing_ready === true || body.status === 'ok' || body.status === 'full_ready') {
           url = `ws://${host}:${_wsPort}/ws`;
           if (statusEl) statusEl.textContent = `endpoint: ${host}`;
           return host;

@@ -376,6 +376,15 @@ def create_app(
                 await application.state.ingress.close()
 
     app = FastAPI(title="MLOmega V19 SessionHub HTTP", lifespan=_lifespan)
+    # companion-web can probe this :8710 health from its :8706 origin while
+    # resolving LAN/Tailscale endpoints. No cross-origin mutation is enabled.
+    from fastapi.middleware.cors import CORSMiddleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["GET"],
+        allow_headers=["*"],
+    )
     app.state.hub = hub
     app.state.ingress = ingress
     app.state.runtime_manager = runtime_manager

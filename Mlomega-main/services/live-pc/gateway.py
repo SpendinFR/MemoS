@@ -303,6 +303,7 @@ class AiortcIngress:
             maxsize=max(32, int(audio_queue_max_chunks))
         )
         self._pcs: set[Any] = set()
+        self._offer_lock = asyncio.Lock()
         self._runner: Any | None = None
         self._site: Any | None = None
         self._started = asyncio.Event()
@@ -421,9 +422,22 @@ class AiortcIngress:
         ``POST /webrtc/offer`` FastAPI route in ``sessionhub_http`` so
         ``fake_xr_device`` and the Android client share one signaling surface.
         """
+        async with self._offer_lock:
+            return await self._replace_peer_from_offer(sdp, sdp_type)
+
+    async def _replace_peer_from_offer(self, sdp: str, sdp_type: str) -> tuple[str, str]:
+        """Serialize re-offers and close every previous peer before new tracks can
+        reset shared PTS/audio state. One transport session owns exactly one peer."""
         self._loop = asyncio.get_running_loop()
         if not self._accepting_media:
             raise RuntimeError("media ingress is frozen")
+        previous = list(self._pcs)
+        if previous:
+            await asyncio.gather(*(self._teardown(old) for old in previous), return_exceptions=True)
+        self._channels.clear()
+        self._audio_pts_origin_s = None
+        self._audio_wall_origin_s = None
+        self._audio_last_pts_s = None
         offer = RTCSessionDescription(sdp=sdp, type=sdp_type)
         pc = RTCPeerConnection()
         self._pcs.add(pc)

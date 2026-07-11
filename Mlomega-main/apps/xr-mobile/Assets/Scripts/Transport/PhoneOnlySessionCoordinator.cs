@@ -72,7 +72,7 @@ namespace MLOmega.XR.Transport
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
             if (!EndRequested && _pairing != null && _pairing.State == PairingState.Paired &&
-                _session != null && _session.Adapter is PhoneOnlyAdapter)
+                _session != null && _session.Adapter != null)
             {
                 if (_session.State == XrSessionState.Running && _session.Adapter.IsEyeActive)
                     _transport?.StartTransport();

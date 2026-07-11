@@ -74,10 +74,33 @@ if ($LivePhone) {
     Write-Host "     Health : http://${address}:$Port/health"
     Write-Host "     Ready  : http://${address}:$Port/ready"
     Write-Host "     Metrics: http://${address}:$Port/metrics"
+    Write-Host "     Companion: http://${address}:8706/"
   }
   Write-Host "[INFO] Ce lancement ne prouve pas le build Unity/Gradle ni le flux materiel Android." -ForegroundColor Yellow
-  & $Python (Join-Path $ProjectRoot "services\live-pc\sessionhub_http.py") --host $BindHost --port $Port --person-id $PersonId
-  exit $LASTEXITCODE
+  $companion = Start-Process -FilePath $Python -ArgumentList @(
+    (Join-Path $ProjectRoot "services\live-pc\delivery_adapter.py"), "--host", $BindHost, "--port", "8706"
+  ) -WindowStyle Hidden -PassThru
+  $companionReady = $false
+  for ($i = 0; $i -lt 20; $i++) {
+    try {
+      $probe = Invoke-WebRequest -Uri "http://127.0.0.1:8706/health" -UseBasicParsing -TimeoutSec 1
+      if ($probe.StatusCode -eq 200) { $companionReady = $true; break }
+    }
+    catch { Start-Sleep -Milliseconds 250 }
+  }
+  if (-not $companionReady) {
+    if ($companion -and -not $companion.HasExited) { Stop-Process -Id $companion.Id -Force -ErrorAction SilentlyContinue }
+    Write-Host "[FAIL] Companion-web n'a pas démarré sur http://127.0.0.1:8706/." -ForegroundColor Red
+    exit 5
+  }
+  try {
+    & $Python (Join-Path $ProjectRoot "services\live-pc\sessionhub_http.py") --host $BindHost --port $Port --person-id $PersonId
+    $serverCode = $LASTEXITCODE
+  }
+  finally {
+    if ($companion -and -not $companion.HasExited) { Stop-Process -Id $companion.Id -Force -ErrorAction SilentlyContinue }
+  }
+  exit $serverCode
 }
 
 if ($SimOnly) {

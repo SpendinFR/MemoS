@@ -19,14 +19,24 @@ namespace MLOmega.XR.Editor
     {
         private const string ScenePath = "Assets/Scenes/PhoneOnly.unity";
         private const string ConfigPath = "Assets/Config/MLOmegaPhoneOnly.asset";
+        public const string XrealScenePath = "Assets/Scenes/XrealProduct.unity";
+        public const string XrealConfigPath = "Assets/Config/MLOmegaXreal.asset";
         private const string CacheConfigPath = "Assets/Settings/PhoneOnlySceneCacheConfig.asset";
         private const string ThemePath = "Assets/Settings/PhoneOnlyUITheme.asset";
 
         [MenuItem("MLOmega/Build PhoneOnly Scene")]
-        public static void BuildScene()
+        public static void BuildScene() =>
+            BuildProductScene(ScenePath, ConfigPath, XrAdapterKind.PhoneOnly, phonePreview: true);
+
+        [MenuItem("MLOmega/XREAL/Build Product Scene")]
+        public static void BuildXrealScene() =>
+            BuildProductScene(XrealScenePath, XrealConfigPath, XrAdapterKind.Xreal, phonePreview: false);
+
+        private static void BuildProductScene(string scenePath, string configPath,
+            XrAdapterKind adapterKind, bool phonePreview)
         {
             UnityEngine.SceneManagement.Scene scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
-            var config = LoadOrCreateConfig();
+            var config = LoadOrCreateConfig(configPath, adapterKind);
 
             var cameraGo = new GameObject("Phone Camera");
             cameraGo.tag = "MainCamera";
@@ -35,7 +45,7 @@ namespace MLOmega.XR.Editor
             camera.backgroundColor = Color.black;
             cameraGo.AddComponent<AudioListener>();
 
-            var root = new GameObject("PhoneOnly Session");
+            var root = new GameObject(adapterKind == XrAdapterKind.Xreal ? "XREAL Product Session" : "PhoneOnly Session");
             var permissions = root.AddComponent<PermissionGate>();
             var session = root.AddComponent<XrSessionController>();
             var pairing = root.AddComponent<SessionPairing>();
@@ -48,7 +58,7 @@ namespace MLOmega.XR.Editor
             var modelInstaller = root.AddComponent<StreamingAssetsModelInstaller>();
             var provisioning = root.AddComponent<ModelProvisioningBridge>();
             var coordinator = root.AddComponent<PhoneOnlySessionCoordinator>();
-            var preview = cameraGo.AddComponent<PhoneCameraPreview>();
+            var preview = phonePreview ? cameraGo.AddComponent<PhoneCameraPreview>() : null;
 
             // Real phone UI path: consume PC UIIntent/SceneDelta messages and
             // render the same component registry as the glasses, without the E25
@@ -110,8 +120,11 @@ namespace MLOmega.XR.Editor
             Assign(coordinator, "_pairing", pairing);
             Assign(coordinator, "_transport", transport);
             Assign(coordinator, "_session", session);
-            Assign(preview, "_session", session);
-            Assign(preview, "_camera", camera);
+            if (preview != null)
+            {
+                Assign(preview, "_session", session);
+                Assign(preview, "_camera", camera);
+            }
             Assign(cache, "_config", cacheConfig);
             Assign(tracks, "_sceneCache", cache);
             Assign(broker, "_sceneCache", cache);
@@ -179,28 +192,34 @@ namespace MLOmega.XR.Editor
                 typeof(UnityEngine.EventSystems.EventSystem),
                 typeof(UnityEngine.EventSystems.StandaloneInputModule));
 
-            Directory.CreateDirectory(Path.GetDirectoryName(ScenePath));
-            if (!EditorSceneManager.SaveScene(scene, ScenePath))
-                throw new System.InvalidOperationException("Unable to save PhoneOnly scene");
+            Directory.CreateDirectory(Path.GetDirectoryName(scenePath));
+            if (!EditorSceneManager.SaveScene(scene, scenePath))
+                throw new System.InvalidOperationException($"Unable to save product scene: {scenePath}");
             var scenes = new List<EditorBuildSettingsScene>(EditorBuildSettings.scenes);
-            scenes.RemoveAll(s => s.path == ScenePath);
-            scenes.Insert(0, new EditorBuildSettingsScene(ScenePath, true));
+            scenes.RemoveAll(s => s.path == scenePath);
+            scenes.Insert(0, new EditorBuildSettingsScene(scenePath, true));
             EditorBuildSettings.scenes = scenes.ToArray();
             AssetDatabase.SaveAssets();
-            Debug.Log("[PhoneOnlySceneBuilder] Scene and config ready. Set the PC endpoint before Android build.");
+            Debug.Log($"[PhoneOnlySceneBuilder] {adapterKind} product scene ready: {scenePath}");
         }
 
-        private static MLOmegaConfig LoadOrCreateConfig()
+        private static MLOmegaConfig LoadOrCreateConfig(string configPath, XrAdapterKind adapterKind)
         {
-            var config = AssetDatabase.LoadAssetAtPath<MLOmegaConfig>(ConfigPath);
-            if (config != null) return config;
-            Directory.CreateDirectory(Path.GetDirectoryName(ConfigPath));
-            config = ScriptableObject.CreateInstance<MLOmegaConfig>();
+            var config = AssetDatabase.LoadAssetAtPath<MLOmegaConfig>(configPath);
+            bool created = config == null;
+            if (created)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(configPath));
+                config = ScriptableObject.CreateInstance<MLOmegaConfig>();
+            }
             var so = new SerializedObject(config);
-            so.FindProperty("_adapter").enumValueIndex = (int)XrAdapterKind.PhoneOnly;
-            so.FindProperty("_deviceId").stringValue = "phone-only-primary";
+            so.FindProperty("_adapter").enumValueIndex = (int)adapterKind;
+            so.FindProperty("_deviceId").stringValue = adapterKind == XrAdapterKind.Xreal
+                ? "xreal-primary" : "phone-only-primary";
             so.ApplyModifiedPropertiesWithoutUndo();
-            AssetDatabase.CreateAsset(config, ConfigPath);
+            if (created) AssetDatabase.CreateAsset(config, configPath);
+            else EditorUtility.SetDirty(config);
+            AssetDatabase.SaveAssets();
             return config;
         }
 

@@ -142,7 +142,10 @@ def default_health_probe(endpoint: Endpoint, *, timeout_s: float = 2.0) -> bool:
             if resp.status != 200:
                 return False
             body = json.loads(resp.read().decode("utf-8"))
-            return bool(body.get("ready")) and str(body.get("status")) == "ready"
+            status = str(body.get("status") or "")
+            return bool(body.get("ready") or body.get("pairing_ready")) and status in {
+                "ready", "pairing_ready", "full_ready",
+            }
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         return False
 

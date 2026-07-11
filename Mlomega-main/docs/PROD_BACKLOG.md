@@ -352,10 +352,12 @@ Source de vérité : audit statique transversal du checkout réel, relu et class
 
 ### E61-C — Companion, lunettes et reconnexion
 
-- [ ] **07 — Companion-web produit continu** : servir réellement les assets web, démarrer le WebSocket delivery, lancer la boucle `dispatch_once` continue et prouver navigateur réel → receipt, sans remplacer le viewer par SimOnly.
-- [ ] **08 — XREAL produit honnête** : fournir une scène/build lunettes portant la chaîne produit complète, ou limiter explicitement l'APK à G1 et corriger toutes les promesses README/FIRST_TRY ; ne jamais appeler le gate G1 « identique au téléphone ».
-- [ ] **18 — Re-offer WebRTC mono-peer** : lors d'une renégociation, fermer/remplacer l'ancien peer ou isoler strictement les tracks ; empêcher audio dupliqué, plusieurs downlinks et origine PTS partagée entre anciens/nouveaux tracks.
-- [ ] **19 — Resolver Python aligné sur `/health`** : accepter le contrat courant `pairing_ready/full_ready` et couvrir le failover fake-device/outils sans affecter Unity.
+- [x] **07 — Companion-web produit continu** : servir réellement les assets web, démarrer le WebSocket delivery, lancer la boucle `dispatch_once` continue et prouver navigateur réel → receipt, sans remplacer le viewer par SimOnly.
+- [x] **08 — XREAL produit honnête** : fournir une scène/build lunettes portant la chaîne produit complète, ou limiter explicitement l'APK à G1 et corriger toutes les promesses README/FIRST_TRY ; ne jamais appeler le gate G1 « identique au téléphone ».
+- [x] **18 — Re-offer WebRTC mono-peer** : lors d'une renégociation, fermer/remplacer l'ancien peer ou isoler strictement les tracks ; empêcher audio dupliqué, plusieurs downlinks et origine PTS partagée entre anciens/nouveaux tracks.
+- [x] **19 — Resolver Python aligné sur `/health`** : accepter le contrat courant `pairing_ready/full_ready` et couvrir le failover fake-device/outils sans affecter Unity.
+
+**Avancement E61-C (2026-07-11 — code clos)** : `RUN -LivePhone` lance aussi le serveur companion :8706, vérifie son health, sert les vrais assets et arrête proprement le process avec SessionHub ; son lifespan dépile la queue toutes les 500 ms, même sans reconnexion. Le navigateur accepte le health `pairing_ready/full_ready` avec CORS GET. Le builder XREAL régénère maintenant `XrealProduct.unity` avec pairing, capture, WebRTC, SceneCache/UI, Reflex, menu/aide/replay et modèles embarqués ; `G1Gate` reste un diagnostic séparé, l'artefact produit devient `mlomega-xreal.apk`. Chaque re-offer est sérialisée, ferme l'ancien peer/canaux avant de réinitialiser PTS, et le resolver Python reconnaît le contrat health E60. Validation ciblée : **33 passed** + parse PowerShell/py_compile. Compilation/build Unity à relancer après reconnexion Hub ; aucune APK nouvelle n'est revendiquée dans ce lot.
 
 ### E61-D — Durabilité, ownership et surfaces historiques
 
