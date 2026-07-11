@@ -324,7 +324,52 @@ Constat : paume (menu) / balayage (cacher) / pincement (zoom) existaient, mais p
 - [x] Budget §9.4 tenu (pipeline gestes on-demand, zéro alloc/frame). Tests : 8 nouveaux EditMode, **suite complète 76/76**, zéro régression. ADR §E59.
 - Restes : MenuPanel (surface logique sans géométrie propre — trivial quand il portera un GlassPanel) ; halo visuel pendant le drag (polish UI séparé) ; validation device.
 
-## E61 — Distribution des APK via WELCOME (téléchargement + build lunettes assisté) (À FAIRE)
+## E61 — Clôture pré-production : 26 corrections finales + distribution APK (À FAIRE)
+
+Source de vérité : audit statique transversal du checkout réel, relu et classé par le développeur le 2026-07-11. Une case ne sera cochée qu'après correction du chemin produit et preuve ciblée de la frontière concernée. Les points mono-propriétaire restent à scoper proprement mais sont de priorité basse ; l'absence de secret de pairing reste une décision assumée hors de ce lot.
+
+### E61-A — Life Model, prédictions, Self Schema et temps local
+
+- [ ] **01 — Producteur Life Model V19 réel** : produire des `life_model_entries_v19` nouvelles depuis les faits/deltas nocturnes du jour, avec evidence refs et contrat LLM strict ; ne plus dépendre d'un amorçage par test/simulateur.
+- [ ] **10 — Calibration prédictive causale** : ne plus étiqueter arbitrairement les deux derniers observed cases ; relier une vérification/réfutation à la vraie paire de cas concernée, sinon enregistrer un skip explicite sans modifier la calibration V18.
+- [ ] **11 — Self Schema réellement reconstruit** : retirer/invalider les projections dont la source Life Model/pattern n'est plus active au lieu de faire uniquement des upserts.
+- [ ] **12 — Causalités owner-scopées** : empêcher les `causal_edges` d'une autre personne d'entrer dans `self_schema_v19` ; si la table reste sans `person_id`, prouver l'appartenance via les lignes sources.
+- [ ] **13 — Lien durable prédiction → entrée source** : persister `source_entry_id` dans `predictions_v19` et l'utiliser pour les contradictions, jamais l'égalité fragile du texte `statement`.
+- [ ] **14 — Temps civil cohérent** : interpréter replay, journée Life Model et horizons de prédiction dans `MLOMEGA_LOCAL_TZ` puis convertir en UTC, y compris DST et bords de minuit.
+- [ ] **15 — Sorties nocturnes vides observables** : conserver la preuve non circulaire, mais produire au minimum un warning/gate sémantique lorsque des entrées éligibles existent et qu'un stage Life Model/prédiction/Self Schema retourne zéro sortie ; vérifier aussi les rollups week/month dus.
+
+### E61-B — Sorties utilisateur PhoneOnly
+
+- [ ] **02 — Replay média bout-en-bout** : ajouter les routes tokenisées `/replay/media/{kind}/{id}`, résolution owner/session, lecteur images/vidéos Unity et chargement réel dans `VirtualScreen.SetSurfaceTexture`; jamais d'octets média sur le DataChannel.
+- [ ] **03 — LensWindow = vrai zoom** : fabriquer/résoudre le crop texture depuis centre+facteur, l'afficher dans `LensWindow.SetContentTexture` et conserver le chemin local PC coupé.
+- [ ] **04 — Sélection réelle du MenuPanel** : produire l'index sur gaze ou position de pincement par hit-test des lignes, avec dwell/pinch réellement déclenchables dans la scène produit.
+- [ ] **05 — Actions menu vers le routeur PC** : raccorder Mémoire, Ma voix, Replay, Écran virtuel et mode payant/local à une commande montante consommée par l'unique `IntentRouter`; conserver les actions purement device en local.
+- [ ] **06 — Confidentialité effective** : `privacy_pause` doit stopper/suspendre caméra, micro, ASR et émission transport, puis reprendre proprement sans double propriétaire ; le StatusBar reflète l'état réel et non l'inverse.
+
+### E61-C — Companion, lunettes et reconnexion
+
+- [ ] **07 — Companion-web produit continu** : servir réellement les assets web, démarrer le WebSocket delivery, lancer la boucle `dispatch_once` continue et prouver navigateur réel → receipt, sans remplacer le viewer par SimOnly.
+- [ ] **08 — XREAL produit honnête** : fournir une scène/build lunettes portant la chaîne produit complète, ou limiter explicitement l'APK à G1 et corriger toutes les promesses README/FIRST_TRY ; ne jamais appeler le gate G1 « identique au téléphone ».
+- [ ] **18 — Re-offer WebRTC mono-peer** : lors d'une renégociation, fermer/remplacer l'ancien peer ou isoler strictement les tracks ; empêcher audio dupliqué, plusieurs downlinks et origine PTS partagée entre anciens/nouveaux tracks.
+- [ ] **19 — Resolver Python aligné sur `/health`** : accepter le contrat courant `pairing_ready/full_ready` et couvrir le failover fake-device/outils sans affecter Unity.
+
+### E61-D — Durabilité, ownership et surfaces historiques
+
+- [ ] **09 — Reprise atomique end-session → CloseDay** : créer durablement le marqueur/job de recovery avant ou dans la même transaction que le passage BrainLive à `ended`, afin qu'un kill dans cette fenêtre soit repris.
+- [ ] **16 — Replay keyframes owner-scopé** : rattacher `vision_frames` à la personne/session avant sélection ; aucune image d'un autre owner dans un bundle.
+- [ ] **17 — MediaRetention owner-scopée** : filtrer inventaire, références, transcodage, tiering, purge et quota par propriétaire/session malgré le mode `me` actuel.
+- [ ] **26 — API V18 historique explicitement dépréciée** : marquer `mlomega_audio_elite.api` comme surface legacy non lancée, documenter les remplaçants CLI/dashboard/SessionHub et empêcher qu'une route dormante soit prise pour un chemin produit.
+
+### E61-E — Installation, Doctor et builds reproductibles
+
+- [ ] **20 — Préflight CloseDay réel** : exécuter avec `.venv` une sonde bornée des imports/configs nocturnes, WhisperX/pyannote/token HF et entrypoint `run_phoneonly_close_day`, pas seulement tester l'existence de `python.exe`.
+- [ ] **21 — Doctor sur le vrai env et la vraie base** : charger `.env`, utiliser `MLOMEGA_DB/MLOMEGA_MEDIA`, exécuter les contrôles cœur avec `.venv` et refuser les fallbacks silencieux vers `data/memory.db`/`data/evidence`.
+- [ ] **22 — Rollback `.venv-live` réellement disponible** : conserver `.venv-live.previous` jusqu'à la fin de toutes les étapes critiques/Doctor, restaurer sur échec, puis seulement supprimer la sauvegarde.
+- [ ] **23 — FAIL Doctor bloquant** : distinguer WARN acceptés et FAIL critiques ; un FAIL final doit rendre INSTALL/WELCOME non-zéro et interdire le message « installation terminée ».
+- [ ] **24 — Python 3.11 explicite dans WELCOME** : créer `.venv` avec l'interpréteur 3.11 64-bit résolu (`py -3.11`/chemin vérifié), jamais le premier `python` du PATH.
+- [ ] **25 — Builders Unity hermétiques** : le build PhoneOnly retire `XREAL_SDK_PRESENT`, le build XREAL retire `MLOMEGA_PHONE_ONLY`, et chaque cible reconstruit sans dépendre d'un revert Git préalable.
+
+### E61-F — Distribution APK via WELCOME
 
 Constat (2026-07-10) : les APK sont git-ignorées (artefacts locaux, ~90+191 Mo) → un utilisateur qui CLONE le repo n'a aucun APK ; WELCOME affiche un chemin vide et l'utilisateur devrait builder lui-même (Unity + licence = irréaliste pour un non-dev). Solution long terme, tout passe par WELCOME :
 
