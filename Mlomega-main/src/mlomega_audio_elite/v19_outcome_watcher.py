@@ -64,7 +64,10 @@ def _call_conversation_auto_verifier(*, person_id: str) -> dict[str, Any]:
         return {"status": "skipped", "error": str(exc)[:300]}
 
 
-def _try_register_calibration(*, person_id: str, prediction_id: str, status: str, resolved_at: str, db_path=None) -> dict[str, Any]:
+def _try_register_calibration(
+    *, person_id: str, prediction_id: str, status: str, resolved_at: str,
+    verification_spec: Mapping[str, Any] | None = None, db_path=None,
+) -> dict[str, Any]:
     """Best-effort strict calibration hook.
 
     The predictive calibration API requires pre-existing observed-case pairs;
@@ -73,18 +76,18 @@ def _try_register_calibration(*, person_id: str, prediction_id: str, status: str
     """
     try:
         from .v18_predictive_retrieval import register_verified_similarity_label
-        with connect(db_path) as con:
-            rows = [dict(r) for r in con.execute(
-                """SELECT observed_case_id FROM brain2_observed_cases_v17
-                   WHERE person_id=? ORDER BY observed_at DESC LIMIT 2""",
-                (person_id,),
-            ).fetchall()]
-        if len(rows) < 2:
-            return {"status": "skipped", "reason": "not_enough_observed_cases"}
+        spec = dict(verification_spec or {})
+        pair = spec.get("calibration_case_pair")
+        if not isinstance(pair, Mapping):
+            return {"status": "skipped", "reason": "no_causal_case_pair"}
+        anchor_case_id = str(pair.get("anchor_case_id") or "").strip()
+        similar_case_id = str(pair.get("similar_case_id") or "").strip()
+        if not anchor_case_id or not similar_case_id:
+            return {"status": "skipped", "reason": "incomplete_causal_case_pair"}
         return register_verified_similarity_label(
             person_id=person_id,
-            anchor_case_id=rows[0]["observed_case_id"],
-            similar_case_id=rows[1]["observed_case_id"],
+            anchor_case_id=anchor_case_id,
+            similar_case_id=similar_case_id,
             label=status == "verified",
             label_source="strict_verifier",
             verified_at=resolved_at,
@@ -100,7 +103,7 @@ def resolve_prediction_outcomes(*, person_id: str, package_date: str, db_path=No
     now_dt = _parse_dt(resolved_at) or datetime.now(timezone.utc)
     results: list[dict[str, Any]] = []
     outcome_ids: list[str] = []
-    pending_calibrations: list[tuple[str, str, str]] = []
+    pending_calibrations: list[tuple[str, str, str, dict[str, Any]]] = []
     conversation_auto = _call_conversation_auto_verifier(person_id=person_id)
     with connect(db_path) as con, write_transaction(con):
         preds = [dict(r) for r in con.execute("SELECT * FROM predictions_v19 WHERE person_id=? AND status='open'", (person_id,)).fetchall()]
@@ -141,7 +144,7 @@ def resolve_prediction_outcomes(*, person_id: str, package_date: str, db_path=No
             oid = stable_id("outv19", pred["prediction_id"], status, json_dumps(evidence_refs))
             outcome_ids.append(oid)
             if status in {"verified", "refuted"}:
-                pending_calibrations.append((oid, pred["prediction_id"], status))
+                pending_calibrations.append((oid, pred["prediction_id"], status, dict(spec)))
             insert_only(
                 con,
                 "prediction_outcomes_v19",
@@ -161,10 +164,10 @@ def resolve_prediction_outcomes(*, person_id: str, package_date: str, db_path=No
                 con.execute("UPDATE predictions_v19 SET status=? WHERE prediction_id=?", (status, pred["prediction_id"]))
             results.append({"prediction_id": pred["prediction_id"], "status": status})
 
-    for oid, prediction_id, status in pending_calibrations:
+    for oid, prediction_id, status, spec in pending_calibrations:
         calibration = _try_register_calibration(
             person_id=person_id, prediction_id=prediction_id, status=status,
-            resolved_at=resolved_at, db_path=db_path,
+            resolved_at=resolved_at, verification_spec=spec, db_path=db_path,
         )
         with connect(db_path) as con, write_transaction(con):
             row = con.execute(

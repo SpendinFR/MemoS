@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .db import connect, init_db, upsert, write_transaction
@@ -34,6 +35,53 @@ def ensure_self_schema(db_path=None) -> None:
 def _refs_from_json(raw: Any) -> list[dict[str, Any]]:
     refs = json_loads(raw, []) if isinstance(raw, str) else raw
     return [dict(x) for x in refs if isinstance(x, dict)] if isinstance(refs, list) else []
+
+
+_SAFE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _endpoint_belongs_to_person(con, table: Any, source_id: Any, person_id: str) -> bool | None:
+    """Prove an endpoint owner through its real source row; None means unprovable."""
+    table_name = str(table or "").strip()
+    if not table_name or not _SAFE_IDENTIFIER.fullmatch(table_name) or source_id is None:
+        return None
+    exists = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table_name,)
+    ).fetchone()
+    if exists is None:
+        return None
+    columns = [dict(row) for row in con.execute(f"PRAGMA table_info({table_name})").fetchall()]
+    owner_column = next(
+        (name for name in ("person_id", "memory_owner_id") if any(c.get("name") == name for c in columns)),
+        None,
+    )
+    primary = next((str(c.get("name")) for c in columns if int(c.get("pk") or 0) > 0), None)
+    if not owner_column or not primary or not _SAFE_IDENTIFIER.fullmatch(primary):
+        return None
+    row = con.execute(
+        f"SELECT {owner_column} AS owner FROM {table_name} WHERE {primary}=? LIMIT 1",
+        (str(source_id),),
+    ).fetchone()
+    return None if row is None else str(row["owner"] or "") == person_id
+
+
+def _owner_causal_edges(con, person_id: str) -> list[dict[str, Any]]:
+    rows = [dict(r) for r in con.execute(
+        "SELECT * FROM causal_edges WHERE truth_status IN ('active','confirmed','hypothesis') "
+        "ORDER BY updated_at DESC LIMIT 200"
+    ).fetchall()]
+    scoped: list[dict[str, Any]] = []
+    for edge in rows:
+        proofs = [
+            _endpoint_belongs_to_person(con, edge.get("from_table"), edge.get("from_id"), person_id),
+            _endpoint_belongs_to_person(con, edge.get("to_table"), edge.get("to_id"), person_id),
+        ]
+        known = [value for value in proofs if value is not None]
+        if known and all(known):
+            scoped.append(edge)
+        if len(scoped) >= 50:
+            break
+    return scoped
 
 
 def rebuild_self_schema(*, person_id: str, db_path=None) -> dict[str, Any]:
@@ -71,7 +119,7 @@ def rebuild_self_schema(*, person_id: str, db_path=None) -> dict[str, Any]:
             refs = [{"source_table": "confirmed_patterns", "source_id": pattern["confirmed_pattern_id"]}]
             upsert(con, "self_schema_v19", {"schema_entry_id": sid, "person_id": person_id, "entry_type": "conditionnel", "statement": pattern.get("description") or pattern.get("title") or pattern.get("pattern_key"), "occurrence_rate": occurrence, "evidence_refs_json": json_dumps(refs), "source_json": json_dumps({"source_table": "confirmed_patterns", "source_id": pattern["confirmed_pattern_id"], "usual_outcome": pattern.get("usual_outcome")}), "created_at": now, "updated_at": now}, "schema_entry_id")
             entries.append(sid)
-        causal = [dict(r) for r in con.execute("SELECT * FROM causal_edges WHERE truth_status IN ('active','confirmed','hypothesis') ORDER BY updated_at DESC LIMIT 50").fetchall()]
+        causal = _owner_causal_edges(con, person_id)
         for edge in causal:
             sid = stable_id("schema", person_id, "causal", edge["causal_edge_id"])
             refs = [{"source_table": "causal_edges", "source_id": edge["causal_edge_id"]}]
@@ -86,6 +134,14 @@ def rebuild_self_schema(*, person_id: str, db_path=None) -> dict[str, Any]:
             refs = _refs_from_json(outcome.get("evidence_refs_json")) or [{"source_table": "prediction_outcomes_v19", "source_id": outcome["outcome_id"]}]
             upsert(con, "self_schema_v19", {"schema_entry_id": sid, "person_id": person_id, "entry_type": "conditionnel", "statement": f"prediction {outcome['prediction_id']} {outcome['status']}", "occurrence_rate": 1.0 if outcome["status"] == "verified" else 0.0, "evidence_refs_json": json_dumps(refs), "source_json": json_dumps({"source_table": "prediction_outcomes_v19", "source_id": outcome["outcome_id"]}), "created_at": now, "updated_at": now}, "schema_entry_id")
             entries.append(sid)
+        if entries:
+            placeholders = ",".join("?" for _ in entries)
+            con.execute(
+                f"DELETE FROM self_schema_v19 WHERE person_id=? AND schema_entry_id NOT IN ({placeholders})",
+                (person_id, *entries),
+            )
+        else:
+            con.execute("DELETE FROM self_schema_v19 WHERE person_id=?", (person_id,))
     return {"status": "completed", "schema_entry_ids": entries, "count": len(entries)}
 
 

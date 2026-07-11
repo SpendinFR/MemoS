@@ -61,8 +61,8 @@ def parse_time_window(
     """Parse « 14h30 » / « 14h » / « 14:30 » → an ISO (start, end) window.
 
     The window is centred loosely on the spoken minute: [t, t+window_minutes] so
-    « rejoue 14h30 » returns 14:30–14:45. Anchored to ``date`` (default: today,
-    UTC). Returns ``None`` when no hour can be parsed."""
+    « rejoue 14h30 » returns 14:30–14:45 in the configured local civil timezone,
+    then converts the query bounds to UTC. Returns ``None`` when no hour parses."""
     if not spoken:
         return None
     m = _TIME_RE.search(str(spoken))
@@ -72,19 +72,24 @@ def parse_time_window(
     minute = int(m.group(2)) if m.group(2) else 0
     if not (0 <= hour <= 23 and 0 <= minute <= 59):
         return None
+    from mlomega_audio_elite.v19_visual_consolidation import _local_zone
+
+    zone = _local_zone()
     now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=zone)
+    local_now = now.astimezone(zone)
     if date:
         try:
-            base = datetime.fromisoformat(f"{date}T00:00:00+00:00")
+            local_day = datetime.fromisoformat(str(date)[:10]).date()
+            base = datetime.combine(local_day, datetime.min.time(), tzinfo=zone)
         except ValueError:
-            base = now
+            base = local_now
     else:
-        base = now
+        base = local_now
     start = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if start.tzinfo is None:
-        start = start.replace(tzinfo=timezone.utc)
     end = start + timedelta(minutes=max(1, int(window_minutes)))
-    return start.isoformat(), end.isoformat()
+    return start.astimezone(timezone.utc).isoformat(), end.astimezone(timezone.utc).isoformat()
 
 
 # --------------------------------------------------------------------------- service

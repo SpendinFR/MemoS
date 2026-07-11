@@ -182,6 +182,10 @@ def _stage_artifacts(name: str, result: dict[str, Any]) -> list[tuple[str, str, 
         for key in ("confirmed", "contradicted", "weakened"):
             for value in result.get(key) or []:
                 add("life_model_entries_v19", "entry_id", value)
+        projected = result.get("projected") if isinstance(result.get("projected"), dict) else {}
+        for key in ("created", "updated"):
+            for value in projected.get(key) or []:
+                add("life_model_entries_v19", "entry_id", value)
     elif name == "prediction_emission":
         for value in result.get("prediction_ids") or []:
             add("predictions_v19", "prediction_id", value)
@@ -272,6 +276,95 @@ def _due_longitudinal_periods(day: str) -> list[str]:
     if next_day.month != d.month:  # last day of the month
         due.append("month")
     return due
+
+
+def _semantic_output_warnings(
+    *, person_id: str, package_date: str, stage_results: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Report semantically empty outputs without making an empty day fail.
+
+    The durable manifest proves every returned id.  These checks cover the other
+    direction: eligible durable inputs that unexpectedly produced no output.
+    """
+    warnings: list[dict[str, Any]] = []
+    canonical_tables = (
+        "brain2_personal_routine_models", "brain2_place_preference_models",
+        "brain2_action_preference_models", "brain2_need_expectation_models",
+        "brain2_expression_state_models", "brain2_emotional_trajectory_models",
+        "brain2_contextual_self_models", "brain2_live_prediction_hooks",
+        "brain2_live_affordance_preferences",
+    )
+    with connect() as con:
+        def table_exists(name: str) -> bool:
+            return con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+            ).fetchone() is not None
+
+        canonical_count = 0
+        for table in canonical_tables:
+            if table_exists(table):
+                canonical_count += int(con.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE person_id=? AND status IN ('active','confirmed','candidate')",
+                    (person_id,),
+                ).fetchone()[0])
+        if canonical_count and int((stage_results.get("life_model_v19") or {}).get("count") or 0) == 0:
+            warnings.append({
+                "code": "life_model_v19_empty_with_canonical_inputs",
+                "eligible_inputs": canonical_count,
+            })
+
+        eligible_predictions = 0
+        if table_exists("life_model_entries_v19"):
+            rows = con.execute(
+                "SELECT verification_spec_json,prediction_template_json FROM life_model_entries_v19 "
+                "WHERE person_id=? AND status IN ('active','confirmed')",
+                (person_id,),
+            ).fetchall()
+            for row in rows:
+                spec = json_loads(row["verification_spec_json"], {}) or json_loads(row["prediction_template_json"], {})
+                if isinstance(spec, dict) and "visual_events_v19" in {
+                    str(x) for x in (spec.get("sources") or spec.get("observation_sources") or [])
+                } and any(spec.get(key) for key in ("event_type", "entity_label", "place_label", "observation_contains")):
+                    eligible_predictions += 1
+        if eligible_predictions and not ((stage_results.get("prediction_emission") or {}).get("prediction_ids") or []):
+            warnings.append({
+                "code": "prediction_emission_empty_with_eligible_entries",
+                "eligible_inputs": eligible_predictions,
+            })
+
+        schema_inputs = 0
+        if table_exists("life_model_entries_v19"):
+            schema_inputs += int(con.execute(
+                "SELECT COUNT(*) FROM life_model_entries_v19 WHERE person_id=? "
+                "AND status IN ('active','confirmed','weakening')", (person_id,)
+            ).fetchone()[0])
+        if table_exists("confirmed_patterns"):
+            schema_inputs += int(con.execute(
+                "SELECT COUNT(*) FROM confirmed_patterns WHERE person_id=? "
+                "AND validity_status IN ('active','confirmed')", (person_id,)
+            ).fetchone()[0])
+        if schema_inputs and not ((stage_results.get("self_schema") or {}).get("schema_entry_ids") or []):
+            warnings.append({
+                "code": "self_schema_empty_with_eligible_inputs",
+                "eligible_inputs": schema_inputs,
+            })
+
+        longitudinal = stage_results.get("longitudinal") or {}
+        for period in _due_longitudinal_periods(package_date):
+            period_result = longitudinal.get(period) if isinstance(longitudinal.get(period), dict) else {}
+            run_id = str((period_result or {}).get("run_id") or "")
+            durable = bool(run_id) and table_exists("brain2_longitudinal_runs_v17") and con.execute(
+                "SELECT 1 FROM brain2_longitudinal_runs_v17 "
+                "WHERE run_id=? AND person_id=? AND period=? AND status IN ('ok','completed')",
+                (run_id, person_id, period),
+            ).fetchone() is not None
+            if not durable:
+                warnings.append({
+                    "code": "longitudinal_rollup_not_durably_observed",
+                    "period": period,
+                    "run_id": run_id or None,
+                })
+    return warnings
 
 
 def _resolve_context(
@@ -645,21 +738,28 @@ def close_brainlive_day(
         live_ready = _run_stage(run_id=run_id, name="live_ready", fn=do_live_ready)
         result["stages"]["live_ready"] = live_ready
 
+        stage_results = {
+            "post_stop": post,
+            "visual_consolidation": visual_consolidation,
+            "longitudinal": longitudinal,
+            "coordination": coordination,
+            "life_model": life,
+            "outcome_resolution": outcome_resolution,
+            "life_model_v19": life_model_v19,
+            "prediction_emission": prediction_emission,
+            "self_schema": self_schema,
+            "live_ready": live_ready,
+        }
+        semantic_warnings = _semantic_output_warnings(
+            person_id=person_id, package_date=day, stage_results=stage_results
+        )
+        if semantic_warnings:
+            result["semantic_warnings"] = semantic_warnings
+
         expected, observed = _verified_close_day_outputs(
             run_id=run_id,
             person_id=person_id,
-            stage_results={
-                "post_stop": post,
-                "visual_consolidation": visual_consolidation,
-                "longitudinal": longitudinal,
-                "coordination": coordination,
-                "life_model": life,
-                "outcome_resolution": outcome_resolution,
-                "life_model_v19": life_model_v19,
-                "prediction_emission": prediction_emission,
-                "self_schema": self_schema,
-                "live_ready": live_ready,
-            },
+            stage_results=stage_results,
         )
         output = record_output_manifest(
             run_id=run_id,

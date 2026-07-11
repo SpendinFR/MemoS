@@ -58,7 +58,10 @@ def test_prediction_auto_verified_by_observation(tmp_path, monkeypatch):
     apply_life_model_delta(person_id, {
         "dimension": "routines", "temporal_axis": "future_short",
         "statement": "café matinal attendu", "confidence": 0.8, "status": "active",
-        "verification_spec": {"event_type": "visit", "place_label": "cafe", "sources": ["visual_events_v19"]},
+        "verification_spec": {
+            "event_type": "visit", "place_label": "cafe", "sources": ["visual_events_v19"],
+            "calibration_case_pair": {"anchor_case_id": "case-newer", "similar_case_id": "case-older"},
+        },
     }, db_path=db_path)
 
     emit_daily_predictions(person_id=person_id, package_date="2026-06-02", db_path=db_path)

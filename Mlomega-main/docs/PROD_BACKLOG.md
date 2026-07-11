@@ -330,13 +330,15 @@ Source de vérité : audit statique transversal du checkout réel, relu et class
 
 ### E61-A — Life Model, prédictions, Self Schema et temps local
 
-- [ ] **01 — Producteur Life Model V19 réel** : produire des `life_model_entries_v19` nouvelles depuis les faits/deltas nocturnes du jour, avec evidence refs et contrat LLM strict ; ne plus dépendre d'un amorçage par test/simulateur.
-- [ ] **10 — Calibration prédictive causale** : ne plus étiqueter arbitrairement les deux derniers observed cases ; relier une vérification/réfutation à la vraie paire de cas concernée, sinon enregistrer un skip explicite sans modifier la calibration V18.
-- [ ] **11 — Self Schema réellement reconstruit** : retirer/invalider les projections dont la source Life Model/pattern n'est plus active au lieu de faire uniquement des upserts.
-- [ ] **12 — Causalités owner-scopées** : empêcher les `causal_edges` d'une autre personne d'entrer dans `self_schema_v19` ; si la table reste sans `person_id`, prouver l'appartenance via les lignes sources.
-- [ ] **13 — Lien durable prédiction → entrée source** : persister `source_entry_id` dans `predictions_v19` et l'utiliser pour les contradictions, jamais l'égalité fragile du texte `statement`.
-- [ ] **14 — Temps civil cohérent** : interpréter replay, journée Life Model et horizons de prédiction dans `MLOMEGA_LOCAL_TZ` puis convertir en UTC, y compris DST et bords de minuit.
-- [ ] **15 — Sorties nocturnes vides observables** : conserver la preuve non circulaire, mais produire au minimum un warning/gate sémantique lorsque des entrées éligibles existent et qu'un stage Life Model/prédiction/Self Schema retourne zéro sortie ; vérifier aussi les rollups week/month dus.
+- [x] **01 — Producteur Life Model V19 réel** : produire des `life_model_entries_v19` nouvelles depuis les faits/deltas nocturnes du jour, avec evidence refs et contrat LLM strict ; ne plus dépendre d'un amorçage par test/simulateur.
+- [x] **10 — Calibration prédictive causale** : ne plus étiqueter arbitrairement les deux derniers observed cases ; relier une vérification/réfutation à la vraie paire de cas concernée, sinon enregistrer un skip explicite sans modifier la calibration V18.
+- [x] **11 — Self Schema réellement reconstruit** : retirer/invalider les projections dont la source Life Model/pattern n'est plus active au lieu de faire uniquement des upserts.
+- [x] **12 — Causalités owner-scopées** : empêcher les `causal_edges` d'une autre personne d'entrer dans `self_schema_v19` ; si la table reste sans `person_id`, prouver l'appartenance via les lignes sources.
+- [x] **13 — Lien durable prédiction → entrée source** : persister `source_entry_id` dans `predictions_v19` et l'utiliser pour les contradictions, jamais l'égalité fragile du texte `statement`.
+- [x] **14 — Temps civil cohérent** : interpréter replay, journée Life Model et horizons de prédiction dans `MLOMEGA_LOCAL_TZ` puis convertir en UTC, y compris DST et bords de minuit.
+- [x] **15 — Sorties nocturnes vides observables** : conserver la preuve non circulaire, mais produire au minimum un warning/gate sémantique lorsque des entrées éligibles existent et qu'un stage Life Model/prédiction/Self Schema retourne zéro sortie ; vérifier aussi les rollups week/month dus.
+
+**Avancement E61-A (2026-07-11 — code clos)** : le stage V19 projette désormais, de façon idempotente et sourcée, les neuf familles du magasin canonique V15.10/V15.13 réellement produit la nuit ; aucun seed V19 n'est nécessaire. Les prédictions portent leur `source_entry_id`, la calibration n'écrit un label que si le spec fournit une vraie paire de cas causale, le Self Schema retire ses sources invalidées et ne garde que les causalités dont l'owner est prouvé. Replay/Life Model/horizons utilisent la journée civile `MLOMEGA_LOCAL_TZ` convertie en UTC. CloseDay relit aussi les entrées projetées et conserve des warnings sémantiques pour sorties vides/rollups non observés. Validation ciblée : **29 passed, 1 skipped TTS local indisponible** (`test_e61_memory_integrity`, Life Model, replay E35, mémoire E16→E20, preuve CloseDay).
 
 ### E61-B — Sorties utilisateur PhoneOnly
 

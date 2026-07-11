@@ -54,6 +54,7 @@ def _env(tmp_path, monkeypatch):
     monkeypatch.setenv("MLOMEGA_DB", str(db_path))
     monkeypatch.setenv("MLOMEGA_RAW", str(tmp_path / "raw"))
     monkeypatch.setenv("MLOMEGA_HOME", str(tmp_path))
+    monkeypatch.setenv("MLOMEGA_LOCAL_TZ", "UTC")
     return db_path
 
 

@@ -6,6 +6,18 @@ Conventions : `E<n>` = étape ; chaque étape a Objectif / Créer / Brancher / V
 
 ---
 
+## E61 — Clôture pré-production (EN COURS — 2026-07-11)
+
+La checklist canonique des **26 corrections finales** et leur découpage E61-A→E se trouvent dans `docs/PROD_BACKLOG.md` §E61. La distribution APK historique devient E61-F. Même discipline que E60 : code réellement appelé, preuve ciblée, documentation mise à jour avant chaque commit, puis gate S25 transversal.
+
+### E61-A — Life Model, prédictions, Self Schema et temps local (code clos)
+
+Le producteur n'est pas un nouveau prompt parallèle : `run_life_model_v19_stage` projette idempotemment les neuf familles du magasin canonique V15.10/V15.13 déjà construit par le stage nocturne `life_model`. Chaque entrée V19 porte table/id/version source et evidence refs ; une base neuve n'attend plus le seed de `synthetic_life`. Les prédictions migrent avec `source_entry_id`. Une réfutation contredit cette entrée précise, jamais une autre ligne partageant le même texte. Le watcher ne crée un label de similarité V18 que si le `verification_spec` fournit une paire anchor/similar explicitement reliée ; sinon l'audit conserve `no_causal_case_pair` sans pollution.
+
+`rebuild_self_schema` supprime les projections sorties du set actif et n'admet un `causal_edge` que si son appartenance owner est prouvée via ses vraies lignes source. Replay, Life Model V19 et horizons de prédiction partent de la journée civile `MLOMEGA_LOCAL_TZ` et interrogent ensuite des bornes UTC semi-ouvertes ; les heures explicites du spec sont enfin consommées. Le manifeste CloseDay vérifie aussi les IDs nouvellement projetés. Des warnings sémantiques signalent désormais des entrées canoniques/éligibles sans sortie V19 et un rollup week/month dû mais absent, sans transformer une journée réellement vide en échec.
+
+Validation ciblée : **29 passed, 1 skipped** (provider TTS local absent), sur `test_e61_memory_integrity`, Life Model V19, replay E35, scénario mémoire E16→E20 et preuve manifeste CloseDay.
+
 ## E60 — Corrections d'intégration pré-production (EN COURS — 2026-07-10)
 
 La checklist canonique des **32 corrections** se trouve dans `docs/PROD_BACKLOG.md` §E60. Une case y représente la correction code/test ciblé ; la matrice S25 reste un gate transversal unique. Exécution imposée : petit lot cohérent → appel produit prouvé → tests ciblés du bon arbre → mise à jour simultanée du guide et du backlog → commit.

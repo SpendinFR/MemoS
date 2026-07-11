@@ -11,6 +11,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS predictions_v19 (
   prediction_id TEXT PRIMARY KEY,
   person_id TEXT NOT NULL,
+  source_entry_id TEXT,
   emitted_at TEXT NOT NULL,
   horizon_start TEXT,
   horizon_end TEXT,
@@ -31,6 +32,46 @@ def ensure_prediction_schema(db_path=None) -> None:
     ensure_life_model_store(db_path)
     with connect(db_path) as con, write_transaction(con):
         con.executescript(SCHEMA)
+        try:
+            con.execute("ALTER TABLE predictions_v19 ADD COLUMN source_entry_id TEXT")
+        except Exception:
+            pass
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_predictions_v19_source "
+            "ON predictions_v19(person_id,source_entry_id)"
+        )
+
+
+def _prediction_window(spec: dict[str, Any], package_date: str) -> tuple[str, str]:
+    """Resolve an explicit/local civil horizon to UTC without inventing a zone."""
+    from datetime import date, datetime, time, timedelta, timezone
+    from .v19_visual_consolidation import _local_day_utc_bounds, _local_zone
+
+    default_start, default_end = _local_day_utc_bounds(package_date)
+    start = spec.get("horizon_start")
+    end = spec.get("horizon_end")
+    if start and end:
+        return str(start), str(end)
+    local_day = date.fromisoformat(str(package_date)[:10])
+    zone = _local_zone()
+    start_hour = spec.get("horizon_start_hour")
+    end_hour = spec.get("horizon_end_hour")
+    if start_hour is not None:
+        try:
+            local_start = datetime.combine(
+                local_day, time(hour=max(0, min(23, int(start_hour)))), tzinfo=zone
+            )
+            start = local_start.astimezone(timezone.utc).isoformat()
+        except (TypeError, ValueError, OverflowError):
+            start = None
+    if end_hour is not None:
+        try:
+            hour = max(0, min(24, int(end_hour)))
+            local_end = datetime.combine(local_day, time.min, tzinfo=zone) + timedelta(hours=hour)
+            end = local_end.astimezone(timezone.utc).isoformat()
+        except (TypeError, ValueError, OverflowError):
+            end = None
+    return str(start or default_start), str(end or default_end)
 
 
 def _usable_spec(raw: Any) -> dict[str, Any] | None:
@@ -86,8 +127,7 @@ def emit_daily_predictions(*, person_id: str, package_date: str, db_path=None, l
         ).fetchone()[0] - len(candidates)
         for entry in candidates:
             spec = dict(entry["verification_spec"])
-            horizon_start = spec.get("horizon_start") or f"{package_date}T00:00:00+00:00"
-            horizon_end = spec.get("horizon_end") or f"{package_date}T23:59:59+00:00"
+            horizon_start, horizon_end = _prediction_window(spec, package_date)
             confidence = max(0.0, min(1.0, float(entry.get("confidence") or 0.0)))
             pid = stable_id("predv19", person_id, package_date, entry["entry_id"], json_dumps(spec))
             insert_only(
@@ -96,6 +136,7 @@ def emit_daily_predictions(*, person_id: str, package_date: str, db_path=None, l
                 {
                     "prediction_id": pid,
                     "person_id": person_id,
+                    "source_entry_id": entry["entry_id"],
                     "emitted_at": now,
                     "horizon_start": horizon_start,
                     "horizon_end": horizon_end,
