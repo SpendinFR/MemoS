@@ -1,6 +1,6 @@
-# REPO_MAP — MLOmega V19
+# REPO_MAP — MLOmega V19 — V4
 
-Carte logique du dépôt, destinée à orienter un agent avant une tâche importante.
+Carte logique V4 du dépôt, destinée à orienter un agent avant une tâche importante. Cette édition fusionne les chemins E53/E58/E59/E60 dans les sections natives au lieu de conserver un patch delta séparé.
 
 Ce fichier n’est pas une preuve que le code fonctionne. Il indique où regarder, quels contrats relier, quels tests existent, et quels pièges éviter. Avant toute modification, lire les fichiers réels concernés dans le checkout courant.
 
@@ -57,7 +57,7 @@ Couche par couche :
 - `pyproject.toml`, `pytest.ini`, `requirements*.txt` — packaging et dépendances.
 - `FIRST_TRY_ANDROID.md` — procédure premier essai Android.
 - `INSTALL_STATE.md`, `E46D_STATE.md`, `E46_close_day_completed.json` — états/preuves de travaux.
-- `REPO_MAP.md`, `repo_graph.json` — cette carte et sa version structurée.
+- `REPO_MAP.md`, `repo_graph_v4.json` — cette carte et sa version structurée.
 
 ### `src/mlomega_audio_elite/`
 
@@ -222,7 +222,9 @@ Rôle :
 - define `MLOMEGA_PHONE_ONLY` ;
 - scène PhoneOnly ;
 - StreamingAssets modèles petits ;
-- endpoint runtime.
+- endpoint runtime ;
+- application ID forcé `com.mlomega.xr.phoneonly` ;
+- régénération systématique de la scène PhoneOnly avant build.
 
 ### Build scène PhoneOnly
 
@@ -246,6 +248,7 @@ Rôle :
 - `PhoneOnlySessionCoordinator` présent ;
 - `AsrBridge`, `GestureBridge`, `TranslateBridge`, `ReflexScheduler` présents si gates device ;
 - `UIIntentBroker`, `TransportIntentSource`, `SceneDeltaTransportHandler`, `UIReceiptTransportSink` présents ;
+- `PhoneOnlyReflexSignalSource`, `MenuPanel`, `OrientationGuard`, `TtsAudioPlayer` et `PanelManipulator` présents ;
 - pas de `E25DemoDriver` en prod PhoneOnly.
 
 ### Build XREAL
@@ -439,36 +442,41 @@ Méthodes clés :
 - `PhoneOnlyRuntime.start()`
 - `_delivery_loop()`
 - `_on_datachannel_open()`
+- `_on_receipt()`
 - `_on_audio_chunk()`
 - `end_session_only()`
-- `run_close_day()`
-- `end_and_close_day()`
-- `_run_close_day()`
-- `close_transport()`
-- `status()`
+- `run_close_day()` / `_run_close_day()`
+- `_completed_close_day_exists()`
+- watchdog CloseDay de secours
+- `close_transport()` / `status()`
 - `SinglePhoneRuntimeManager.get_or_create()`
 - `SinglePhoneRuntimeManager.start_close_day()`
 
 Rôle :
 
 - crée/possède le runtime d’une session PhoneOnly ;
-- lie ingress + pipeline ;
+- construit le `ClipRecorder` et le `GpuArbiter` de production ;
+- passe `clip_recorder` à `AiortcIngress` ;
+- lie ingress + pipeline avec `enable_tts=True` ;
 - consomme la queue H1/DeliveryAdapter ;
-- pousse UIIntent sur DataChannel ;
-- reçoit receipts ;
-- coordonne end_session et CloseDay worker.
+- pousse UIIntent, `device_command` et `tts_audio` sur DataChannel ;
+- reçoit UIReceipt et `device_command_result` ;
+- coordonne end_session et CloseDay worker ;
+- vérifie les complétions CloseDay dans la DB et arme un watchdog après fin explicite.
 
 Risques :
 
 - `live_session_id` doit venir de `ConversationBridge`, pas du transport.
 - CloseDay ne doit pas bloquer la requête HTTP.
 - End doit être idempotent.
-- DataChannel pas ouvert : ne pas marquer faussement une delivery comme affichée.
+- Le watchdog ne doit jamais transformer une coupure réseau en fin de session.
+- DataChannel pas ouvert : ne pas marquer faussement une delivery comme affichée ni perdre une commande wake-word non acquittée.
 
 Tests :
 
 - `tests/v19/test_phoneonly_runtime.py`
 - `tests/v19/test_delivery_adapter.py`
+- `tests/v19/test_multi_session_close_day.py`
 
 ### `services/live-pc/live_pipeline.py`
 
@@ -485,6 +493,7 @@ Méthodes importantes :
 - `_route_vision_focus(...)`
 - `_push_intent(...)`
 - `_push_device_command(...)`
+- `push_wake_word(...)`
 - `set_wake_word_policy(...)`
 - `arm_command_window(...)`
 - `_should_route_intent(...)`
@@ -494,21 +503,23 @@ Rôle :
 
 - cœur du live PC ;
 - consomme vidéo/audio ;
-- appelle VisionRT ;
-- appelle AudioRT ;
-- archive ;
+- appelle VisionRT hors boucle quand nécessaire via `asyncio.to_thread` ;
+- gate la spatialisation sur `FrameEnvelope.pose_valid` ;
+- appelle AudioRT et archive ;
 - route transcripts vers ConversationBridge ;
 - met à jour WorldBrain ;
 - génère SceneDelta/UIIntent/device_command ;
+- pousse le wake word runtime avec `command_id` et retry d’ack ;
+- émet `tts_audio` quand `enable_tts=True` ;
 - expose métriques.
 
 À vérifier quand on touche :
 
 - queue vidéo latest-only ;
+- pose neutre jamais spatialisée ;
 - frames reçues vs traitées vs dropped ;
-- audio chunks reçus ;
-- finals ASR ;
-- transcripts BrainLive ;
+- audio chunks/finals/turns ;
+- commandes device acquittées/idempotentes ;
 - keyframes / clips / archives ;
 - fin stricte : freeze, drain, flush, close.
 
@@ -518,6 +529,7 @@ Tests :
 - `tests/v19/test_phoneonly_runtime.py`
 - `tests/v19/test_visionrt.py`
 - `tests/v19/test_audiort.py`
+- `tests/v19/test_wake_word_gating.py`
 
 ### `services/live-pc/audiort.py`
 
@@ -642,7 +654,8 @@ Rôle :
 - last-seen ;
 - relations spatiales ;
 - changements ;
-- summaries de session.
+- summaries de session ;
+- IDs d’entité stables inter-sessions depuis E60 (`stable_id` sans transport `session_id`).
 
 Tables liées :
 
@@ -650,6 +663,10 @@ Tables liées :
 - `scene_session_summaries_v19`
 - `world_entity_links_v19`
 - `brain2_spatial_routine_models`
+
+Invariant :
+
+- une même entité observable ne doit pas changer d’ID uniquement parce que le transport a créé une nouvelle session.
 
 ### `services/live-pc/brainlive_scene_adapter.py`
 
@@ -676,9 +693,11 @@ Classes :
 Méthodes :
 
 - `on_transcript(...)`
+- pré-routeur des contrôles de mode aide
 - `_match_grammar(...)`
 - `_llm_parse(...)`
 - `_dispatch(...)`
+- `_do_help_start(...)`
 - `_do_vision(...)`
 - `_do_device(...)`
 - `_do_replay(...)`
@@ -688,11 +707,47 @@ Rôle :
 
 - convertit phrases finales/commandes en actions ;
 - support grammar locale + LLM fallback ;
-- gère “c’est quoi ça ?”, OCR, replay, device commands, cloud/local mode, mémoire.
+- gère “c’est quoi ça ?”, OCR, replay, device commands, cloud/local mode, mémoire ;
+- démarre `HelpTaskEngine` et pré-route les contrôles actifs (« c’est fait », « répète »…) avant le parseur générique.
 
 Risques :
 
 - wake word/gated : tout audio va en mémoire, mais le routage d’intent peut être conditionné par `is_command`.
+- un contrôle de plan actif ne doit pas être reclassé comme une nouvelle demande générique.
+
+### `services/live-pc/help_mode.py`
+
+Classe :
+
+- `HelpTaskEngine`
+
+Chemin :
+
+- `IntentRouter._do_help_start()`
+- `HelpTaskEngine.start_from_description()`
+- `_guess_scene_context()` (un coup d’œil VLM au démarrage)
+- `llm_router.complete_json()`
+- `_adopt_plan()`
+- `_enqueue(task_panel)` + `_emit_hot(task_anchor)`
+
+Rôle :
+
+- plan de micro-actions ;
+- machine à états et reprise ;
+- ghost N+1 ;
+- grounding sur tracks par `label_en` ;
+- watchdog d’indices ;
+- persistance dans `help_mode_tasks` ;
+- panel H1 + ancre hot.
+
+Statut :
+
+- PC/tests : proven selon E53 ;
+- rendu/grounding sur device : `to_verify`.
+
+Invariant :
+
+- une ancre non groundée doit dégrader en guidance panel, pas inventer une position.
 
 ### `services/live-pc/delivery_adapter.py`
 
@@ -741,8 +796,15 @@ Rôle :
 
 - enregistre clips vidéo live via ffmpeg CPU libx264 ;
 - queue bornée drop-on-full ;
-- indexe clips dans `visual_evidence_assets_v19`;
+- indexe clips dans `visual_evidence_assets_v19` ;
 - tiering keep/drop au CloseDay.
+
+Wiring V4 :
+
+- construit et démarré par `phoneonly_runtime` ;
+- injecté dans `AiortcIngress` via `clip_recorder` ;
+- reçoit les frames depuis `gateway._consume_track()` ;
+- l’ancien mismatch « code présent mais non branché » est résolu statiquement.
 
 Config :
 
@@ -751,6 +813,10 @@ Config :
 Tests :
 
 - `tests/v19/test_clip_recorder.py`
+
+Limite :
+
+- capture Android réelle/replay complet : `to_verify`.
 
 ### `services/live-pc/media_retention.py`
 
@@ -813,6 +879,7 @@ Rôle :
 - `EyeCaptureSource` publie frames + `FrameEnvelope`.
 - `PhoneCameraPreview` affiche caméra sur téléphone.
 - `PosePublisher` fournit pose approximative si disponible.
+- `FrameEnvelope.pose_valid` indique explicitement si cette pose est exploitable ; le PC refuse de spatialiser une pose neutre/invalide.
 
 Flux :
 
@@ -859,7 +926,9 @@ Fichiers :
 - pousse frames texture ou CPU I420 ;
 - envoie transcript device ;
 - reçoit DataChannel messages ;
-- expose stats/state.
+- expose stats/state ;
+- supporte `DetachPcmFeed` au teardown ;
+- sépare UIIntent, `device_command`, `device_command_result`, `tts_audio` et `scene_delta`.
 
 `PhoneOnlySessionCoordinator` :
 
@@ -896,7 +965,9 @@ Fichiers :
 - `SceneDeltaTransportHandler.cs`
 - `EntityHotUpdateHandler.cs`
 - `DeviceCommandHandler.cs`
-- composants dans `UI/Components`.
+- `TtsAudioPlayer.cs` ;
+- `PanelManipulator.cs`, `IManipulablePanel.cs`, `ManipulablePanelRegistry.cs` ;
+- composants dans `UI/Components`, dont `TaskAtoms/`, `TaskPanelComponent` et `TaskAnchorComponent`.
 
 Rôle :
 
@@ -905,7 +976,10 @@ Rôle :
 - rend sous-titres/cards/tags/task/lens/virtual screen ;
 - renvoie receipts ;
 - applique scene_delta dans SceneCache ;
-- exécute device_command.
+- exécute `device_command` et renvoie `device_command_result` ;
+- joue `tts_audio` ;
+- rend `task_panel`/`task_anchor` ;
+- manipule les panels par pinch claimé, sinon laisse le fallback LensWindow.
 
 ### Scene cache
 
@@ -1069,18 +1143,27 @@ Fichiers :
 Rôle :
 
 - sherpa streaming ASR ;
-- KWS ;
+- KWS anglais existant ;
+- détection du wake word dans les finals ASR français via `WakeWordMatcher.matches()` ;
 - VAD ;
-- wake word ;
 - fenêtre de commande ;
+- `setWakeWord` à chaud via JNI ;
 - flag `is_command` pour le PC ;
 - tout l’audio continue vers mémoire même hors commande.
+
+Source de vérité :
+
+- `configs/user_profile.yaml` clé `wake_word` ; défaut V4 : `viki`.
 
 Tests :
 
 - `CommandWindowTest.kt`
 - `KeywordEncoderTest.kt`
 - `WakeWordMatcherTest.kt`
+
+Limite :
+
+- modèle/device réel et changement runtime acquitté : `to_verify`.
 
 ### Gestes
 
@@ -1152,14 +1235,17 @@ Répertoire :
 
 Contrats :
 
-- `FrameEnvelope` — metadata frame/capture.
+- `FrameEnvelope` — metadata frame/capture ; champ additif `pose_valid` gate la spatialisation.
 - `EvidenceEvent` — preuve/événement.
 - `HotSceneContext` — contexte live pour UI/BrainLive.
 - `LocalTrack` — track local device.
 - `ReflexEvent` — signal réflexe device.
 - `SceneDelta` — mise à jour scène.
-- `UIIntent` — commande UI sémantique PC → device.
+- `UIIntent` — commande UI sémantique PC → device, incluant `task_panel`/`task_anchor`.
 - `UIReceipt` — feedback device → PC.
+- `device_command set_wake_word {word, command_id}` — PC → Unity/Kotlin.
+- `device_command_result {command_id, action, ok}` — device → PC.
+- `tts_audio` — audio TTS PC → consommateur Unity `TtsAudioPlayer`.
 
 Tests :
 
@@ -1170,6 +1256,7 @@ Tests :
 Règle :
 
 - Changer un champ impose de vérifier : schema JSON, modèle Python, modèle C#, parsing Unity, producteurs PC, consommateurs Unity/Kotlin éventuels, tests.
+- Les types DataChannel non-UI ne doivent pas passer par le parseur `UIIntent`.
 
 ## 9. Cœur mémoire V18/V19
 
@@ -1431,6 +1518,7 @@ Tables :
 - `world_entity_links_v19`
 - `scene_session_summaries_v19`
 - `ui_interaction_outcomes_v19`
+- `help_mode_tasks`
 - `brain2_spatial_routine_models`
 - `brain2_visual_task_models`
 - `brain2_ui_preference_models`
@@ -1578,15 +1666,18 @@ Vérifications :
 ```text
 WebCamTexture
   → PhoneOnlyAdapter.TryGetLatestFrame()
-  → EyeCaptureSource.OnFrame(frame,envelope)
+  → EyeCaptureSource.OnFrame(frame,envelope pose_valid)
   → LiveTransportBridge.HandleFrame()
   → Kotlin UnityPushVideoFeeder
-  → WebRTC video
+  → WebRTC video + FrameEnvelope DataChannel
   → gateway._consume_track(video)
+      → ClipRecorder.offer() best-effort
+      → envelope matcher
   → LatestFrameQueue
   → LivePipeline.run_video()
-  → VisionRT.process_frame()
-  → WorldBrain.ingest_scene_delta()
+  → pose_valid gate
+  → VisionRT.process_frame() via asyncio.to_thread si nécessaire
+  → WorldBrain.ingest_scene_delta() (stable_id inter-session)
   → SceneAdapter/Delivery/UIIntent
   → DataChannel
   → Unity UIIntentBroker/SceneCache
@@ -1594,11 +1685,11 @@ WebCamTexture
 
 À tester :
 
-- frame reçue ;
-- frame traitée ;
-- frame dropped comptée ;
-- keyframe écrite ;
-- scene_delta consommé côté Unity ;
+- frame reçue/traitée/dropped ;
+- pose invalide non spatialisée ;
+- keyframe et clip écrits ;
+- stable entity ID après nouvelle session ;
+- scene_delta consommé ;
 - UI visible téléphone.
 
 ### D. Audio live
@@ -1620,59 +1711,72 @@ Android microphone
   → AudioArchive.archive_segment()
 ```
 
+E60 :
+
+- `PhoneOnlyReflexSignalSource` active réellement le scheduler prod ;
+- `DetachPcmFeed` nettoie le branchement ;
+- `AsrBridge.ownMicrophone` est un fallback dégradé, jamais concurrent du fan-out nominal.
+
 À prouver :
 
-- micro Android → Opus → aiortc audio track ;
-- PCM mono correct ;
-- ASR final ;
-- turn BrainLive ;
-- WAV/speech_segment archivé ;
+- micro Android → Opus → aiortc ;
+- ASR local et PC ;
+- turn BrainLive/WAV ;
+- activation prod des réflexes ;
 - pas de double micro.
 
 ### E. Réflexes device
 
+Activation production :
+
 ```text
-MicAudioFanout PCM
-  → AsrKwsService
-  → KWS/wake word
-  → CommandWindow
-  → final transcript is_command=true
-  → LiveTransportBridge.SendTranscriptSegment()
-  → PC IntentRouter si policy gated/open l’autorise
+PhoneOnlyReflexSignalSource
+  → ReflexScheduler.RaiseSignal
+  → ASR / gestes / traduction / sous-titres / skills locaux
 ```
 
-Gestes :
+Wake word :
+
+```text
+MicAudioFanout PCM
+  → AsrKwsService.decodeSegment()
+  → WakeWordMatcher.matches(final FR) ou KWS existant
+  → openCommandWindow + onWakeWord
+  → final transcript is_command=true
+  → LiveTransportBridge.SendTranscriptSegment()
+  → PC IntentRouter si policy l’autorise
+```
+
+Configuration runtime :
+
+```text
+user_profile.yaml wake_word
+  → LivePipeline.push_wake_word()
+  → device_command set_wake_word + command_id
+  → DeviceCommandHandler
+  → AsrBridge.SetWakeWord
+  → JNI setWakeWord
+  → device_command_result
+  → ack/retry PC
+```
+
+Gestes/panels :
 
 ```text
 EyeCaptureSource.OnFrame
   → GestureBridge
-  → downscale/throttle
-  → GesturePipeline
-  → GestureStateMachine
-  → palm/swipe/pinch
-  → Unity MenuGestureController / LensWindowSkill
+  → GesturePipeline / GestureStateMachine
+  → pinch(x,y)
+  → PanelManipulator claim/hit-test
+      ↘ IManipulablePanel move/resize/close/minimise
+      ↘ sinon LensWindowSkill zoom
 ```
 
-Traduction :
+À valider sur device : modèles, wake word, changement runtime, sous-titres/traduction, gestes/panels, stabilité micro.
 
-```text
-AsrBridge final transcript
-  → TranslateBridge
-  → OfflineTranslatorBridge
-  → OfflineTranslator ONNX
-  → SubtitleSkill + SceneCache.translation_hot
-```
+### F. UI / aide / TTS / receipts
 
-À valider sur device :
-
-- modèles présents ;
-- wake word ;
-- sous-titres PC coupé ;
-- traduction offline ;
-- gestes ;
-- stabilité micro.
-
-### F. UI / receipts
+Delivery classique :
 
 ```text
 BrainLive/WorldBrain/IntentRouter
@@ -1681,18 +1785,37 @@ BrainLive/WorldBrain/IntentRouter
   → PhoneOnlyRuntime._delivery_loop()
   → DataChannelRenderer.push(UIIntent)
   → LiveTransportBridge.OnNativeMessage()
-  → TransportIntentSource
-  → UIIntentBroker
-  → UI components
+  → TransportIntentSource → UIIntentBroker → UI components
   → UIReceiptTransportSink
-  → LiveTransportBridge.SendContractMessage()
   → PhoneOnlyRuntime._on_receipt()
   → v18_8_live_policy.record_delivery_feedback()
 ```
 
-Piège :
+Mode aide :
 
-- Pas de DataChannel ouvert = ne pas déclarer “delivered/displayed”.
+```text
+IntentRouter._do_help_start
+  → HelpTaskEngine.start_from_description
+  → one-shot VLM scene glance
+  → LLM structured micro-plan
+  → help_mode_tasks
+  → task_panel (queue H1) + task_anchor (hot)
+  → TaskAtoms / SceneCache.Tracks
+```
+
+TTS :
+
+```text
+LivePipeline(enable_tts=True)
+  → tts_audio DataChannel
+  → Unity TtsAudioPlayer
+```
+
+Pièges :
+
+- pas de DataChannel = ne pas déclarer delivered/displayed ;
+- une ancre non groundée ne doit pas inventer une position ;
+- `tts_audio` et `device_command_result` ne sont pas des UIIntent.
 
 ### G. Fin explicite et CloseDay
 
@@ -1700,48 +1823,42 @@ Piège :
 User clicks Terminer
   → PhoneOnlySessionCoordinator.EndExplicitly()
   → POST /session/end with session_id+token
-  → PhoneOnlyRuntime.end_and_close_day()
+  → PhoneOnlyRuntime.end_session_only()
   → ingress.stop_accepting_media()
   → drain audio/video callbacks
+  → DetachPcmFeed
   → AudioRT.flush()
   → LivePipeline.end_session()
   → ConversationBridge.end_session()
+  → DB-backed _completed_close_day_exists()
   → run_phoneonly_close_day.py in .venv
   → v18_close_day.close_brainlive_day()
   → /session/status polls progress
 ```
 
-Non-déclencheurs :
+Fallback : watchdog CloseDay après fin explicite si le déclenchement normal a été perdu.
 
-- WebRTC disconnected ;
-- perte Wi-Fi/4G ;
-- Android sleep ;
-- `OnDisable` ;
-- crash.
+Non-déclencheurs : WebRTC disconnected, perte réseau, Android sleep, `OnDisable`, crash.
 
 ### H. CloseDay / nuit
 
 ```text
 v18_close_day.close_brainlive_day()
   → post_stop
-      → brainlive_event_assembler_v15_14
-      → brainlive_offline_deep_audio_v18_5
-      → brainlive_offline_deep_vision_v16_1
-  → longitudinal
-  → coordination
-  → life_model
-  → live_ready
-  → visual_consolidation
-  → outcome_resolution
-  → prediction_emission
-  → self_schema
+      → event assembler
+      → deep audio
+      → deep vision
+  → longitudinal / coordination / life_model / live_ready
+  → visual_consolidation (Europe/Paris)
+  → outcome_resolution / prediction_emission / self_schema
+  → manifest re-read des tables finales
   → media_retention / clip tiering best-effort
 ```
 
 Règles :
 
-- checkpoints `v18_pipeline_stages`;
-- idempotence ;
+- checkpoints `v18_pipeline_stages` ;
+- idempotence et même-jour décidés par DB ;
 - no partial LLM output ;
 - preuves approuvées ;
 - pas de purge automatique de preuve référencée.
@@ -2016,42 +2133,42 @@ powershell -ExecutionPolicy Bypass -File scripts\RUN_DASHBOARD.ps1
 
 Elle sert à éviter que l’agent parte du mauvais arbre, du mauvais script, du mauvais runtime ou d’un faux chemin simulé.
 
-## 19. V3 — Index preuve / navigation technique
+## 19. V4 — Index preuve / navigation technique
 
-La V3 ajoute une couche structurée dans `repo_graph.json`.
+La V4 expose la couche structurée fusionnée dans `repo_graph_v4.json`.
 
-Contenu du JSON V3 :
+Contenu du JSON V4 :
 
-- `tables` : 403 tables détectées par `CREATE TABLE` dans `src/mlomega_audio_elite/` et `services/live-pc/`.
-- `flows` : 12 flows prioritaires avec entrée, chemin, payloads, tables, tests, risques.
-- `modules` : 146 modules Python + modules Unity/Kotlin critiques, avec symboles, routes, tables lues/écrites, tests détectés.
+- `tables` : 404 entrées, dont les 403 tables du scan statique précédent et `help_mode_tasks` fusionnée depuis la vérification E53 du `CREATE TABLE`.
+- `flows` : 16 flows prioritaires avec entrée, chemin, payloads, tables, tests, risques.
+- `modules` : 152 entrées Python + modules Unity/Kotlin critiques, avec symboles, routes, tables lues/écrites, tests détectés.
 - `routes` : routes FastAPI détectées.
 - `critical_invariants` : invariants globaux.
 
 Règle de confiance :
 
-- `created_by`, `important_columns`, `primary_key`, `foreign_keys` viennent du scan `CREATE TABLE`.
+- Pour les 403 tables héritées, `created_by`, `important_columns`, `primary_key`, `foreign_keys` viennent du scan `CREATE TABLE`. Pour `help_mode_tasks`, l’existence du `CREATE TABLE` est vérifiée par la session E53, mais le détail des colonnes doit être rafraîchi depuis le checkout.
 - `writers` / `readers` viennent d’un scan SQL statique `INSERT/UPDATE/DELETE/FROM/JOIN`.
 - `tests` sont des correspondances statiques par nom de table/module dans les fichiers de test.
 - `unknown` / `to_verify` signifie : pas prouvé par scan statique.
 - Les appels dynamiques, SQL construit par string interpolation, wrappers installés à runtime et writes indirects peuvent être sous-détectés.
 
-### 19.1 Requêtes rapides dans `repo_graph.json`
+### 19.1 Requêtes rapides dans `repo_graph_v4.json`
 
 ```powershell
 # Voir une table
-.venv-live\Scripts\python.exe -c "import json; j=json.load(open('repo_graph.json',encoding='utf-8')); print([t for t in j['tables'] if t['name']=='brainlive_turn_buffer'][0])"
+.venv-live\Scripts\python.exe -c "import json; j=json.load(open('repo_graph_v4.json',encoding='utf-8')); print([t for t in j['tables'] if t['name']=='brainlive_turn_buffer'][0])"
 
 # Voir un flow
-.venv-live\Scripts\python.exe -c "import json; j=json.load(open('repo_graph.json',encoding='utf-8')); print([f for f in j['flows'] if f['id']=='live_audio'][0])"
+.venv-live\Scripts\python.exe -c "import json; j=json.load(open('repo_graph_v4.json',encoding='utf-8')); print([f for f in j['flows'] if f['id']=='live_audio'][0])"
 
 # Voir un module
-.venv-live\Scripts\python.exe -c "import json; j=json.load(open('repo_graph.json',encoding='utf-8')); print([m for m in j['modules'] if m['module']=='services/live-pc/live_pipeline.py'][0])"
+.venv-live\Scripts\python.exe -c "import json; j=json.load(open('repo_graph_v4.json',encoding='utf-8')); print([m for m in j['modules'] if m.get('module')=='services/live-pc/live_pipeline.py'][0])"
 ```
 
 ### 19.2 Tables critiques — exemples humains
 
-Le catalogue complet est dans `repo_graph.json.tables`. Ci-dessous : les tables à inspecter en premier sur PhoneOnly/BrainLive/CloseDay.
+Le catalogue complet est dans `repo_graph_v4.json.tables`. Ci-dessous : les tables à inspecter en premier sur PhoneOnly/BrainLive/CloseDay.
 
 #### `turns`
 
@@ -2141,6 +2258,27 @@ table: brainlive_intervention_delivery_queue
   risks:
     - do not mark delivered/displayed without actual renderer/DataChannel success
     - live_session_id must be BrainLive durable id
+```
+
+#### `help_mode_tasks`
+
+```txt
+table: help_mode_tasks
+  created_by:
+    - services/live-pc/help_mode.py:<module>
+  writers:
+    - HelpTaskEngine._adopt_plan
+  readers:
+    - reprise/lookup du plan actif HelpTaskEngine
+  used_by_flows:
+    - help_mode
+    - ui_delivery_receipt
+  tests:
+    - suite PC E53 (62 tests rapportés)
+  risks:
+    - le détail exact des colonnes doit être relu dans le checkout
+    - ne pas casser la reprise du plan actif
+    - ne pas inventer de grounding si le track manque
 ```
 
 #### `v18_close_day_runs`
@@ -2348,9 +2486,9 @@ table: life_model_entries_v19
     - tests/v19/test_life_model_v19.py
 ```
 
-### 19.3 Flows V3 — traces concrètes
+### 19.3 Flows V4 — traces concrètes
 
-Les 12 flows complets sont dans `repo_graph.json.flows`. IDs :
+Les 16 flows complets sont dans `repo_graph_v4.json.flows`. IDs :
 
 - `pairing_phoneonly`
 - `webrtc_setup`
@@ -2364,6 +2502,10 @@ Les 12 flows complets sont dans `repo_graph.json.flows`. IDs :
 - `visual_evidence_clips`
 - `memory_query`
 - `contracts_python_csharp_kotlin`
+- `help_mode`
+- `reflex_activation`
+- `tts_audio_delivery`
+- `panel_manipulation`
 
 Exemple critique :
 
@@ -2442,9 +2584,9 @@ flow: explicit_end_session
     - idempotence
 ```
 
-### 19.4 Modules V3
+### 19.4 Modules V4
 
-`repo_graph.json.modules` contient 146 entrées.
+`repo_graph_v4.json.modules` contient 152 entrées.
 
 Chaque module a :
 
@@ -2478,7 +2620,7 @@ module: services/live-pc/live_pipeline.py
     - LivePipeline.end_session
   tables:
     reads/writes:
-      - voir repo_graph.json.modules[...].tables
+      - voir repo_graph_v4.json.modules[...].tables
   invariants:
     - drain/flush before CloseDay
     - latest-frame queue must not grow
@@ -2506,14 +2648,14 @@ module: services/live-pc/sessionhub_http.py
     - no silent runtime overwrite
 ```
 
-### 19.5 Comment utiliser la V3 pour trouver les erreurs
+### 19.5 Comment utiliser la V4 pour trouver les erreurs
 
 Procédure :
 
 1. Choisir le flow touché.
-2. Ouvrir `repo_graph.json.flows[id]`.
+2. Ouvrir `repo_graph_v4.json.flows[id]`.
 3. Lister `tables_written` et `tables_read`.
-4. Pour chaque table, ouvrir `repo_graph.json.tables[name]`.
+4. Pour chaque table, ouvrir `repo_graph_v4.json.tables[name]`.
 5. Vérifier `writers/readers/tests`.
 6. Si un writer attendu est absent ou `unknown`, remonter au code avec `rg`.
 7. Si le test prouve seulement fake/sim/JVM, marquer matériel `to_verify`.
@@ -2529,9 +2671,9 @@ Exemples de vrais signaux d’alerte :
 - Table avec `live_session_id` alimentée par un transport `session_id`.
 - Evidence media référencé sans chemin stable.
 
-## 20. V3.1 — Top 20 chemins critiques à vérifier
+## 20. V4 — 24 chemins critiques à vérifier
 
-Cette section ne remplace pas `repo_graph.json`. Elle donne les 20 chemins à relire avant modification. Statuts :
+Cette section ne remplace pas `repo_graph_v4.json`. Elle donne les 24 chemins à relire avant modification. Statuts :
 
 - `proven` : prouvé par tests unitaires/intégration du checkout.
 - `partially_proven` : prouvé côté PC/JVM/EditMode ou par statique, mais pas sur tout le chemin matériel.
@@ -2699,69 +2841,64 @@ risques si modifié:
 
 ```txt
 objectif:
-  - Wake word ouvre une fenêtre commande ; l’audio continue en mémoire mais seuls les finals commandés routent les intents en mode gated.
+  - Wake word ouvre une fenêtre commande ; tout final reste en mémoire ; la configuration runtime est acquittée.
 entrée réelle:
-  - AsrKwsService KWS hit
-  - device_transcript is_command
+  - AsrKwsService.decodeSegment final FR / KWS
+  - LivePipeline.push_wake_word
 path:
-  1. AsrKwsService.kt:onPcm/openCommandWindow/decodeSegment
-  2. AsrBridge.cs:OnNativeTranscript
-  3. LiveTransportBridge.cs:SendTranscriptSegment
-  4. live_pipeline.py:arm_command_window/_should_route_intent
-  5. intent_router.py:IntentRouter.on_transcript
+  1. WakeWordMatcher.matches → openCommandWindow/onWakeWord
+  2. AsrBridge.OnNativeTranscript → device_transcript is_command
+  3. LivePipeline.arm_command_window/_should_route_intent
+  4. user_profile wake_word → device_command set_wake_word
+  5. DeviceCommandHandler → AsrBridge.SetWakeWord → JNI
+  6. device_command_result → ack/retry PC
 tables:
-  reads: []
-  writes:
-    - brainlive_turn_buffer
+  writes: [brainlive_turn_buffer]
 tests existants:
   - tests/v19/test_wake_word_gating.py
-  - apps/xr-mobile/android/reflexvision/src/test/java/com/mlomega/xr/reflexvision/CommandWindowTest.kt
-  - apps/xr-mobile/android/reflexvision/src/test/java/com/mlomega/xr/reflexvision/WakeWordMatcherTest.kt
+  - CommandWindowTest.kt
+  - WakeWordMatcherTest.kt
 tests manquants:
-  - test device wake word réel.
-  - test changement mot d’éveil runtime si cette feature est ajoutée.
+  - device réel wake word + changement runtime acquitté.
 statut:
   - partially_proven
-commande:
-  - .venv-live\Scripts\python.exe -m pytest tests\v19\test_wake_word_gating.py
 risques si modifié:
-  - couper la mémoire continue par erreur.
-  - router toutes les phrases en commandes.
-  - mot d’éveil baked APK vs runtime confondu.
+  - couper la mémoire continue.
+  - confondre type DataChannel et UIIntent.
+  - retry non idempotent.
 ```
 
 ### 6. UIIntent delivery
 
 ```txt
 objectif:
-  - Une intervention BrainLive/H1 devient une UIIntent envoyée au téléphone.
+  - Intervention classique ou aide devient une UIIntent rendue sur téléphone.
 entrée réelle:
   - v18_delivery.enqueue_delivery()
-  - PhoneOnlyRuntime._delivery_loop()
+  - HelpTaskEngine task_panel/task_anchor
 path:
-  1. v18_delivery.py:enqueue_delivery
-  2. delivery_adapter.py:DeliveryAdapter.poll_queued/dispatch_once
-  3. phoneonly_runtime.py:DataChannelRenderer.push
-  4. LiveTransportBridge.cs:OnNativeMessage
-  5. TransportIntentSource.cs:Forward
-  6. UIIntentBroker.cs:OnSourceIntent
+  1. delivery queue / hot path
+  2. DeliveryAdapter / DataChannelRenderer
+  3. LiveTransportBridge.OnNativeMessage
+  4. TransportIntentSource → UIIntentBroker
+  5. UIComponentRegistry
+  6. TaskPanelComponent/TaskAnchorComponent + TaskAtoms si mode aide
 tables:
-  reads:
+  reads/writes:
     - brainlive_intervention_delivery_queue
-  writes:
-    - brainlive_intervention_delivery_queue
+    - help_mode_tasks
 tests existants:
   - tests/v19/test_delivery_adapter.py
   - tests/v19/test_phoneonly_runtime.py
+  - E53 PC + EditMode suites rapportées
 tests manquants:
-  - test téléphone réel : carte visible après DataChannel.
+  - rendu device réel, grounding anchor et reprise.
 statut:
   - partially_proven
-commande:
-  - .venv-live\Scripts\python.exe -m pytest tests\v19\test_delivery_adapter.py tests\v19\test_phoneonly_runtime.py
 risques si modifié:
-  - delivery marquée envoyée alors que DataChannel fermé.
-  - UIIntent reçu mais filtré par density/privacy.
+  - delivery marquée envoyée DataChannel fermé.
+  - nom composant divergent du registry.
+  - ancre non groundée spatialisée artificiellement.
 ```
 
 ### 7. UIReceipt feedback
@@ -2839,72 +2976,49 @@ risques si modifié:
 
 ```txt
 objectif:
-  - Consolider la journée/session avec checkpoints durables et preuves.
+  - CloseDay après fin explicite, multi-session/jour et recovery corrects.
 entrée réelle:
-  - scripts/run_phoneonly_close_day.py
-  - v18_close_day.close_brainlive_day()
+  - /session/end
+  - /session/close-day
+  - watchdog après end explicite
 path:
-  1. run_phoneonly_close_day.py:main
-  2. v18_close_day.py:close_brainlive_day
-  3. brainlive_poststop_deep_flow_v15_15.py:run_brainlive_post_stop_deep_flow
-  4. brainlive_event_assembler_v15_14.py:run_brainlive_event_assembly
-  5. brainlive_offline_deep_audio_v18_5.py:run_offline_deep_audio_for_bundles
-  6. brainlive_offline_deep_vision_v16_1.py:run_offline_deep_vision_for_bundles
-  7. brain2_life_model_updater_v15_13.py
+  1. end_session_only capture live_session_id BrainLive
+  2. _completed_close_day_exists lit v18_close_day_runs
+  3. manager.start_close_day / watchdog
+  4. run_phoneonly_close_day.py dans .venv
+  5. v18_close_day stages
+  6. visual consolidation Europe/Paris
+  7. manifest relit tables finales
 tables:
-  reads:
-    - brainlive_turn_buffer
-    - brainlive_raw_timeline_v1514
-    - visual_events_v19
-    - vision_frames
-  writes:
+  reads/writes:
     - v18_close_day_runs
     - v18_pipeline_stages
-    - brainlive_event_bundles_v1514
-    - brainlive_deep_audio_artifacts_v185
-    - brainlive_deep_vision_observations_v161
-    - life_model_entries_v19
-tests existants:
-  - tests/v19/test_e37_nightly.py
-  - tests/v19/test_multi_session_close_day.py
-  - tests/v19/test_longitudinal_periods.py
-  - tests/v19/test_life_model_v19.py
-  - tests/v19/test_ollama_context_budget.py
-tests manquants:
-  - CloseDay déclenché depuis vraie session Android.
+    - tables BrainLive/vision/life model
 statut:
   - partially_proven
-commande:
-  - .venv\Scripts\python.exe -m pytest tests\v19\test_e37_nightly.py tests\v19\test_multi_session_close_day.py tests\v19\test_longitudinal_periods.py tests\v19\test_life_model_v19.py
 risques si modifié:
-  - mauvais environnement `.venv-live` au lieu de `.venv`.
-  - mauvais live_session_id.
-  - JSON LLM tronqué appliqué.
-  - rerun même jour non idempotent.
+  - session_id transport utilisé.
+  - disconnect traité comme end.
+  - compteur mémoire remplace la DB.
+  - frontière de jour implicite/UTC.
 ```
 
 ### 10. visual evidence / clips
 
 ```txt
 objectif:
-  - Conserver keyframes/clips utiles, indexés et protégés comme preuves/replay.
+  - Conserver keyframes/clips utiles et prouver le wiring runtime.
 entrée réelle:
-  - Live video frames
-  - ClipRecorder
-  - VisionRT keyframe sink
+  - phoneonly_runtime construit ClipRecorder + GpuArbiter
+  - gateway._consume_track
 path:
-  1. live_pipeline.py:run_video
-  2. visionrt.py:default_keyframe_sink
-  3. clip_recorder.py:ClipRecorder
-  4. v19_keyframes.py:register_xr_keyframe
-  5. v19_visual_store.py:store_visual_event
-  6. media_retention.py
+  1. runtime → ingress_kwargs[clip_recorder]
+  2. gateway._consume_track → recorder.offer
+  3. VisionRT keyframe sink
+  4. index assets/events
+  5. media_retention / tiering
 tables:
-  reads:
-    - visual_events_v19
-    - visual_evidence_assets_v19
-    - vision_frames
-  writes:
+  reads/writes:
     - vision_frames
     - raw_assets
     - visual_evidence_assets_v19
@@ -2914,15 +3028,13 @@ tests existants:
   - tests/v19/test_media_retention.py
   - tests/v19/test_visionrt.py
 tests manquants:
-  - test session réelle avec clip rejouable depuis dashboard/UI.
+  - clip Android réel rejouable ; pression GPU/device.
 statut:
   - partially_proven
-commande:
-  - .venv-live\Scripts\python.exe -m pytest tests\v19\test_clip_recorder.py tests\v19\test_media_retention.py tests\v19\test_visionrt.py
 risques si modifié:
-  - recorder bloque le live.
+  - recorder débranché à nouveau.
+  - live bloqué.
   - preuve référencée purgée.
-  - fichiers en TEMP.
 ```
 
 ### 11. model provisioning
@@ -3119,7 +3231,7 @@ tables:
     - visual_evidence_assets_v19
     - vision_frames
   writes:
-    - media paths / metadata updates (voir repo_graph.json)
+    - media paths / metadata updates (voir repo_graph_v4.json)
 tests existants:
   - tests/v19/test_media_retention.py
   - tests/v19/test_clip_recorder.py
@@ -3258,45 +3370,75 @@ risques si modifié:
 
 ```txt
 objectif:
-  - Installer/guider sans cacher les prérequis ni casser l’état utilisateur.
+  - Installer/guider et construire toujours la scène PhoneOnly V4 réelle.
 entrée réelle:
   - scripts/WELCOME_MLOMEGA.ps1
+  - AndroidBuild.cs
 path:
-  1. WELCOME_MLOMEGA.ps1
-  2. INSTALL_MLOMEGA_V19_WINDOWS.ps1
-  3. START_QDRANT.ps1
-  4. fetch_models_v19.py
-  5. setup_profile.ps1
-  6. DOCTOR_MLOMEGA_V19.ps1
-  7. RUN_MLOMEGA_V19.ps1
-tables:
-  reads: []
-  writes:
-    - filesystem/env/profile/model files
-tests existants:
-  - dry-run documenté, pas un test pytest
-tests manquants:
-  - install réelle machine propre.
-  - test idempotence sur machine partiellement installée.
+  1. onboarding/install/doctor/run
+  2. AndroidBuild force com.mlomega.xr.phoneonly
+  3. régénère PhoneOnly scene à chaque build
+  4. scène contient ReflexSignalSource/MenuPanel/OrientationGuard/TtsAudioPlayer/PanelManipulator
 statut:
-  - to_verify
-commande:
-  - powershell -ExecutionPolicy Bypass -File scripts\WELCOME_MLOMEGA.ps1 -DryRun
+  - partially_proven
+tests manquants:
+  - install machine propre.
+  - APK build/install S25 réel.
 risques si modifié:
-  - installer trop destructif.
-  - prérequis Python/Ollama/Qdrant mal détectés.
-  - secrets `.env` logués.
-  - modèles live/deep/VLM incohérents.
+  - stale scene.
+  - mauvais applicationId.
+  - SimOnly confondu avec hardware.
 ```
 
----
+### 21. help mode
 
-## Delta 2026-07-10 — E53 / E58 / E59 / E60 (post-scan V3)
+```txt
+objectif: plan micro-actions persistant + panel + ancre.
+path:
+  IntentRouter._do_help_start
+  → HelpTaskEngine.start_from_description
+  → one-shot VLM
+  → LLM JSON
+  → help_mode_tasks
+  → task_panel/task_anchor
+statut: partially_proven (device to_verify)
+risques: VLM répété, contrôle actif mal routé, ancre inventée.
+```
 
-Changements STRUCTURELS depuis la génération de cette carte (code = source de vérité ; device non validé = to_verify) :
+### 22. reflex activation production
 
-- **Mode aide (E53)** — NOUVEAU flow. `services/live-pc/help_mode.py` (`HelpTaskEngine`) : plan LLM de micro-actions (+1 coup d'œil VLM scène au start), machine à états, ghost N+1, grounding tracks par `label_en`, watchdog indices ; table sqlite additive `help_mode_tasks` (persistance/reprise). Émet les UIIntents `task_panel` (queue H1) et `task_anchor` (canal hot). Intents routeur : `help_start` + contrôles actifs (« c'est fait », « répète »…) via pré-routeur dans `intent_router.py`. Unity : `Assets/Scripts/UI/Components/TaskAtoms/` (12 atomes) + clés `task_panel`/`task_anchor` dans `UIComponentRegistry`. Statut : proven (tests PC 62 + EditMode 9) ; rendu device to_verify.
-- **Wake word runtime (E58)** — le mot d'éveil est détecté dans la transcription ASR FR device (`WakeWordMatcher.kt`, branch dans `AsrKwsService.decodeSegment`), plus par le KWS anglais. NOUVEAU contrat DataChannel : `device_command set_wake_word {word}` PC→Unity (poussé par `LivePipeline.push_wake_word()`), appliqué par `AsrBridge.SetWakeWord` → JNI `setWakeWord`. NOUVEAU message montant `device_command_result {command_id, action, ok}` (ack, ajouté E60). Source de vérité du mot : `configs/user_profile.yaml wake_word` (défaut « viki »). Statut : proven unit ; device to_verify.
-- **Window management (E59)** — Unity only : `Reflex/PanelManipulator.cs` + `UI/Components/IManipulablePanel.cs`/`ManipulablePanelRegistry.cs`. Pinch « claimé » par hit-test (sinon zoom LensWindow inchangé). Aucun nouveau message réseau. Statut : proven EditMode (76/76) ; device to_verify.
-- **Corrections d'intégration (E60, audit)** — `Reflex/PhoneOnlyReflexSignalSource.cs` (les signaux Reflex sont ENFIN levés en prod → ASR/gestes/sous-titres offline démarrent) ; MenuPanel + OrientationGuard ajoutés à la scène ; TTS connecté activé (`enable_tts=True` runtime + NOUVEAU consommateur Unity `UI/TtsAudioPlayer.cs` du message `tts_audio`) ; contrat `FrameEnvelope` : champ `pose_valid` ajouté (gate spatialisation PC) ; multi-session/jour : `_completed_close_day_exists()` lit la DB (plus de compteur mémoire) ; watchdog close-day de secours (`phoneonly_runtime`) ; `DetachPcmFeed` + fallback `ownMicrophone` (AsrBridge) ; `worldbrain` : entity_id stable inter-sessions (`stable_id` sans session) ; consolidation visuelle en Europe/Paris ; manifest CloseDay relit les tables réelles ; vision déportée en `asyncio.to_thread` ; `AndroidBuild` force `com.mlomega.xr.phoneonly` + régénère toujours la scène. Statut : proven unit ; matrice device S25 to_verify (gate final E60).
-- **Mismatch persistants** : `ClipRecorder` (E55) et `GpuArbiter` — **RÉSOLU (E60 final, 2026-07-10)** : ClipRecorder construit+démarré dans phoneonly_runtime et passé à l'ingress ; GpuArbiter construit. Device to_verify (matrice S25).
+```txt
+objectif: le scheduler réflexe a un appelant prod.
+path:
+  PhoneOnlyReflexSignalSource
+  → ReflexScheduler.RaiseSignal
+  → ASR/gestes/traduction/skills
+statut: partially_proven (device to_verify)
+risques: retour au flow mort, double micro, signaux non idempotents.
+```
+
+### 23. TTS DataChannel
+
+```txt
+objectif: tts_audio possède un consommateur Unity.
+path:
+  LivePipeline(enable_tts=True)
+  → tts_audio
+  → LiveTransportBridge
+  → TtsAudioPlayer
+statut: partially_proven (playback device to_verify)
+risques: type confondu avec UIIntent, blocage main thread.
+```
+
+### 24. panel manipulation
+
+```txt
+objectif: pinch manipule le panel ciblé sans casser le zoom fallback.
+path:
+  GestureBridge pinch(x,y)
+  → PanelManipulator claim/hit-test
+  → IManipulablePanel
+  → sinon LensWindowSkill
+statut: partially_proven (EditMode proven, device to_verify)
+risques: mauvais espace coordonnées, double handling du pinch.
+```

@@ -1,6 +1,6 @@
 {
-  "version": "V3.2 Call Trace Proof",
-  "generated_from": "read-only source inspection of current checkout",
+  "version": "V4 Call Trace Proof",
+  "generated_from": "V3.2 static checkout scan with E53/E58/E59/E60 paths merged into native flows",
   "git_status_before_write": [
     "?? Oldconversation/",
     "?? REPO_MAP.md",
@@ -261,6 +261,27 @@
           "line": 1164,
           "proof": "static_direct",
           "payload": "final transcript"
+        },
+        {
+          "from": "PhoneOnlyReflexSignalSource",
+          "to": "ReflexScheduler.RaiseSignal",
+          "file": "apps/xr-mobile/Assets/Scripts/Reflex/PhoneOnlyReflexSignalSource.cs",
+          "proof": "static_direct",
+          "note": "E60 production activation source"
+        },
+        {
+          "from": "AsrBridge teardown",
+          "to": "LiveTransportBridge.DetachPcmFeed",
+          "file": "apps/xr-mobile/Assets/Scripts/Reflex/AsrBridge.cs",
+          "proof": "static_direct",
+          "note": "E60 teardown fix"
+        },
+        {
+          "from": "AsrBridge degraded startup",
+          "to": "ownMicrophone fallback",
+          "file": "apps/xr-mobile/Assets/Scripts/Reflex/AsrBridge.cs",
+          "proof": "static_direct",
+          "note": "must not coexist with nominal WebRTC PCM feed"
         }
       ],
       "tables": {
@@ -278,12 +299,14 @@
         "apps/xr-mobile/android/livetransport/src/test/java/com/mlomega/xr/livetransport/MicAudioFanoutTest.kt"
       ],
       "missing_tests": [
-        "Real Android mic -> Opus -> aiortc -> AudioRT -> BrainLive/WAV"
+        "Real Android mic -> Opus -> aiortc -> AudioRT -> BrainLive/WAV",
+        "Physical-device production reflex activation and fallback microphone exclusion"
       ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_phoneonly_runtime.py::test_audio_frame_conversion_reaches_pcm_callback tests/v19/test_phoneonly_runtime.py::test_vad_segment_is_archived_when_asr_unavailable tests/v19/test_e31_conversation.py::test_wiring_final_segment_reaches_core_turn_buffer",
       "risks": [
         "Audio queue must remain bounded/drop-oldest.",
-        "End drain must precede flush and pipeline end."
+        "End drain must precede flush and pipeline end.",
+        "Fallback ownMicrophone must never run concurrently with the nominal WebRTC PCM fan-out."
       ]
     },
     {
@@ -352,6 +375,34 @@
           "file": "services/live-pc/live_pipeline.py",
           "line": 766,
           "proof": "static_direct"
+        },
+        {
+          "from": "EyeCaptureSource",
+          "to": "FrameEnvelope.pose_valid",
+          "file": "apps/xr-mobile/Assets/Scripts/Core/EyeCaptureSource.cs",
+          "proof": "static_direct",
+          "payload": "bool pose validity"
+        },
+        {
+          "from": "LivePipeline.on_video_frame",
+          "to": "pose_valid spatialisation gate",
+          "file": "services/live-pc/live_pipeline.py",
+          "proof": "static_direct",
+          "effect": "neutral pose is never spatialised"
+        },
+        {
+          "from": "LivePipeline vision dispatch",
+          "to": "asyncio.to_thread",
+          "file": "services/live-pc/live_pipeline.py",
+          "proof": "static_direct",
+          "effect": "avoid blocking live loop"
+        },
+        {
+          "from": "WorldBrain entity assignment",
+          "to": "stable_id without transport session",
+          "file": "services/live-pc/worldbrain.py",
+          "proof": "static_direct",
+          "effect": "cross-session stability"
         }
       ],
       "tables": {
@@ -366,69 +417,94 @@
       "tests": [
         "tests/v19/test_transport_webrtc.py",
         "tests/v19/test_visionrt.py",
-        "tests/v19/test_e28_worldbrain.py"
+        "tests/v19/test_e28_worldbrain.py",
+        "E60 unit coverage: pose_valid gating and cross-session stable entity IDs (exact file names not present in supplied artefacts)"
       ],
       "missing_tests": [
-        "Real Android rear camera -> PC run_video"
+        "Real Android rear camera -> PC run_video",
+        "Real Android pose-valid/invalid transition through full WebRTC path"
       ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_transport_webrtc.py tests/v19/test_visionrt.py tests/v19/test_e28_worldbrain.py",
       "risks": [
         "Do not block live loop with clip/keyframe IO.",
-        "FrameEnvelope shape changes break async matching."
+        "FrameEnvelope shape changes break async matching.",
+        "pose_valid=false must not create spatial anchors from neutral/default poses.",
+        "World entity stable IDs must not include transport session_id."
       ]
     },
     {
       "id": "wake_word_command_routing",
       "status": "partially_proven",
       "entry": {
-        "file": "apps/xr-mobile/Assets/Scripts/Reflex/AsrBridge.cs",
-        "line": 231,
-        "symbol": "AsrBridge.OnNativeTranscript"
+        "file": "apps/xr-mobile/android/reflexvision/src/main/java/com/mlomega/xr/reflexvision/AsrKwsService.kt",
+        "symbol": "AsrKwsService.decodeSegment / LivePipeline.push_wake_word"
       },
       "edges": [
+        {
+          "from": "AsrKwsService.decodeSegment(final FR)",
+          "to": "WakeWordMatcher.matches",
+          "file": "apps/xr-mobile/android/reflexvision/src/main/java/com/mlomega/xr/reflexvision/AsrKwsService.kt",
+          "proof": "static_direct",
+          "payload": "final transcript text"
+        },
+        {
+          "from": "WakeWordMatcher.matches",
+          "to": "openCommandWindow + onWakeWord",
+          "file": "apps/xr-mobile/android/reflexvision/src/main/java/com/mlomega/xr/reflexvision/WakeWordMatcher.kt",
+          "proof": "static_direct"
+        },
         {
           "from": "AsrBridge.OnNativeTranscript",
           "to": "LiveTransportBridge.SendTranscriptSegment",
           "file": "apps/xr-mobile/Assets/Scripts/Reflex/AsrBridge.cs",
-          "line": 238,
-          "proof": "static_direct",
-          "payload": "text/lang/start/end/isCommand"
-        },
-        {
-          "from": "LiveTransportBridge.SendTranscriptSegment",
-          "to": "LiveTransportPlugin.sendContractMessage",
-          "file": "apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs",
-          "line": 224,
-          "proof": "datachannel_boundary",
-          "payload": "device_transcript JSON"
-        },
-        {
-          "from": "AiortcIngress._on_message",
-          "to": "PhoneOnlyRuntime._on_receipt",
-          "file": "services/live-pc/gateway.py",
-          "line": 459,
-          "proof": "datachannel_boundary"
+          "proof": "jni_boundary",
+          "payload": "device_transcript is_command"
         },
         {
           "from": "PhoneOnlyRuntime._on_receipt",
           "to": "LivePipeline.arm_command_window",
           "file": "services/live-pc/phoneonly_runtime.py",
-          "line": 174,
-          "proof": "static_direct"
+          "proof": "datachannel_boundary"
         },
         {
-          "from": "LivePipeline._handle_audio_intents",
+          "from": "LivePipeline._should_route_intent",
           "to": "IntentRouter.on_transcript",
           "file": "services/live-pc/live_pipeline.py",
-          "line": 1148,
+          "proof": "static_direct",
+          "note": "ConversationBridge still ingests all finals"
+        },
+        {
+          "from": "configs/user_profile.yaml wake_word",
+          "to": "LivePipeline.push_wake_word",
+          "file": "services/live-pc/live_pipeline.py",
+          "proof": "static_direct",
+          "payload": "word"
+        },
+        {
+          "from": "LivePipeline.push_wake_word",
+          "to": "_push_device_command(set_wake_word)",
+          "file": "services/live-pc/live_pipeline.py",
+          "proof": "datachannel_boundary",
+          "payload": "{action,set_wake_word,word,command_id}"
+        },
+        {
+          "from": "DeviceCommandHandler.Execute",
+          "to": "SetWakeWordRequested",
+          "file": "apps/xr-mobile/Assets/Scripts/UI/DeviceCommandHandler.cs",
           "proof": "static_direct"
         },
         {
-          "from": "LivePipeline._handle_audio_intents",
-          "to": "ConversationBridge.ingest_segment",
-          "file": "services/live-pc/live_pipeline.py",
-          "line": 1164,
-          "proof": "static_direct"
+          "from": "AsrBridge.SetWakeWord",
+          "to": "JNI setWakeWord",
+          "file": "apps/xr-mobile/Assets/Scripts/Reflex/AsrBridge.cs",
+          "proof": "jni_boundary"
+        },
+        {
+          "from": "device_command_result",
+          "to": "PhoneOnlyRuntime ack/retry",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "proof": "datachannel_boundary",
+          "payload": "{command_id,action,ok}"
         }
       ],
       "tables": {
@@ -440,15 +516,18 @@
       },
       "tests": [
         "tests/v19/test_wake_word_gating.py",
-        "tests/v19/test_e33_intents.py",
-        "apps/xr-mobile/android/reflexvision/src/test/java/com/mlomega/xr/reflexvision/WakeWordMatcherTest.kt"
+        "apps/xr-mobile/android/reflexvision/src/test/java/com/mlomega/xr/reflexvision/CommandWindowTest.kt",
+        "apps/xr-mobile/android/reflexvision/src/test/java/com/mlomega/xr/reflexvision/WakeWordMatcherTest.kt",
+        "E58/E60 unit coverage for set_wake_word ack/retry (exact filename not present in supplied artefacts)"
       ],
       "missing_tests": [
-        "Real Android KWS -> Unity -> PC command window"
+        "Physical-device French-final wake match and runtime wake-word update acknowledgement"
       ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_wake_word_gating.py tests/v19/test_e33_intents.py",
       "risks": [
-        "Gating must suppress command routing only, not memory ingestion."
+        "All speech must remain in memory even when command routing is gated.",
+        "DataChannel control types must not be parsed as UIIntent.",
+        "Retries and duplicate acknowledgements must be idempotent by command_id."
       ]
     },
     {
@@ -511,6 +590,25 @@
           "file": "apps/xr-mobile/Assets/Scripts/UI/UIRuntime.cs",
           "line": 110,
           "proof": "static_direct"
+        },
+        {
+          "from": "UIComponentRegistry[task_panel]",
+          "to": "TaskPanelComponent",
+          "file": "apps/xr-mobile/Assets/Scripts/UI/UIComponentRegistry.cs",
+          "proof": "static_direct"
+        },
+        {
+          "from": "UIComponentRegistry[task_anchor]",
+          "to": "TaskAnchorComponent",
+          "file": "apps/xr-mobile/Assets/Scripts/UI/UIComponentRegistry.cs",
+          "proof": "static_direct"
+        },
+        {
+          "from": "TaskAnchorComponent",
+          "to": "SceneCache.Tracks",
+          "file": "apps/xr-mobile/Assets/Scripts/UI/Components/TaskAtoms/",
+          "proof": "static_direct",
+          "note": "grounded anchor following"
         }
       ],
       "tables": {
@@ -524,14 +622,17 @@
       "tests": [
         "tests/v19/test_phoneonly_runtime.py::test_brainlive_delivery_queue_reaches_phone_datachannel",
         "tests/v19/test_delivery_adapter.py",
-        "tests/v19/test_phoneonly_android_wiring.py"
+        "tests/v19/test_phoneonly_android_wiring.py",
+        "E53 Unity EditMode task-atom/registry suite (9 reported)"
       ],
       "missing_tests": [
-        "Real Android DataChannel UIIntent rendered on phone"
+        "Real Android DataChannel UIIntent rendered on phone",
+        "Physical-device task_panel/task_anchor rendering and track following"
       ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_phoneonly_runtime.py::test_brainlive_delivery_queue_reaches_phone_datachannel tests/v19/test_delivery_adapter.py",
       "risks": [
-        "Component name drift can deliver valid JSON but render nothing."
+        "Component name drift can deliver valid JSON but render nothing.",
+        "Ungrounded task anchors must degrade to panel-only guidance."
       ]
     },
     {
@@ -762,6 +863,32 @@
           "file": "src/mlomega_audio_elite/v18_close_day.py",
           "line": 500,
           "proof": "static_direct"
+        },
+        {
+          "from": "PhoneOnlyRuntime._completed_close_day_exists",
+          "to": "v18_close_day_runs query",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "proof": "db_boundary",
+          "note": "E60 replaces in-memory completion counter"
+        },
+        {
+          "from": "PhoneOnlyRuntime close-day watchdog",
+          "to": "start_close_day after explicit end",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "proof": "static_direct",
+          "note": "fallback only, not disconnect semantic"
+        },
+        {
+          "from": "visual consolidation day bucketing",
+          "to": "Europe/Paris",
+          "file": "src/mlomega_audio_elite/v18_close_day.py",
+          "proof": "static_direct"
+        },
+        {
+          "from": "CloseDay final manifest",
+          "to": "re-read persisted tables",
+          "file": "src/mlomega_audio_elite/v18_close_day.py",
+          "proof": "db_boundary"
         }
       ],
       "tables": {
@@ -777,7 +904,8 @@
       "tests": [
         "tests/v19/test_phoneonly_runtime.py",
         "tests/v19/test_multi_session_close_day.py",
-        "tests/v19/test_ollama_context_budget.py"
+        "tests/v19/test_ollama_context_budget.py",
+        "E60 unit coverage: DB completion lookup, watchdog, Paris bucketing and manifest refresh (exact filenames unavailable)"
       ],
       "missing_tests": [
         "Full heavy CloseDay on real PhoneOnly session"
@@ -785,56 +913,61 @@
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_phoneonly_runtime.py tests/v19/test_multi_session_close_day.py tests/v19/test_ollama_context_budget.py",
       "risks": [
         "Must pass BrainLive live_session_id, not transport session_id.",
-        "Task and DB idempotence must both hold."
+        "Task and DB idempotence must both hold.",
+        "Same-day completion must be derived from durable run identity, not process memory.",
+        "Watchdog may run only after explicit semantic end."
       ]
     },
     {
       "id": "visual_evidence_clips",
       "status": "partially_proven",
       "entry": {
-        "file": "services/live-pc/visionrt.py",
-        "line": 517,
-        "symbol": "VisionRT.process_frame keyframe"
+        "file": "services/live-pc/phoneonly_runtime.py",
+        "symbol": "PhoneOnlyRuntime composition / gateway clip offer"
       },
       "edges": [
+        {
+          "from": "PhoneOnlyRuntime composition",
+          "to": "ClipRecorder construct + start",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "proof": "static_direct"
+        },
+        {
+          "from": "PhoneOnlyRuntime composition",
+          "to": "GpuArbiter construct",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "proof": "static_direct"
+        },
+        {
+          "from": "PhoneOnlyRuntime ingress_kwargs",
+          "to": "AiortcIngress(clip_recorder=...)",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "proof": "static_direct"
+        },
         {
           "from": "AiortcIngress._consume_track",
           "to": "ClipRecorder.offer",
           "file": "services/live-pc/gateway.py",
-          "line": 517,
+          "line": 514,
           "proof": "static_direct"
         },
         {
-          "from": "VisionRT.process_frame",
-          "to": "VisionRT._record_keyframe",
-          "file": "services/live-pc/visionrt.py",
-          "line": 518,
-          "proof": "static_direct"
+          "from": "ClipRecorder._run",
+          "to": "visual_evidence_assets_v19 index",
+          "file": "services/live-pc/clip_recorder.py",
+          "proof": "db_boundary"
         },
         {
-          "from": "VisionRT._record_keyframe",
-          "to": "keyframe_sink",
-          "file": "services/live-pc/visionrt.py",
-          "line": 576,
-          "proof": "static_direct"
-        },
-        {
-          "from": "default_keyframe_sink",
+          "from": "VisionRT.default_keyframe_sink",
           "to": "register_xr_keyframe",
           "file": "services/live-pc/visionrt.py",
-          "line": 758,
-          "proof": "db_boundary",
-          "tables_write": [
-            "raw_assets",
-            "vision_frames"
-          ]
+          "proof": "db_boundary"
         },
         {
-          "from": "WorldBrain.ingest_scene_delta",
-          "to": "evidence_ref frame:<frame_id>",
-          "file": "services/live-pc/worldbrain.py",
-          "line": 357,
-          "proof": "static_direct"
+          "from": "media_retention",
+          "to": "protect referenced evidence",
+          "file": "services/live-pc/media_retention.py",
+          "proof": "db_boundary"
         }
       ],
       "tables": {
@@ -848,15 +981,18 @@
       "tests": [
         "tests/v19/test_visionrt.py::test_keyframe_recorded_via_v19_keyframes",
         "tests/v19/test_clip_recorder.py",
-        "tests/v19/test_media_retention.py"
+        "tests/v19/test_media_retention.py",
+        "E60 runtime composition coverage for ClipRecorder and GpuArbiter"
       ],
       "missing_tests": [
-        "Real live clip from Android WebRTC video"
+        "Real Android clip capture/replay and nominal GPU-pressure device matrix"
       ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_visionrt.py::test_keyframe_recorded_via_v19_keyframes tests/v19/test_clip_recorder.py tests/v19/test_media_retention.py",
       "risks": [
-        "Managed media path must not revert to tempfile.",
-        "Clip recorder must stay non-blocking."
+        "Recorder must remain non-blocking and drop-on-full.",
+        "Runtime composition must not silently remove ClipRecorder or GpuArbiter again.",
+        "Referenced evidence media must never be purged.",
+        "Construction is not physical-device validation."
       ]
     },
     {
@@ -1517,6 +1653,24 @@
           "file": "apps/xr-mobile/Assets/Scripts/Editor/AndroidBuild.cs",
           "line": 156,
           "proof": "static_direct"
+        },
+        {
+          "from": "AndroidBuild",
+          "to": "applicationId com.mlomega.xr.phoneonly",
+          "file": "apps/xr-mobile/Assets/Scripts/Editor/AndroidBuild.cs",
+          "proof": "static_direct"
+        },
+        {
+          "from": "AndroidBuild",
+          "to": "always regenerate PhoneOnly scene",
+          "file": "apps/xr-mobile/Assets/Scripts/Editor/AndroidBuild.cs",
+          "proof": "static_direct"
+        },
+        {
+          "from": "PhoneOnlySceneBuilder",
+          "to": "PhoneOnlyReflexSignalSource/MenuPanel/OrientationGuard/TtsAudioPlayer/PanelManipulator",
+          "file": "apps/xr-mobile/Assets/Scripts/Editor/PhoneOnlySceneBuilder.cs",
+          "proof": "static_direct"
         }
       ],
       "tables": {
@@ -1529,99 +1683,221 @@
       ],
       "missing_tests": [
         "Actual Windows LivePhone run",
-        "Unity APK build/install on Android"
+        "Unity APK build/install on Android",
+        "Physical APK build/install confirming package ID and regenerated E60 scene components"
       ],
       "command": ".\\.venv-live\\Scripts\\python.exe -m pytest tests/v19/test_scripts_profile.py tests/v19/test_phoneonly_android_wiring.py",
       "risks": [
         "Keep SimOnly and LivePhone separate.",
-        "Do not claim hardware validation from launcher alone."
+        "Do not claim hardware validation from launcher alone.",
+        "Never allow a stale pre-E60 PhoneOnly scene to bypass regeneration."
+      ]
+    },
+    {
+      "id": "help_mode",
+      "status": "partially_proven",
+      "entry": {
+        "file": "services/live-pc/intent_router.py",
+        "symbol": "IntentRouter._do_help_start"
+      },
+      "edges": [
+        {
+          "from": "IntentRouter.on_transcript pre-router",
+          "to": "IntentRouter._do_help_start / active help controls",
+          "file": "services/live-pc/intent_router.py",
+          "proof": "static_direct"
+        },
+        {
+          "from": "IntentRouter._do_help_start",
+          "to": "HelpTaskEngine.start_from_description",
+          "file": "services/live-pc/help_mode.py",
+          "proof": "static_direct"
+        },
+        {
+          "from": "HelpTaskEngine.start_from_description",
+          "to": "_guess_scene_context",
+          "file": "services/live-pc/help_mode.py",
+          "proof": "static_direct",
+          "note": "at most one VLM glance at start"
+        },
+        {
+          "from": "HelpTaskEngine",
+          "to": "llm_router.complete_json",
+          "file": "services/live-pc/help_mode.py",
+          "proof": "static_direct",
+          "payload": "structured micro-action plan"
+        },
+        {
+          "from": "HelpTaskEngine._adopt_plan",
+          "to": "help_mode_tasks",
+          "file": "services/live-pc/help_mode.py",
+          "proof": "db_boundary"
+        },
+        {
+          "from": "HelpTaskEngine",
+          "to": "scene_adapter._enqueue(task_panel)",
+          "file": "services/live-pc/help_mode.py",
+          "proof": "static_direct"
+        },
+        {
+          "from": "HelpTaskEngine",
+          "to": "scene_adapter._emit_hot(task_anchor)",
+          "file": "services/live-pc/help_mode.py",
+          "proof": "static_direct"
+        },
+        {
+          "from": "UIComponentRegistry task components",
+          "to": "TaskAtoms + SceneCache.Tracks",
+          "file": "apps/xr-mobile/Assets/Scripts/UI/Components/TaskAtoms/",
+          "proof": "static_direct"
+        }
+      ],
+      "tables": {
+        "read": [
+          "help_mode_tasks"
+        ],
+        "write": [
+          "help_mode_tasks",
+          "brainlive_intervention_delivery_queue"
+        ]
+      },
+      "tests": [
+        "E53 PC help-mode suite (62 reported)",
+        "E53 Unity EditMode task suite (9 reported)"
+      ],
+      "missing_tests": [
+        "Physical-device rendering, grounding and restart resume"
+      ],
+      "command": "rg -n \"HelpTaskEngine|help_mode_tasks|task_panel|task_anchor\" services/live-pc apps/xr-mobile tests",
+      "risks": [
+        "VLM glance must remain bounded.",
+        "Active controls must pre-route before generic intent parsing.",
+        "Missing track must degrade without fabricated grounding."
+      ]
+    },
+    {
+      "id": "reflex_activation",
+      "status": "partially_proven",
+      "entry": {
+        "file": "apps/xr-mobile/Assets/Scripts/Reflex/PhoneOnlyReflexSignalSource.cs",
+        "symbol": "production lifecycle signal source"
+      },
+      "edges": [
+        {
+          "from": "PhoneOnlyReflexSignalSource",
+          "to": "ReflexScheduler.RaiseSignal",
+          "file": "apps/xr-mobile/Assets/Scripts/Reflex/PhoneOnlyReflexSignalSource.cs",
+          "proof": "static_direct"
+        },
+        {
+          "from": "ReflexScheduler",
+          "to": "ASR/gesture/translation/subtitle skills",
+          "file": "apps/xr-mobile/Assets/Scripts/Reflex/ReflexScheduler.cs",
+          "proof": "static_direct"
+        }
+      ],
+      "tables": {
+        "read": [],
+        "write": []
+      },
+      "tests": [
+        "E60 unit activation coverage (exact filename unavailable)"
+      ],
+      "missing_tests": [
+        "Physical-device lifecycle activation/deactivation"
+      ],
+      "command": "rg -n \"PhoneOnlyReflexSignalSource|RaiseSignal\" apps/xr-mobile",
+      "risks": [
+        "Do not regress to demo/editor-only signals.",
+        "Signals must be idempotent and must not open a second microphone."
+      ]
+    },
+    {
+      "id": "tts_audio_delivery",
+      "status": "partially_proven",
+      "entry": {
+        "file": "services/live-pc/live_pipeline.py",
+        "symbol": "LivePipeline(enable_tts=True)"
+      },
+      "edges": [
+        {
+          "from": "PhoneOnlyRuntime",
+          "to": "LivePipeline(enable_tts=True)",
+          "file": "services/live-pc/phoneonly_runtime.py",
+          "proof": "static_direct"
+        },
+        {
+          "from": "LivePipeline TTS producer",
+          "to": "tts_audio DataChannel",
+          "file": "services/live-pc/live_pipeline.py",
+          "proof": "datachannel_boundary"
+        },
+        {
+          "from": "LiveTransportBridge.OnNativeMessage",
+          "to": "TtsAudioPlayer",
+          "file": "apps/xr-mobile/Assets/Scripts/UI/TtsAudioPlayer.cs",
+          "proof": "static_direct"
+        }
+      ],
+      "tables": {
+        "read": [],
+        "write": []
+      },
+      "tests": [
+        "E60 unit wiring coverage (exact filename unavailable)"
+      ],
+      "missing_tests": [
+        "Physical-device playback, interruption and reconnect"
+      ],
+      "command": "rg -n \"enable_tts|tts_audio|TtsAudioPlayer\" services/live-pc apps/xr-mobile",
+      "risks": [
+        "tts_audio must not be parsed as UIIntent.",
+        "Playback must not block Unity main/DataChannel callbacks."
+      ]
+    },
+    {
+      "id": "panel_manipulation",
+      "status": "partially_proven",
+      "entry": {
+        "file": "apps/xr-mobile/Assets/Scripts/Reflex/PanelManipulator.cs",
+        "symbol": "GestureBridge pinch handler"
+      },
+      "edges": [
+        {
+          "from": "GestureBridge pinch(x,y)",
+          "to": "PanelManipulator claim/hit-test",
+          "file": "apps/xr-mobile/Assets/Scripts/Reflex/PanelManipulator.cs",
+          "proof": "static_direct"
+        },
+        {
+          "from": "PanelManipulator claimed target",
+          "to": "IManipulablePanel MoveTo/Resize/Close/Minimise",
+          "file": "apps/xr-mobile/Assets/Scripts/UI/Components/IManipulablePanel.cs",
+          "proof": "static_direct"
+        },
+        {
+          "from": "PanelManipulator unclaimed pinch",
+          "to": "LensWindowSkill zoom fallback",
+          "file": "apps/xr-mobile/Assets/Scripts/Reflex/PanelManipulator.cs",
+          "proof": "static_direct"
+        }
+      ],
+      "tables": {
+        "read": [],
+        "write": []
+      },
+      "tests": [
+        "E59 Unity EditMode suite (76/76 reported)"
+      ],
+      "missing_tests": [
+        "Physical-device precision and overlapping-panel conflict tests"
+      ],
+      "command": "rg -n \"PanelManipulator|IManipulablePanel|ManipulablePanelRegistry\" apps/xr-mobile",
+      "risks": [
+        "Claim must precede fallback handling.",
+        "Hit-test and panel bounds must share coordinate space."
       ]
     }
   ],
-  "session_delta_2026_07_10": {
-    "date": "2026-07-10",
-    "note": "Structural delta E53/E58/E59/E60 appended post-scan; see REPO_MAP.md / CALL_TRACE_PROOF.md sections 'Delta 2026-07-10'. Device paths remain to_verify until the real S25 matrix (E60 final gate).",
-    "new_modules": [
-      {
-        "path": "services/live-pc/help_mode.py",
-        "role": "E53 HelpTaskEngine (micro-action plans, VLM scene glance, ghost N+1, grounding, watchdog)",
-        "table": "help_mode_tasks",
-        "status": "proven_unit"
-      },
-      {
-        "path": "apps/xr-mobile/Assets/Scripts/UI/Components/TaskAtoms/",
-        "role": "E53 UI bank (12 atoms) + task_panel/task_anchor registry components",
-        "status": "proven_editmode"
-      },
-      {
-        "path": "apps/xr-mobile/android/reflexvision/src/main/java/com/mlomega/xr/reflexvision/WakeWordMatcher.kt",
-        "role": "E58 wake word matched in FR ASR finals",
-        "status": "proven_jvm"
-      },
-      {
-        "path": "apps/xr-mobile/Assets/Scripts/Reflex/PanelManipulator.cs",
-        "role": "E59 pinch grab/resize/close/minimise (claim-based, no network)",
-        "status": "proven_editmode"
-      },
-      {
-        "path": "apps/xr-mobile/Assets/Scripts/Reflex/PhoneOnlyReflexSignalSource.cs",
-        "role": "E60 production RaiseSignal source (reflex flow was dead before)",
-        "status": "proven_unit_device_to_verify"
-      },
-      {
-        "path": "apps/xr-mobile/Assets/Scripts/UI/TtsAudioPlayer.cs",
-        "role": "E60 Unity consumer of tts_audio DataChannel message",
-        "status": "to_verify"
-      }
-    ],
-    "contract_changes": [
-      {
-        "kind": "device_command",
-        "name": "set_wake_word",
-        "payload": {
-          "word": "str",
-          "command_id": "str"
-        },
-        "direction": "pc_to_unity"
-      },
-      {
-        "kind": "datachannel_up",
-        "name": "device_command_result",
-        "payload": {
-          "command_id": "str",
-          "action": "str",
-          "ok": "bool"
-        },
-        "direction": "unity_to_pc"
-      },
-      {
-        "kind": "ui_intent_components",
-        "names": [
-          "task_panel",
-          "task_anchor"
-        ]
-      },
-      {
-        "kind": "contract_field",
-        "name": "FrameEnvelope.pose_valid",
-        "effect": "PC gates spatialisation on it"
-      }
-    ],
-    "flow_fixes_e60": [
-      "reflex_activation",
-      "tts_connected",
-      "close_day_rerun_db_lookup",
-      "close_day_watchdog",
-      "entity_id_stable_cross_session",
-      "visual_consolidation_europe_paris",
-      "close_day_manifest_rereads_tables",
-      "vision_to_thread",
-      "apk_appid_and_scene_regen"
-    ],
-    "persisting_mismatch": [
-      "RESOLVED 2026-07-10 (E60 final): ClipRecorder constructed+started in phoneonly_runtime and passed to AiortcIngress (clip_recorder kwarg).",
-      "RESOLVED 2026-07-10 (E60 final): GpuArbiter constructed in phoneonly_runtime (arbiter_factory).",
-      "Device paths still to_verify until the real S25 matrix."
-    ]
-  }
+  "line_reference_policy": "Legacy V3.2 edges retain exact line numbers. E53-E60 edges are symbol/path-level because the source checkout was not supplied with the artefacts."
 }

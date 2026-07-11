@@ -1,8 +1,8 @@
-# V3.2 Call Trace Proof
+# V4 Call Trace Proof
 
-Scope: read-only call tracing over the current checkout. This file records concrete call edges that are visible in code. It does not claim Android hardware validation, Unity build validation, or real phone-to-PC validation unless a test or runtime boundary proves it.
+Scope: clean V4 merge of the V3.2 static call trace and the verified E53/E58/E59/E60 session changes dated 2026-07-10. Existing line references come from the V3.2 checkout scan; newly merged E53–E60 paths are recorded at symbol/path level because the source checkout itself was not included with these artefacts. Android hardware, Unity build and real phone-to-PC validation remain unclaimed unless explicitly proven.
 
-Git status before writing these two artefacts:
+Git status captured by the V3.2 source scan before the original artefacts were written:
 
 ```text
 ?? Oldconversation/
@@ -183,13 +183,14 @@ command:
 risks if modified:
 
 - The audio queue must stay bounded and non-blocking (`services/live-pc/gateway.py:553` to `services/live-pc/gateway.py:562`).
+- A fallback microphone must never run concurrently with the nominal WebRTC PCM feed.
 - Final drain order must remain: stop accepting media -> drain audio -> flush AudioRT -> pipeline end (`services/live-pc/phoneonly_runtime.py:196` to `services/live-pc/phoneonly_runtime.py:210`).
 
 ## 04. Live video
 
 status: `partially_proven`
 
-objective: Android rear camera frames become WebRTC video, aiortc receives frames, `LivePipeline.run_video()` calls VisionRT, WorldBrain, keyframes, and clips.
+objective: Android rear-camera frames and their `FrameEnvelope` metadata become WebRTC video, aiortc receives frames, `LivePipeline.run_video()` calls VisionRT/WorldBrain, and neutral poses are never spatialised unless `pose_valid` is true.
 
 real entry:
 
@@ -199,21 +200,24 @@ real entry:
 call trace:
 
 - `LiveTransportBridge.OnEnable()` subscribes `_capture.OnFrame += HandleFrame` at `apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs:89` to `apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs:91`.
-- `HandleFrame()` sends the `FrameEnvelope` over DataChannel and pushes texture/video frame to native feeder at `apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs:233` to `apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs:239`. Boundary: Unity texture/JNI/DataChannel metadata.
+- `EyeCaptureSource` serialises `FrameEnvelope`, including the additive `pose_valid` field introduced in E60.
+- `HandleFrame()` sends the `FrameEnvelope` over DataChannel and pushes texture/video frame to the native feeder at `apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs:233` to `apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs:239`. Boundary: Unity texture/JNI/DataChannel metadata.
 - Kotlin creates video track `cam0` and `pc.addTrack(track, ...)` at `apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/LiveTransportPlugin.kt:378` to `apps/xr-mobile/android/livetransport/src/main/java/com/mlomega/xr/livetransport/LiveTransportPlugin.kt:389`.
 - PC track handler branches `track.kind == "video"` and schedules `_consume_track(track, pc)` at `services/live-pc/gateway.py:463` to `services/live-pc/gateway.py:466`.
-- `_consume_track()` awaits `track.recv()`, converts to `bgr24`, optionally offers decoded frame to clip recorder, matches pending envelope, and places latest frame into queue at `services/live-pc/gateway.py:483` to `services/live-pc/gateway.py:531`.
+- `_consume_track()` awaits `track.recv()`, converts to `bgr24`, offers decoded frames to the active clip recorder, matches the pending envelope and places the latest frame into the queue at `services/live-pc/gateway.py:483` to `services/live-pc/gateway.py:531`.
 - `PhoneOnlyRuntime.start()` launches `self.pipeline.run_video()` at `services/live-pc/phoneonly_runtime.py:119` to `services/live-pc/phoneonly_runtime.py:123`.
 - `LivePipeline.run_video()` iterates `async for frame_bgr, envelope in self.ingress` and calls `on_video_frame()` at `services/live-pc/live_pipeline.py:1237` to `services/live-pc/live_pipeline.py:1242`.
+- E60 gates spatialisation on `FrameEnvelope.pose_valid`; a neutral/default pose is retained as non-spatial metadata instead of being treated as a real world pose.
+- Vision work that can block is dispatched with `asyncio.to_thread`, keeping the live loop responsive.
 - `LivePipeline.on_video_frame()` -> `self.vision.process_frame()` at `services/live-pc/live_pipeline.py:809` and `services/live-pc/live_pipeline.py:833`.
 - `VisionRT.process_frame()` records keyframes and emits scene deltas at `services/live-pc/visionrt.py:481` to `services/live-pc/visionrt.py:523`.
-- `LivePipeline._on_scene_delta()` sends `scene_delta` DataChannel and mirrors into WorldBrain at `services/live-pc/live_pipeline.py:757` to `services/live-pc/live_pipeline.py:766`.
-- `WorldBrain.ingest_scene_delta()` persists last-seen/change/world state at `services/live-pc/worldbrain.py:351` to `services/live-pc/worldbrain.py:428`.
+- `LivePipeline._on_scene_delta()` sends `scene_delta` over DataChannel and mirrors it into WorldBrain at `services/live-pc/live_pipeline.py:757` to `services/live-pc/live_pipeline.py:766`.
+- `WorldBrain.ingest_scene_delta()` persists last-seen/change/world state at `services/live-pc/worldbrain.py:351` to `services/live-pc/worldbrain.py:428`; E60 derives stable entity identifiers without the transport session so identity can survive session boundaries.
 
 tables read/write:
 
-- `vision_frames` / `raw_assets` via `register_xr_keyframe()` call from `services/live-pc/visionrt.py:748` and `services/live-pc/visionrt.py:758`.
-- `visual_events_v19`, `scene_session_summaries_v19`, world-state tables through WorldBrain store calls; visible at `services/live-pc/worldbrain.py:423` to `services/live-pc/worldbrain.py:428`.
+- `vision_frames` / `raw_assets` via `register_xr_keyframe()` from `services/live-pc/visionrt.py:748` and `services/live-pc/visionrt.py:758`.
+- `visual_events_v19`, `scene_session_summaries_v19`, world-state tables through WorldBrain store calls.
 
 tests existing:
 
@@ -222,10 +226,11 @@ tests existing:
 - `tests/v19/test_visionrt.py:69` SceneDelta bound to frame.
 - `tests/v19/test_visionrt.py:118` keyframe registered via V19 keyframes.
 - `tests/v19/test_e28_worldbrain.py:172` last-seen persisted.
+- E60 unit coverage proves `pose_valid` gating and stable cross-session entity IDs; exact test filenames were not preserved in the supplied delta.
 
 tests missing:
 
-- Real Android camera -> Kotlin WebRTC -> aiortc -> `run_video()` hardware proof.
+- Real Android camera -> Kotlin WebRTC -> aiortc -> `run_video()` hardware proof, including valid/invalid pose transitions.
 
 command:
 
@@ -235,46 +240,54 @@ command:
 
 risks if modified:
 
-- Do not block the live video loop with clip encoding; current path uses best-effort offer at `services/live-pc/gateway.py:514` to `services/live-pc/gateway.py:518`.
-- DataChannel frame metadata and video frame matching are asynchronous; changing envelope shape can silently break alignment.
+- Do not block the live video loop with clip encoding; the recorder path must remain best-effort.
+- DataChannel frame metadata and video-frame matching are asynchronous; changing envelope shape can silently break alignment.
+- `pose_valid=false` must never produce a spatial anchor from a neutral/default pose.
+- Stable world entity IDs must not include the transport session identifier.
 
 ## 05. Wake word / command routing
 
 status: `partially_proven`
 
-objective: Device wake word/command state gates whether a final transcript routes to command intents while still remembering background speech.
+objective: Device wake-word state gates command routing while all final speech continues into memory; the configured wake word can also be changed at runtime with an acknowledged PC↔device command.
 
 real entry:
 
-- Android ASR callback: `apps/xr-mobile/Assets/Scripts/Reflex/AsrBridge.cs:231`.
+- Device ASR final: `AsrKwsService.decodeSegment()` in `apps/xr-mobile/android/reflexvision/.../AsrKwsService.kt`.
+- Unity ASR callback: `apps/xr-mobile/Assets/Scripts/Reflex/AsrBridge.cs:231`.
+- PC wake-word push: `LivePipeline.push_wake_word()`.
 - PC DataChannel receipt/control callback: `services/live-pc/phoneonly_runtime.py:152`.
 
 call trace:
 
-- Android `AsrBridge.StartAndroid()` creates `AsrKwsService`, calls `start()`, and attaches `asPcmSink()` to `LiveTransportBridge` at `apps/xr-mobile/Assets/Scripts/Reflex/AsrBridge.cs:216` to `apps/xr-mobile/Assets/Scripts/Reflex/AsrBridge.cs:226`.
+- Shared PCM reaches `AsrKwsService`; the existing English KWS path remains available.
+- E58 adds the production French-final path: `AsrKwsService.decodeSegment()` -> `WakeWordMatcher.matches(finalText)` -> `openCommandWindow()` + `onWakeWord()`.
 - `AsrBridge.OnNativeTranscript()` forwards final segments with `isCommand` via `_transport.SendTranscriptSegment(...)` at `apps/xr-mobile/Assets/Scripts/Reflex/AsrBridge.cs:231` to `apps/xr-mobile/Assets/Scripts/Reflex/AsrBridge.cs:238`.
-- `LiveTransportBridge.SendTranscriptSegment()` emits DataChannel JSON `{type:"device_transcript", text, language, start_ms, end_ms, is_final:true, is_command}` at `apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs:211` to `apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs:224`.
-- PC gateway treats non-envelope DataChannel messages as receipt/control payload and calls `on_receipt` at `services/live-pc/gateway.py:439` to `services/live-pc/gateway.py:459`.
-- `PhoneOnlyRuntime._on_receipt()` recognizes control/wake messages and calls `self.pipeline.arm_command_window()` at `services/live-pc/phoneonly_runtime.py:159` to `services/live-pc/phoneonly_runtime.py:175`.
-- `LivePipeline.arm_command_window()` sets TTL and metric at `services/live-pc/live_pipeline.py:671` to `services/live-pc/live_pipeline.py:683`.
-- Final transcript routing gate is evaluated by `_should_route_intent()` at `services/live-pc/live_pipeline.py:685` to `services/live-pc/live_pipeline.py:714`.
-- `_handle_audio_intents()` routes only if gate allows: `self.intents.on_transcript(text)` at `services/live-pc/live_pipeline.py:1141` to `services/live-pc/live_pipeline.py:1149`; conversation ingestion still happens at `services/live-pc/live_pipeline.py:1162` to `services/live-pc/live_pipeline.py:1171`.
+- `LiveTransportBridge.SendTranscriptSegment()` emits `{type:"device_transcript", text, language, start_ms, end_ms, is_final:true, is_command}` at `apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs:211` to `apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs:224`.
+- PC gateway sends non-envelope DataChannel payloads to `PhoneOnlyRuntime._on_receipt()` at `services/live-pc/gateway.py:439` to `services/live-pc/gateway.py:459`.
+- Wake/control messages call `LivePipeline.arm_command_window()`; final routing is gated by `_should_route_intent()`, while `ConversationBridge.ingest_segment()` still records background speech.
+- Runtime configuration source is `configs/user_profile.yaml` key `wake_word` (default reported by E58: `viki`).
+- PC->device update path: `PhoneOnlyRuntime` DataChannel -> `LivePipeline.push_wake_word()` -> `_push_device_command({action:"set_wake_word", word, command_id})`.
+- Unity path: `DeviceCommandHandler.Execute()` -> `SetWakeWordRequested` -> `AsrBridge.SetWakeWord()` -> JNI `setWakeWord` on the Kotlin service.
+- Device->PC acknowledgement: `{type:"device_command_result", command_id, action, ok}`. The PC retains/retries an unacknowledged wake-word command.
 
 tables read/write:
 
-- Writes BrainLive turns through `ConversationBridge.ingest_segment()` even when gate suppresses command routing.
-- May enqueue UI deliveries through intent router / delivery queue depending on command.
+- Writes BrainLive turns through `ConversationBridge.ingest_segment()` even when command routing is suppressed.
+- May enqueue UI deliveries through the intent router depending on the recognised command.
 
 tests existing:
 
 - `tests/v19/test_wake_word_gating.py:82` open policy routes and remembers.
-- `tests/v19/test_wake_word_gating.py:94` gated routes only commands but remembers all.
-- `tests/v19/test_wake_word_gating.py:143` runtime control message arms command window.
-- Android unit tests under `apps/xr-mobile/android/reflexvision/src/test/java/com/mlomega/xr/reflexvision/WakeWordMatcherTest.kt`.
+- `tests/v19/test_wake_word_gating.py:94` gated policy routes commands but remembers all speech.
+- `tests/v19/test_wake_word_gating.py:143` runtime control message arms the command window.
+- `WakeWordMatcherTest.kt` covers device final-text matching.
+- E58/E60 unit coverage covers `set_wake_word`, `device_command_result` and retry semantics; exact filenames were not preserved in the supplied delta.
 
 tests missing:
 
-- Android ASR/KWS real model callback -> Unity `SendTranscriptSegment()` -> PC `arm_command_window()` over real DataChannel.
+- Real Android ASR final -> `WakeWordMatcher` -> Unity/PC command window over a real DataChannel.
+- Runtime wake-word change applied and acknowledged on a physical device.
 
 command:
 
@@ -284,7 +297,10 @@ command:
 
 risks if modified:
 
-- Do not treat `device_transcript` or `scene_delta` as `UIIntent`; Unity filters UIIntent by `ui_intent_id` in `apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs:369` to `apps/xr-mobile/Assets/Scripts/Transport/LiveTransportBridge.cs:383`.
+- Never cut continuous memory ingestion when command routing is gated.
+- Do not treat `device_transcript`, `scene_delta`, `tts_audio` or `device_command_result` as `UIIntent`.
+- The configured word must remain normalised consistently on PC, Unity and Kotlin.
+- Retry must be keyed by `command_id` so duplicate acknowledgements stay idempotent.
 
 ## 06. UIIntent delivery
 
@@ -310,6 +326,7 @@ call trace:
 - `TransportIntentSource.OnEnable()` subscribes bridge event and `Forward()` raises `IntentProduced` at `apps/xr-mobile/Assets/Scripts/UI/TransportIntentSource.cs:26` to `apps/xr-mobile/Assets/Scripts/UI/TransportIntentSource.cs:36`.
 - `UIIntentBroker.RegisterSource()` subscribes source events at `apps/xr-mobile/Assets/Scripts/UI/UIIntentBroker.cs:185` to `apps/xr-mobile/Assets/Scripts/UI/UIIntentBroker.cs:189`.
 - `UIRuntime.Awake()` subscribes `IntentAdmitted`, and `OnAdmitted()` renders components at `apps/xr-mobile/Assets/Scripts/UI/UIRuntime.cs:50` to `apps/xr-mobile/Assets/Scripts/UI/UIRuntime.cs:71` and `apps/xr-mobile/Assets/Scripts/UI/UIRuntime.cs:88` to `apps/xr-mobile/Assets/Scripts/UI/UIRuntime.cs:110`.
+- E53 registers `task_panel` and `task_anchor` in `UIComponentRegistry`; `TaskPanelComponent` and `TaskAnchorComponent` use the 12-atom `UI/Components/TaskAtoms/` bank and follow `SceneCache.Tracks` for grounded anchors.
 
 tables read/write:
 
@@ -320,12 +337,13 @@ tests existing:
 
 - `tests/v19/test_phoneonly_runtime.py:368` BrainLive delivery queue reaches phone DataChannel.
 - `tests/v19/test_delivery_adapter.py:14` delivery row maps to UIIntent.
-- `apps/xr-mobile/Assets/Tests/EditMode/UIComponentRegistryTests.cs:12` component mapping.
+- `apps/xr-mobile/Assets/Tests/EditMode/UIComponentRegistryTests.cs:12` component mapping, including E53 task components.
+- E53 EditMode suite reports nine task-atom/registry tests.
 - `tests/v19/test_phoneonly_android_wiring.py:43` PhoneOnly scene includes UI path components.
 
 tests missing:
 
-- Real Android DataChannel UIIntent -> visible phone UI component.
+- Real Android DataChannel UIIntent -> visible phone UI component, including `task_panel` and grounded `task_anchor`.
 
 command:
 
@@ -337,6 +355,153 @@ risks if modified:
 
 - If UIIntent component names diverge from Unity registry, PC will deliver JSON but phone renders nothing.
 - The delivery loop treats DataChannel absence as `ConnectionError`; it must not end the session on reconnect gaps.
+
+## 06A. Help mode
+
+status: `partially_proven`
+
+objective: A spoken help request becomes a persisted micro-action plan, a task panel and a grounded next-step anchor, with active-session controls and recovery.
+
+real entry:
+
+- `IntentRouter.on_transcript()` pre-routes `help_start` and active controls such as “c’est fait” and “répète”.
+- `services/live-pc/help_mode.py` `HelpTaskEngine`.
+
+call trace:
+
+- `IntentRouter._do_help_start()` -> `HelpTaskEngine.start_from_description()`.
+- Start performs at most one `_guess_scene_context()` VLM glance, then calls `llm_router.complete_json()` for a structured micro-action plan.
+- `_adopt_plan()` persists/replaces the active plan in `help_mode_tasks` and advances the state machine.
+- The engine enqueues `task_panel` through the normal H1/delivery path and emits `task_anchor` on the hot path.
+- Grounding resolves tracks by `label_en`; ghost N+1 and watchdog indices keep the next action visible/recoverable.
+- Unity maps `task_panel|task_anchor` to `TaskPanelComponent|TaskAnchorComponent`, backed by the 12 TaskAtoms and `SceneCache.Tracks`.
+
+tables read/write:
+
+- Reads/writes `help_mode_tasks` for active-plan persistence and resume.
+- Uses the normal delivery tables for queued task panels.
+
+tests existing:
+
+- E53 PC suite reported 62 passing help-mode tests.
+- E53 Unity EditMode suite reported nine passing task component tests.
+
+tests missing:
+
+- Physical-device render, anchor tracking and resume after process/device restart.
+
+command:
+
+```powershell
+# Exact E53 test file names were not included in the supplied artefacts; refresh from checkout before execution.
+rg -n "HelpTaskEngine|help_mode_tasks|task_panel|task_anchor" services/live-pc apps/xr-mobile tests
+```
+
+risks if modified:
+
+- Do not call the VLM more than once at help-session start unless the contract is deliberately changed.
+- Active controls must be pre-routed before generic intent parsing.
+- A task anchor without a matching live track must degrade to panel-only guidance, not fabricate spatial grounding.
+
+## 06B. Reflex activation
+
+status: `partially_proven`
+
+objective: Production PhoneOnly lifecycle signals actually reach `ReflexScheduler`, activating ASR, gestures, translation/subtitles and related local skills.
+
+real entry:
+
+- `apps/xr-mobile/Assets/Scripts/Reflex/PhoneOnlyReflexSignalSource.cs`.
+
+call trace:
+
+- `PhoneOnlyReflexSignalSource` observes production pairing/transport/capture lifecycle.
+- It calls `ReflexScheduler.RaiseSignal(...)` for the relevant availability/activity transitions.
+- Scheduler decisions activate/deactivate ASR, gesture and translation/subtitle skills.
+- Before E60 the scheduler had no production caller in PhoneOnly, so the flow was statically present but dead.
+
+tables read/write: none.
+
+tests existing:
+
+- E60 unit coverage proves the production signal source reaches `ReflexScheduler`.
+
+tests missing:
+
+- Physical-device proof that ASR, gestures and offline subtitles start/stop from real lifecycle transitions.
+
+risks if modified:
+
+- Do not regress to editor/demo-only signal injection.
+- Repeated lifecycle signals must stay idempotent and must not open a second microphone.
+
+## 06C. TTS audio delivery
+
+status: `partially_proven`
+
+objective: PC-generated TTS audio reaches a real Unity consumer instead of ending at an unhandled DataChannel message.
+
+real entry:
+
+- `LivePipeline(enable_tts=True)`.
+- `apps/xr-mobile/Assets/Scripts/UI/TtsAudioPlayer.cs`.
+
+call trace:
+
+- PhoneOnly runtime constructs `LivePipeline` with TTS enabled.
+- Pipeline emits a `tts_audio` DataChannel payload.
+- `LiveTransportBridge.OnNativeMessage()` dispatches the typed payload.
+- `TtsAudioPlayer` decodes/queues playback on Unity audio output.
+
+tables read/write: none.
+
+tests existing:
+
+- E60 unit wiring coverage reports the PC producer and Unity consumer are connected.
+
+tests missing:
+
+- Real Android playback, interruption, volume/route and reconnect behaviour.
+
+risks if modified:
+
+- `tts_audio` is not a `UIIntent`; keep transport dispatch types separate.
+- Playback buffering must not block the Unity main thread or DataChannel receive callback.
+
+## 06D. Panel manipulation
+
+status: `partially_proven`
+
+objective: A pinch over a manipulable panel moves/resizes/closes/minimises that panel; an unclaimed pinch preserves the existing LensWindow zoom fallback.
+
+real entry:
+
+- `GestureBridge` pinch `(x,y)` callback.
+- `apps/xr-mobile/Assets/Scripts/Reflex/PanelManipulator.cs`.
+
+call trace:
+
+- `GestureBridge` forwards pinch coordinates to `PanelManipulator`.
+- `PanelManipulator` performs claim/hit-test through `ManipulablePanelRegistry`.
+- A claimed target invokes `IManipulablePanel.MoveTo`, `Resize`, `Close` or `Minimise`.
+- An unclaimed pinch falls through to the unchanged `LensWindowSkill` zoom path.
+- This flow is Unity-only and adds no network contract.
+
+tables read/write: none.
+
+tests existing:
+
+- E59 EditMode suite reported 76/76 passing tests.
+
+tests missing:
+
+- Physical-device precision/latency and conflict testing across several overlapping panels.
+
+risks if modified:
+
+- Claim must occur before the LensWindow fallback.
+- Hit-test coordinates must use the same screen/canvas space as panel bounds.
+
 
 ## 07. UIReceipt feedback
 
@@ -437,40 +602,43 @@ risks if modified:
 
 status: `partially_proven`
 
-objective: After explicit end, run CloseDay with real `person_id` and the BrainLive `live_session_id`, idempotently.
+objective: After explicit end, run CloseDay with the real `person_id` and BrainLive `live_session_id`, idempotently across multiple same-day sessions and recoverably if the normal trigger is missed.
 
 real entry:
 
-- PC `POST /session/end` starts CloseDay automatically after explicit end: `services/live-pc/sessionhub_http.py:421`.
-- PC `POST /session/close-day` can retry/status-start explicitly: `services/live-pc/sessionhub_http.py:424`.
+- PC `POST /session/end` starts CloseDay after explicit end: `services/live-pc/sessionhub_http.py:421`.
+- PC `POST /session/close-day` retries/starts explicitly: `services/live-pc/sessionhub_http.py:424`.
+- E60 fallback watchdog in `phoneonly_runtime` checks ended sessions that still lack a completed durable run.
 
 call trace:
 
 - `/session/end` calls `manager.start_close_day(session_id)` after `end_session_only()` completion at `services/live-pc/sessionhub_http.py:418` to `services/live-pc/sessionhub_http.py:421`.
-- `/session/close-day` authenticates and requires `runtime.ended` before `manager.start_close_day(session_id)` at `services/live-pc/sessionhub_http.py:424` to `services/live-pc/sessionhub_http.py:438`.
-- `SinglePhoneRuntimeManager.start_close_day()` returns an existing running task if present, returns completed status if already completed, else schedules `runtime.run_close_day()` at `services/live-pc/phoneonly_runtime.py:357` to `services/live-pc/phoneonly_runtime.py:369`.
-- `PhoneOnlyRuntime.run_close_day()` refuses if not ended, sets `running`, then calls `_run_close_day(person_id=self.person_id, live_session_id=self.live_session_id)` at `services/live-pc/phoneonly_runtime.py:232` to `services/live-pc/phoneonly_runtime.py:240`.
-- `end_session_only()` captures real `ConversationBridge.live_session_id` and rejects missing id at `services/live-pc/phoneonly_runtime.py:211` to `services/live-pc/phoneonly_runtime.py:218`.
-- `_run_close_day()` shells to `scripts/run_phoneonly_close_day.py --person-id ... --live-session-id ...` at `services/live-pc/phoneonly_runtime.py:259` to `services/live-pc/phoneonly_runtime.py:266`.
-- Worker parses `--person-id` and `--live-session-id` at `scripts/run_phoneonly_close_day.py:79` to `scripts/run_phoneonly_close_day.py:83`, then calls `close_brainlive_day(person_id=..., live_session_id=...)` at `scripts/run_phoneonly_close_day.py:91` to `scripts/run_phoneonly_close_day.py:105`.
-- Core `close_brainlive_day()` starts at `src/mlomega_audio_elite/v18_close_day.py:347`, enforces `person_id` at `src/mlomega_audio_elite/v18_close_day.py:364`, loads idempotent existing day at `src/mlomega_audio_elite/v18_close_day.py:369`, and resolves context with `live_session_id` at `src/mlomega_audio_elite/v18_close_day.py:374`.
-- Core stages include post-stop deep flow at `src/mlomega_audio_elite/v18_close_day.py:415` to `src/mlomega_audio_elite/v18_close_day.py:428`, visual consolidation at `src/mlomega_audio_elite/v18_close_day.py:439` to `src/mlomega_audio_elite/v18_close_day.py:443`, Life Model V19 at `src/mlomega_audio_elite/v18_close_day.py:497` to `src/mlomega_audio_elite/v18_close_day.py:500`, and final `_save_close_day(... status="completed")` at `src/mlomega_audio_elite/v18_close_day.py:533`.
+- `/session/close-day` authenticates, requires `runtime.ended`, then calls `manager.start_close_day(session_id)` at `services/live-pc/sessionhub_http.py:424` to `services/live-pc/sessionhub_http.py:438`.
+- `end_session_only()` captures `ConversationBridge.live_session_id` and rejects a missing durable ID at `services/live-pc/phoneonly_runtime.py:211` to `services/live-pc/phoneonly_runtime.py:218`.
+- E60 `_completed_close_day_exists()` queries the durable DB instead of trusting an in-memory completed counter, preserving correct same-day multi-session/rerun semantics.
+- `SinglePhoneRuntimeManager.start_close_day()` reuses an active task, returns durable completion when present, or schedules `runtime.run_close_day()`.
+- The watchdog provides a secondary start path only after explicit end; disconnect, `OnDisable`, track end and process loss are still not semantic session ends.
+- `_run_close_day()` shells to `scripts/run_phoneonly_close_day.py --person-id ... --live-session-id ...` using the core `.venv`.
+- Worker calls `close_brainlive_day(person_id=..., live_session_id=...)`.
+- Core CloseDay keeps durable checkpoints, post-stop deep audio/vision, longitudinal, Life Model, prediction and self-schema stages.
+- E60 visual consolidation uses `Europe/Paris` day boundaries and the CloseDay manifest re-reads the actual persisted tables before finalising counts/status.
 
 tables read/write:
 
-- `v18_close_day_runs` created/updated in `src/mlomega_audio_elite/v18_close_day.py:44` and `src/mlomega_audio_elite/v18_close_day.py:274` to `src/mlomega_audio_elite/v18_close_day.py:284`.
-- Reads/writes core BrainLive, visual, vector, Life Model tables through close-day stages.
+- Reads/writes `v18_close_day_runs` and `v18_pipeline_stages` plus core BrainLive, visual, vector and Life Model tables.
+- Completion lookup is DB-backed, not process-memory-backed.
 
 tests existing:
 
 - `tests/v19/test_phoneonly_runtime.py:98` CloseDay once/idempotence at runtime level.
-- `tests/v19/test_multi_session_close_day.py:245` manager arms allow-rerun.
+- `tests/v19/test_multi_session_close_day.py:245` manager allow-rerun semantics.
 - `tests/v19/test_multi_session_close_day.py:265` subprocess command carries allow-rerun.
 - `tests/v19/test_ollama_context_budget.py:28` truncated JSON is never applied.
+- E60 unit coverage covers DB completion lookup, watchdog, manifest refresh and Paris day boundary; exact filenames were not preserved in the supplied delta.
 
 tests missing:
 
-- Full heavy CloseDay worker with real models/Ollama/faster-whisper over a real PhoneOnly session.
+- Full heavy CloseDay worker over a real Android PhoneOnly session and real production data/models.
 
 command:
 
@@ -480,45 +648,51 @@ command:
 
 risks if modified:
 
-- Passing transport `session_id` instead of `ConversationBridge.live_session_id` would break consolidation; current proof line is `services/live-pc/phoneonly_runtime.py:211` to `services/live-pc/phoneonly_runtime.py:218`.
-- CloseDay idempotence lives in both manager task cache and `v18_close_day_runs`; changing one without the other can re-run heavy stages or skip a real second session.
+- Passing transport `session_id` instead of `ConversationBridge.live_session_id` breaks consolidation.
+- A disconnect must never become an implicit end.
+- Same-day completion must be decided from durable run identity, not a global/in-memory “already ran today” flag.
+- Day bucketing must stay explicit (`Europe/Paris`) and manifests must reflect final persisted tables.
 
 ## 10. Visual evidence / clips
 
 status: `partially_proven`
 
-objective: Store keyframes/proofs and optional clips without blocking live video; referenced proof media must stay reachable.
+objective: Store keyframes/proofs and optional clips without blocking live video; ensure the recorder and GPU arbiter are actually constructed in the production runtime, while referenced proof media remains reachable.
 
 real entry:
 
+- PhoneOnly runtime composition constructs `ClipRecorder` and `GpuArbiter`.
 - Vision keyframe: `services/live-pc/visionrt.py:517`.
 - Clip recorder offer: `services/live-pc/gateway.py:514`.
 
 call trace:
 
-- `AiortcIngress._consume_track()` offers decoded BGR frame to clip recorder at `services/live-pc/gateway.py:514` to `services/live-pc/gateway.py:518`. Boundary: best-effort non-blocking.
+- E60 `phoneonly_runtime` constructs and starts `ClipRecorder`, passes it through `ingress_kwargs["clip_recorder"]`, and constructs `GpuArbiter` via the runtime arbiter factory.
+- `AiortcIngress._consume_track()` offers decoded BGR frames to the active recorder at `services/live-pc/gateway.py:514` to `services/live-pc/gateway.py:518`. Boundary: best-effort, non-blocking.
 - `ClipRecorder.start()` runs a daemon pump thread at `services/live-pc/clip_recorder.py:374` to `services/live-pc/clip_recorder.py:381`.
 - `ClipRecorder._run()` encodes frames and closes segments at `services/live-pc/clip_recorder.py:396` to `services/live-pc/clip_recorder.py:420`.
-- `VisionRT.process_frame()` calls `_record_keyframe()` when change selector fires at `services/live-pc/visionrt.py:516` to `services/live-pc/visionrt.py:518`.
-- `VisionRT._record_keyframe()` increments metric and calls configured sink at `services/live-pc/visionrt.py:572` to `services/live-pc/visionrt.py:576`.
-- `default_keyframe_sink()` writes JPEG to managed media root and calls `register_xr_keyframe()` at `services/live-pc/visionrt.py:731` to `services/live-pc/visionrt.py:765`.
-- `WorldBrain.ingest_scene_delta()` generates `evidence_ref = f"frame:{frame_id}"` at `services/live-pc/worldbrain.py:351` to `services/live-pc/worldbrain.py:357`.
+- `VisionRT.process_frame()` calls `_record_keyframe()` when the selector fires at `services/live-pc/visionrt.py:516` to `services/live-pc/visionrt.py:518`.
+- `default_keyframe_sink()` writes JPEG into managed media storage and calls `register_xr_keyframe()` at `services/live-pc/visionrt.py:731` to `services/live-pc/visionrt.py:765`.
+- `WorldBrain.ingest_scene_delta()` creates frame evidence references.
+- Retention/tiering keeps referenced media and only purges unreferenced assets under policy.
 
 tables read/write:
 
-- Keyframes: `raw_assets`, `vision_frames` through `register_xr_keyframe()`.
-- World evidence: `visual_events_v19`, `scene_session_summaries_v19`, world entity/link tables through WorldBrain.
-- Clips: clip recorder indexes assets; retention later reads referenced media.
+- Keyframes: `raw_assets`, `vision_frames`.
+- World evidence: `visual_events_v19`, `scene_session_summaries_v19`, world entity/link tables.
+- Clips: `visual_evidence_assets_v19` plus retention reads.
 
 tests existing:
 
 - `tests/v19/test_visionrt.py:118` keyframe recorded via V19 keyframes.
 - `tests/v19/test_clip_recorder.py:124` segment written/indexed/replay finds it.
-- `tests/v19/test_media_retention.py:93` referenced keyframe never selected.
+- `tests/v19/test_media_retention.py:93` referenced keyframe never selected for purge.
+- E60 unit composition coverage resolves the former dead-wiring mismatch for `ClipRecorder` and `GpuArbiter`.
 
 tests missing:
 
-- Real live clip capture from Android WebRTC video.
+- Real live clip capture and replay from Android WebRTC video.
+- Physical-device matrix proving nominal arbiter/recorder behaviour under GPU pressure.
 
 command:
 
@@ -528,8 +702,10 @@ command:
 
 risks if modified:
 
-- Keyframes must not land in temp folders; current sink uses managed `media/keyframes` path at `services/live-pc/visionrt.py:753` to `services/live-pc/visionrt.py:757`.
+- Keyframes must not land in temporary folders.
 - Clip encoding must remain best-effort and never block `_consume_track()`.
+- Runtime composition tests must fail if recorder/arbiter construction is removed again.
+- “Constructed” is not hardware validation; the S25/device path remains `to_verify`.
 
 ## 11. Model provisioning
 
@@ -951,6 +1127,8 @@ call trace:
 - `-SimOnly` path remains separate below `scripts/RUN_MLOMEGA_V19.ps1:74`; it runs `scripts/simonly_demo_v19.py` and does not start PhoneOnly runtime.
 - PhoneOnly scene builder creates real session, pairing, capture, transport, model provisioning, coordinator, UI path, ASR, gestures at `apps/xr-mobile/Assets/Scripts/Editor/PhoneOnlySceneBuilder.cs:38` to `apps/xr-mobile/Assets/Scripts/Editor/PhoneOnlySceneBuilder.cs:80`.
 - Android build invokes PhoneOnly scene build before APK validation at `apps/xr-mobile/Assets/Scripts/Editor/AndroidBuild.cs:156` to `apps/xr-mobile/Assets/Scripts/Editor/AndroidBuild.cs:158`.
+- E60 forces application ID `com.mlomega.xr.phoneonly` and regenerates the PhoneOnly scene on every build.
+- The generated production scene now includes `PhoneOnlyReflexSignalSource`, `MenuPanel`, `OrientationGuard`, `TtsAudioPlayer` and panel-manipulation wiring in addition to the prior pairing/capture/transport/UI components.
 
 tables read/write:
 
@@ -965,7 +1143,7 @@ tests existing:
 
 tests missing:
 
-- Actual Windows run of `-LivePhone` plus Unity Android build/install on device.
+- Actual Windows run of `-LivePhone` plus Unity Android build/install on device, confirming package ID and regenerated scene contents.
 - Full installer/onboarding E2E with user profile, models, Unity Hub/JDK/Gradle/adb.
 
 command:
@@ -978,16 +1156,4 @@ risks if modified:
 
 - Keep `-SimOnly` and `-LivePhone` separated; fake device must not be launched by the PhoneOnly hardware path.
 - Onboarding must not claim Unity/Android validation unless APK/AAR build and real phone test have run.
-
-
----
-
-## 17. Delta 2026-07-10 — nouveaux appels réels (E53/E58/E59/E60)
-
-- **help mode** : `intent_router._do_help_start` → `HelpTaskEngine.start_from_description` → (`_guess_scene_context` VLM 1x) → `llm_router.complete_json` → `_adopt_plan` → `scene_adapter._enqueue(task_panel)` + `_emit_hot(task_anchor)` ; contrôles actifs pré-routés dans `on_transcript`. Écrit `help_mode_tasks`. Unity : `UIComponentRegistry[task_panel|task_anchor]` → `TaskPanelComponent`/`TaskAnchorComponent` (suivent `SceneCache.Tracks`). **proven** (tests) / rendu device **to_verify**.
-- **wake word runtime** : device final FR → `WakeWordMatcher.matches` → `openCommandWindow` + `onWakeWord`. PC→device : `PhoneOnlyRuntime` (datachannel) → `LivePipeline.push_wake_word()` → `_push_device_command({set_wake_word, word, command_id})` → Unity `DeviceCommandHandler.Execute` → event `SetWakeWordRequested` → `AsrBridge.SetWakeWord` → JNI `setWakeWord`. Ack montant `device_command_result` → retry PC. **proven** unit / device **to_verify**.
-- **reflex activation (fix majeur)** : `PhoneOnlyReflexSignalSource` (prod) → `ReflexScheduler.RaiseSignal` → skills/ASR/gestes. Avant E60 : AUCUN appelant prod (flow mort). **proven** unit / device **to_verify**.
-- **TTS connecté** : `LivePipeline(enable_tts=True)` → message `tts_audio` DataChannel → Unity `TtsAudioPlayer` (NOUVEAU consommateur). **to_verify** device.
-- **pose** : `FrameEnvelope.pose_valid` (nouveau champ contrat) sérialisé Unity → gate `live_pipeline` (pose neutre jamais spatialisée). **proven** unit.
-- **panel manipulation (E59)** : `GestureBridge` pinch(x,y) → `PanelManipulator` claim/hit-test → `IManipulablePanel.MoveTo/Resize/Close/Minimise` ; sinon fallback zoom `LensWindowSkill` inchangé. **proven** EditMode.
-- **Mismatch maintenus** : `ClipRecorder` — **RÉSOLU (E60 final)** : phoneonly_runtime construit ClipRecorder (ingress_kwargs[clip_recorder] → edge gateway._consume_track→offer actif) et GpuArbiter. Device **to_verify**.
+- Never allow a stale pre-E60 scene to bypass regeneration during an APK build.
