@@ -6,6 +6,7 @@
 using System.Collections.Generic;
 using System.Globalization;
 using MLOmega.Contracts.V19;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 
 namespace MLOmega.XR.UI.Components
@@ -63,9 +64,17 @@ namespace MLOmega.XR.UI.Components
         public static bool TryPoint(Dictionary<string, object> d, string key, out Vector2 point)
         {
             point = Vector2.zero;
-            if (d != null && d.TryGetValue(key, out object v) && v is IList<object> list && list.Count >= 2)
+            if (d == null || !d.TryGetValue(key, out object v) || v == null) return false;
+            if (v is IList<object> list && list.Count >= 2)
             {
                 point = new Vector2(ToFloat(list[0]), ToFloat(list[1]));
+                return true;
+            }
+            // Values received from Newtonsoft through Dictionary<string, object>
+            // are JArray, whereas locally-created Reflex intents use List<object>.
+            if (v is JArray array && array.Count >= 2)
+            {
+                point = new Vector2(ToFloat(array[0]), ToFloat(array[1]));
                 return true;
             }
             return false;

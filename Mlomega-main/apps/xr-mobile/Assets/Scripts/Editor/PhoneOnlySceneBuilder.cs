@@ -124,6 +124,7 @@ namespace MLOmega.XR.Editor
             Assign(uiRuntime, "_sceneCache", cache);
             Assign(uiRuntime, "_theme", theme);
             Assign(uiRuntime, "_camera", camera);
+            Assign(uiRuntime, "_pairing", pairing);
             Assign(uiRuntime, "_receiptSinkBehaviour", receiptSink);
             Assign(statusBar, "_theme", theme);
             Assign(statusBar, "_camera", camera);
@@ -143,6 +144,7 @@ namespace MLOmega.XR.Editor
             Assign(commands, "_statusBar", statusBar);
             Assign(commands, "_appLauncher", appLauncher);
             Assign(commands, "_transport", transport);
+            Assign(commands, "_session", session);
             Assign(ttsPlayer, "_transport", transport);
             // E48-A reflex wiring (the rest self-finds in Awake at scene load).
             Assign(translate, "_commands", commands);
@@ -156,6 +158,7 @@ namespace MLOmega.XR.Editor
             Assign(reflex, "_motionProximity", motionProximity);
             Assign(reflex, "_focusSearch", focusSearch);
             Assign(reflex, "_subtitle", subtitle);
+            Assign(reflex, "_commands", commands);
             // E59: the manipulator runs BEFORE the lens on the pinch stream (claim → no zoom).
             Assign(reflex, "_panelManipulator", panelManipulator);
             Assign(reflexSignals, "_scheduler", reflex);

@@ -16,8 +16,10 @@
 // (delivered) back to the PC. Lives in the UI assembly (which references Transport,
 // Scene and Contracts) â€” a Transport->UI dependency would be a cycle.
 using System;
+using System.Collections;
 using MLOmega.Contracts.V19;
 using MLOmega.XR.Transport;
+using MLOmega.XR.Core;
 using MLOmega.XR.UI.Components;
 using Newtonsoft.Json;
 using UnityEngine;
@@ -54,6 +56,7 @@ namespace MLOmega.XR.UI
         [SerializeField] private StatusBar _statusBar;
         [SerializeField] private AppLauncherBridge _appLauncher;
         [SerializeField] private LiveTransportBridge _transport;
+        [SerializeField] private XrSessionController _session;
 
         /// <summary>Raised when a "menu" command arrives (MenuPanel opens the panel).</summary>
         public event Action MenuRequested;
@@ -77,6 +80,7 @@ namespace MLOmega.XR.UI
 
         /// <summary>Raised for every executed command with its (action, ok) result.</summary>
         public event Action<string, bool> CommandExecuted;
+        public event Action<bool> PrivacyPauseChanged;
 
         private void Awake()
         {
@@ -84,6 +88,7 @@ namespace MLOmega.XR.UI
             if (_statusBar == null) _statusBar = FindAnyObjectByType<StatusBar>();
             if (_appLauncher == null) _appLauncher = FindAnyObjectByType<AppLauncherBridge>();
             if (_transport == null) _transport = FindAnyObjectByType<LiveTransportBridge>();
+            if (_session == null) _session = FindAnyObjectByType<XrSessionController>();
         }
 
         private void OnEnable()
@@ -167,6 +172,27 @@ namespace MLOmega.XR.UI
             return ok;
         }
 
+        /// <summary>Menu-only entry: actions owned by BrainLive/IntentRouter travel
+        /// upstream; truly local actions keep the shared Execute path.</summary>
+        public bool ExecuteFromMenu(DeviceCommand cmd)
+        {
+            if (cmd == null) return false;
+            string action = (cmd.Action ?? string.Empty).ToLowerInvariant();
+            switch (action)
+            {
+                case "ask_memory_prompt":
+                case "owner_enroll":
+                case "replay":
+                case "virtual_screen":
+                case "paid_mode":
+                case "local_mode":
+                    return _transport != null && _transport.SendContractMessage(
+                        ContractJson.Serialize(new { type = "device_intent", action, time = cmd.Time }));
+                default:
+                    return Execute(cmd);
+            }
+        }
+
         private bool SetUiMode(string uiMode)
         {
             UIDensityMode mode = UIIntentBroker.ParseDensity(uiMode);
@@ -202,12 +228,37 @@ namespace MLOmega.XR.UI
         private bool PrivacyPause()
         {
             if (_statusBar == null) return false;
-            _statusBar.PrivacyPaused = !_statusBar.PrivacyPaused;
-            // Privacy pause cuts the sensors (the actual capture toggle is owned by
-            // the capture source, which reads the StatusBar flag).
-            _statusBar.CameraOn = !_statusBar.PrivacyPaused;
-            _statusBar.MicOn = !_statusBar.PrivacyPaused;
-            return true;
+            bool paused = !_statusBar.PrivacyPaused;
+            // Notify before WebRTC disposal so the PC watchdog does not mistake an
+            // explicit privacy pause for an abandoned session.
+            if (paused)
+                _transport?.SendContractMessage(ContractJson.Serialize(
+                    new { type = "privacy_state", paused = true }));
+            bool cameraOk = _session == null || _session.SetEyeCapturePaused(paused);
+            if (paused) StartCoroutine(StopTransportAfterPrivacyNotice());
+            else _transport?.StartTransport();
+            _statusBar.PrivacyPaused = paused;
+            _statusBar.CameraOn = !paused;
+            _statusBar.MicOn = !paused;
+            PrivacyPauseChanged?.Invoke(paused);
+            return cameraOk;
+        }
+
+        private IEnumerator StopTransportAfterPrivacyNotice()
+        {
+            // Give the reliable DataChannel one player-loop turn to queue the
+            // privacy_state and command acknowledgement before native disposal.
+            yield return null;
+            _transport?.StopTransport();
+        }
+
+        private void OnGUI()
+        {
+            // Once camera+gesture+mic are genuinely released, a sensor-based command
+            // cannot resume them. Keep one explicit local touch escape hatch.
+            if (_statusBar == null || !_statusBar.PrivacyPaused) return;
+            if (GUI.Button(new Rect(16, 16, 330, 56), "Reprendre caméra et micro"))
+                PrivacyPause();
         }
 
         private bool OpenApp(DeviceCommand cmd)

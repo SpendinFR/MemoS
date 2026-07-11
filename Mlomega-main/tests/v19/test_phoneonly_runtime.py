@@ -356,6 +356,22 @@ def test_explicit_end_waits_inflight_audio_before_flush_and_pipeline_end(monkeyp
     asyncio.run(scenario())
 
 
+def test_device_privacy_and_structured_intent_reach_runtime_controls():
+    class Intents:
+        def __init__(self): self.calls = []
+        def on_device_action(self, action, payload): self.calls.append((action, payload))
+
+    rt = runtime_mod.PhoneOnlyRuntime(
+        "s-menu", ingress_factory=FakeIngress, pipeline_factory=FakePipeline,
+        close_day=lambda **_: {"status": "completed"},
+    )
+    rt.pipeline.intents = Intents()
+    rt._on_receipt('{"type":"privacy_state","paused":true}')
+    assert rt.privacy_paused is True
+    rt._on_receipt('{"type":"device_intent","action":"owner_enroll"}')
+    assert rt.pipeline.intents.calls[0][0] == "owner_enroll"
+
+
 def test_runtime_surfaces_best_effort_close_day_maintenance_warning():
     async def scenario():
         rt = runtime_mod.PhoneOnlyRuntime(

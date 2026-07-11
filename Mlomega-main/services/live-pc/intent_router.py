@@ -29,7 +29,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 _HERE = Path(__file__).resolve().parent
 _ROOT = _HERE.parents[1]
@@ -304,6 +304,7 @@ class IntentRouter:
         # (before the generic grammar can swallow them).
         self.help_engine = help_engine
         self.person_id = person_id
+        self._pending_device_action: str | None = None
         self.context = IntentContext()
         self.metrics: dict[str, Any] = {
             "intents_routed": 0,
@@ -348,6 +349,18 @@ class IntentRouter:
         raw = _norm(text)
         if not raw:
             return RoutedIntent(intent="empty")
+
+        # A menu action may require one natural-language value. The next spoken
+        # turn is consumed as that value; no fake transcript or regex command is
+        # manufactured by the device.
+        if self._pending_device_action is not None:
+            pending = self._pending_device_action
+            self._pending_device_action = None
+            self.metrics["multiturn_hits"] += 1
+            if pending == "ask_memory":
+                return self._dispatch({"intent": "ask_memory", "question": raw}, raw)
+            if pending == "replay":
+                return self._dispatch({"intent": "replay", "time": raw}, raw)
 
         # 1) Identity commands first (absorbed E32 pre-router) — enroll/correction.
         if self.enrollment is not None:
@@ -415,6 +428,38 @@ class IntentRouter:
             return self._dispatch(routed, raw)
 
         return self._unknown(raw)
+
+    def on_device_action(self, action: str, params: Mapping[str, Any] | None = None) -> RoutedIntent:
+        """Route a structured menu choice through the same handlers as speech."""
+        action = str(action or "").strip().lower()
+        params = dict(params or {})
+        if action == "ask_memory_prompt":
+            self._pending_device_action = "ask_memory"
+            self._ui(self._toast("Que veux-tu demander à ta mémoire ?", level="confirm"))
+            return RoutedIntent(intent="ask_memory_prompt", handled=True)
+        if action == "replay" and not params.get("time"):
+            self._pending_device_action = "replay"
+            self._ui(self._toast("Quelle heure veux-tu revoir ?", level="confirm"))
+            return RoutedIntent(intent="replay_prompt", handled=True)
+        if action == "replay":
+            return self._dispatch({"intent": "replay", "time": params.get("time")}, "")
+        if action == "owner_enroll":
+            return self._dispatch({"intent": "owner_enroll"}, "")
+        if action == "paid_mode":
+            return self._dispatch({"intent": "paid_mode", "provider": params.get("provider", "openai")}, "")
+        if action == "local_mode":
+            return self._dispatch({"intent": "local_mode"}, "")
+        if action == "virtual_screen":
+            intent = {
+                "type": "ui_intent", "ui_intent_id": str(uuid.uuid4()),
+                "producer": "ultralive", "component": "virtual_screen",
+                "content": {"kind": "empty", "title": "Écran virtuel"},
+                "truth_level": "observed", "confidence": 1.0,
+                "priority": 0.5, "ttl_ms": 60000, "evidence_refs": [],
+            }
+            self._ui(intent)
+            return RoutedIntent(intent="virtual_screen", ui_intent=intent, handled=True)
+        return self._unknown(action or "menu action")
 
     # ---- resolution ---------------------------------------------------------
     def _match_grammar(self, text: str) -> dict[str, Any] | None:

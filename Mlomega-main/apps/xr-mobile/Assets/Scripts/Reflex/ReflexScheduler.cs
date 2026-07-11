@@ -15,6 +15,7 @@
 using System;
 using System.Collections.Generic;
 using MLOmega.XR.Reflex.Skills;
+using MLOmega.XR.UI;
 using UnityEngine;
 
 namespace MLOmega.XR.Reflex
@@ -24,6 +25,7 @@ namespace MLOmega.XR.Reflex
         [SerializeField] private ReflexConfig _config;
         [SerializeField] private GestureBridge _gestureBridge;
         [SerializeField] private AsrBridge _asrBridge;
+        [SerializeField] private DeviceCommandHandler _commands;
 
         // E59: when the PanelManipulator claims a pinch (grab/resize/button-tap on a
         // manipulable panel), the SAME pinch must NOT also drive the LensWindow zoom.
@@ -71,6 +73,7 @@ namespace MLOmega.XR.Reflex
             new Dictionary<ReflexSkillId, long>();
 
         private readonly HashSet<ReflexSignal> _activeSignals = new HashSet<ReflexSignal>();
+        private bool _privacyPaused;
 
         public IReadOnlyDictionary<ReflexSkillId, ReflexSkillBase> Skills => _skills;
         private readonly Dictionary<ReflexSkillId, ReflexSkillBase> _skills =
@@ -92,11 +95,14 @@ namespace MLOmega.XR.Reflex
             // but was never subscribed to the bridge). Palm/swipe/pinch-commit are
             // wired separately by MenuGestureController.
             if (_gestureBridge != null) _gestureBridge.GestureRecognized += OnGestureForLens;
+            if (_commands == null) _commands = FindAnyObjectByType<DeviceCommandHandler>();
+            if (_commands != null) _commands.PrivacyPauseChanged += SetPrivacyPaused;
         }
 
         private void OnDisable()
         {
             if (_gestureBridge != null) _gestureBridge.GestureRecognized -= OnGestureForLens;
+            if (_commands != null) _commands.PrivacyPauseChanged -= SetPrivacyPaused;
         }
 
         private void OnGestureForLens(GestureEvent ev)
@@ -132,6 +138,15 @@ namespace MLOmega.XR.Reflex
         /// </summary>
         public void Tick(long nowMs)
         {
+            if (_privacyPaused)
+            {
+                _activeSignals.Clear();
+                foreach (ReflexSkillBase skill in _skills.Values)
+                    if (skill.IsActive) skill.Deactivate();
+                if (_gestureBridge != null && _gestureBridge.IsRunning) _gestureBridge.Deactivate();
+                if (_asrBridge != null && _asrBridge.IsRunning) _asrBridge.Deactivate();
+                return;
+            }
             bool continuousSpeech = _activeSignals.Contains(ReflexSignal.ContinuousSpeech);
             bool continuousGestures = _activeSignals.Contains(ReflexSignal.ContinuousGestures);
             // 1) collect desired skills from raised signals.
@@ -176,6 +191,12 @@ namespace MLOmega.XR.Reflex
 
             // 5) drive native detectors on demand (battery — §9.4).
             DriveDetectors(keep, continuousSpeech, continuousGestures);
+        }
+
+        public void SetPrivacyPaused(bool paused)
+        {
+            _privacyPaused = paused;
+            if (paused) Tick((long)(Time.unscaledTimeAsDouble * 1000.0));
         }
 
         private void DriveDetectors(HashSet<ReflexSkillId> keep,

@@ -342,11 +342,13 @@ Source de vérité : audit statique transversal du checkout réel, relu et class
 
 ### E61-B — Sorties utilisateur PhoneOnly
 
-- [ ] **02 — Replay média bout-en-bout** : ajouter les routes tokenisées `/replay/media/{kind}/{id}`, résolution owner/session, lecteur images/vidéos Unity et chargement réel dans `VirtualScreen.SetSurfaceTexture`; jamais d'octets média sur le DataChannel.
-- [ ] **03 — LensWindow = vrai zoom** : fabriquer/résoudre le crop texture depuis centre+facteur, l'afficher dans `LensWindow.SetContentTexture` et conserver le chemin local PC coupé.
-- [ ] **04 — Sélection réelle du MenuPanel** : produire l'index sur gaze ou position de pincement par hit-test des lignes, avec dwell/pinch réellement déclenchables dans la scène produit.
-- [ ] **05 — Actions menu vers le routeur PC** : raccorder Mémoire, Ma voix, Replay, Écran virtuel et mode payant/local à une commande montante consommée par l'unique `IntentRouter`; conserver les actions purement device en local.
-- [ ] **06 — Confidentialité effective** : `privacy_pause` doit stopper/suspendre caméra, micro, ASR et émission transport, puis reprendre proprement sans double propriétaire ; le StatusBar reflète l'état réel et non l'inverse.
+- [x] **02 — Replay média bout-en-bout** : ajouter les routes tokenisées `/replay/media/{kind}/{id}`, résolution owner/session, lecteur images/vidéos Unity et chargement réel dans `VirtualScreen.SetSurfaceTexture`; jamais d'octets média sur le DataChannel.
+- [x] **03 — LensWindow = vrai zoom** : fabriquer/résoudre le crop texture depuis centre+facteur, l'afficher dans `LensWindow.SetContentTexture` et conserver le chemin local PC coupé.
+- [x] **04 — Sélection réelle du MenuPanel** : produire l'index sur gaze ou position de pincement par hit-test des lignes, avec dwell/pinch réellement déclenchables dans la scène produit.
+- [x] **05 — Actions menu vers le routeur PC** : raccorder Mémoire, Ma voix, Replay, Écran virtuel et mode payant/local à une commande montante consommée par l'unique `IntentRouter`; conserver les actions purement device en local.
+- [x] **06 — Confidentialité effective** : `privacy_pause` doit stopper/suspendre caméra, micro, ASR et émission transport, puis reprendre proprement sans double propriétaire ; le StatusBar reflète l'état réel et non l'inverse.
+
+**Avancement E61-B (2026-07-11 — code clos)** : les bundles replay restent bornés sur le DataChannel puis leurs refs sont résolues par une route HTTP authentifiée ; `UIRuntime` séquence images et MP4 dans le vrai `VirtualScreen`. LensWindow applique un `uvRect` centre/zoom sur la texture capture vivante, donc le grossissement est un crop GPU réel, y compris local. Le pinch menu est désormais hit-testé sur le `RectTransform` des lignes et ces zones ne sont plus volées par `PanelManipulator`. Les cinq actions PC montent comme `device_intent` structuré ; Mémoire et Replay demandent naturellement la question/l'heure au tour vocal suivant. Enfin privacy stoppe caméra, WebRTC/micro et Reflex, suspend le watchdog PC, puis reprend la même session via un bouton local explicite. Validation PC ciblée : **66 passed, 1 test cloud réel désélectionné**. Le runner Unity a été lancé mais s'est arrêté avant import/compilation (`No valid Unity Editor license found`, exit 1) : rafraîchir Unity Hub puis relancer E33/S25 ; les cases représentent le code clos, pas le gate téléphone.
 
 ### E61-C — Companion, lunettes et reconnexion
 

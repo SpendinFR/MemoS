@@ -163,6 +163,39 @@ def test_open_app_message_shapes():
     assert "spotify" in pkg["package"]
 
 
+def test_structured_menu_actions_use_router_and_natural_multiturn():
+    sink = _Sink()
+    questions = []
+    r = _router(sink, ask_memory=lambda q: questions.append(q) or {
+        "content": {"text": "réponse"}, "component": "context_card"
+    })
+    prompt = r.on_device_action("ask_memory_prompt")
+    assert prompt["handled"] is True
+    answer = r.on_transcript("quand ai-je vu Sarah la dernière fois ?")
+    assert answer["intent"] == "ask_memory"
+    assert questions == ["quand ai-je vu Sarah la dernière fois ?"]
+
+    screen = r.on_device_action("virtual_screen")
+    assert screen["handled"] is True
+    assert sink.ui[-1]["component"] == "virtual_screen"
+
+
+def test_structured_replay_menu_asks_for_time_then_routes_it():
+    calls = []
+
+    class Replay:
+        def replay(self, *, time, date=None):
+            calls.append(time)
+            return {"status": "ok"}
+
+    sink = _Sink()
+    r = intent_router.IntentRouter(emit_ui_intent=sink.emit_ui, replay_service=Replay())
+    assert r.on_device_action("replay")["handled"] is True
+    out = r.on_transcript("14h30")
+    assert out["intent"] == "replay" and out["handled"] is True
+    assert calls == ["14h30"]
+
+
 # --------------------------------------------------------------------------- memory
 def test_ask_memory_calls_ask_brain2(monkeypatch):
     calls = {}

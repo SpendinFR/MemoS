@@ -294,6 +294,35 @@ class ReplayService:
             return None
         return f"{self.media_url_base}/{kind}/{asset_id}"
 
+    def resolve_media_path(self, kind: str, asset_id: str) -> Path | None:
+        """Resolve one authenticated replay reference back to its durable file."""
+        try:
+            with self._connect() as con:
+                if kind == "frame":
+                    row = con.execute(
+                        "SELECT image_path FROM vision_frames WHERE frame_id=? LIMIT 1",
+                        (asset_id,),
+                    ).fetchone()
+                    raw = row[0] if row else None
+                elif kind == "clip":
+                    row = con.execute(
+                        """SELECT uri FROM visual_evidence_assets_v19
+                           WHERE visual_asset_id=? AND person_id=? LIMIT 1""",
+                        (asset_id, self.person_id),
+                    ).fetchone()
+                    raw = row[0] if row else None
+                else:
+                    return None
+        except Exception:
+            return None
+        if not raw:
+            return None
+        value = str(raw)
+        if value.startswith("file://"):
+            value = value[7:]
+        path = Path(value).expanduser()
+        return path.resolve() if path.is_file() else None
+
     # ------------------------------------------------------------------ intents
     def virtual_screen_intent(self, bundle: Mapping[str, Any]) -> dict[str, Any]:
         """A ``virtual_screen`` UIIntent: ordered image/clip refs for the Unity

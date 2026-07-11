@@ -18,6 +18,14 @@ Le producteur n'est pas un nouveau prompt parallèle : `run_life_model_v19_stage
 
 Validation ciblée : **29 passed, 1 skipped** (provider TTS local absent), sur `test_e61_memory_integrity`, Life Model V19, replay E35, scénario mémoire E16→E20 et preuve manifeste CloseDay.
 
+### E61-B — Sorties utilisateur PhoneOnly (code clos, validation Unity à relancer)
+
+Replay transporte uniquement des refs bornées. `/replay/media/{kind}/{asset_id}` exige les credentials SessionHub, résout le fichier par le `ReplayService` actif et `UIRuntime` ajoute ces credentials à chaque chargement image/MP4 avant d'alimenter `VirtualScreen.SetSurfaceTexture`. LensWindow réutilise directement la texture adapter et calcule son crop GPU par `RawImage.uvRect` depuis `anchor.center` + `content.zoom` ; la valeur reçue par JSON (`JArray`) et la valeur Reflex locale (`List<object>`) suivent le même lecteur.
+
+Le menu calcule sa ligne réelle par intersection viewport→plan→`RectTransform`. `PanelManipulator` laisse les lignes d'action non réclamées, tout en gardant titre/bords/corners déplaçables. Les actions PC montent par `device_intent` et appellent `IntentRouter.on_device_action`; Replay/Mémoire arment un vrai tour naturel suivant, sans transcript synthétique. Privacy est un état de capture : caméra adapter stoppée, transport WebRTC disposé (micro libéré), ASR/gestes/skills coupés, watchdog PC suspendu ; la reprise reconstruit WebRTC avec les mêmes IDs et un bouton local reste disponible quand les capteurs sont coupés.
+
+Validation : **66 passed, 1 deselected** sur IntentRouter/replay/runtime. Le test cloud réel a été exclu car la clé présente tente le proxy de test fermé `127.0.0.1:9`. Unity CLI n'a pas atteint l'import : licence Hub absente/périmée (`No valid Unity Editor license found`, exit 1). Après reconnexion Hub, relancer uniquement `E33MenuDeviceTests`, puis les builds/gates S25 globaux.
+
 ## E60 — Corrections d'intégration pré-production (EN COURS — 2026-07-10)
 
 La checklist canonique des **32 corrections** se trouve dans `docs/PROD_BACKLOG.md` §E60. Une case y représente la correction code/test ciblé ; la matrice S25 reste un gate transversal unique. Exécution imposée : petit lot cohérent → appel produit prouvé → tests ciblés du bon arbre → mise à jour simultanée du guide et du backlog → commit.

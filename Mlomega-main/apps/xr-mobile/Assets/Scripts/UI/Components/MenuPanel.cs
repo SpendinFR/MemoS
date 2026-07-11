@@ -226,7 +226,7 @@ namespace MLOmega.XR.UI.Components
             bool ok = false;
             if (_commandHandler != null && action.Command != null)
             {
-                ok = _commandHandler.Execute(action.Command);
+                ok = _commandHandler.ExecuteFromMenu(action.Command);
             }
             SendReceipt(action);
             // Selecting a mode/app action closes the menu (single-shot), like a tap.
@@ -276,6 +276,36 @@ namespace MLOmega.XR.UI.Components
         public void PinchCommit()
         {
             if (_gazeIndex >= 0) Select(_gazeIndex);
+        }
+
+        /// <summary>Resolve a real gesture/gaze viewport point to the visible menu row.</summary>
+        public int ResolveActionAtViewport(Vector2 viewportPoint)
+        {
+            if (!IsOpen || _panel?.Body == null || _camera == null ||
+                viewportPoint.x < 0f || viewportPoint.y < 0f) return -1;
+            RectTransform body = _panel.Body.rectTransform;
+            Ray ray = _camera.ViewportPointToRay(new Vector3(viewportPoint.x, viewportPoint.y, 0f));
+            Plane plane = new Plane(-body.forward, body.position);
+            if (!plane.Raycast(ray, out float enter)) return -1;
+            Vector3 local3 = body.InverseTransformPoint(ray.GetPoint(enter));
+            Vector2 local = new Vector2(local3.x, local3.y);
+            Rect rect = body.rect;
+            if (!rect.Contains(local) || _actions.Count == 0) return -1;
+            float fromTop = rect.yMax - local.y;
+            return Mathf.Clamp(Mathf.FloorToInt(fromTop / rect.height * _actions.Count), 0, _actions.Count - 1);
+        }
+
+        public void HoverAtViewport(Vector2 viewportPoint) =>
+            SetGazeHover(ResolveActionAtViewport(viewportPoint));
+
+        /// <summary>PanelManipulator calls this with panel-local coordinates so an
+        /// action row remains clickable instead of being stolen as a window drag.</summary>
+        public bool IsActionPoint(Vector2 panelLocalPoint)
+        {
+            if (_panel?.Body == null) return false;
+            Vector3 world = transform.TransformPoint(new Vector3(panelLocalPoint.x, panelLocalPoint.y, 0f));
+            Vector3 bodyLocal3 = _panel.Body.rectTransform.InverseTransformPoint(world);
+            return _panel.Body.rectTransform.rect.Contains(new Vector2(bodyLocal3.x, bodyLocal3.y));
         }
 
         public string PersistenceKey => "menu_panel";

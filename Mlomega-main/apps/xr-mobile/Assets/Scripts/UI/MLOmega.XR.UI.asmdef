@@ -8,6 +8,7 @@
         "MLOmega.XR.Transport",
         "Unity.TextMeshPro",
         "UnityEngine.UI",
+        "UnityEngine.VideoModule",
         "Unity.RenderPipelines.Universal.Runtime",
         "Unity.RenderPipelines.Core.Runtime"
     ],

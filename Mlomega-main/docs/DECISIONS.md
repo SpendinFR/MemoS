@@ -1,5 +1,13 @@
 # DECISIONS
 
+## 2026-07-11 — E61-B : média hors DataChannel, actions structurées et privacy dure (ADR)
+
+**Les octets replay restent en HTTP authentifié.** Le DataChannel ne porte que les refs bornées du bundle. SessionHub vérifie session+token, le service replay résout l'ID durable et Unity séquence les textures/vidéos dans le composant déjà admis. Le zoom local n'attend pas un crop PC : `RawImage.uvRect` recadre la texture adapter sur GPU à partir du centre/facteur Reflex.
+
+**Un choix menu n'est pas une fausse phrase.** Les actions qui appartiennent au PC montent comme `device_intent{action,...}` et entrent dans les mêmes méthodes de l'unique `IntentRouter`. Quand une valeur manque (question mémoire ou heure replay), le routeur arme un tour multi-turn et consomme la prochaine parole naturelle. Les modes UI/apps/traduction/privacy restent locaux.
+
+**Privacy libère réellement les capteurs.** Désactiver seulement les icônes ou tracks était insuffisant. L'adapter caméra est stoppé, WebRTC est disposé afin de rendre le micro, Reflex est forcé à l'arrêt et le watchdog connaît la pause. Comme aucun capteur vocal/gestuel ne peut logiquement réveiller un système qui les a libérés, le device expose un bouton local explicite de reprise ; la session transport/BrainLive durable n'est ni remplacée ni clôturée.
+
 ## 2026-07-11 — E61-A : un seul producteur nocturne, projections V19 sourcées (ADR)
 
 **Ne pas ajouter un second cerveau.** Le Life Model canonique V15.10/V15.13 possède déjà la collecte de preuves owner-scopée, le contrat LLM patch-only et la quarantaine des sorties sans evidence. E61-A branche donc ce magasin réel vers `life_model_entries_v19` au lieu de créer un nouveau prompt. La projection est typée, idempotente sur `source_updated_at`, conserve `source_table/source_id` et n'invente aucun statement. Les tests qui appellent directement `apply_life_model_delta` restent utiles comme tests unitaires, mais ne sont plus la condition de fonctionnement produit.

@@ -507,6 +507,26 @@ def create_app(
             headers={"X-Model-Sha256": _sha256_file(artefact)},
         )
 
+    @app.get("/replay/media/{kind}/{asset_id}")
+    async def replay_media(kind: str, asset_id: str, request: Request):
+        """Stream a bounded replay image/clip; refs never cross the DataChannel."""
+        from fastapi.responses import FileResponse
+
+        q = request.query_params
+        _authenticate_query(q.get("session_id"), q.get("token"))
+        if kind not in {"frame", "clip"}:
+            raise HTTPException(status_code=404, detail="unknown replay media kind")
+        manager = app.state.runtime_manager
+        runtime = manager.get(q.get("session_id")) if manager is not None else None
+        replay = getattr(getattr(runtime, "pipeline", None), "replay", None)
+        if replay is None or not hasattr(replay, "resolve_media_path"):
+            raise HTTPException(status_code=404, detail="replay service unavailable")
+        path = replay.resolve_media_path(kind, asset_id)
+        if path is None:
+            raise HTTPException(status_code=404, detail="replay media not found")
+        return FileResponse(path=str(path), filename=path.name,
+                            headers={"Cache-Control": "private, max-age=60"})
+
     @app.post("/session/create")
     async def create_session(request: Request) -> dict[str, Any]:
         body = await request.json()

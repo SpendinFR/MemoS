@@ -167,6 +167,19 @@ def test_replay_window_excludes_out_of_range(tmp_path, monkeypatch):
     assert svc.metrics["empty_windows"] == 1
 
 
+def test_replay_media_reference_resolves_to_real_file(tmp_path, monkeypatch):
+    db_path = _env(tmp_path, monkeypatch)
+    image = tmp_path / "frame.jpg"
+    image.write_bytes(b"jpeg")
+    _seed_replay_window(db_path)
+    from mlomega_audio_elite.db import connect, write_transaction
+    with connect(db_path) as con, write_transaction(con):
+        con.execute("UPDATE vision_frames SET image_path=? WHERE frame_id='kf1'", (str(image),))
+    svc = replay_service.ReplayService(person_id="me", live_session_id="s-e35", db_path=db_path)
+    assert svc.resolve_media_path("frame", "kf1") == image.resolve()
+    assert svc.resolve_media_path("frame", "missing") is None
+
+
 def test_replay_via_router_llm_frontier_mocked(tmp_path, monkeypatch):
     db_path = _env(tmp_path, monkeypatch)
     _seed_replay_window(db_path)

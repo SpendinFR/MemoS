@@ -7,6 +7,7 @@
 // to acted/dismissed receipts.
 using UnityEngine;
 using UnityEngine.UI;
+using MLOmega.XR.Core;
 
 namespace MLOmega.XR.UI.Components
 {
@@ -17,6 +18,7 @@ namespace MLOmega.XR.UI.Components
 
         private GlassPanel _panel;
         private RawImage _content;
+        private XrSessionController _session;
 
         public override string ComponentKey => "lens_window";
 
@@ -46,11 +48,34 @@ namespace MLOmega.XR.UI.Components
             _content.color = texture != null ? Color.white : new Color(1, 1, 1, 0);
         }
 
+        /// <summary>Display a true crop of the live capture texture. RawImage.uvRect
+        /// performs the crop/zoom on the GPU; no CPU readback or fake magnification.</summary>
+        public void SetContentTexture(Texture texture, Vector2 center, float zoom)
+        {
+            SetContentTexture(texture);
+            if (_content == null) return;
+            zoom = Mathf.Max(1f, zoom);
+            float span = 1f / zoom;
+            // Gesture coordinates and WebCamTexture UVs both use a bottom-left origin
+            // in the Unity path. Clamp keeps the crop within the source texture.
+            float x = Mathf.Clamp01(center.x - span * 0.5f);
+            float y = Mathf.Clamp01(center.y - span * 0.5f);
+            x = Mathf.Min(x, 1f - span);
+            y = Mathf.Min(y, 1f - span);
+            _content.uvRect = new Rect(x, y, span, span);
+        }
+
         protected override void Bind(Contracts.V19.UIIntent intent)
         {
             if (_panel.Title != null) _panel.Title.text = IntentRead.Content(intent, "title", "Lens");
             if (_panel.Body != null) _panel.Body.text = IntentRead.Content(intent, "text",
                 IntentRead.Content(intent, "ocr", ""));
+            if (_session == null) _session = FindAnyObjectByType<XrSessionController>();
+            if (!IntentRead.TryPoint(intent.Anchor, "center", out Vector2 center))
+                center = new Vector2(0.5f, 0.5f);
+            float zoom = (float)IntentRead.Num(intent.Content, "zoom", 1.0);
+            EyeFrame? frame = _session?.Adapter?.TryGetLatestFrame();
+            SetContentTexture(frame.HasValue ? frame.Value.Texture : null, center, zoom);
             PlaceFocus();
         }
 

@@ -205,6 +205,32 @@ namespace MLOmega.XR.Core
             SetState(XrSessionState.Stopped);
         }
 
+        /// <summary>Pause/resume camera capture without changing the XR/BrainLive
+        /// session identity. Privacy pause is deliberately not an end-session.</summary>
+        public bool SetEyeCapturePaused(bool paused)
+        {
+            _wantEyeCapture = !paused;
+            if (Adapter == null) return false;
+            try
+            {
+                if (paused)
+                {
+                    if (Adapter.IsEyeActive) Adapter.StopEyeCapture();
+                }
+                else if ((State == XrSessionState.Running || State == XrSessionState.Suspended) &&
+                         !Adapter.IsEyeActive)
+                {
+                    Adapter.StartEyeCapture();
+                }
+                return paused ? !Adapter.IsEyeActive : Adapter.IsEyeActive;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[XrSessionController] privacy capture toggle failed: {ex.Message}");
+                return false;
+            }
+        }
+
         private void OnDisable()
         {
             if (_permissions != null) _permissions.AllGranted -= OnPermissionsGranted;

@@ -401,6 +401,7 @@ class PhoneOnlyRuntime:
         self.final_segments = 0
         self.live_session_id: str | None = live_session_id
         self._last_frame_drops = 0
+        self.privacy_paused = False
 
     def _record_pipeline_error(self, message: str) -> None:
         self.recent_errors.append(str(message)[:500])
@@ -458,6 +459,9 @@ class PhoneOnlyRuntime:
 
     async def _on_datachannel_open(self) -> None:
         try:
+            # Privacy resume deliberately rebuilds WebRTC with the same durable
+            # session. A newly-open channel is therefore authoritative resume.
+            self.privacy_paused = False
             if hasattr(self.pipeline, "set_device_gate_authoritative"):
                 self.pipeline.set_device_gate_authoritative(True)
             if hasattr(self.pipeline, "push_wake_word") and not self.pipeline.push_wake_word():
@@ -499,6 +503,17 @@ class PhoneOnlyRuntime:
                     self.pipeline.on_device_transcript(payload)
                 except Exception as exc:
                     self.recent_errors.append(("device_transcript: " + str(exc))[:500])
+            return
+        if isinstance(payload, dict) and payload.get("type") == "privacy_state":
+            self.privacy_paused = bool(payload.get("paused"))
+            return
+        if isinstance(payload, dict) and payload.get("type") == "device_intent":
+            router = getattr(self.pipeline, "intents", None)
+            if router is not None and hasattr(router, "on_device_action"):
+                try:
+                    router.on_device_action(str(payload.get("action") or ""), payload)
+                except Exception as exc:
+                    self.recent_errors.append(("device_intent: " + str(exc))[:500])
             return
         if isinstance(payload, dict) and (
             payload.get("type") == "control" or "is_command" in payload
@@ -732,7 +747,7 @@ class SinglePhoneRuntimeManager:
         while True:
             await asyncio.sleep(self.watchdog_interval_s)
             runtime = self.active
-            if runtime is None or runtime.ended:
+            if runtime is None or runtime.ended or getattr(runtime, "privacy_paused", False):
                 continue
             stats = runtime.ingress.stats() if hasattr(runtime.ingress, "stats") else {}
             idle = float((stats or {}).get("media_idle_seconds", 0.0) or 0.0)

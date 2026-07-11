@@ -72,7 +72,16 @@ namespace MLOmega.XR.Reflex
 
                 case GestureKind.PinchEnd:
                     // A pinch commits the hovered menu item while the menu is open.
-                    if (_menu != null && _menu.IsOpen) _menu.PinchCommit();
+                    if (_menu != null && _menu.IsOpen)
+                    {
+                        _menu.HoverAtViewport(ev.ScreenPoint);
+                        _menu.PinchCommit();
+                    }
+                    break;
+
+                case GestureKind.PinchBegin:
+                case GestureKind.PinchUpdate:
+                    if (_menu != null && _menu.IsOpen) _menu.HoverAtViewport(ev.ScreenPoint);
                     break;
             }
         }

@@ -163,6 +163,11 @@ namespace MLOmega.XR.Reflex
                 if (!RayHitsPanel(ray, t, panel.PanelSize, out Vector3 worldHit, out Vector2 localHit))
                     continue;
 
+                // Menu action rows are controls, not drag handles. Leave these
+                // pinches unclaimed so MenuGestureController can select the row;
+                // title, borders and corners remain fully manipulable.
+                if (panel is MenuPanel menu && menu.IsActionPoint(localHit)) continue;
+
                 float dist = Vector3.Distance(cam.transform.position, worldHit);
                 if (dist >= bestDist) continue;
 
