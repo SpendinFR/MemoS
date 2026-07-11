@@ -12,6 +12,13 @@ def load(name, path):
 delivery_adapter = load('delivery_adapter', 'services/live-pc/delivery_adapter.py')
 
 
+def test_adapter_eagerly_creates_delivery_queue_before_first_poll(monkeypatch):
+    calls = []
+    monkeypatch.setattr(delivery_adapter, "ensure_delivery_schema", lambda: calls.append("ready"))
+    delivery_adapter.DeliveryAdapter()
+    assert calls == ["ready"]
+
+
 def test_delivery_row_maps_to_brainlive_context_card_ui_intent():
     intent = delivery_adapter.delivery_row_to_ui_intent({'delivery_id':'d1','message':'hello','action_type':'notify','priority':0.7,'evidence_json':'{"evidence_refs":["x"]}'})
     assert intent.producer == 'brainlive'

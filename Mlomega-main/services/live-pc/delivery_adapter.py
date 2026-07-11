@@ -13,6 +13,7 @@ from packages.contracts.python.models import UIIntent, UIReceipt
 from mlomega_audio_elite.db import connect
 from mlomega_audio_elite.utils import json_loads
 from mlomega_audio_elite.v18_8_live_policy import record_delivery_feedback
+from mlomega_audio_elite.v18_delivery import ensure_delivery_schema
 
 # Module-level so FastAPI can resolve the `websocket: WebSocket` annotation:
 # with `from __future__ import annotations`, get_type_hints() looks the name up
@@ -104,6 +105,10 @@ class WebSocketRendererHub(RendererHub):
 
 class DeliveryAdapter:
     def __init__(self, renderer: RendererHub | None = None) -> None:
+        # The dispatch loop starts before the first H1 candidate. On a brand-new
+        # database the producer has therefore not had a chance to lazily create
+        # its queue yet; initialise it before the very first poll.
+        ensure_delivery_schema()
         self.renderer = renderer or RendererHub()
 
     def poll_queued(self, *, limit: int = 20) -> list[sqlite3.Row]:
