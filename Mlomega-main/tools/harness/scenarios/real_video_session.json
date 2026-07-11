@@ -1,0 +1,26 @@
+{
+  "name": "real_video_session",
+  "description": "E63 scenario ALIGNED to the real 5-minute test video the user will film. Each event's t (seconds) matches the video's shot breakdown so the scripted ASR finals / intents land while the matching content is on screen. Use with: run_harness.py --media <that_video.mp4> --scenario real_video_session.json --duration 305 --with-close-day. NOTE: wake word and gestures are device-side and NOT testable by this harness (reserved for the real OnePlus session); the '« viki aide-moi »' line is delivered here as a help_start device_transcript at t=240, standing in for the on-device wake-word path.",
+  "video_breakdown": {
+    "0:00-1:30": "conversation with a visible person (memorable facts: 'demain je dois racheter des piles', 'rendez-vous avec Karim jeudi 15h chez le dentiste', a promise) -> diarisation, memory, entities, Life Model, PersonTag",
+    "1:30-2:30": "table of objects (phone, keys, bottle, book, cup), slow pan 3-4s/object, then put the keys down and move them out of frame -> detection, what_is, where_is (last seen)",
+    "2:30-3:00": "text in stable close-up 5s -> OCR, read the text, translate it",
+    "3:00-4:00": "walk through 2-3 rooms, return to the first with an object moved -> tracking, scene change, ChangeAttention",
+    "4:00-5:00": "manual activity in first-person (e.g. making a coffee); at ~4:00 the user says 'viki aide-moi' -> help_start final ASR + VLM glance"
+  },
+  "events": [
+    { "t": 20.0,  "kind": "transcript", "text": "qui est cette personne", "is_command": true },
+    { "t": 45.0,  "kind": "transcript", "text": "retiens demain je dois racheter des piles", "is_command": true },
+    { "t": 70.0,  "kind": "transcript", "text": "retiens rendez-vous avec Karim jeudi 15h chez le dentiste", "is_command": true },
+    { "t": 95.0,  "kind": "transcript", "text": "c'est quoi ca", "is_command": true },
+    { "t": 115.0, "kind": "transcript", "text": "c'est quoi cet objet", "is_command": true },
+    { "t": 145.0, "kind": "transcript", "text": "ou sont mes cles", "is_command": true },
+    { "t": 155.0, "kind": "transcript", "text": "ou est mon telephone", "is_command": true },
+    { "t": 165.0, "kind": "transcript", "text": "lis le texte", "is_command": true },
+    { "t": 175.0, "kind": "transcript", "text": "traduis le texte", "is_command": true },
+    { "t": 210.0, "kind": "transcript", "text": "qu'est-ce qui a change dans la piece", "is_command": true },
+    { "t": 240.0, "kind": "transcript", "text": "aide-moi a faire un cafe", "is_command": true },
+    { "t": 270.0, "kind": "transcript", "text": "etape suivante", "is_command": true },
+    { "t": 290.0, "kind": "transcript", "text": "interroge ma memoire qui est Karim", "is_command": true }
+  ]
+}

@@ -54,6 +54,40 @@ Le gate nocturne n'est plus une présence de fichier. `scripts/check_close_day_p
 
 Le premier rebuild E61 a réfuté la compilation présumée verte de Replay : `VideoPlayer`, `UnityWebRequestTexture` et `DownloadHandlerTexture` existaient dans le code mais leurs modules builtin n'étaient pas activés dans le player UI. `com.unity.modules.video`, `com.unity.modules.unitywebrequesttexture` et les références asmdef correspondantes sont désormais explicites. Preuves réelles : PhoneOnly exit 0, **94 759 838 octets**, SHA-256 `C569EE4596B7E47B755FB8AA027E242577F48C140F6EBD1378C84DCE0EFB975B`; XREAL produit deux passes exit 0, SHA-256 `945F5D38AC9E3FB72A905B371A5BF20BA2144672D2AB61111A31EB774D360DDF`; **12 tests distribution/install** verts.
 
+## E63 — Harnais d'intégration bout-en-bout (FAIT — 2026-07-11)
+
+Faux device XR (`tools/harness/`) qui rejoue une session complète contre le vrai code PC en WebRTC réel, sans modifier aucun fichier produit (fichiers neufs uniquement). Toujours lancer avec `.venv-live\Scripts\python` (aiortc/cv2/sherpa). Le serveur produit est démarré sur un **port de test dédié (8730 par défaut)**, jamais 8710/8766, et sa base est une sqlite scratch (`MLOMEGA_DB` → `tools/harness/_run/harness_memory.db`), donc un run ne touche jamais `memory.db`.
+
+Commandes exactes (depuis la racine du repo) :
+
+```
+REM Session minimale complète (mp4 synthétique mire+bip, sans close-day) — chemin PASS validé
+.venv-live\Scripts\python tools\harness\run_harness.py --port 8730 --duration 26 --synth-seconds 30
+
+REM Contre un vrai mp4 avec parole (transcripts/turns réels)
+.venv-live\Scripts\python tools\harness\run_harness.py --port 8730 --media chemin\clip.mp4 --duration 40
+
+REM Vraie vidéo de test 5 min alignée sur le scénario dédié + close-day complet (LOURD, GPU)
+.venv-live\Scripts\python tools\harness\run_harness.py --port 8730 --media chemin\video5min.mp4 --scenario tools\harness\scenarios\real_video_session.json --duration 305 --with-close-day
+
+REM S'attacher à un serveur déjà lancé (ex. le vrai 8710) au lieu d'en spawner un
+.venv-live\Scripts\python tools\harness\run_harness.py --attach --host 127.0.0.1 --port 8710 --db <base-de-ce-serveur>
+
+REM Device seul (serveur déjà up)
+.venv-live\Scripts\python tools\harness\fake_xr_device.py --port 8730 --out device_report.json
+
+REM Assertions seules contre une base
+.venv-live\Scripts\python tools\harness\assertions.py --db tools\harness\_run\harness_memory.db --json
+
+REM Passe chaos (chaque scénario sur son propre serveur+DB)
+.venv-live\Scripts\python tools\harness\chaos.py --port 8742 --scenarios net_drop_reconnect,double_end,ollama_down
+.venv-live\Scripts\python tools\harness\chaos.py --port 8746 --scenarios kill_before_close_day --with-recovery-close-day
+```
+
+Prérequis mode minimal : `ffmpeg` sur le PATH (mp4 synthétique) ; **pas de GPU/Ollama/Qdrant requis** (`/health` renvoie `ai_ready=false` mais `pairing_ready=true` suffit au pairing/offer, le harnais l'attend). Le close-day complet (`--with-close-day`) est le seul chemin qui exige la chaîne IA + le core `.venv` + GPU.
+
+Résultat exécution réelle (2026-07-11) : run minimal = **ALL PASS** (session enregistrée+terminée, audio traversé, 1 clip indexé dans `visual_evidence_assets_v19`, 8 intents scriptés joués). Chaos (a)(c)(d) verts (`net_drop_reconnect`, `double_end`, `ollama_down`). Observation produit notée dans `tools/harness/BUGS_FOUND.md` (OBS-1, table `brainlive_intervention_delivery_queue` absente à la 1re session sur DB neuve) — non corrigée (règle E63).
+
 ## E60 — Corrections d'intégration pré-production (EN COURS — 2026-07-10)
 
 La checklist canonique des **32 corrections** se trouve dans `docs/PROD_BACKLOG.md` §E60. Une case y représente la correction code/test ciblé ; la matrice S25 reste un gate transversal unique. Exécution imposée : petit lot cohérent → appel produit prouvé → tests ciblés du bon arbre → mise à jour simultanée du guide et du backlog → commit.

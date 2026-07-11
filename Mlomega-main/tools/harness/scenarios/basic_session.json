@@ -1,0 +1,14 @@
+{
+  "name": "basic_session",
+  "description": "E63 default end-to-end scenario. Each event is replayed on the reliable DataChannel at t seconds after the channel opens. transcript events are final device ASR segments (LiveTransportBridge.SendTranscriptSegment schema); is_command=true routes them through the PC IntentRouter (on_device_transcript). Covers the main intents: what_is, spatial (ou est X), read text, owner/attribute enrollment (retiens c'est Karim), memory question, replay, and hide/show all.",
+  "events": [
+    { "t": 2.0,  "kind": "transcript", "text": "c'est quoi ca", "is_command": true },
+    { "t": 5.0,  "kind": "transcript", "text": "ou est mon telephone", "is_command": true },
+    { "t": 8.0,  "kind": "transcript", "text": "lis le texte", "is_command": true },
+    { "t": 11.0, "kind": "transcript", "text": "retiens c'est Karim", "is_command": true },
+    { "t": 14.0, "kind": "transcript", "text": "interroge ma memoire qui est Karim", "is_command": true },
+    { "t": 17.0, "kind": "transcript", "text": "rejoue la derniere minute", "is_command": true },
+    { "t": 20.0, "kind": "transcript", "text": "cache tout", "is_command": true },
+    { "t": 23.0, "kind": "transcript", "text": "affiche tout", "is_command": true }
+  ]
+}

@@ -1,0 +1,9 @@
+# E63 harness runtime scratch — never committed.
+_run/
+_chaos/
+_synth/
+*.mp4
+*.db
+*.db-wal
+*.db-shm
+*.log
