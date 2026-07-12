@@ -83,14 +83,23 @@ class OllamaWindowLLM:
 
     def generate(self, prompt: Mapping[str, Any] | str, *, output_budget: int) -> LLMCallResult:
         user = self._prompt_text(prompt)
+        schema_hint = self._schema_hint
+        format_schema = self._format_schema
+        if isinstance(prompt, Mapping):
+            dynamic_hint = prompt.get("schema_hint")
+            dynamic_format = prompt.get("format_schema")
+            if isinstance(dynamic_hint, Mapping):
+                schema_hint = dict(dynamic_hint)
+            if isinstance(dynamic_format, Mapping):
+                format_schema = dict(dynamic_format)
         try:
             result = self._client.generate_json(
                 self._system,
                 user,
-                self._schema_hint,
+                schema_hint,
                 self._timeout,
                 max_output_tokens=int(output_budget),
-                format_schema=self._format_schema,
+                format_schema=format_schema,
             )
         except Exception as exc:  # network / provider fault -> transient, retryable
             return LLMCallResult(ok=False, error_kind="unavailable", finish_reason=f"exception:{type(exc).__name__}")

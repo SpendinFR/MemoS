@@ -465,16 +465,185 @@ def _episode_bundle(con, episode_id: str) -> dict[str, Any]:
         "context_scope": {"episode_id":episode_id,"conversation_id":conv_id,"turn_count":len(turns),"local_only":True},
     }
 
-def _engine_prompt(engine_name: str, bundle: dict[str, Any], prior: dict[str, Any]) -> str:
+def _engine_prompt(
+    engine_name: str,
+    bundle: dict[str, Any],
+    prior: dict[str, Any],
+    *,
+    schema_override: dict[str, Any] | None = None,
+) -> str:
     return _safe_prompt_payload({
         "engine_name": engine_name,
         "mission": "Remplir le modèle dynamique Brain 2.0: vie observée -> situation -> état -> parole/action -> réaction/résultat -> patterns -> simulation -> prédiction -> vérification -> correction.",
         "no_heuristic_policy": "Tout contenu cognitif vient de cette réponse Qwen. Ne pas inventer. Marquer missing_context.",
         "evidence_role_policy": "Respecte metadata_json.kind/evidence_role: human_or_audio_transcript = parole/transcription humaine; system_observation_not_user_speech = observation capteur/contexte, jamais une déclaration de William; side-channel prediction/intervention/outcome dans conversation.raw_json = metadata de vérification, jamais parole utilisateur. Ne transforme pas une observation système en goût, préférence ou intention déclarée.",
-        "schema": ENGINE_SCHEMAS[engine_name],
+        "schema": schema_override or ENGINE_SCHEMAS[engine_name],
         "bundle": bundle,
         "prior_engine_outputs": prior,
     })
+
+
+def _run_engine_partitioned(
+    con,
+    *,
+    engine: str,
+    episode_id: str,
+    person_id: str,
+    bundle: dict[str, Any],
+    prior: dict[str, Any],
+    window_llm: Any | None = None,
+    context_window: int | None = None,
+    output_budget: int | None = None,
+) -> dict[str, Any]:
+    """Execute one V13 engine by bounded schema-field tasks, then merge losslessly.
+
+    Evidence/counter-evidence/confidence accompany every task. Business fields are
+    each primary exactly once; the generic E64 executor checkpoints and recursively
+    subdivides them on length/invalid JSON. No engine or schema field is dropped.
+    """
+    from .config import get_settings
+    from .night_orchestrator import (
+        ModelBudget, OllamaWindowLLM, PlanUnit, StageScope,
+        estimate_tokens_for_text, run_windows,
+    )
+
+    schema = dict(ENGINE_SCHEMAS[engine])
+    common_names = [
+        name for name in ("evidence", "counter_evidence", "confidence")
+        if name in schema
+    ]
+    business_names = [name for name in schema if name not in common_names]
+    if not business_names:
+        return _llm_require_json(
+            engine, _engine_prompt(engine, bundle, prior), schema
+        )
+
+    units = [
+        PlanUnit(
+            ref_id=name,
+            tokens=estimate_tokens_for_text(json_dumps({name: schema[name]})) + 8,
+            content_digest=_hash_payload(json_dumps({name: schema[name]})),
+        )
+        for name in business_names
+    ]
+    common_schema = {name: schema[name] for name in common_names}
+
+    def render(window_units) -> dict[str, Any]:
+        task_names = [unit.ref_id for unit in window_units]
+        task_schema = {
+            **{name: schema[name] for name in task_names},
+            **common_schema,
+        }
+        return {
+            "prompt": _engine_prompt(
+                engine, bundle, prior, schema_override=task_schema
+            ),
+            "schema_hint": task_schema,
+        }
+
+    def validate(value: Any) -> bool:
+        return isinstance(value, dict)
+
+    def envelope(value: Any, primary) -> dict[str, Any]:
+        return {
+            "task_fields": [unit.ref_id for unit in primary],
+            "result": value,
+        }
+
+    cfg = get_settings()
+    if output_budget is None:
+        try:
+            output_budget = max(
+                256, int(os.environ.get("MLOMEGA_POSTSTOP_LLM_MAX_OUTPUT_TOKENS", "4096"))
+            )
+        except ValueError:
+            output_budget = 4096
+    context_window = int(context_window or cfg.ollama_context_poststop)
+    if window_llm is None:
+        try:
+            timeout = float(os.environ.get("MLOMEGA_V13_ENGINE_TIMEOUT", "180"))
+        except ValueError:
+            timeout = 180.0
+        window_llm = OllamaWindowLLM(
+            system=_BRAIN2_STRICT_SYSTEM,
+            timeout=timeout,
+        )
+    model = str(getattr(window_llm, "model", "injected-window-llm"))
+    episode = con.execute(
+        "SELECT start_time FROM episodes WHERE episode_id=?", (episode_id,)
+    ).fetchone()
+    package_date = str((episode["start_time"] if episode else None) or now_iso())[:10]
+    empty_prompt = _engine_prompt(
+        engine, bundle, prior, schema_override=common_schema
+    )
+    stage = run_windows(
+        units,
+        con=con,
+        scope=StageScope(
+            person_id=person_id,
+            package_date=package_date,
+            stage_name=f"brain2_engine_fields:{engine}:{episode_id}",
+            adapter_version="e64f-v13-engine-fields-v2",
+            prompt_version=f"{STRICT_VERSION}:{engine}",
+            model=model,
+        ),
+        llm=window_llm,
+        budget=ModelBudget(
+            context_window=context_window,
+            output_reserve=int(output_budget),
+            safety_margin=768,
+        ),
+        render=render,
+        validate=validate,
+        decorate_output=envelope,
+        target_units=2 if len(business_names) > 3 else 3,
+        overlap=0,
+        prompt_overhead_tokens=estimate_tokens_for_text(empty_prompt),
+    )
+    if not stage.all_completed:
+        raise RuntimeError(
+            f"{engine} field tasks incomplete: "
+            f"states={[window.state for window in stage.windows]}"
+        )
+
+    merged: dict[str, Any] = {}
+    evidence: list[Any] = []
+    counter_evidence: list[Any] = []
+    confidences: list[float] = []
+    for stored in stage.outputs:
+        if not isinstance(stored, dict):
+            continue
+        result = stored.get("result")
+        fields = stored.get("task_fields") or []
+        if not isinstance(result, dict):
+            continue
+        for field in fields:
+            if field in result:
+                merged[str(field)] = result[field]
+        evidence.extend(_as_list(result.get("evidence")))
+        counter_evidence.extend(_as_list(result.get("counter_evidence")))
+        if isinstance(result.get("confidence"), (int, float)):
+            confidences.append(float(result["confidence"]))
+
+    def unique_json(values: list[Any]) -> list[Any]:
+        seen: set[str] = set()
+        out: list[Any] = []
+        for value in values:
+            marker = json_dumps(value)
+            if marker not in seen:
+                seen.add(marker)
+                out.append(value)
+        return out
+
+    if "evidence" in schema:
+        merged["evidence"] = unique_json(evidence)
+    if "counter_evidence" in schema:
+        merged["counter_evidence"] = unique_json(counter_evidence)
+    if "confidence" in schema:
+        merged["confidence"] = (
+            sum(confidences) / len(confidences) if confidences else 0.0
+        )
+    return merged
 
 
 def _record_engine(con, *, engine: str, conversation_id: str | None, episode_id: str | None, person_id: str | None, prompt: str, output: dict[str, Any] | None, status: str, error: str | None = None) -> str:
@@ -584,6 +753,12 @@ def _insert_temporal_link(con, conversation_id: str | None, episode_id: str | No
 def _materialize_episodes_from_qwen(con, conversation_id: str, output: dict[str, Any]) -> int:
     conv = con.execute("SELECT * FROM conversations WHERE conversation_id=?", (conversation_id,)).fetchone()
     now = now_iso(); count = 0
+    missing_context = _as_list(output.get("missing_context"))
+    missing_manifest = {
+        "count": len(missing_context),
+        "digest": _hash_payload(json_dumps(missing_context)),
+        "detail_source": "night_llm_window_outputs_v19",
+    }
     for i, ep in enumerate(_as_list(output.get("episodes"))):
         if not isinstance(ep, dict):
             continue
@@ -625,7 +800,7 @@ def _materialize_episodes_from_qwen(con, conversation_id: str, output: dict[str,
                 "strict_v13_2": True,
                 "episode_source": STRICT_VERSION,
                 "coverage_status": "complete",
-                "missing_context": _as_list(output.get("missing_context")),
+                "missing_context_manifest": missing_manifest,
             }),
             "created_at": now,
             "updated_at": now,
@@ -1183,7 +1358,14 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                     counts[f"engine_{engine}_resumed"] += 1
                     continue
                 try:
-                    out = _llm_require_json(engine, prompt, ENGINE_SCHEMAS[engine])
+                    out = _run_engine_partitioned(
+                        con,
+                        engine=engine,
+                        episode_id=episode_id,
+                        person_id=person_id,
+                        bundle=bundle,
+                        prior=outputs,
+                    )
                     _record_engine(con, engine=engine, conversation_id=conversation_id, episode_id=episode_id, person_id=person_id, prompt=prompt, output=out, status="ok")
                 except Exception as exc:
                     _record_engine(con, engine=engine, conversation_id=conversation_id, episode_id=episode_id, person_id=person_id, prompt=prompt, output=None, status="error", error=str(exc)[:1000])

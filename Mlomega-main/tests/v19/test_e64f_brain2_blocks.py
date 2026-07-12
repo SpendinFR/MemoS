@@ -124,7 +124,8 @@ class _FakeClient:
         self.last = None
 
     def generate_json(self, system, prompt, schema_hint, timeout, *, max_output_tokens, format_schema=None):
-        self.last = {"system": system, "prompt": prompt, "budget": max_output_tokens}
+        self.last = {"system": system, "prompt": prompt, "budget": max_output_tokens,
+                     "schema_hint": schema_hint, "format_schema": format_schema}
         return self._result
 
 
@@ -170,3 +171,15 @@ def test_budget_and_prompt_are_forwarded():
     assert client.last["budget"] == 333
     assert client.last["prompt"] == "hello"
     assert client.last["system"] == "SYS"
+
+
+def test_dynamic_window_schema_overrides_adapter_default():
+    client = _FakeClient(_FakeResult(ok=True, data={}))
+    llm = OllamaWindowLLM(
+        system="SYS", client=client, schema_hint={"old": []}
+    )
+    llm.generate(
+        {"prompt": "hello", "schema_hint": {"task_field": []}},
+        output_budget=333,
+    )
+    assert client.last["schema_hint"] == {"task_field": []}

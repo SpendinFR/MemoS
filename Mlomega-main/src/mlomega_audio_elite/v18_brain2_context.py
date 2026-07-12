@@ -12,7 +12,7 @@ from typing import Any
 from .db import connect
 from .governance_v18 import canonical_time, conversation_in_scope, projection_is_active, strict_many
 from .integrity_v176 import parse_iso_utc
-from .utils import json_dumps
+from .utils import json_dumps, json_loads, sha256_bytes
 
 
 def _scope_owner(con: Any, conversation_id: str) -> str | None:
@@ -208,7 +208,30 @@ def install(module: Any) -> dict[str, Any]:
 
     def _episode_bundle(con: Any, episode_id: str) -> dict[str, Any]:
         bundle = old_episode_bundle(con, episode_id)
-        ep = bundle.get("episode") or {}
+        ep = dict(bundle.get("episode") or {})
+        # Prompt projection only: detailed window diagnostics remain durably in
+        # night_llm_window_outputs_v19 and raw turns remain unchanged in `turns`.
+        # Repeating them inside every one of 16 engine prompts added >10k tokens
+        # to a single episode without adding cognitive evidence.
+        metadata = json_loads(ep.get("metadata_json"), {}) if isinstance(ep.get("metadata_json"), str) else {}
+        if isinstance(metadata, dict) and isinstance(metadata.get("missing_context"), list):
+            detailed = metadata.pop("missing_context")
+            metadata["missing_context_manifest"] = {
+                "count": len(detailed),
+                "digest": sha256_bytes(json_dumps(detailed).encode("utf-8")),
+                "detail_source": "night_llm_window_outputs_v19",
+            }
+            ep["metadata_json"] = json_dumps(metadata)
+        bundle["episode"] = ep
+        try:
+            from .brain2_episode_windowing import _prompt_turn
+            bundle["turns"] = [
+                _prompt_turn(dict(turn)) for turn in (bundle.get("turns") or [])
+            ]
+        except Exception:
+            # Projection must not make the legacy context unreadable; the E64
+            # executor will still refuse an actually over-budget prompt.
+            pass
         conv_id = str(ep.get("source_conversation_id") or "")
         owner = _scope_owner(con, conv_id) if conv_id else None
         start = canonical_time(ep, "start_time")

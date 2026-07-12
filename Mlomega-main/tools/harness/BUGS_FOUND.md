@@ -305,7 +305,24 @@ Une erreur tardive rejouait tous les appels précédents. Chaque moteur + ses wr
 est maintenant commit atomiquement ; reprise par `(engine,episode,prompt hash)` et
 sortie validée. Test négatif FK + reprise exacte vert. Volume observé restant à
 arbitrer sans supprimer de passes : 19 épisodes v4 × 16 moteurs = 304 appels.
-Suite ciblée complète : 55 tests verts.
+Suite ciblée complète après splitter de champs : 57 tests verts.
+
+## OBS-20 — V13 aval n'est pas dimensionné pour une journée (OUVERT — ARCHITECTURE À BATCHER)
+
+Après EpisodeBuilder v4, la fixture produit 19 épisodes (dont 8 purement visuels)
+et V13 lance 16 moteurs par épisode : **304 appels avant Life Model/longitudinal**.
+Le premier `internal_state_engine` monolithique a tronqué. La protection E64 par
+champs est maintenant fonctionnelle : schéma 10 champs traité en 4 sous-tâches,
+10/10 clés fusionnées, zéro partiel. Le prompt a aussi été ramené de 13 665 à
+7 038 tokens en sortant du prompt les diagnostics globaux `missing_context` et
+les copies de métadonnées de tours ; détails et preuves restent durables.
+
+Mesure 9B réelle : **195,8 s pour un seul internal_state d'un épisode** (forte
+variance : 79 s, 2,7 s, puis appels longs). Cette protection évite la perte mais
+ne rend pas le produit viable : 5 min prendraient probablement 45–90 min et une
+journée plusieurs jours. Correction de fond suivante : boucle moteur→batch
+d'épisodes token-aware, résultats owner/episode-scopés, moteurs psychologiques non
+appliqués aux seuls événements capteur, sans supprimer les tables ni les preuves.
 
 ## Notes that are NOT bugs (expected, documented so future runs don't chase them)
 

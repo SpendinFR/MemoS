@@ -238,6 +238,56 @@ def test_episode_ollama_schema_forbids_verbose_evidence_objects():
     assert EPISODE_FORMAT_SCHEMA["additionalProperties"] is False
 
 
+def test_v13_large_engine_schema_is_partitioned_and_merged_without_field_loss():
+    from mlomega_audio_elite.brain2_complete_v13 import ENGINE_SCHEMAS
+    from mlomega_audio_elite.brain2_strict_v13_2 import _run_engine_partitioned
+
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.execute("CREATE TABLE episodes(episode_id TEXT PRIMARY KEY,start_time TEXT)")
+    con.execute("INSERT INTO episodes VALUES('ep1','2026-07-12T10:00:00+00:00')")
+
+    class FieldLLM:
+        model = "fake-field-llm"
+
+        def __init__(self):
+            self.calls = []
+
+        def generate(self, prompt, *, output_budget):
+            fields = list(prompt["schema_hint"])
+            self.calls.append(fields)
+            data = {}
+            for field in fields:
+                if field == "confidence":
+                    data[field] = 0.8
+                elif field in {"evidence", "counter_evidence", "secondary_emotions",
+                               "thought_hypotheses", "state_transitions"}:
+                    data[field] = [field]
+                else:
+                    data[field] = {"field": field}
+            return LLMCallResult(ok=True, data=data)
+
+    llm = FieldLLM()
+    output = _run_engine_partitioned(
+        con,
+        engine="internal_state_engine",
+        episode_id="ep1",
+        person_id="me",
+        bundle={"episode": {"episode_id": "ep1"}},
+        prior={},
+        window_llm=llm,
+        context_window=16000,
+        output_budget=1000,
+    )
+    schema_fields = set(ENGINE_SCHEMAS["internal_state_engine"])
+    assert set(output) == schema_fields
+    # Seven business fields, proactively split 2+2+2+1; common proof fields are
+    # available in every call but merged once.
+    assert len(llm.calls) == 4
+    assert all(len(set(call) - {"evidence", "counter_evidence", "confidence"}) <= 2
+               for call in llm.calls)
+
+
 def test_build_episodes_windowed_runs_per_window_merges_and_covers():
     from mlomega_audio_elite.brain2_episode_windowing import build_episodes_windowed
 
