@@ -69,6 +69,46 @@ def test_timeline_reduction_lossless_across_a_session():
     assert len(atoms) == 2  # 230 frames -> 2 atoms
 
 
+def test_raw_frame_rows_attach_to_semantic_atoms_without_splitting_state():
+    semantic = [
+        _tl(f"obs{i}", f"2026-07-12T00:00:0{i}.500+00:00")
+        for i in range(3)
+    ]
+    raw = [
+        {
+            "source_id": f"raw{i}",
+            "source_table": "vision_frames",
+            "frame_id": f"raw-frame-{i}",
+            "time": f"2026-07-12T00:00:0{i}.400+00:00",
+            "summary": f"Raw visual frame: unique-{i}.jpg",
+            "objects": None,
+            "visible_text": None,
+        }
+        for i in range(3)
+    ]
+    interleaved = [x for pair in zip(raw, semantic) for x in pair]
+    atoms = reduce_vision_timeline(interleaved)
+    assert len(atoms) == 1
+    assert set(atoms[0].source_refs) == {
+        "raw0", "raw1", "raw2", "obs0", "obs1", "obs2",
+    }
+    assert {"raw-frame-0", "raw-frame-1", "raw-frame-2"} <= set(atoms[0].frame_refs)
+
+
+def test_camera_only_timeline_is_one_evidence_range_not_filename_events():
+    raw = [
+        {
+            "source_id": f"raw{i}", "source_table": "vision_frames",
+            "frame_id": f"frame{i}", "time": f"t{i}",
+            "summary": f"Raw visual frame: unique-{i}.jpg",
+        }
+        for i in range(20)
+    ]
+    atoms = reduce_vision_timeline(raw)
+    assert len(atoms) == 1
+    assert len(atoms[0].source_refs) == 20
+
+
 # ------------------------------------------------------- OllamaWindowLLM map
 class _FakeResult:
     def __init__(self, ok, data=None, error_kind=None, finish_reason=None):

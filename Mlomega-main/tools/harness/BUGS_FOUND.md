@@ -225,6 +225,27 @@ déplacées vers 3:34 ; machine à café 3:57–4:10 ; terrasse puis seconde per
 à 4:24 jusqu'à la fin. Cette description ne doit pas modifier
 `scenarios/real_video_session.json`.
 
+## OBS-15 — Le reducer alternait frames brutes et observations (CORRIGÉ — 2026-07-12)
+
+La reprise a enfin atteint E64-F réel : Ollama 9B a validé cinq fenêtres et
+subdivisé correctement les entrées/sorties trop longues, sans matérialiser de
+partiel. La DB a alors révélé que la conversation contenait encore **1 433
+tours**, dont **1 407 atomes vision unitaires**. Continuer aurait créé au moins
+32 fenêtres racines pour cinq minutes ; le run a été arrêté volontairement, les
+checkpoints validés restant durables.
+
+Cause : `vision_timeline_json` mélange 709 lignes `vision_frames` brutes (aucun
+objet, résumé unique = nom du JPG) et 698 `vision_scene_observations`. Leur
+alternance raw-vide/détection/raw-vide cassait chaque plage. Une frame brute est
+maintenant rattachée temporellement comme preuve à l'observation sémantique la
+plus proche ; elle reste dans `source_refs/frame_refs` mais n'ouvre plus un
+événement cognitif. Preuve réelle : **1 407 refs uniques → 132 atomes**, export
+produit **162 tours = 132 vision + 30 audio**. Le scénario VIKI est inchangé.
+
+L'artifact Deep Audio inclut aussi le digest du contexte réduit dans son identité,
+pour ne jamais reprendre l'ancienne conversation raffinée sous prétexte que les
+WAV n'ont pas changé.
+
 ## Notes that are NOT bugs (expected, documented so future runs don't chase them)
 
 - **`ai_ready=false` / `/health` 200 with `pairing_ready=true`.** Expected on a

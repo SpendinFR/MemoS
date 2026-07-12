@@ -1218,7 +1218,23 @@ def run_offline_deep_audio_for_bundles(
                         result["artifacts"].append({"bundle_id": bundle["bundle_id"], "status": "no_audio"})
                     continue
                 manifest = _source_manifest(pieces)
-                source_digest = hashlib.sha256(json_dumps({"source_manifest": manifest, "processing_profile": processing_profile}).encode("utf-8")).hexdigest()
+                # A deep-audio artifact is not only a transcript of WAV inputs:
+                # its refined Brain2 conversation also embeds the bundle's
+                # non-verbal context. If the vision/context adapter changes while
+                # audio IDs stay stable, resuming the old artifact would keep a
+                # stale 1-frame=1-turn conversation forever. Include the actual
+                # reduced context digest in the durable identity.
+                from .brainlive_event_assembler_v15_14 import _pseudo_turns_for_bundle
+
+                context_digest = hashlib.sha256(
+                    json_dumps(_pseudo_turns_for_bundle(bundle)).encode("utf-8")
+                ).hexdigest()
+                source_digest = hashlib.sha256(json_dumps({
+                    "source_manifest": manifest,
+                    "processing_profile": processing_profile,
+                    "brain2_context_digest": context_digest,
+                    "context_adapter_version": "e64-vision-timeline-v2",
+                }).encode("utf-8")).hexdigest()
                 artifact_id = stable_id("deep_audio_artifact_v185", bundle["bundle_id"], source_digest)
                 with connect() as con:
                     existing = _one(

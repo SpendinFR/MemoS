@@ -596,6 +596,7 @@ Le problème est transversal : tout stage nocturne qui concatène un jour, une c
 > - Package additif NON câblé au close-day : `src/mlomega_audio_elite/night_orchestrator/` (`evidence_ref`, `stage_adapter`, `vision_atoms`, `audio_atoms`, `multimodal_timeline`, `loaders`). Aucun prompt métier touché, aucune preuve supprimée.
 > - E64-A : matrice des stages dans `docs/E64_NIGHT_STAGE_INVENTORY.md` ; `EvidenceRef.evidence_id = stable_id("evref", source_table, source_pk)` (jamais depuis un LLM) ; `NightStageAdapter` = contrat seul, exécuteur générique reporté à E64-C.
 > - E64-B : preuve sur la vraie DB (run vidéo 5 min, blsess_e28e0d554f2fd667) — 472 observations vision → 120 atomes 100% lossless, 60 segments audio → 60 tours intacts, timeline 180 entrées.
+> - Nouvelle preuve réelle 2026-07-12 (`blsess_aa0ef66764807c62`) : la timeline contenait 709 `vision_frames` brutes alternées avec 698 `vision_scene_observations`. Le premier reducer traitait les deux comme des états et produisait **1 407 atomes pour 1 407 refs**. Correction : les frames brutes sont rattachées temporellement comme preuves aux observations sémantiques et ne cassent plus les plages. Résultat produit réel : **1 407 refs → 132 atomes**, toutes uniques et couvertes ; export Brain2 **162 tours = 132 vision + 30 audio live**. Aucun changement au scénario ASR/VIKI.
 > - Tests : 14 verts (`tests/v19/test_e64_night_orchestrator.py`) + 49 non-régression E63.
 
 
@@ -652,8 +653,10 @@ Le problème est transversal : tout stage nocturne qui concatène un jour, une c
 ### E64-F0 — Frontière fermeture révélée avant le premier run F réel
 
 - [ ] Identifier précisément quel drain (`device receipts`, audio ingress, final worker ou transport) dépasse son budget ; le statut doit nommer la phase et l'exception, jamais enregistrer une chaîne vide.
-- [ ] Empêcher le harnais `--with-close-day` de poller CloseDay pendant 30 minutes lorsque `end_session` a déjà échoué ou que `close_day=not_started`.
+- [x] Empêcher le harnais `--with-close-day` de poller CloseDay pendant 30 minutes lorsque `end_session` a déjà échoué ou que `close_day=not_started`.
 - [ ] Reprendre la base scratch existante via `recover_abandoned_phoneonly_sessions`, puis seulement valider les checkpoints E64-F, les épisodes et le manifeste.
+
+> **Checkpoint de reprise réel avant optimisation** : E64-F a effectivement atteint Ollama 9B et prouvé 5 sorties `completed`, subdivisions entrée/sortie et absence de matérialisation partielle. Le run a été volontairement arrêté quand la DB a révélé 1 433 tours (dont 1 407 faux atomes unitaires) : continuer aurait exigé ≥32 fenêtres racines. Ces checkpoints restent pour audit sous l'ancien `conversation_id` et ne contaminent pas le nouvel export immuable.
 
 **Référence humaine de la vidéo (documentation de diagnostic uniquement ; NE PAS modifier le scénario ASR/VIKI)** : 0:00–1:30 ami/canapé et conversation ; 1:30–2:00 lever + table avec lunettes/téléphone ; 2:00 clés posées puis regard table/tête tournée ; 2:30–2:38 texte fixé ; 2:38–3:20 changements de pièces puis retour salon/table ; 3:34 lunettes déplacées près du meuble ; 3:57–4:10 machine à café ; 4:10 terrasse ; 4:24–fin seconde personne et conversation. Cette vérité sert à interpréter la fragmentation vision ; `tools/harness/scenarios/real_video_session.json` reste inchangé.
 

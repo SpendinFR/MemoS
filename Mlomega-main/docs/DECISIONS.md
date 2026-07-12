@@ -882,3 +882,13 @@ Périmètre strict PC (`services/live-pc/change_attention.py` + câblage `live_p
 **Preuves automatisées.** 60 tests E64, puis 13 régressions nocturnes/contexte : **73 verts**. Cas nouveaux : checkpoint visible après fermeture/réouverture SQLite, digest modifié sous ID stable, erreur Ollama `truncated_output`, échec non crédité/non matérialisé, 985 preuves sources et épisode partiel traversant une frontière.
 
 **Premier essai réel après correction.** Le run vidéo du 2026-07-12 a validé le transport live (301 s, 15 077 chunks audio, 30 tours, 3 clips) mais PAS E64-F : `/session/end` a expiré, BrainLive est resté `active`, `close_day=not_started`, aucune table `night_llm_*` n'a été créée. Les logs montrent des flushs LiveDiscourse LLM invalides/tronqués et le statut de fermeture ne nomme pas encore le drain responsable. La base scratch est conservée pour startup recovery. Décision : ne pas relancer la vidéo ni le dashboard ; réparer/observer la frontière de fermeture, reprendre la même DB, puis juger F sur les checkpoints réels.
+
+## 2026-07-12 — E64-B/F : frames brutes = preuves, pas changements cognitifs
+
+**Mesure réelle qui invalide le premier reducer.** La nouvelle capture porte 1 407 lignes vision : 709 `vision_frames` brutes (sans objets, résumé unique contenant le nom du JPG) et 698 `vision_scene_observations`. Elles alternent dans `vision_timeline_json`. Le reducer les comparait toutes comme des états : raw vide → observation détectée → raw vide, donc 1 407 atomes unitaires. Envoyer ce flux aurait créé au moins 32 fenêtres racines de 45 unités pour cinq minutes.
+
+**Décision lossless.** Une `vision_frames` brute ne constitue pas un changement sémantique. Elle est rattachée à l'observation sémantique temporellement la plus proche, puis conservée dans `source_refs`/`frame_refs` de l'atome. Seules les observations sémantiques ouvrent/ferment les plages. Si une timeline ne contient que des frames brutes, elles deviennent une plage de preuves unique plutôt que des événements pilotés par noms de fichiers. Aucun fichier, ID, hash ou observation n'est supprimé.
+
+**Preuves.** Sur la DB scratch réelle : 1 407 entrées → **132 `VisionChangeAtom`**, 1 407 `source_refs` uniques, max 207 observations sémantiques dans une plage ; export produit immuable : **162 tours (132 vision + 30 audio)** contre 1 433. Tests dédiés : interleaving raw/semantic, camera-only, provenance exacte ; 35 ciblés verts et 44 avec E37.
+
+**Invalidation aval.** L'identité d'un artifact Deep Audio inclut désormais le digest du contexte Brain2 réduit, en plus des WAV et du profil. Une évolution du reducer ne peut donc plus reprendre silencieusement une conversation raffinée construite avec l'ancien contexte, même si l'audio n'a pas changé.

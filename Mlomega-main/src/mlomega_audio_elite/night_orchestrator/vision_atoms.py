@@ -19,7 +19,9 @@ replay. No LLM is involved and no business prompt is touched.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from bisect import bisect_left
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from typing import Any, Iterable, Mapping, Sequence
 
 from ..utils import stable_id
@@ -238,5 +240,82 @@ def reduce_vision_timeline(items: Iterable[Mapping[str, Any]]) -> list[VisionCha
     confidence-agnostic) but for the bundle-side item shape. Used to feed Brain2
     a few change atoms instead of ~945 per-frame pseudo-turns.
     """
-    obs = [_timeline_item_to_observation(it, i) for i, it in enumerate(items)]
-    return reduce_vision_observations(obs)
+    rows = list(items)
+    # ``vision_timeline_json`` contains TWO records for most detector instants:
+    # a raw ``vision_frames`` row (no objects; summary is a unique filename) and
+    # a semantic ``vision_scene_observations`` row. Feeding both into the state
+    # reducer alternates empty/raw and detected states, producing almost one atom
+    # per row. Raw frames are immutable evidence, not cognitive state changes:
+    # attach them to the nearest semantic observation, then reduce the semantic
+    # stream. No source/frame id is discarded.
+    raw_frames = [it for it in rows if str(it.get("source_table") or "") == "vision_frames"]
+    semantic = [it for it in rows if str(it.get("source_table") or "") != "vision_frames"]
+    if not semantic:
+        # A camera-only bundle still has one honest evidence range instead of
+        # hundreds of filename-driven pseudo-events.
+        semantic = [
+            {
+                **dict(it),
+                "summary": None,
+                "objects": [],
+                "visible_text": [],
+            }
+            for it in raw_frames
+        ]
+        raw_frames = []
+
+    def _time_value(item: Mapping[str, Any]) -> float:
+        text = str(item.get("time") or "").replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(text).timestamp()
+        except (TypeError, ValueError):
+            return 0.0
+
+    ordered_semantic = sorted(
+        enumerate(semantic), key=lambda pair: (_time_value(pair[1]), pair[0])
+    )
+    semantic_times = [_time_value(item) for _, item in ordered_semantic]
+    raw_by_semantic_id: dict[str, list[Mapping[str, Any]]] = {}
+    for raw in raw_frames:
+        t = _time_value(raw)
+        pos = bisect_left(semantic_times, t)
+        candidates = [p for p in (pos - 1, pos) if 0 <= p < len(ordered_semantic)]
+        nearest = min(candidates, key=lambda p: abs(semantic_times[p] - t))
+        owner_index, owner = ordered_semantic[nearest]
+        owner_id = str(owner.get("source_id") or f"vtl_{owner_index}")
+        raw_by_semantic_id.setdefault(owner_id, []).append(raw)
+
+    obs = [_timeline_item_to_observation(it, i) for i, it in enumerate(semantic)]
+    atoms = reduce_vision_observations(obs)
+    if not raw_by_semantic_id:
+        return atoms
+
+    expanded: list[VisionChangeAtom] = []
+    for atom in atoms:
+        source_refs: list[str] = []
+        frame_refs = list(atom.frame_refs)
+        for source_ref in atom.source_refs:
+            source_refs.append(source_ref)
+            for raw in raw_by_semantic_id.get(source_ref, []):
+                raw_source = str(raw.get("source_id") or "")
+                raw_frame = str(raw.get("frame_id") or "")
+                if raw_source:
+                    source_refs.append(raw_source)
+                if raw_frame:
+                    frame_refs.append(raw_frame)
+        source_refs = list(dict.fromkeys(source_refs))
+        frame_refs = list(dict.fromkeys(frame_refs))
+        expanded.append(
+            replace(
+                atom,
+                atom_id=stable_id(
+                    "vatom", atom.state_key, source_refs[0], source_refs[-1]
+                ),
+                digest=content_digest(
+                    {"state_key": atom.state_key, "source_refs": source_refs}
+                ),
+                source_refs=tuple(source_refs),
+                frame_refs=tuple(frame_refs),
+            )
+        )
+    return expanded
