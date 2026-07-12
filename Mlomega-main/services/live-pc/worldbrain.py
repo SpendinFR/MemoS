@@ -35,6 +35,7 @@ WorldBrain does **not** produce a psychological profile or arbitrary UI output
 import importlib.util
 import sqlite3
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -290,6 +291,11 @@ class WorldBrain:
         self._obs_seq = 0
 
         # Light service-local SQLite for session persistence (never a core table).
+        # The connection is created on the init thread but used from the vision
+        # worker threads (ingest_scene_delta), so it MUST allow cross-thread use
+        # (check_same_thread=False) and every access MUST be serialized by
+        # ``self._db_lock`` — sqlite3 connections are not internally thread-safe.
+        self._db_lock = threading.RLock()
         self._svc_db = self._init_service_db(service_db_path)
         self._init_entity_registry()
 
@@ -304,7 +310,9 @@ class WorldBrain:
 
     # -------------------------------------------------------- service-local store
     def _init_service_db(self, path: str | Path | None) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(path) if path else ":memory:")
+        conn = sqlite3.connect(
+            str(path) if path else ":memory:", check_same_thread=False
+        )
         conn.execute(
             """CREATE TABLE IF NOT EXISTS worldbrain_session_entities(
                  entity_id TEXT PRIMARY KEY, live_session_id TEXT, kind TEXT,
@@ -322,22 +330,23 @@ class WorldBrain:
     def _persist_entity(self, e: WorldEntity) -> None:
         import json as _json
 
-        self._svc_db.execute(
-            """INSERT INTO worldbrain_session_entities(
-                 entity_id, live_session_id, kind, label, lifecycle, first_seen,
-                 last_seen, observation_count, confidence, last_bbox)
-               VALUES(?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(entity_id) DO UPDATE SET
-                 lifecycle=excluded.lifecycle, last_seen=excluded.last_seen,
-                 observation_count=excluded.observation_count,
-                 confidence=excluded.confidence, last_bbox=excluded.last_bbox""",
-            (
-                e.entity_id, self.live_session_id, e.kind, e.label, e.lifecycle,
-                e.first_seen, e.last_seen, e.observation_count, e.confidence,
-                _json.dumps(list(e.last_bbox) if e.last_bbox else None),
-            ),
-        )
-        self._svc_db.commit()
+        with self._db_lock:
+            self._svc_db.execute(
+                """INSERT INTO worldbrain_session_entities(
+                     entity_id, live_session_id, kind, label, lifecycle, first_seen,
+                     last_seen, observation_count, confidence, last_bbox)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(entity_id) DO UPDATE SET
+                     lifecycle=excluded.lifecycle, last_seen=excluded.last_seen,
+                     observation_count=excluded.observation_count,
+                     confidence=excluded.confidence, last_bbox=excluded.last_bbox""",
+                (
+                    e.entity_id, self.live_session_id, e.kind, e.label, e.lifecycle,
+                    e.first_seen, e.last_seen, e.observation_count, e.confidence,
+                    _json.dumps(list(e.last_bbox) if e.last_bbox else None),
+                ),
+            )
+            self._svc_db.commit()
         self._persist_registry_entity(e)
 
     def _init_entity_registry(self) -> None:
@@ -650,13 +659,14 @@ class WorldBrain:
                     ))
         self.change_events.extend(changes)
         self.metrics["change_events"] += len(changes)
-        for c in changes:
-            self._svc_db.execute(
-                "INSERT INTO worldbrain_session_changes(live_session_id, change_type, entity_id, label, observed_at) VALUES(?,?,?,?,?)",
-                (self.live_session_id, c.change_type, c.entity_id, c.label, c.observed_at),
-            )
         if changes:
-            self._svc_db.commit()
+            with self._db_lock:
+                for c in changes:
+                    self._svc_db.execute(
+                        "INSERT INTO worldbrain_session_changes(live_session_id, change_type, entity_id, label, observed_at) VALUES(?,?,?,?,?)",
+                        (self.live_session_id, c.change_type, c.entity_id, c.label, c.observed_at),
+                    )
+                self._svc_db.commit()
         return changes
 
     # ---------------------------------------------------------------- attribute change
@@ -691,11 +701,12 @@ class WorldBrain:
         self.change_events.append(change)
         self.metrics["change_events"] += 1
         try:
-            self._svc_db.execute(
-                "INSERT INTO worldbrain_session_changes(live_session_id, change_type, entity_id, label, observed_at) VALUES(?,?,?,?,?)",
-                (self.live_session_id, change.change_type, subject, str(label), now_iso),
-            )
-            self._svc_db.commit()
+            with self._db_lock:
+                self._svc_db.execute(
+                    "INSERT INTO worldbrain_session_changes(live_session_id, change_type, entity_id, label, observed_at) VALUES(?,?,?,?,?)",
+                    (self.live_session_id, change.change_type, subject, str(label), now_iso),
+                )
+                self._svc_db.commit()
         except Exception:
             pass
         # A change confirmed by two independent modalities (seen + heard) is

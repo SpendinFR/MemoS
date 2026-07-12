@@ -68,7 +68,8 @@ REM Contre un vrai mp4 avec parole (transcripts/turns réels)
 .venv-live\Scripts\python tools\harness\run_harness.py --port 8730 --media chemin\clip.mp4 --duration 40
 
 REM Vraie vidéo de test 5 min alignée sur le scénario dédié + close-day complet (LOURD, GPU)
-.venv-live\Scripts\python tools\harness\run_harness.py --port 8730 --media chemin\video5min.mp4 --scenario tools\harness\scenarios\real_video_session.json --duration 305 --with-close-day
+REM --duration doit dépasser la durée réelle du mp4 (301.6s pour la vidéo WhatsApp de test → 320).
+.venv-live\Scripts\python tools\harness\run_harness.py --port 8730 --media chemin\video5min.mp4 --scenario tools\harness\scenarios\real_video_session.json --duration 320 --with-close-day
 
 REM S'attacher à un serveur déjà lancé (ex. le vrai 8710) au lieu d'en spawner un
 .venv-live\Scripts\python tools\harness\run_harness.py --attach --host 127.0.0.1 --port 8710 --db <base-de-ce-serveur>

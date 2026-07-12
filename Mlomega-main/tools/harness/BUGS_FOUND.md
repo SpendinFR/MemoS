@@ -43,6 +43,62 @@ DeliveryAdapter run the `brainlive_intervention_delivery_queue` `CREATE TABLE IF
 NOT EXISTS` (or call the shared schema) at startup, the same way
 `phoneonly_runtime._RECOVERY_SCHEMA` is ensured before use.
 
+## OBS-2 — /session/end 500 on drain timeout (CORRIGÉ — 2026-07-12)
+
+**Severity:** blocker (the whole end-of-session + close-day never ran).
+
+**Where:** `services/live-pc/live_pipeline.py` `drain_final_processing`
+(`raise TimeoutError("final turn processing did not drain in 30.0s")`) →
+`services/live-pc/phoneonly_runtime.py` `end_session_only` call site.
+
+**Symptom (real-video run 2026-07-11):** `POST /session/end` → HTTP 500,
+`end_session: error`, `close_day: not_started`, `recovery: not_started`. The
+drain TimeoutError propagated out of `pipeline.end_session(strict=True)`, flipped
+`end_status` to `error`, and close-day was never triggered.
+
+**Fix:** the end of session must NEVER fail because the final-turn worker did not
+drain — the turns are already durable in the DB and close-day reprocesses them.
+`end_session_only` now catches `TimeoutError` around the three drain-bearing
+calls (`flush_audio`, `pipeline.end_session`, `release_live_resources`), records
+it in the pipeline errors + `recent_errors`, and continues (best-effort
+post-drain flush via new `live_pipeline.end_session_after_drain_timeout`, which
+runs the discourse/WorldBrain summary without re-draining). The drain semantics
+themselves are unchanged. New regression:
+`tests/v19/test_phoneonly_runtime.py::test_drain_timeout_never_fails_end_session_and_still_closes_day`.
+Committed in the E63 real-video fix pass.
+
+## OBS-3 — WorldBrain service SQLite used cross-thread (CORRIGÉ — 2026-07-12)
+
+**Severity:** grave (dead scene ingestion; 50+ errors/session).
+
+**Where:** `services/live-pc/worldbrain.py` `_init_service_db` + all `self._svc_db`
+uses; called from the vision worker threads via
+`live_pipeline.py:_on_scene_delta → worldbrain.ingest_scene_delta`.
+
+**Symptom:** `worldbrain.ingest_scene_delta: SQLite objects created in a thread
+can only be used in that same thread` — 54 occurrences in the real-video run;
+scene entities/changes were never persisted.
+
+**Fix (minimal):** `sqlite3.connect(..., check_same_thread=False)` + a
+`threading.RLock` (`self._db_lock`) held around every `self._svc_db` access
+(`_persist_entity`, the session-changes insert, `record_attribute_change`). No
+broader refactor. New regression:
+`tests/v19/test_e28_worldbrain.py::test_ingest_scene_delta_is_thread_safe`.
+
+## OBS-4 — hypothesis_engine.note_turn crashes on dirty LLM confidence (CORRIGÉ — 2026-07-12)
+
+**Severity:** minor (one turn's addressee hypothesis dropped, reported).
+
+**Where:** `services/live-pc/hypothesis_engine.py` `note_turn`
+(`float(signal.get("confidence") or 0.0)`).
+
+**Symptom:** `hypothesis_engine.note_turn: could not convert string to float:
+'}}0'` — a local LLM leaked a malformed JSON fragment into the confidence field.
+
+**Fix:** new `_safe_confidence` helper wraps the coercion in try/except, falls
+back to `0.0`, counts `metrics["signal_parse_errors"]`, and reports the parse
+failure once (`_reported_conf_parse_error`). Existing tests unchanged.
+
 ## Notes that are NOT bugs (expected, documented so future runs don't chase them)
 
 - **`ai_ready=false` / `/health` 200 with `pairing_ready=true`.** Expected on a

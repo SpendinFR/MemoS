@@ -199,7 +199,10 @@ class HypothesisEngine:
             "auto_promotions": 0,
             "clarifications_resolved": 0,
             "llm_unavailable": 0,
+            "signal_parse_errors": 0,
         }
+        # Report a dirty-LLM-confidence parse only once (avoid log spam).
+        self._reported_conf_parse_error = False
 
     # -------------------------------------------------------- service-local store
     def _init_service_db(self, path: str | Path | None) -> sqlite3.Connection:
@@ -296,7 +299,7 @@ class HypothesisEngine:
                 present=list(present_person_entities or []),
             )
             if entity is not None:
-                conf = max(float(signal.get("confidence") or 0.0), 0.0)
+                conf = max(self._safe_confidence(signal.get("confidence")), 0.0)
                 result = self.observe(
                     entity_id=entity, attr_type="name",
                     value=_norm_value(signal.get("name")), source="heard",
@@ -308,6 +311,23 @@ class HypothesisEngine:
             self._prev_speaker_entity = self._last_speaker_entity
             self._last_speaker_entity = speaker_entity
         return result
+
+    def _safe_confidence(self, raw: Any, default: float = 0.0) -> float:
+        """Coerce an LLM-provided confidence to a float, tolerating dirty output.
+
+        Local LLMs occasionally leak malformed JSON fragments (e.g. ``'}}0'``)
+        into scalar fields. Rather than let ``float()`` raise and abort the turn,
+        fall back to ``default`` and report the parse failure ONCE via metrics.
+        """
+        if raw is None:
+            return default
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            self.metrics["signal_parse_errors"] += 1
+            if not self._reported_conf_parse_error:
+                self._reported_conf_parse_error = True
+            return default
 
     def _extract_addressed_name(self, text: str) -> dict[str, Any] | None:
         """Generic LLM extraction (mockable). Never a name lexicon/regex."""

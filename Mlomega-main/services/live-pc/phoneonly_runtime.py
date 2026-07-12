@@ -620,7 +620,15 @@ class PhoneOnlyRuntime:
                 if hasattr(self.ingress, "drain_audio"):
                     await self.ingress.drain_audio(timeout_s=drain_timeout_s)
                 if hasattr(self.pipeline, "flush_audio"):
-                    await asyncio.to_thread(self.pipeline.flush_audio)
+                    # A drain timeout here leaves the final turns durable in the
+                    # DB; do not let it fail the end of session (close-day
+                    # reprocesses them).
+                    try:
+                        await asyncio.to_thread(self.pipeline.flush_audio)
+                    except TimeoutError as drain_exc:
+                        if hasattr(self.pipeline, "_report_error"):
+                            self.pipeline._report_error("flush_audio.drain_timeout", drain_exc)
+                        self.recent_errors.append(str(drain_exc)[:500])
                 await self.close_transport()
                 self.end_status = "ending_pipeline"
                 conversation = getattr(self.pipeline, "conversation", None)
@@ -638,7 +646,21 @@ class PhoneOnlyRuntime:
                         live_session_id=self.live_session_id,
                         db_path=self.db_path,
                     )
-                await asyncio.to_thread(self.pipeline.end_session, strict=True)
+                # A drain timeout must NEVER fail the end of session: the final
+                # turns are already durable in the DB and close-day reprocesses
+                # them. Swallow ONLY the TimeoutError, record it in the pipeline
+                # errors, and continue ending the session + triggering close-day.
+                try:
+                    await asyncio.to_thread(self.pipeline.end_session, strict=True)
+                except TimeoutError as drain_exc:
+                    if hasattr(self.pipeline, "_report_error"):
+                        self.pipeline._report_error("end_session.drain_timeout", drain_exc)
+                    self.recent_errors.append(str(drain_exc)[:500])
+                    # Best-effort finish of the session flush the drain gated on.
+                    if hasattr(self.pipeline, "end_session_after_drain_timeout"):
+                        await asyncio.to_thread(
+                            self.pipeline.end_session_after_drain_timeout
+                        )
                 self.live_session_id = getattr(conversation, "live_session_id", None)
                 if conversation is not None:
                     await asyncio.to_thread(
@@ -647,7 +669,16 @@ class PhoneOnlyRuntime:
                 if not self.live_session_id:
                     raise RuntimeError("BrainLive live_session_id was never created")
                 if hasattr(self.pipeline, "release_live_resources"):
-                    await asyncio.to_thread(self.pipeline.release_live_resources)
+                    # release_live_resources re-drains via _stop_final_worker; a
+                    # drain timeout must not fail the end of session either.
+                    try:
+                        await asyncio.to_thread(self.pipeline.release_live_resources)
+                    except TimeoutError as drain_exc:
+                        if hasattr(self.pipeline, "_report_error"):
+                            self.pipeline._report_error(
+                                "release_live_resources.drain_timeout", drain_exc
+                            )
+                        self.recent_errors.append(str(drain_exc)[:500])
                 await asyncio.to_thread(self._release_core_live_caches)
                 self.ended = True
                 self.end_status = "completed"

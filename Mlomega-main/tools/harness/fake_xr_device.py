@@ -220,40 +220,65 @@ class FakeXrDevice:
 
     # -- frame envelope pump (paces alongside the native media track) -------
     async def _pump_envelopes(self) -> None:
+        # NEVER let an exception die silently in this task: it is cancelled +
+        # gathered with return_exceptions=True at teardown, so a bare crash here
+        # would be invisible. Log it into the report instead.
         idx = 0
         period = 1.0 / self.frame_hz if self.frame_hz > 0 else 0.1
-        while not self._stop.is_set():
-            if self._send(self._make_envelope(idx)):
-                idx += 1
-                self.report["envelopes_sent"] = idx
-            await asyncio.sleep(period)
+        try:
+            while not self._stop.is_set():
+                if self._send(self._make_envelope(idx)):
+                    idx += 1
+                    self.report["envelopes_sent"] = idx
+                await asyncio.sleep(period)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive
+            self.report["errors"].append(f"pump_envelopes: {type(exc).__name__}: {exc}")
 
     # -- scenario replay ----------------------------------------------------
     async def _play_scenario(self) -> None:
+        # Scripted events run on their own schedule and MUST NOT stall because a
+        # single send failed or the channel is momentarily not open. We wait to
+        # each event's absolute t, then send if the channel is open; a not-open
+        # channel is recorded (once) but does not abort the remaining events.
         start = time.monotonic()
-        for seq, event in enumerate(self.scenario):
-            t = float(event.get("t", 0.0))
-            wait = start + t - time.monotonic()
-            if wait > 0:
-                await asyncio.sleep(wait)
-            if self._stop.is_set():
-                break
-            kind = event.get("kind", "transcript")
-            if kind == "transcript":
-                sent = self._send(self._device_transcript(event, seq))
-            elif kind == "device_intent":
-                # Menu-driven action path (DeviceCommandHandler.ExecuteFromMenu).
-                sent = self._send({
-                    "type": "device_intent",
-                    "action": str(event.get("action") or ""),
-                    "time": event.get("time"),
-                })
-            elif kind == "raw":
-                sent = self._send(dict(event.get("payload") or {}))
-            else:
-                sent = False
-            if sent:
-                self.report["scenario_events_sent"] += 1
+        try:
+            for seq, event in enumerate(self.scenario):
+                t = float(event.get("t", 0.0))
+                wait = start + t - time.monotonic()
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                if self._stop.is_set():
+                    self.report["errors"].append(
+                        f"scenario_stopped_early: stop set before event {seq} (t={t})"
+                    )
+                    break
+                kind = event.get("kind", "transcript")
+                if kind == "transcript":
+                    sent = self._send(self._device_transcript(event, seq))
+                elif kind == "device_intent":
+                    # Menu-driven action path (DeviceCommandHandler.ExecuteFromMenu).
+                    sent = self._send({
+                        "type": "device_intent",
+                        "action": str(event.get("action") or ""),
+                        "time": event.get("time"),
+                    })
+                elif kind == "raw":
+                    sent = self._send(dict(event.get("payload") or {}))
+                else:
+                    sent = False
+                if sent:
+                    self.report["scenario_events_sent"] += 1
+                else:
+                    self.report["errors"].append(
+                        f"scenario_event_not_sent: seq={seq} t={t} "
+                        f"channel={getattr(self._channel, 'readyState', None)}"
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive
+            self.report["errors"].append(f"play_scenario: {type(exc).__name__}: {exc}")
 
     # -- lifecycle ----------------------------------------------------------
     async def run(self) -> dict[str, Any]:
@@ -280,16 +305,30 @@ class FakeXrDevice:
             def _on_message(message: Any) -> None:
                 self._on_downlink(message)
 
-            player = MediaPlayer(str(self.media))
-            if player.audio is not None:
-                pc.addTrack(player.audio)
-            if player.video is not None:
-                pc.addTrack(player.video)
+            # Two SEPARATE MediaPlayer instances — one for audio, one for video.
+            # A single MediaPlayer demuxes both tracks on one worker thread with
+            # bounded per-track queues; if the two senders consume at different
+            # rates the slower track's queue fills, the demux thread blocks, and
+            # BOTH tracks stall (observed: media froze at ~21s regardless of the
+            # source file). Independent players give each track its own demuxer.
+            player_v = MediaPlayer(str(self.media))
+            player_a = MediaPlayer(str(self.media))
+            self._players = [player_v, player_a]
+            if player_a.audio is not None:
+                pc.addTrack(player_a.audio)
+            if player_v.video is not None:
+                pc.addTrack(player_v.video)
 
             @pc.on("connectionstatechange")
             async def _on_state() -> None:
                 self.report["peer_state"] = pc.connectionState
-                if pc.connectionState in {"failed", "closed", "disconnected"}:
+                self.report.setdefault("peer_state_log", []).append(
+                    {"t": _utc(), "state": pc.connectionState}
+                )
+                # Only TERMINAL states abort the run. "disconnected" is transient
+                # (ICE can recover); treating it as terminal used to kill the frame
+                # pump + scenario replay mid-session on a brief media hiccup.
+                if pc.connectionState in {"failed", "closed"}:
                     self._stop.set()
 
             offer = await pc.createOffer()
@@ -349,10 +388,14 @@ class FakeXrDevice:
                 except Exception as exc:
                     self.report["errors"].append(f"end_session: {type(exc).__name__}: {exc}")
 
-            try:
-                await player.audio.stop() if player.audio else None
-            except Exception:
-                pass
+            for _pl in getattr(self, "_players", []):
+                try:
+                    if _pl.audio is not None:
+                        _pl.audio.stop()
+                    if _pl.video is not None:
+                        _pl.video.stop()
+                except Exception:
+                    pass
             await pc.close()
         return self.report
 

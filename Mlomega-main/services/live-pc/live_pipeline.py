@@ -1454,6 +1454,21 @@ class LivePipeline:
     def end_session(self, *, place_hint: str | None = None, strict: bool = False) -> str | None:
         """Flush the WorldBrain end-of-session summary (E28) + discourse (E34)."""
         self.drain_final_processing()
+        return self._end_session_after_drain(place_hint=place_hint, strict=strict)
+
+    def end_session_after_drain_timeout(self, *, place_hint: str | None = None) -> str | None:
+        """Best-effort end-of-session flush AFTER a drain timeout was swallowed.
+
+        The caller (phoneonly_runtime) catches the drain ``TimeoutError`` so the
+        end of session never fails, but the discourse/WorldBrain summary flush
+        still needs to run. This skips the (already-timed-out) drain and runs the
+        remaining, non-strict flush; the un-drained final turns stay durable in
+        the DB for close-day to reprocess."""
+        return self._end_session_after_drain(place_hint=place_hint, strict=False)
+
+    def _end_session_after_drain(
+        self, *, place_hint: str | None = None, strict: bool = False
+    ) -> str | None:
         if self.live_discourse is not None:
             try:
                 self.live_discourse.close()
