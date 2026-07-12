@@ -93,8 +93,9 @@ def test_coverage_all_buckets_and_missing_blocks():
     report = build_coverage_report(
         stage_name="brain2",
         expected_ids=expected,
-        covered_refs=["e1"],  # directly cited
-        atom_parent_index={"vatom1": ["e2", "e3"]},  # represented by an atom
+        # covered_refs is the FULL set cited in outputs: raw ids AND the atom id.
+        covered_refs=["e1", "vatom1"],
+        atom_parent_index={"vatom1": ["e2", "e3"]},  # atom vatom1 IS cited -> represents e2,e3
         overlap_deduplicated_refs=["e4"],  # folded into a survivor
         quarantined_reasons={"e5": "single unit truncates"},  # quarantined w/ reason
         # e6 -> nowhere
@@ -104,6 +105,21 @@ def test_coverage_all_buckets_and_missing_blocks():
     assert report.overlap_deduplicated == ("e4",)
     assert report.quarantined == (("e5", "single unit truncates"),)
     assert report.missing == ("e6",)
+    assert report.ok is False
+
+
+def test_represented_by_atom_requires_the_atom_in_outputs():
+    # Codex gap 1: an atom's parents are NOT represented if the atom itself never
+    # appears in the persisted outputs (covered_refs). Otherwise coverage goes
+    # falsely green.
+    report = build_coverage_report(
+        stage_name="brain2",
+        expected_ids=["e2", "e3"],
+        covered_refs=[],  # the atom vatom1 was NOT cited in any output
+        atom_parent_index={"vatom1": ["e2", "e3"]},
+    )
+    assert report.represented_by_atom == ()
+    assert report.missing == ("e2", "e3")  # correctly reported as missing, not green
     assert report.ok is False
 
 
@@ -160,6 +176,72 @@ def test_coverage_reread_from_outputs_table_not_returned_ids():
         stage_name="brain2", expected_ids=["e1", "e2", "e3"], covered_refs=refs
     )
     assert report.ok
+
+
+def test_adapter_verify_coverage_recomputes_from_db_and_flags_missing():
+    # Codex gap 2: verify_coverage must return the RICH report recomputed by
+    # re-reading the DB, never trust in-memory ids. A concrete adapter proves the
+    # contract: it seeds one output covering e1 only, expects e1+e2 -> e2 missing.
+    from mlomega_audio_elite.night_orchestrator import NightStageAdapter, StageContext
+    from mlomega_audio_elite.night_orchestrator.coverage import (
+        build_coverage_report,
+        covered_refs_from_outputs_table,
+    )
+
+    class _Brain2Adapter(NightStageAdapter):
+        stage_name = "brain2"
+
+        def load_evidence(self, ctx):  # pragma: no cover - not exercised here
+            return []
+
+        def estimate_tokens(self, refs):  # pragma: no cover
+            return 0
+
+        def build_window_prompt(self, ctx, window):  # pragma: no cover
+            return {}
+
+        def validate_window_output(self, output):  # pragma: no cover
+            return True
+
+        def merge_outputs(self, outputs):  # pragma: no cover
+            return outputs
+
+        def persist_outputs(self, ctx, merged):  # pragma: no cover
+            return merged
+
+        def verify_coverage(self, con, ctx, expected):
+            refs = covered_refs_from_outputs_table(
+                con, person_id=ctx.person_id, package_date=ctx.package_date,
+                stage_name=self.stage_name,
+                extract_refs=lambda o: o.get("evidence_refs", []),
+            )
+            return build_coverage_report(
+                stage_name=self.stage_name,
+                expected_ids=[e.evidence_id for e in expected],
+                covered_refs=refs,
+            )
+
+    con = _con()
+    _seed_completed_window(con, "k1", {"evidence_refs": ["e1"]})
+
+    from mlomega_audio_elite.night_orchestrator import make_ref
+    expected = [
+        make_ref(source_table="t", source_pk="e1", modality="audio",
+                 payload_kind="audio_segment", payload={}),
+        make_ref(source_table="t", source_pk="e2", modality="audio",
+                 payload_kind="audio_segment", payload={}),
+    ]
+    # the persisted output cites the evidence_id of e1 (recompute it the same way)
+    e1_id = expected[0].evidence_id
+    _seed_completed_window(con, "k2", {"evidence_refs": [e1_id]})
+
+    adapter = _Brain2Adapter()
+    ctx = StageContext(person_id="me", package_date="d")
+    report = adapter.verify_coverage(con, ctx, expected)
+    # e1 covered from DB, e2 never produced -> blocks
+    assert expected[0].evidence_id in report.covered
+    assert report.missing == (expected[1].evidence_id,)
+    assert report.ok is False
 
 
 def test_stage_stats_aggregate_from_windows_table():

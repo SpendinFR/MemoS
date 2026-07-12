@@ -64,17 +64,27 @@ def build_coverage_report(
 ) -> CoverageReport:
     """Categorise every expected evidence id into exactly one bucket.
 
-    ``atom_parent_index`` maps an atom/derived id -> the source evidence ids it
-    represents; any expected id present there (and in a covered atom) counts as
-    represented_by_atom. ``quarantined_reasons`` maps evidence_id -> reason.
+    ``covered_refs`` is the FULL set of refs actually cited in the persisted
+    outputs (raw evidence ids AND derived/atom ids). ``atom_parent_index`` maps a
+    derived atom id -> the source evidence ids it represents; an expected id is
+    ``represented_by_atom`` ONLY IF its atom is itself cited in the outputs (its
+    atom id is in ``covered_refs``). Marking an atom's parents as represented
+    while the atom never appears in a persisted output would make coverage
+    falsely green - that gap is closed here. ``quarantined_reasons`` maps
+    evidence_id -> reason.
     """
     expected = list(dict.fromkeys(str(e) for e in expected_ids))
     expected_set = set(expected)
-    covered_set = {str(c) for c in covered_refs} & expected_set
+    covered_full = {str(c) for c in covered_refs}
+    covered_set = covered_full & expected_set
 
     represented: set[str] = set()
     if atom_parent_index:
-        for _atom_id, parents in atom_parent_index.items():
+        for atom_id, parents in atom_parent_index.items():
+            # The atom only stands in for its parents if the atom itself landed
+            # in a persisted output.
+            if str(atom_id) not in covered_full:
+                continue
             for pid in parents:
                 pid = str(pid)
                 if pid in expected_set and pid not in covered_set:

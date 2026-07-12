@@ -12,8 +12,8 @@ import pytest
 
 from mlomega_audio_elite.night_orchestrator import (
     build_audio_atoms,
+    build_coverage_report,
     build_timeline,
-    compute_coverage,
     content_digest,
     estimate_tokens_for_text,
     make_ref,
@@ -67,13 +67,13 @@ def test_content_digest_is_order_insensitive():
 
 
 # -------------------------------------------------------------- coverage manifest
-def test_compute_coverage_blocks_on_missing():
-    m = compute_coverage(stage_name="s", expected=["e1", "e2", "e3"],
-                         covered=["e1"], quarantined=["e2"])
+def test_coverage_blocks_on_missing():
+    m = build_coverage_report(stage_name="s", expected_ids=["e1", "e2", "e3"],
+                              covered_refs=["e1"], quarantined_reasons={"e2": "r"})
     assert m.missing == ("e3",)
     assert m.ok is False
-    m2 = compute_coverage(stage_name="s", expected=["e1", "e2"],
-                          covered=["e1"], quarantined=["e2"])
+    m2 = build_coverage_report(stage_name="s", expected_ids=["e1", "e2"],
+                               covered_refs=["e1"], quarantined_reasons={"e2": "r"})
     assert m2.ok is True and m2.missing == ()
 
 
@@ -171,8 +171,8 @@ def test_full_coverage_no_evidence_lost_across_changes():
         for atom in atoms
     ]
     covered = refs_cover(expected, produced)
-    manifest = compute_coverage(stage_name="vision", expected=list(parent_ids),
-                                covered=list(covered))
+    manifest = build_coverage_report(stage_name="vision", expected_ids=list(parent_ids),
+                                     covered_refs=list(covered))
     assert manifest.ok is True
 
 

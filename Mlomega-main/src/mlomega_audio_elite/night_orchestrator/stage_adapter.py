@@ -7,20 +7,26 @@ deliberately NOT in this file yet. A stage adapter exposes its business logic
 these methods; the future executor drives budget/retry/checkpoint/resume around
 them so no business prompt re-implements the mechanics.
 
-This module also ships two small, fully deterministic helpers that E64-A can
-already test and that later waves reuse unchanged:
-- ``estimate_tokens_for_text`` : conservative, tokenizer-pluggable estimate.
-- ``compute_coverage`` : the anti-loss manifest (expected vs covered vs
-  quarantined vs missing); a non-empty ``missing`` MUST block a stage.
+This module also ships a small, fully deterministic helper that later waves
+reuse unchanged: ``estimate_tokens_for_text`` (conservative, tokenizer-pluggable).
+
+The anti-loss coverage manifest is NOT here: it lives in ``coverage.py``
+(``CoverageReport`` + ``build_coverage_report``), which recomputes coverage by
+RE-READING the persisted outputs from the DB. ``verify_coverage`` below returns
+that rich report - there is deliberately no simplified in-memory manifest, so a
+stage cannot be declared green from ids a function merely returned.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from .evidence_ref import EvidenceRef
+
+if TYPE_CHECKING:
+    from .coverage import CoverageReport
 
 
 @dataclass(frozen=True)
@@ -48,61 +54,6 @@ class WindowSpec:
     primary_refs: tuple[str, ...]
     overlap_refs: tuple[str, ...] = field(default_factory=tuple)
     input_digest: str = ""
-
-
-@dataclass(frozen=True)
-class CoverageManifest:
-    """E64-E anti-loss manifest. ``ok`` is False whenever ``missing`` is non-empty."""
-
-    stage_name: str
-    expected: tuple[str, ...]
-    covered: tuple[str, ...]
-    quarantined: tuple[str, ...]
-    missing: tuple[str, ...]
-
-    @property
-    def ok(self) -> bool:
-        return not self.missing
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "stage_name": self.stage_name,
-            "expected_count": len(self.expected),
-            "covered_count": len(self.covered),
-            "quarantined_count": len(self.quarantined),
-            "missing_count": len(self.missing),
-            "missing": list(self.missing),
-            "ok": self.ok,
-        }
-
-
-def compute_coverage(
-    *,
-    stage_name: str,
-    expected: Sequence[str],
-    covered: Sequence[str],
-    quarantined: Sequence[str] = (),
-) -> CoverageManifest:
-    """Deterministic coverage manifest.
-
-    An expected evidence id is satisfied when it is either covered (directly or
-    transitively) or explicitly quarantined with a reason recorded elsewhere.
-    Anything left is ``missing`` and MUST block the stage. Quarantine never wins
-    over coverage: an id counted as covered is not also reported missing.
-    """
-    expected_set = list(dict.fromkeys(str(e) for e in expected))
-    covered_set = {str(c) for c in covered}
-    quarantined_set = {str(q) for q in quarantined}
-    missing = tuple(
-        e for e in expected_set if e not in covered_set and e not in quarantined_set
-    )
-    return CoverageManifest(
-        stage_name=stage_name,
-        expected=tuple(expected_set),
-        covered=tuple(sorted(covered_set & set(expected_set))),
-        quarantined=tuple(sorted(quarantined_set & set(expected_set))),
-        missing=missing,
-    )
 
 
 # A tokenizer is a callable text -> token count. Kept pluggable so E64-C can pass
@@ -168,6 +119,14 @@ class NightStageAdapter(ABC):
 
     @abstractmethod
     def verify_coverage(
-        self, ctx: StageContext, expected: Sequence[EvidenceRef], produced: Sequence[EvidenceRef]
-    ) -> CoverageManifest:
-        """Re-read persisted outputs and prove every expected evidence is covered."""
+        self, con: Any, ctx: StageContext, expected: Sequence[EvidenceRef]
+    ) -> "CoverageReport":
+        """Return the RICH coverage manifest, recomputed by RE-READING the DB.
+
+        Implementations MUST derive the covered refs from the persisted outputs
+        (``coverage.covered_refs_from_outputs_table``) and build the report with
+        ``coverage.build_coverage_report`` - never from ids returned in memory by
+        an earlier step. A non-empty ``missing`` MUST block the stage, and an atom
+        only counts as representing its parents when the atom itself is cited in a
+        persisted output.
+        """

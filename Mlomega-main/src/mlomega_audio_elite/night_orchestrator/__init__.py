@@ -20,11 +20,9 @@ Design invariants (mirror docs/PROD_BACKLOG.md E64):
 
 from .evidence_ref import EvidenceRef, content_digest, make_ref
 from .stage_adapter import (
-    CoverageManifest,
     NightStageAdapter,
     StageContext,
     WindowSpec,
-    compute_coverage,
     estimate_tokens_for_text,
 )
 from .vision_atoms import VisionChangeAtom, reduce_vision_observations
@@ -62,8 +60,6 @@ __all__ = [
     "NightStageAdapter",
     "StageContext",
     "WindowSpec",
-    "CoverageManifest",
-    "compute_coverage",
     "estimate_tokens_for_text",
     "VisionChangeAtom",
     "reduce_vision_observations",
