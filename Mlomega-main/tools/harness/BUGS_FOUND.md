@@ -128,12 +128,74 @@ La récupération durable retrouvait correctement le job, mais ne passait
 est désormais toujours un retry explicite (`allow_rerun=True`) ; le script ne
 réouvre un jour completed que s'il existe réellement.
 
-## Validation complète encore bloquée par la configuration machine
+## OBS-8 — Token HF sans scope public gated (CONFIG CORRIGÉE — 2026-07-12)
 
-Le CloseDay atteint WhisperX/Pyannote et CUDA, puis Hugging Face répond **403**
-sur `pyannote/speaker-diarization-3.1`: le token doit autoriser les dépôts publics
-gated et le compte doit avoir accepté les conditions du modèle. Ce n'est pas
-contourné : la validation `--with-close-day` reste ouverte jusqu'à ce droit.
+Le compte avait bien accès à `pyannote/speaker-diarization-3.1`, mais le token
+fine-grained `py` réellement lu par `.env` annonçait
+`canReadGatedRepos=false` et `permissions=[]` pour ce modèle. Le scope a été
+activé par l'utilisateur ; `whoami` renvoie maintenant `true` et Pyannote 3.1,
+segmentation 3.0 et WeSpeaker se téléchargent. Ne pas confondre « accès accordé
+au compte » et « scope accordé au token ».
+
+## OBS-9 — SpeechBrain ECAPA exigeait un privilège symlink Windows (CORRIGÉ — 2026-07-12)
+
+`EncoderClassifier.from_hparams(savedir=...)` tente de collecter ses checkpoints
+par symlinks. Un compte Windows normal lève `WinError 1314`. Le backend utilise
+désormais le cache Hugging Face directement (`savedir=None`) sous Windows et la
+stratégie COPY lorsque disponible. Validation réelle : ECAPA chargé, CUDA actif,
+aucun mode vocal simplifié.
+
+## OBS-10 — Résolution vocale auto-verrouillait SQLite (CORRIGÉ — 2026-07-12)
+
+`resolve_speakers_for_audio` détenait une transaction puis `ensure_speaker`
+ouvrait une seconde connexion en écriture : `database is locked`. Le writer
+réutilise maintenant la connexion/transaction appelante. Cela ne dépend pas de
+l'enrôlement owner : le profil du run avait `require_self_voice=false`, donc les
+voix inconnues doivent être clusterisées sans bloquer.
+
+## OBS-11 — Un mot WhisperX non aligné bloquait tous les tours (CORRIGÉ — 2026-07-12)
+
+WhisperX peut conserver un token sans `start/end`. Le validateur rejetait alors
+les 40 tours (`turn 2 word 8 lacks bounds`). Le texte reste intact dans
+l'utterance et la preuve brute ; seul le token sans bornes est exclu de la liste
+des mots horodatés. Une utterance entièrement non alignée hérite des bornes du
+segment, sans inventer de timestamp mot-à-mot. Validation réelle : **40 tours**,
+`large-v3`, CUDA float16, alignement, Pyannote et SpeechBrain tous actifs.
+
+## OBS-12 — Brain2 refusait même le person_id explicite (CORRIGÉ — 2026-07-12)
+
+`_default_user` appelait le garde anti-owner-implicite avant de tester
+`explicit_person_id`, puis EpisodeBuilder reperdait le `person_id` reçu du
+CloseDay. Le contrôle accepte désormais immédiatement l'ID explicite et le
+propage au builder ; l'absence d'ID continue d'échouer fermement.
+
+## OBS-13 — Explosion du prompt Brain2 / sortie LLM tronquée (OUVERT — ARRÊT VOLONTAIRE)
+
+Le premier vrai passage nocturne atteint maintenant Brain2, mais la conversation
+raffinée contient **985 pseudo-tours** : **40 tours Deep Audio utiles + 945
+`vision_context`**, pratiquement une observation par frame/détection. Le bundle
+EpisodeBuilder mesure **1 595 361 caractères**. Il ne doit ni être envoyé en un
+seul prompt, ni être réduit arbitrairement.
+
+Un second défaut a été identifié et corrigé sans perte : `_safe_prompt_payload`
+cherchait uniquement `payload["bundle"]`, alors qu'EpisodeBuilder fournit
+`payload["conversation_bundle"]`; en dépassement, le LLM recevait donc une
+enveloppe vide et inventait des épisodes. Le fallback conserve maintenant les
+références de la bonne clé et échoue s'il ne peut pas produire une enveloppe
+valide. Les appels JSON désactivent aussi le thinking Qwen et retentent une fois
+à 8192 tokens, sans jamais appliquer une sortie partielle.
+
+**Important :** les essais provisoires « échantillonner 16 frames », « maximum 6
+épisodes » et « 8 éléments par liste » ont été **retirés avant commit**. Ils
+auraient pu perdre de la granularité et ne constituent pas la correction.
+
+La correction de fond doit être décidée avant de reprendre : traitement durable
+par fenêtres de 40–50 éléments, réduction des frames en changements/tracks sans
+supprimer leurs preuves, références vers les lignes sources, checkpoints par
+fenêtre, fusion des frontières, déduplication/idempotence et validation de
+couverture finale. Il faut appliquer cette politique à tous les stages LLM de la
+nuit, pas corriger EpisodeBuilder seul. Le CloseDay réel reste `blocked` au stage
+Brain2 ; le dashboard n'a volontairement pas été lancé comme si le run était vert.
 
 ## Notes that are NOT bugs (expected, documented so future runs don't chase them)
 

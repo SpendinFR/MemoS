@@ -14,7 +14,11 @@ from typing import Any
 
 from .db import connect, init_db, upsert
 from .governance_v18 import DataAccessError, GovernanceError, ensure_v18_schema, strict_many, strict_one
-from .llm import EliteLLMError, OllamaJsonClient
+from .llm import (
+    EliteLLMError,
+    LLMTruncatedOutputError,
+    OllamaJsonClient,
+)
 from .utils import json_dumps, json_loads, now_iso, sha256_bytes, stable_id
 from .brain2_complete_v13 import COMPLETE_TARGETS, ENGINE_ORDER, ENGINE_TABLES, PLAN_TABLES, ENGINE_SCHEMAS
 from .llm_contracts_v15_18 import normalize_outcome_tracker, normalize_similar_case_score, normalize_calibration_rows, normalize_intervention_plan
@@ -103,10 +107,10 @@ def _available_tables(con) -> set[str]:
 
 
 def _default_user(con, conversation_id: str | None = None, explicit_person_id: str | None = None) -> str:
-    from .v18_owner_scope import reject_implicit_owner_fallback
-    reject_implicit_owner_fallback(__name__)
     if explicit_person_id:
         return str(explicit_person_id)
+    from .v18_owner_scope import reject_implicit_owner_fallback
+    reject_implicit_owner_fallback(__name__)
     row = con.execute("SELECT person_id FROM speaker_profiles WHERE is_user=1 ORDER BY created_at LIMIT 1").fetchone()
     if row:
         return row["person_id"]
@@ -265,7 +269,32 @@ def _llm_require_json(engine_name: str, prompt: str, schema: dict[str, Any]) -> 
         "Si une information manque, indique missing_context au lieu d'inventer."
     )
     client = OllamaJsonClient()
-    data = client.require_json(system, prompt, schema_hint=schema, timeout=float(os.environ.get("MLOMEGA_V13_ENGINE_TIMEOUT", "180")))
+    timeout = float(os.environ.get("MLOMEGA_V13_ENGINE_TIMEOUT", "180"))
+    try:
+        data = client.require_json(
+            system,
+            prompt,
+            schema_hint=schema,
+            timeout=timeout,
+        )
+    except LLMTruncatedOutputError:
+        # Never apply the partial JSON. Retry the same deterministic contract
+        # once with a larger response budget; if it truncates again the durable
+        # stage remains blocked/retryable exactly as before.
+        try:
+            retry_tokens = max(
+                4096,
+                int(os.environ.get("MLOMEGA_V13_TRUNCATION_RETRY_TOKENS", "8192")),
+            )
+        except ValueError:
+            retry_tokens = 8192
+        data = client.require_json(
+            system,
+            prompt,
+            schema_hint=schema,
+            timeout=timeout,
+            max_output_tokens=retry_tokens,
+        )
     if not isinstance(data, dict):
         raise EliteLLMError(f"{engine_name} returned non-object JSON")
     return data
@@ -323,6 +352,8 @@ def _safe_prompt_payload(payload: dict[str, Any], max_chars: int = 90000) -> str
     if len(txt) <= max_chars:
         return txt
     bundle = payload.get("bundle") if isinstance(payload.get("bundle"), dict) else {}
+    if not bundle and isinstance(payload.get("conversation_bundle"), dict):
+        bundle = payload["conversation_bundle"]
     compact_bundle: dict[str, Any] = {}
     for key, value in bundle.items():
         if isinstance(value, list):
@@ -600,7 +631,7 @@ def _materialize_episodes_from_qwen(con, conversation_id: str, output: dict[str,
     return count
 
 
-def _ensure_episodes_strict(con, conversation_id: str) -> int:
+def _ensure_episodes_strict(con, conversation_id: str, *, person_id: str) -> int:
     existing_rows = [dict(r) for r in con.execute("SELECT episode_id, metadata_json FROM episodes WHERE source_conversation_id=?", (conversation_id,)).fetchall()]
     if existing_rows:
         complete = False
@@ -618,7 +649,18 @@ def _ensure_episodes_strict(con, conversation_id: str) -> int:
     bundle = _conversation_bundle(con, conversation_id)
     prompt = _safe_prompt_payload({"mission": "Découpe cette conversation en épisodes de vie selon le plan Brain 2.0. Aucun découpage par regex: utilise le sens, les preuves et l'incertitude. Respecte metadata_json.kind/evidence_role: observation système ≠ parole de William.", "conversation_bundle": bundle, "schema": STRICT_EPISODE_SCHEMA})
     out = _llm_require_json("episode_builder", prompt, STRICT_EPISODE_SCHEMA)
-    _record_engine(con, engine="episode_builder", conversation_id=conversation_id, episode_id=None, person_id=_default_user(con, conversation_id), prompt=prompt, output=out, status="ok")
+    _record_engine(
+        con,
+        engine="episode_builder",
+        conversation_id=conversation_id,
+        episode_id=None,
+        person_id=_default_user(
+            con, conversation_id, explicit_person_id=person_id
+        ),
+        prompt=prompt,
+        output=out,
+        status="ok",
+    )
     return _materialize_episodes_from_qwen(con, conversation_id, out)
 
 
@@ -938,7 +980,9 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
     results = []
     with connect() as con:
         person_id = _default_user(con, conversation_id, explicit_person_id=person_id)
-        counts["episodes_created_by_qwen"] += _ensure_episodes_strict(con, conversation_id)
+        counts["episodes_created_by_qwen"] += _ensure_episodes_strict(
+            con, conversation_id, person_id=person_id
+        )
         _create_readiness_checks(con, conversation_id)
         episodes = [dict(r) for r in con.execute("SELECT episode_id FROM episodes WHERE source_conversation_id=? ORDER BY start_time, created_at", (conversation_id,))]
         if max_episodes is not None:

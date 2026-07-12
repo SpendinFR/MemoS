@@ -29,10 +29,30 @@ class SpeechBrainVoiceEmbedder:
                 from speechbrain.inference.speaker import EncoderClassifier  # speechbrain >=1
             except Exception:
                 from speechbrain.pretrained import EncoderClassifier  # older speechbrain
+            fetch_options: dict[str, Any] = {}
+            try:
+                # SpeechBrain defaults to symlinks, which ordinary Windows
+                # accounts cannot create unless Developer Mode/admin is enabled.
+                # COPY preserves the same cached model without requiring that
+                # machine-wide privilege. Older SpeechBrain releases without
+                # LocalStrategy keep their historical default.
+                from speechbrain.utils.fetching import LocalStrategy
+
+                fetch_options["local_strategy"] = LocalStrategy.COPY
+            except (ImportError, AttributeError):
+                pass
             self.classifier = EncoderClassifier.from_hparams(
                 source=model_id,
-                savedir=str(settings.root_dir / "models" / "speechbrain_ecapa"),
+                # With savedir=None SpeechBrain loads directly from its durable
+                # HF cache. On Windows this also prevents Pretrainer from
+                # collecting checkpoints through privileged symlinks.
+                savedir=(
+                    None
+                    if os.name == "nt"
+                    else str(settings.root_dir / "models" / "speechbrain_ecapa")
+                ),
                 run_opts={"device": self.device},
+                **fetch_options,
             )
             import torch  # noqa: F401
             import torchaudio  # noqa: F401
@@ -72,17 +92,29 @@ def _extract_voice_embedding(audio_path: Path) -> tuple[list[float], str, float]
     return emb, "speechbrain-ecapa-voxceleb", 0.90
 
 
-def ensure_speaker(person_id: str, display_name: str | None = None, is_user: bool = False) -> None:
-    with connect() as con:
-        upsert(con, "speaker_profiles", {
-            "person_id": person_id,
-            "display_name": display_name or person_id,
-            "is_user": 1 if is_user else 0,
-            "aliases_json": "[]",
-            "notes": None,
-            "created_at": now_iso(),
-        }, "person_id")
-        con.commit()
+def ensure_speaker(
+    person_id: str,
+    display_name: str | None = None,
+    is_user: bool = False,
+    *,
+    con: Any | None = None,
+) -> None:
+    values = {
+        "person_id": person_id,
+        "display_name": display_name or person_id,
+        "is_user": 1 if is_user else 0,
+        "aliases_json": "[]",
+        "notes": None,
+        "created_at": now_iso(),
+    }
+    if con is not None:
+        # Callers already holding a write transaction must reuse it. Opening a
+        # second SQLite connection here self-deadlocks on Windows.
+        upsert(con, "speaker_profiles", values, "person_id")
+        return
+    with connect() as own_con:
+        upsert(own_con, "speaker_profiles", values, "person_id")
+        own_con.commit()
 
 
 def enroll_voice(person_id: str, audio_path: Path, display_name: str | None = None, is_user: bool = False) -> str:

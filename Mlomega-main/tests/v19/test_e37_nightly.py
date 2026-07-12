@@ -77,6 +77,38 @@ def _speech(n_samples: int = 16000, freq: float = 180.0) -> np.ndarray:
     return (0.4 * np.sin(2 * np.pi * freq * t)).astype(np.float32)
 
 
+def test_unaligned_whisperx_word_keeps_text_without_false_timestamps():
+    from mlomega_audio_elite.segmentation import normalize_transcript_turns
+
+    transcript = normalize_transcript_turns({
+        "metadata": {"conversation_id": "unaligned"},
+        "turns": [{
+            "turn_id": "raw-1", "speaker": "SPEAKER_00",
+            "start": 1.0, "end": 2.0, "text": "bonjour Viki",
+            "words": [
+                {"word": "bonjour", "start": 1.0, "end": 1.4},
+                {"word": "Viki"},
+            ],
+        }],
+    })
+
+    assert transcript["turns"][0]["text"] == "bonjour Viki"
+    assert transcript["turns"][0]["words"] == [
+        {"word": "bonjour", "start": 1.0, "end": 1.4}
+    ]
+
+
+def test_strict_brain2_accepts_the_explicit_owner_without_legacy_escape_hatch():
+    import sqlite3
+    from mlomega_audio_elite.brain2_strict_v13_2 import _default_user
+    from mlomega_audio_elite.governance_v18 import ScopeError
+
+    con = sqlite3.connect(":memory:")
+    assert _default_user(con, explicit_person_id="me") == "me"
+    with pytest.raises(ScopeError):
+        _default_user(con)
+
+
 # ============================================================ 1. format fidelity
 def test_archived_segment_writes_wav_and_core_format_speech_segment(tmp_path, monkeypatch):
     _env(tmp_path, monkeypatch)

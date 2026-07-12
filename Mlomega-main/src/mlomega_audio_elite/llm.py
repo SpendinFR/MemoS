@@ -265,6 +265,11 @@ class OllamaJsonClient:
             "model": self.model,
             "prompt": f"SYSTEM:\n{system}\n\nUSER:\n{prompt}\n\nReturn one compact JSON object only.",
             "stream": False,
+            # Qwen 3.x otherwise spends the bounded response budget on hidden
+            # reasoning before emitting the required JSON and can finish with
+            # done_reason=length. Strict schema calls need the answer, not a
+            # separate thinking trace.
+            "think": False,
             "format": json_schema or "json",
             # num_ctx is the total prompt + response window.  Ollama otherwise
             # defaults to 4096 on this workstation, which made a 4096-token

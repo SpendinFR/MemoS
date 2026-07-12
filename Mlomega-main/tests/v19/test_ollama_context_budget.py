@@ -18,6 +18,7 @@ def test_ollama_uses_distinct_total_context_windows(monkeypatch):
     assert llm.OllamaJsonClient().require_json("system", "prompt", {"ok": True}) == {"ok": True}
     assert captured[-1]["options"]["num_ctx"] == 4096
     assert captured[-1]["options"]["num_predict"] == 900
+    assert captured[-1]["think"] is False
 
     with phase("post_stop_context_test"):
         assert llm.OllamaJsonClient().require_json("system", "prompt", {"ok": True}) == {"ok": True}
@@ -41,4 +42,40 @@ def test_truncated_json_is_never_applied(monkeypatch):
     assert result.ok is False
     assert result.data == {}
     assert result.error_kind == "truncated_output"
+
+
+def test_strict_brain2_retries_truncation_once_with_larger_budget(monkeypatch):
+    from mlomega_audio_elite import brain2_strict_v13_2 as strict
+    from mlomega_audio_elite.llm import LLMTruncatedOutputError
+
+    calls: list[int | None] = []
+
+    class FakeClient:
+        def require_json(self, *_args, max_output_tokens=None, **_kwargs):
+            calls.append(max_output_tokens)
+            if len(calls) == 1:
+                raise LLMTruncatedOutputError("length")
+            return {"ok": True}
+
+    monkeypatch.setattr(strict, "OllamaJsonClient", FakeClient)
+    monkeypatch.setenv("MLOMEGA_V13_TRUNCATION_RETRY_TOKENS", "8192")
+    assert strict._llm_require_json("context_resolver", "prompt", {"ok": True}) == {
+        "ok": True
+    }
+    assert calls == [None, 8192]
+
+
+def test_safe_prompt_fallback_keeps_conversation_bundle_references():
+    from mlomega_audio_elite.brain2_strict_v13_2 import _safe_prompt_payload
+    import json
+
+    prompt = json.loads(_safe_prompt_payload({
+        "mission": "segment",
+        "conversation_bundle": {
+            "turns": [{"turn_id": "t1", "text": "x" * 1000}]
+        },
+        "schema": {"episodes": []},
+    }, max_chars=900))
+    assert prompt["context_incomplete"] is True
+    assert prompt["bundle_source_refs"]["turns"][0]["turn_id"] == "t1"
 

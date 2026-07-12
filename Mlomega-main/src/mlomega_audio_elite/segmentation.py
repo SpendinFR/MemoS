@@ -94,9 +94,16 @@ def _split_words(
         text = _join_words(chunk)
         if not text:
             continue
-        start = next((_word_start(w) for w in chunk if _word_start(w) is not None), None)
-        end = next((_word_end(w) for w in reversed(chunk) if _word_end(w) is not None), None)
-        out.append((text, start, end, chunk))
+        # WhisperX legitimately leaves a small number of tokens unaligned. Keep
+        # them in the utterance text/raw metadata, but never expose them as
+        # timestamped evidence without numeric bounds.
+        aligned = [
+            w for w in chunk
+            if _word_start(w) is not None and _word_end(w) is not None
+        ]
+        start = next((_word_start(w) for w in aligned), None)
+        end = next((_word_end(w) for w in reversed(aligned)), None)
+        out.append((text, start, end, aligned))
     return out
 
 
@@ -165,6 +172,13 @@ def normalize_transcript_turns(
         for local_idx, (unit_text, start_s, end_s, unit_words) in enumerate(split_units):
             if not unit_text:
                 continue
+            # A fully unaligned chunk still inherits the enclosing WhisperX
+            # segment bounds; its words list remains empty and therefore makes
+            # no false word-level timing claim.
+            if start_s is None:
+                start_s = turn.get("start")
+            if end_s is None:
+                end_s = turn.get("end")
             child = dict(turn)
             child["turn_id"] = stable_id("utt", conversation_id, original_turn_id, local_idx, unit_text, start_s, end_s)
             child["text"] = unit_text

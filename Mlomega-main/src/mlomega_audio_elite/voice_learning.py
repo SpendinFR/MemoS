@@ -258,7 +258,17 @@ def resolve_speakers_for_audio(audio_path: Path, segments: list[dict[str, Any]],
             if best_person and best_score >= known_threshold:
                 person_id = best_person
                 decision = "known_person_match"
-                ensure_speaker(person_id, display_name=person_id, is_user=bool(con.execute("SELECT is_user FROM speaker_profiles WHERE person_id=?", (person_id,)).fetchone()["is_user"]))
+                ensure_speaker(
+                    person_id,
+                    display_name=person_id,
+                    is_user=bool(
+                        con.execute(
+                            "SELECT is_user FROM speaker_profiles WHERE person_id=?",
+                            (person_id,),
+                        ).fetchone()["is_user"]
+                    ),
+                    con=con,
+                )
             else:
                 if best_cluster and best_cluster_score >= cluster_threshold:
                     cluster_id = best_cluster
@@ -285,7 +295,7 @@ def resolve_speakers_for_audio(audio_path: Path, segments: list[dict[str, Any]],
                         "updated_at": now,
                     }, "cluster_id")
                 person_id = cluster_id
-                ensure_speaker(person_id, display_name=person_id, is_user=False)
+                ensure_speaker(person_id, display_name=person_id, is_user=False, con=con)
                 # update cluster centroid and counters
                 row = con.execute("SELECT centroid_embedding_json, observation_count, total_duration_s FROM voice_clusters WHERE cluster_id=?", (cluster_id,)).fetchone()
                 prev_vec = json_loads(row["centroid_embedding_json"], []) if row else []
