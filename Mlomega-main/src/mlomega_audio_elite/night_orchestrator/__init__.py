@@ -30,6 +30,15 @@ from .stage_adapter import (
 from .vision_atoms import VisionChangeAtom, reduce_vision_observations
 from .audio_atoms import AudioTurnAtom, build_audio_atoms
 from .multimodal_timeline import TimelineEntry, build_timeline
+from .window_planner import PlanUnit, PlannedWindow, plan_windows, subdivide
+from .executor import (
+    LLMCallResult,
+    ModelBudget,
+    StageResult,
+    StageScope,
+    WindowResult,
+    run_windows,
+)
 
 __all__ = [
     "EvidenceRef",
@@ -47,4 +56,14 @@ __all__ = [
     "build_audio_atoms",
     "TimelineEntry",
     "build_timeline",
+    "PlanUnit",
+    "PlannedWindow",
+    "plan_windows",
+    "subdivide",
+    "LLMCallResult",
+    "ModelBudget",
+    "StageResult",
+    "StageScope",
+    "WindowResult",
+    "run_windows",
 ]

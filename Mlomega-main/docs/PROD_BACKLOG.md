@@ -592,21 +592,26 @@ Le problème est transversal : tout stage nocturne qui concatène un jour, une c
 - [x] Les états identiques consécutifs deviennent une plage `[first_seen,last_seen,count,digest,source_refs]`, pas 300 pseudo-tours. Un changement réel ouvre un nouvel atome ; la confiance seule ne crée pas un événement cognitif si l'identité/état ne change pas.
 - [x] Joindre audio et vision par temps/BrainLive session dans une timeline multimodale ordonnée. Aucun aplatissement « une frame = un tour de conversation ».
 
-<!-- Bloc de suivi ajouté (n'altère pas le texte des étapes E64 ci-dessus) — E64-A/B livrés 2026-07-12, commit 03f5b50 :
-- Package additif NON câblé au close-day : `src/mlomega_audio_elite/night_orchestrator/` (`evidence_ref`, `stage_adapter`, `vision_atoms`, `audio_atoms`, `multimodal_timeline`, `loaders`). Aucun prompt métier touché, aucune preuve supprimée.
-- E64-A : matrice des stages dans `docs/E64_NIGHT_STAGE_INVENTORY.md` ; `EvidenceRef.evidence_id = stable_id("evref", source_table, source_pk)` (jamais depuis un LLM) ; `NightStageAdapter` = contrat seul, exécuteur générique reporté à E64-C.
-- E64-B : preuve sur la vraie DB (run vidéo 5 min, blsess_e28e0d554f2fd667) — 472 observations vision → 120 atomes 100% lossless, 60 segments audio → 60 tours intacts, timeline 180 entrées.
-- Tests : 14 verts (`tests/v19/test_e64_night_orchestrator.py`) + 49 non-régression E63.
-- Prochaine étape = E64-C (fenêtrage token-aware + checkpoints durables), puis E64-F vague 1 (câbler EpisodeBuilder/Brain2, débloquer OBS-13). E64-C non commencé (validation attendue). -->
+> **Suivi E64-A/B (notes, n'altèrent pas le texte des étapes) — livrés 2026-07-12, commit 03f5b50 :**
+> - Package additif NON câblé au close-day : `src/mlomega_audio_elite/night_orchestrator/` (`evidence_ref`, `stage_adapter`, `vision_atoms`, `audio_atoms`, `multimodal_timeline`, `loaders`). Aucun prompt métier touché, aucune preuve supprimée.
+> - E64-A : matrice des stages dans `docs/E64_NIGHT_STAGE_INVENTORY.md` ; `EvidenceRef.evidence_id = stable_id("evref", source_table, source_pk)` (jamais depuis un LLM) ; `NightStageAdapter` = contrat seul, exécuteur générique reporté à E64-C.
+> - E64-B : preuve sur la vraie DB (run vidéo 5 min, blsess_e28e0d554f2fd667) — 472 observations vision → 120 atomes 100% lossless, 60 segments audio → 60 tours intacts, timeline 180 entrées.
+> - Tests : 14 verts (`tests/v19/test_e64_night_orchestrator.py`) + 49 non-régression E63.
 
 
 ### E64-C — Fenêtrage token-aware et checkpoints durables
 
-- [ ] Planifier des fenêtres cibles de **40–50 unités utiles**, mais les couper selon le budget de tokens réel, les limites de scène/épisode et le contexte modèle. Le nombre 40–50 est une cible, jamais une règle qui perd des éléments.
-- [ ] Chevauchement borné aux frontières (par ex. 3–5 unités ou une courte durée) avec marqueurs `primary|overlap`, afin de ne pas couper une action/conversation ; le merge élimine ensuite les doublons par refs sources.
-- [ ] Persister `night_llm_windows_v19` et `night_llm_window_outputs_v19` (noms à figer en ADR) avec clé idempotente `(person,day,stage,input_digest,window_index,adapter_version,prompt_version,model)`, état, tentatives, budget, timestamps, erreur et output digest.
-- [ ] Sur `finish_reason=length`, subdiviser récursivement la fenêtre et reprendre ; sur timeout/Ollama down, retry backoff ; sur JSON/contrat invalide, une réparation bornée puis quarantaine explicite. Jamais augmenter indéfiniment `num_predict` ni accepter le fragment.
-- [ ] Désactiver le thinking pour les contrats JSON ; réserver séparément contexte d'entrée et budget de sortie. Refuser l'appel si la somme estimée dépasse la fenêtre du modèle.
+- [x] Planifier des fenêtres cibles de **40–50 unités utiles**, mais les couper selon le budget de tokens réel, les limites de scène/épisode et le contexte modèle. Le nombre 40–50 est une cible, jamais une règle qui perd des éléments.
+- [x] Chevauchement borné aux frontières (par ex. 3–5 unités ou une courte durée) avec marqueurs `primary|overlap`, afin de ne pas couper une action/conversation ; le merge élimine ensuite les doublons par refs sources.
+- [x] Persister `night_llm_windows_v19` et `night_llm_window_outputs_v19` (noms à figer en ADR) avec clé idempotente `(person,day,stage,input_digest,window_index,adapter_version,prompt_version,model)`, état, tentatives, budget, timestamps, erreur et output digest.
+- [x] Sur `finish_reason=length`, subdiviser récursivement la fenêtre et reprendre ; sur timeout/Ollama down, retry backoff ; sur JSON/contrat invalide, une réparation bornée puis quarantaine explicite. Jamais augmenter indéfiniment `num_predict` ni accepter le fragment.
+- [x] Désactiver le thinking pour les contrats JSON ; réserver séparément contexte d'entrée et budget de sortie. Refuser l'appel si la somme estimée dépasse la fenêtre du modèle.
+
+> **Suivi E64-C (notes, n'altèrent pas le texte des étapes) — livré 2026-07-12 :**
+> - Modules additifs NON câblés au close-day : `window_planner.py` (`plan_windows`/`subdivide`), `checkpoint_store.py` (tables `night_llm_windows_v19` / `night_llm_window_outputs_v19`), `executor.py` (`run_windows`, `ModelBudget`, `WindowLLM`). Aucun prompt métier touché.
+> - ADR (noms de tables figés + clé idempotente + politiques d'échec) : `docs/DECISIONS.md` § « 2026-07-12 — E64-C ».
+> - Politiques prouvées : subdivision récursive sur troncature (couvre tout, jamais de partiel), quarantaine d'une unité irréductible/surdimensionnée, réparation bornée puis quarantaine, retry backoff transitoire puis reprise, thinking off + budgets entrée/sortie séparés.
+> - Tests : 13 verts (`tests/v19/test_e64c_executor.py`) — total E64 = 27 verts. **Prochaine étape = E64-F vague 1** (adaptateur EpisodeBuilder/Brain2 câblant l'exécuteur, débloque OBS-13).
 
 ### E64-D — Fusion hiérarchique et frontières
 
