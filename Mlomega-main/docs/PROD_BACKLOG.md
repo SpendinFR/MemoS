@@ -554,3 +554,86 @@ Premier run du harnais contre une vraie vidéo (WhatsApp 301.6s, H.264 baseline 
 Non-régression ciblée verte (`tests/v19/test_e28_worldbrain.py`, `test_phoneonly_runtime.py`, `test_e27_pipeline.py`, `test_e34_proactivity.py` = 49 passed).
 
 **Gate final E63** : exécution minimale (mp4 synthétique, sans close-day) = FAITE et verte. Run `--with-close-day` contre la vraie vidéo 5 min = **PARTIEL** : les 3 bugs produit ci-dessus sont corrigés et testés (la fin de session ne plante plus, WorldBrain thread-safe, parse LLM blindé), MAIS le close-day complet n'est PAS encore validé de bout en bout à cause du blocage média harnais à ~20s. OUVERT.
+
+### Rectification E63 après simulation longue (2026-07-12)
+
+La conclusion ci-dessus est désormais historique. La basse résolution et les deux `MediaPlayer` n'étaient pas la cause du décrochage à 20 s : le premier `device_transcript` exécutait IntentRouter/VLM synchroniquement dans la boucle aiortc, jusqu'à faire expirer ICE/DTLS. Les receipts sont maintenant sérialisés hors boucle et drainés à la fermeture. Preuve : le MP4 de 301 s traverse avec **14 857 chunks audio**. Le correctif provisoire qui avalait le timeout de drain était lui aussi faux (CloseDay dépassait encore le worker final) ; il est remplacé par un drain réel de 300 s et un échec fermé/retryable, sans BrainLive/CloseDay prématuré. Détails autoritaires : `tools/harness/BUGS_FOUND.md` OBS-2 à OBS-13 et `docs/EXECUTOR_BUILD_GUIDE.md` E63.
+
+ASR nocturne réel prouvé jusqu'au bout de Deep Audio : WhisperX `large-v3` CUDA float16, alignement, Pyannote et SpeechBrain ECAPA, **40 tours**, stage `completed`. Le scénario scripté Viki/Help Mode à t=240 n'est **pas encore certifié fonctionnel** : le run interrompu n'a pas écrit son rapport final et aucune ligne `help_mode_tasks` n'est présente. Le harnais injecte un `device_transcript` et ne valide jamais le wake word on-device ; ces deux gates restent distincts.
+
+## E64 — Orchestrateur nocturne LLM lossless et transversal (PLAN À VALIDER AVANT IMPLÉMENTATION)
+
+### Problème confirmé
+
+Le premier passage nocturne réel atteint Brain2 avec une conversation raffinée de **985 pseudo-tours** : 40 tours Deep Audio et 945 observations `vision_context` frame-par-frame. Le bundle EpisodeBuilder fait **1 595 361 caractères** ; Qwen termine par `finish_reason=length`. Les preuves visuelles ne doivent ni être envoyées brutes dans un prompt unique, ni être supprimées/échantillonnées arbitrairement. Les essais provisoires « max 6 épisodes / max 8 éléments / 16 frames » ont été retirés avant commit.
+
+Le problème est transversal : tout stage nocturne qui concatène un jour, une conversation, des frames, des épisodes ou les sorties de stages précédents peut dépasser son contexte ou sa sortie. E64 doit fournir une seule infrastructure de budget/fenêtrage/reprise/couverture. Chaque famille de stage fournit un adaptateur de domaine (requête source, prompt local, merge), mais ne réimplémente jamais l'orchestration.
+
+### Invariants non négociables
+
+- [ ] **Aucune perte de preuve** : lignes audio/vision/événements brutes immuables ; aucune limite `N premiers`, aucun sampling silencieux, aucune suppression pour rendre un prompt vert.
+- [ ] **Provenance totale** : toute sortie LLM cite les `evidence_id`/table/digest sources ; une agrégation vidéo garde la liste ou le manifeste des frames/tracks qu'elle représente.
+- [ ] **Aucun prompt hors budget** : estimation réelle prompt + schéma + sortie avant appel ; marge fixe sous le contexte du modèle, jamais dépendante d'un nombre d'éléments supposé.
+- [ ] **Aucun partiel appliqué** : `length`, timeout, JSON invalide ou contrat invalide n'écrit aucune sortie cognitive active.
+- [ ] **Reprise exactement une fois** : kill/restart reprend la fenêtre incomplète sans rejouer les fenêtres validées ni doubler épisodes/tours/sorties.
+- [ ] **Owner/session corrects** : `person_id` toujours explicite ; transport session, BrainLive session et journée civile restent séparés.
+- [ ] **CloseDay honnête** : un stage n'est `completed` qu'après relecture de ses sorties et un manifeste de couverture complet.
+
+### E64-A — Inventaire et contrat commun des stages
+
+- [ ] Remonter avec `rg` tous les appels nocturnes LLM/VLM (`OllamaJsonClient`, `ollama_generate`, helpers `_llm_*`, Deep Vision, Brain2/V13, coordination, Life Model, longitudinal, reconciliation/live-ready). Produire une matrice : stage, table(s) source, unité atomique, ordre temporel, modèle/contexte, schéma de sortie, writer, stratégie de merge, comportement actuel sur troncature.
+- [ ] Créer un contrat `NightStageAdapter` commun : `stage_name`, `load_evidence`, `estimate_tokens`, `build_window_prompt`, `validate_window_output`, `merge_outputs`, `persist_outputs`, `verify_coverage`. Les prompts métier existants restent derrière ces adaptateurs ; l'exécuteur générique porte budget, retry, checkpoint et reprise.
+- [ ] Définir `EvidenceRef` stable et owner-scopé : `evidence_id`, `source_table`, `source_pk`, `modality`, `timestamp`, `digest`, `payload_kind`, `parent_refs`. L'ID ne dépend jamais d'une tentative LLM.
+
+### E64-B — Réduction déterministe avant LLM, sans perte
+
+- [ ] **Audio** : tours atomiques WhisperX conservés intégralement avec timestamps, speaker/person et refs WAV/source ; aucun redécoupage au milieu d'un tour.
+- [ ] **Vision** : transformer les frames répétitives en `VisionChangeAtom` déterministes : apparition/disparition, changement de label/attribut, déplacement de track, changement de zone/scène, OCR, keyframe, interaction. Chaque atome référence toutes les observations/frame IDs couvertes ; les frames brutes restent en DB/replay.
+- [ ] Les états identiques consécutifs deviennent une plage `[first_seen,last_seen,count,digest,source_refs]`, pas 300 pseudo-tours. Un changement réel ouvre un nouvel atome ; la confiance seule ne crée pas un événement cognitif si l'identité/état ne change pas.
+- [ ] Joindre audio et vision par temps/BrainLive session dans une timeline multimodale ordonnée. Aucun aplatissement « une frame = un tour de conversation ».
+
+### E64-C — Fenêtrage token-aware et checkpoints durables
+
+- [ ] Planifier des fenêtres cibles de **40–50 unités utiles**, mais les couper selon le budget de tokens réel, les limites de scène/épisode et le contexte modèle. Le nombre 40–50 est une cible, jamais une règle qui perd des éléments.
+- [ ] Chevauchement borné aux frontières (par ex. 3–5 unités ou une courte durée) avec marqueurs `primary|overlap`, afin de ne pas couper une action/conversation ; le merge élimine ensuite les doublons par refs sources.
+- [ ] Persister `night_llm_windows_v19` et `night_llm_window_outputs_v19` (noms à figer en ADR) avec clé idempotente `(person,day,stage,input_digest,window_index,adapter_version,prompt_version,model)`, état, tentatives, budget, timestamps, erreur et output digest.
+- [ ] Sur `finish_reason=length`, subdiviser récursivement la fenêtre et reprendre ; sur timeout/Ollama down, retry backoff ; sur JSON/contrat invalide, une réparation bornée puis quarantaine explicite. Jamais augmenter indéfiniment `num_predict` ni accepter le fragment.
+- [ ] Désactiver le thinking pour les contrats JSON ; réserver séparément contexte d'entrée et budget de sortie. Refuser l'appel si la somme estimée dépasse la fenêtre du modèle.
+
+### E64-D — Fusion hiérarchique et frontières
+
+- [ ] Fusionner les sorties par arbre déterministe (fenêtres → scène/bundle → conversation → journée), pas en reconcaténant toutes les sorties dans un nouveau prompt géant.
+- [ ] Chaque adaptateur définit seulement ses règles métier de merge : épisodes adjacents compatibles, entités/relations par ID durable, contradictions conservées, timelines ordonnées. La mécanique de réduction/checkpoint reste commune.
+- [ ] Résoudre les doublons d'overlap par ensemble d'`evidence_id`, plage temporelle et clé sémantique stable ; ne jamais dédupliquer uniquement sur le texte.
+- [ ] Une fusion LLM éventuelle reçoit des résumés bornés + manifestes, jamais les preuves brutes déjà traitées ; elle conserve les références transitives jusqu'aux lignes sources.
+
+### E64-E — Manifeste de couverture anti-perte
+
+- [ ] Pour chaque stage, produire `expected_evidence`, `covered_evidence`, `represented_by_atom`, `overlap_deduplicated`, `quarantined_with_reason`, `missing`. `missing` non vide bloque le stage.
+- [ ] Relire les sorties depuis leurs vraies tables avant de déclarer la couverture ; ne jamais utiliser les IDs simplement retournés par les fonctions comme preuve.
+- [ ] Garantir : chaque preuve attendue est soit directement citée, soit couverte transitivement par un atome/une fenêtre, soit quarantinée avec cause vérifiable. « Bruit/redondant » doit avoir un parent représentatif, pas disparaître.
+- [ ] Enregistrer statistiques tokens/latence/retries/troncatures par stage et afficher les gaps dans Doctor/dashboard.
+
+### E64-F — Migration transversale, par vagues
+
+- [ ] **Vague 1** : EpisodeBuilder + moteurs Brain2/V13, car ils bloquent le run réel. Aucun prompt V13 ne lit directement les 945 frames.
+- [ ] **Vague 2** : Deep Vision, conversation post-stop et Silent Life ; réutiliser les mêmes fenêtres/atoms au lieu de refaire une sélection indépendante.
+- [ ] **Vague 3** : coordination BrainLive↔Brain2, Life Model, longitudinal, reconciliation, live-ready, prédictions/outcomes/self-schema pour tout appel LLM identifié en E64-A.
+- [ ] Les stages déterministes sans LLM restent inchangés mais publient leurs `EvidenceRef`/manifestes dans le même protocole.
+
+### E64-G — Tests préventifs obligatoires
+
+- [ ] Fixture « 5 min réelle » : 40 tours audio + 945 observations vision ; **100 % des 985 preuves présentes au manifeste**, zéro prompt hors budget, aucune limite arbitraire du nombre final d'épisodes.
+- [ ] Fixture longue 8 h et multi-session/jour : plusieurs milliers d'atomes, mémoire bornée, fenêtres/checkpoints stables, mêmes résultats après reprise.
+- [ ] Test de frontières : un événement commence fin fenêtre N et finit début N+1 ; un seul épisode final, toutes les refs couvertes.
+- [ ] Chaos paramétré sur **chaque stage LLM** : `length`, timeout, Ollama down, JSON sale, kill après output avant commit, kill après commit avant stage marker, disque plein. Vérifier reprise exacte et aucune sortie partielle active.
+- [ ] Test de non-régression petit dataset : résultats métier équivalents au chemin direct lorsque l'entrée tient dans une fenêtre.
+- [ ] Mesurer tokens/latence/VRAM et imposer un plafond ; aucun stage ne doit pouvoir générer un prompt non borné par construction.
+
+### Gate de clôture E64
+
+- [ ] Audit E64-A complet : aucun appel LLM nocturne hors orchestrateur commun, sauf exception documentée/testée.
+- [ ] Run harnais 5 min `--with-close-day` : transport, Viki scripté, Deep Audio, Brain2 et tous stages nocturnes `completed`; recovery `completed`; manifeste sans missing.
+- [ ] Rejouer le même jour puis redémarrer entre fenêtres : idempotence et multi-session prouvées.
+- [ ] Lancer ensuite le dashboard et vérifier visuellement épisodes, personnes, événements vidéo, Life Model, prédictions et preuves sources.
+- [ ] Gate appareil séparé : wake word Viki/ASR device, gestes et flux caméra/micro OnePlus/S25 restent à valider sur matériel réel ; le `device_transcript` du harnais ne les remplace pas.
