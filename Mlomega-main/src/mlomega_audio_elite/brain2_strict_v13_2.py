@@ -631,6 +631,11 @@ def _materialize_episodes_from_qwen(con, conversation_id: str, output: dict[str,
     return count
 
 
+# The exact V13 episode_builder mission. Kept as a single constant so the legacy
+# call and the E64-F windowed path use identical prompt text (no prompt change).
+_EPISODE_MISSION = "Découpe cette conversation en épisodes de vie selon le plan Brain 2.0. Aucun découpage par regex: utilise le sens, les preuves et l'incertitude. Respecte metadata_json.kind/evidence_role: observation système ≠ parole de William."
+
+
 def _ensure_episodes_strict(con, conversation_id: str, *, person_id: str) -> int:
     existing_rows = [dict(r) for r in con.execute("SELECT episode_id, metadata_json FROM episodes WHERE source_conversation_id=?", (conversation_id,)).fetchall()]
     if existing_rows:
@@ -647,16 +652,55 @@ def _ensure_episodes_strict(con, conversation_id: str, *, person_id: str) -> int
         for r in existing_rows:
             con.execute("DELETE FROM episodes WHERE episode_id=?", (r.get("episode_id"),))
     bundle = _conversation_bundle(con, conversation_id)
-    prompt = _safe_prompt_payload({"mission": "Découpe cette conversation en épisodes de vie selon le plan Brain 2.0. Aucun découpage par regex: utilise le sens, les preuves et l'incertitude. Respecte metadata_json.kind/evidence_role: observation système ≠ parole de William.", "conversation_bundle": bundle, "schema": STRICT_EPISODE_SCHEMA})
+    # E64-F wave 1: for an oversized day the single episode_builder call truncates
+    # (OBS-13). When the night orchestrator is enabled and the turns would not
+    # fit one call, run the SAME V13 prompt over autonomous windows and merge the
+    # structured episodes with a persisted coverage proof. The prompt text is
+    # unchanged; small conversations keep the legacy single-call path below.
+    resolved_owner = _default_user(con, conversation_id, explicit_person_id=person_id)
+    try:
+        from .brain2_episode_windowing import (
+            build_episodes_windowed,
+            orchestrator_enabled,
+            should_window,
+        )
+
+        use_windows = orchestrator_enabled() and should_window(bundle.get("turns") or [])
+    except Exception:
+        use_windows = False
+    if use_windows:
+        package_date = str(bundle.get("conversation", {}).get("started_at") or now_iso())[:10]
+        stats = build_episodes_windowed(
+            con,
+            conversation_id,
+            bundle=bundle,
+            person_id=resolved_owner,
+            package_date=package_date,
+            safe_prompt=_safe_prompt_payload,
+            llm_call=_llm_require_json,
+            materialize=_materialize_episodes_from_qwen,
+            mission=_EPISODE_MISSION,
+            schema=STRICT_EPISODE_SCHEMA,
+        )
+        _record_engine(
+            con,
+            engine="episode_builder",
+            conversation_id=conversation_id,
+            episode_id=None,
+            person_id=resolved_owner,
+            prompt=f"[e64 windowed x{stats.get('windows')}] {_EPISODE_MISSION}",
+            output={"windowed": True, **stats},
+            status="ok",
+        )
+        return int(stats.get("episodes") or 0)
+    prompt = _safe_prompt_payload({"mission": _EPISODE_MISSION, "conversation_bundle": bundle, "schema": STRICT_EPISODE_SCHEMA})
     out = _llm_require_json("episode_builder", prompt, STRICT_EPISODE_SCHEMA)
     _record_engine(
         con,
         engine="episode_builder",
         conversation_id=conversation_id,
         episode_id=None,
-        person_id=_default_user(
-            con, conversation_id, explicit_person_id=person_id
-        ),
+        person_id=resolved_owner,
         prompt=prompt,
         output=out,
         status="ok",

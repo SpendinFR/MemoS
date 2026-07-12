@@ -140,6 +140,59 @@ def covered_refs_from_outputs_table(
     return refs
 
 
+COVERAGE_TABLE = "night_llm_coverage_v19"
+
+_COVERAGE_SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS {COVERAGE_TABLE}(
+  person_id TEXT NOT NULL,
+  package_date TEXT NOT NULL,
+  stage_name TEXT NOT NULL,
+  source_ref TEXT NOT NULL,
+  expected_count INTEGER NOT NULL,
+  covered_count INTEGER NOT NULL,
+  represented_count INTEGER NOT NULL,
+  quarantined_count INTEGER NOT NULL,
+  missing_count INTEGER NOT NULL,
+  missing_json TEXT NOT NULL,
+  ok INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(person_id, package_date, stage_name, source_ref)
+);
+"""
+
+
+def ensure_coverage_schema(con: Any) -> None:
+    con.executescript(_COVERAGE_SCHEMA)
+
+
+def persist_coverage(
+    con: Any, *, person_id: str, package_date: str, source_ref: str, report: CoverageReport
+) -> None:
+    """Durably record a stage's coverage manifest (the anti-loss proof).
+
+    ``source_ref`` scopes the row (e.g. the conversation_id) so a rerun upserts
+    rather than duplicates. A non-empty ``missing`` is stored with ``ok=0`` - the
+    caller must treat that as a blocked stage.
+    """
+    from ..utils import now_iso
+
+    ensure_coverage_schema(con)
+    con.execute(
+        f"""INSERT OR REPLACE INTO {COVERAGE_TABLE}(
+              person_id, package_date, stage_name, source_ref, expected_count,
+              covered_count, represented_count, quarantined_count, missing_count,
+              missing_json, ok, created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            person_id, package_date, report.stage_name, source_ref,
+            len(report.expected), len(report.covered), len(report.represented_by_atom),
+            len(report.quarantined), len(report.missing),
+            json.dumps(list(report.missing), ensure_ascii=False),
+            1 if report.ok else 0, now_iso(),
+        ),
+    )
+
+
 def stage_stats(
     con: Any, *, person_id: str, package_date: str, stage_name: str
 ) -> dict[str, Any]:

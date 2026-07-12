@@ -768,6 +768,93 @@ def _title_from_rows(rows: list[dict[str, Any]]) -> str:
     return "BrainLive scene"
 
 
+def _vision_context_text(v: dict[str, Any]) -> str:
+    """Build the exact [CONTEXT_VISION_RAW] text for one vision timeline item."""
+    parts = []
+    if v.get("summary"):
+        parts.append(str(v.get("summary")))
+    if v.get("location_hint"):
+        parts.append(f"lieu_probable={v.get('location_hint')}")
+    if v.get("spatial_context"):
+        parts.append(f"spatial={v.get('spatial_context')}")
+    if v.get("objects"):
+        parts.append(f"objets={json_dumps(v.get('objects'))}")
+    if v.get("affordances"):
+        parts.append(f"affordances={json_dumps(v.get('affordances'))}")
+    if v.get("possible_user_activities"):
+        parts.append(f"activites_possibles={json_dumps(v.get('possible_user_activities'))}")
+    return "[CONTEXT_VISION_RAW] " + " | ".join(parts) if parts else "[CONTEXT_VISION_RAW] observation vision sans description textuelle"
+
+
+def _vision_pseudo_turns(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Vision context pseudo-turns for Brain2.
+
+    Legacy: one pseudo-turn per vision observation (~945/session -> prompt
+    explosion, OBS-13). E64-F wave 1: when the night orchestrator is enabled,
+    collapse consecutive observations of the same scene state into ONE
+    VisionChangeAtom pseudo-turn (lossless: every observation_id is kept in
+    metadata.source_refs; raw frames stay in the DB). The pseudo-turn shape,
+    speaker_label and evidence_role are unchanged, so Brain2 reads it identically
+    - there are just far fewer of them. Set MLOMEGA_E64_NIGHT_ORCHESTRATOR=0 to
+    roll back to the per-observation behaviour.
+    """
+    def _legacy() -> list[dict[str, Any]]:
+        return [
+            {
+                "time": v.get("time"),
+                "speaker_label": "context_vision_raw",
+                "speaker_person_id": None,
+                "text": _vision_context_text(v)[:8000],
+                "kind": "vision_context",
+                "evidence_role": "system_observation_not_user_speech",
+                "metadata": v,
+            }
+            for v in items
+        ]
+
+    if len(items) <= 1:
+        return _legacy()
+    try:
+        from .brain2_episode_windowing import orchestrator_enabled
+        from .night_orchestrator import reduce_vision_timeline
+
+        if not orchestrator_enabled():
+            return _legacy()
+        atoms = reduce_vision_timeline(items)
+    except Exception:
+        # Any failure in the reducer must never break assembly: fall back safely.
+        return _legacy()
+
+    by_id = {str(it.get("source_id") or f"vtl_{i}"): it for i, it in enumerate(items)}
+    out: list[dict[str, Any]] = []
+    for atom in atoms:
+        rep = by_id.get(atom.source_refs[0], {}) if atom.source_refs else {}
+        base = _vision_context_text(rep)
+        note = (
+            f" (observé {atom.count}x de {atom.first_seen}->{atom.last_seen})"
+            if atom.count > 1
+            else ""
+        )
+        out.append({
+            "time": atom.first_seen,
+            "speaker_label": "context_vision_raw",
+            "speaker_person_id": None,
+            "text": (base + note)[:8000],
+            "kind": "vision_context",
+            "evidence_role": "system_observation_not_user_speech",
+            "metadata": {
+                "vision_change_atom": True,
+                "count": atom.count,
+                "first_seen": atom.first_seen,
+                "last_seen": atom.last_seen,
+                "source_refs": list(atom.source_refs),
+                "frame_refs": list(atom.frame_refs),
+                "representative": rep,
+            },
+        })
+    return out
+
+
 def _pseudo_turns_for_bundle(bundle: dict[str, Any]) -> list[dict[str, Any]]:
     """Return raw Brain2 turns for the assembled event.
 
@@ -790,30 +877,9 @@ def _pseudo_turns_for_bundle(bundle: dict[str, Any]) -> list[dict[str, Any]]:
             "evidence_role": "human_or_audio_transcript",
             "metadata": t,
         })
-    for v in json_loads(bundle.get("vision_timeline_json"), []) or []:
-        parts = []
-        if v.get("summary"):
-            parts.append(str(v.get("summary")))
-        if v.get("location_hint"):
-            parts.append(f"lieu_probable={v.get('location_hint')}")
-        if v.get("spatial_context"):
-            parts.append(f"spatial={v.get('spatial_context')}")
-        if v.get("objects"):
-            parts.append(f"objets={json_dumps(v.get('objects'))}")
-        if v.get("affordances"):
-            parts.append(f"affordances={json_dumps(v.get('affordances'))}")
-        if v.get("possible_user_activities"):
-            parts.append(f"activites_possibles={json_dumps(v.get('possible_user_activities'))}")
-        text = "[CONTEXT_VISION_RAW] " + " | ".join(parts) if parts else "[CONTEXT_VISION_RAW] observation vision sans description textuelle"
-        timeline.append({
-            "time": v.get("time"),
-            "speaker_label": "context_vision_raw",
-            "speaker_person_id": None,
-            "text": text[:8000],
-            "kind": "vision_context",
-            "evidence_role": "system_observation_not_user_speech",
-            "metadata": v,
-        })
+    timeline.extend(
+        _vision_pseudo_turns(json_loads(bundle.get("vision_timeline_json"), []) or [])
+    )
     for w in json_loads(bundle.get("world_state_timeline_json"), []) or []:
         payload = w.get("payload") or {}
         summary = str(w.get("summary") or payload.get("where_am_i") or payload.get("what_is_happening") or "")

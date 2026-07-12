@@ -635,15 +635,18 @@ Le problème est transversal : tout stage nocturne qui concatène un jour, une c
 
 ### E64-F — Migration transversale, par vagues
 
-- [ ] **Vague 1** : EpisodeBuilder + moteurs Brain2/V13, car ils bloquent le run réel. Aucun prompt V13 ne lit directement les 945 frames.
+- [x] **Vague 1** : EpisodeBuilder + moteurs Brain2/V13, car ils bloquent le run réel. Aucun prompt V13 ne lit directement les 945 frames.
 - [ ] **Vague 2** : Deep Vision, conversation post-stop et Silent Life ; réutiliser les mêmes fenêtres/atoms au lieu de refaire une sélection indépendante.
 - [ ] **Vague 3** : coordination BrainLive↔Brain2, Life Model, longitudinal, reconciliation, live-ready, prédictions/outcomes/self-schema pour tout appel LLM identifié en E64-A.
 - [ ] Les stages déterministes sans LLM restent inchangés mais publient leurs `EvidenceRef`/manifestes dans le même protocole.
 
-> **Suivi E64-F vague 1 — EN COURS 2026-07-12 (briques posées, câblage réel non fait) :**
-> - Point d'intégration identifié (lecture du vrai code) : les **945 pseudo-tours `context_vision_raw`** sont produits par `_pseudo_turns_for_bundle` dans `src/mlomega_audio_elite/brainlive_event_assembler_v15_14.py:793` (1 pseudo-tour par item de `vision_timeline_json`). Chaque item porte `source_id` (observation_id) + `frame_id` → réduction lossless possible au bon endroit.
-> - Briques additives livrées (NON câblées, aucun prompt métier touché) : `night_orchestrator/vision_atoms.py::reduce_vision_timeline` (collapse la forme bundle du timeline en `VisionChangeAtom`, réutilise le réducteur testé) et `night_orchestrator/ollama_window_llm.py::OllamaWindowLLM` (enveloppe le vrai `OllamaJsonClient` en `WindowLLM` : `length`→subdivise, transitoire→retry, thinking off). 8 tests `tests/v19/test_e64f_brain2_blocks.py` — total E64 = 47 verts.
-> - **Constat technique bloquant à valider** : la réduction SEULE ne suffit pas. 945→~120 atomes vision + 40 tours audio ≈ 160 tours ≈ ~64K tokens, ce qui dépasse encore `num_ctx` Brain2 (16384). Il faut donc AUSSI le fenêtrage `run_windows` (E64-C) dans le flux Brain2 — conforme au plan Codex. Le câblage réel (adapter EpisodeBuilder + reduce au producteur + run_windows + merge + verify_coverage dans `brain2_strict_v13_2`/`v18_brain2_context`) touche le close-day → à faire avec validation (checkpoint demandé).
+> **Suivi E64-F vague 1 — FAIT 2026-07-12 (code câblé + testé ; validation run réel Ollama = étape suivante) :**
+> - Règle Codex respectée : prompt V13 conservé, exécuté par fenêtres autonomes, sorties fusionnées avec preuve de couverture persistée, flag de rollback `MLOMEGA_E64_NIGHT_ORCHESTRATOR` (défaut ON, `=0` = legacy).
+> - **Morceau 1** — `brainlive_event_assembler_v15_14.py::_vision_pseudo_turns` : 1 pseudo-tour par `VisionChangeAtom` au lieu de ~945 par observation (via `reduce_vision_timeline`), forme/`speaker_label`/`evidence_role` inchangés, `metadata.source_refs` garde tous les `observation_id`, fallback legacy sûr.
+> - **Morceau 2** — `brain2_strict_v13_2.py::_ensure_episodes_strict` : branche gardée (`should_window`) → `brain2_episode_windowing.build_episodes_windowed` exécute le **même prompt/system/schéma V13** par fenêtre (`plan_windows` ~45 tours, overlap 3), fusionne les épisodes par `evidence_turn_ids` identiques, matérialise une fois. Mission V13 extraite en constante `_EPISODE_MISSION` (aucune modif de prompt). Petites conversations = chemin legacy inchangé.
+> - **Morceau 3** — table `night_llm_coverage_v19` (`coverage.persist_coverage`) : preuve de couverture par conversation, un `missing` non vide lève.
+> - Détails/limites (ex. épisode scindé à une frontière de fenêtre) dans `docs/DECISIONS.md` § « 2026-07-12 — E64-F vague 1 ». Tests : 7 `tests/v19/test_e64f_wiring.py` + 8 briques + non-régression `test_e37_nightly`/`test_ollama_context_budget` = 13 → **total E64 = 54 verts**.
+> - **RESTE (non couvert par la case)** : validation bout-en-bout sur un VRAI run Ollama (harnais `--with-close-day` sur la vraie vidéo) puis dashboard — le code est prouvé avec un faux LLM, pas encore contre Ollama réel. Vagues 2/3 = autres stages.
 
 ### E64-G — Tests préventifs obligatoires
 
