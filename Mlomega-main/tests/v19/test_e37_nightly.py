@@ -259,6 +259,59 @@ def test_audio_vision_complementarity_one_bundle_requires_deep_audio(tmp_path, m
     assert bundles_require_deep_audio(person_id="me", package_date=day, live_session_id=sid) is True
 
 
+def test_bundle_reexport_supersedes_every_previous_active_export(tmp_path, monkeypatch):
+    _env(tmp_path, monkeypatch)
+    from mlomega_audio_elite.brainlive_v15 import ingest_live_turn, start_live_session
+    from mlomega_audio_elite.brainlive_event_assembler_v15_14 import (
+        export_event_bundles_to_brain2,
+        run_brainlive_event_assembly,
+    )
+    from mlomega_audio_elite.db import connect
+    from mlomega_audio_elite.utils import now_iso
+
+    sess = start_live_session(person_id="me", title="re-export", mode="live_xr")
+    sid = sess["live_session_id"]
+    day = "2026-07-04"
+    ingest_live_turn(
+        sid, "bonjour", speaker_label="speaker", is_final=True,
+        timestamp_start="2026-07-04T10:00:00+00:00",
+        timestamp_end="2026-07-04T10:00:01+00:00",
+        metadata={"source": "test"},
+    )
+    first = run_brainlive_event_assembly(
+        "me", package_date=day, live_session_id=sid, export_to_brain2=True,
+    )
+    assert first["exports"] == 1
+    with connect() as con:
+        bundle_id = con.execute(
+            "SELECT bundle_id FROM brainlive_event_bundles_v1514 WHERE live_session_id=?",
+            (sid,),
+        ).fetchone()[0]
+        stamp = now_iso()
+        con.execute(
+            """INSERT INTO brainlive_brain2_event_exports_v1514(
+                   export_id,person_id,bundle_id,conversation_id,turn_ids_json,
+                   export_status,created_at,updated_at)
+               VALUES('fake-old','me',?, 'fake-old-conversation','[]','exported',?,?)""",
+            (bundle_id, stamp, stamp),
+        )
+        con.commit()
+    export_event_bundles_to_brain2(
+        "me", package_date=day, live_session_id=sid,
+    )
+    with connect() as con:
+        active = con.execute(
+            """SELECT export_id FROM brainlive_brain2_event_exports_v1514
+               WHERE bundle_id=? AND export_status IN ('active','ok','exported')""",
+            (bundle_id,),
+        ).fetchall()
+        fake_status = con.execute(
+            "SELECT export_status FROM brainlive_brain2_event_exports_v1514 WHERE export_id='fake-old'"
+        ).fetchone()[0]
+    assert len(active) == 1
+    assert fake_status == "superseded"
+
+
 # ============================================================ 3. owner
 class _FakeEmbedder:
     """Deterministic per-file embedder: same bytes → same vector (cosine==1)."""

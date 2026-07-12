@@ -959,11 +959,40 @@ def export_event_bundles_to_brain2(
                 insert_only(con,"turns",{"turn_id":tid,"conversation_id":conv_id,"idx":idx,"speaker_label":t.get("speaker_label"),"person_id":t.get("speaker_person_id"),"start_s":None,"end_s":None,"text":str(t.get("text") or ""),"previous_turn_id":turn_ids[idx-1] if idx else None,"metadata_json":json_dumps({"brainlive_bundle_id":b.get("bundle_id"),"bundle_digest":digest,"kind":t.get("kind"),"time":t.get("time"),"evidence_role":t.get("evidence_role"),"source":t.get("metadata")})},on_conflict="ignore")
             export_id=stable_id("blexport_v18",b.get("bundle_id"),digest)
             export={"export_id":export_id,"person_id":person_id,"bundle_id":b.get("bundle_id"),"conversation_id":conv_id,"turn_ids_json":json_dumps(turn_ids),"export_status":"exported","created_at":now_iso(),"updated_at":now_iso()}
+            active_previous = strict_many(
+                con,
+                """SELECT conversation_id FROM brainlive_brain2_event_exports_v1514
+                   WHERE bundle_id=? AND export_status IN ('active','ok','exported')""",
+                (b["bundle_id"],),
+                purpose="previous active bundle exports",
+            )
+            previous_ids = [
+                str(row["conversation_id"])
+                for row in active_previous
+                if str(row.get("conversation_id") or "") != conv_id
+            ]
+            con.execute(
+                """UPDATE brainlive_brain2_event_exports_v1514
+                   SET export_status='superseded',updated_at=?
+                   WHERE bundle_id=? AND export_status IN ('active','ok','exported')""",
+                (now_iso(), b["bundle_id"]),
+            )
+            has_scopes = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='v18_conversation_scopes'"
+            ).fetchone()
+            if previous_ids and has_scopes:
+                marks = ",".join("?" for _ in previous_ids)
+                con.execute(
+                    f"UPDATE v18_conversation_scopes SET active=0,updated_at=? "
+                    f"WHERE person_id=? AND conversation_id IN ({marks}) AND active=1",
+                    (now_iso(), person_id, *previous_ids),
+                )
             upsert(con,"brainlive_brain2_event_exports_v1514",export,"export_id")
             b2=dict(b); b2["brain2_conversation_id"]=conv_id; b2["updated_at"]=now_iso(); upsert(con,"brainlive_event_bundles_v1514",b2,"bundle_id")
             exports.append(export)
-            if previous and previous!=conv_id:
-                invalidations.append((str(b["bundle_id"]),previous))
+            for previous_id in dict.fromkeys([*previous_ids, previous]):
+                if previous_id and previous_id != conv_id:
+                    invalidations.append((str(b["bundle_id"]), previous_id))
         con.commit()
     for bundle_id,old_conv in invalidations:
         invalidate_descendants(root_table="conversations",root_id=old_conv,scope=Scope(person_id=person_id,live_session_id=live_session_id,mode="post_stop"),reason=f"bundle {bundle_id} re-exported as a new immutable conversation version")
