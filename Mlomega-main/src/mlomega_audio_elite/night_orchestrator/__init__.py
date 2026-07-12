@@ -39,6 +39,21 @@ from .executor import (
     WindowResult,
     run_windows,
 )
+from .merge_tree import (
+    MergeItem,
+    OverlapResult,
+    all_evidence,
+    default_combine,
+    group_by,
+    hierarchical_merge,
+    resolve_overlap,
+)
+from .coverage import (
+    CoverageReport,
+    build_coverage_report,
+    covered_refs_from_outputs_table,
+    stage_stats,
+)
 
 __all__ = [
     "EvidenceRef",
@@ -66,4 +81,15 @@ __all__ = [
     "StageScope",
     "WindowResult",
     "run_windows",
+    "MergeItem",
+    "OverlapResult",
+    "resolve_overlap",
+    "hierarchical_merge",
+    "group_by",
+    "default_combine",
+    "all_evidence",
+    "CoverageReport",
+    "build_coverage_report",
+    "covered_refs_from_outputs_table",
+    "stage_stats",
 ]

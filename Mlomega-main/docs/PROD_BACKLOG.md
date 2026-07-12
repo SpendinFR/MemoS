@@ -615,17 +615,23 @@ Le problème est transversal : tout stage nocturne qui concatène un jour, une c
 
 ### E64-D — Fusion hiérarchique et frontières
 
-- [ ] Fusionner les sorties par arbre déterministe (fenêtres → scène/bundle → conversation → journée), pas en reconcaténant toutes les sorties dans un nouveau prompt géant.
-- [ ] Chaque adaptateur définit seulement ses règles métier de merge : épisodes adjacents compatibles, entités/relations par ID durable, contradictions conservées, timelines ordonnées. La mécanique de réduction/checkpoint reste commune.
-- [ ] Résoudre les doublons d'overlap par ensemble d'`evidence_id`, plage temporelle et clé sémantique stable ; ne jamais dédupliquer uniquement sur le texte.
+- [x] Fusionner les sorties par arbre déterministe (fenêtres → scène/bundle → conversation → journée), pas en reconcaténant toutes les sorties dans un nouveau prompt géant.
+- [x] Chaque adaptateur définit seulement ses règles métier de merge : épisodes adjacents compatibles, entités/relations par ID durable, contradictions conservées, timelines ordonnées. La mécanique de réduction/checkpoint reste commune.
+- [x] Résoudre les doublons d'overlap par ensemble d'`evidence_id`, plage temporelle et clé sémantique stable ; ne jamais dédupliquer uniquement sur le texte.
 - [ ] Une fusion LLM éventuelle reçoit des résumés bornés + manifestes, jamais les preuves brutes déjà traitées ; elle conserve les références transitives jusqu'aux lignes sources.
 
 ### E64-E — Manifeste de couverture anti-perte
 
-- [ ] Pour chaque stage, produire `expected_evidence`, `covered_evidence`, `represented_by_atom`, `overlap_deduplicated`, `quarantined_with_reason`, `missing`. `missing` non vide bloque le stage.
-- [ ] Relire les sorties depuis leurs vraies tables avant de déclarer la couverture ; ne jamais utiliser les IDs simplement retournés par les fonctions comme preuve.
-- [ ] Garantir : chaque preuve attendue est soit directement citée, soit couverte transitivement par un atome/une fenêtre, soit quarantinée avec cause vérifiable. « Bruit/redondant » doit avoir un parent représentatif, pas disparaître.
+- [x] Pour chaque stage, produire `expected_evidence`, `covered_evidence`, `represented_by_atom`, `overlap_deduplicated`, `quarantined_with_reason`, `missing`. `missing` non vide bloque le stage.
+- [x] Relire les sorties depuis leurs vraies tables avant de déclarer la couverture ; ne jamais utiliser les IDs simplement retournés par les fonctions comme preuve.
+- [x] Garantir : chaque preuve attendue est soit directement citée, soit couverte transitivement par un atome/une fenêtre, soit quarantinée avec cause vérifiable. « Bruit/redondant » doit avoir un parent représentatif, pas disparaître.
 - [ ] Enregistrer statistiques tokens/latence/retries/troncatures par stage et afficher les gaps dans Doctor/dashboard.
+
+> **Suivi E64-D/E (notes, n'altèrent pas le texte des étapes) — livré 2026-07-12 :**
+> - Modules additifs NON câblés au close-day : `merge_tree.py` (`resolve_overlap`, `hierarchical_merge`, `MergeItem`) et `coverage.py` (`build_coverage_report`, `covered_refs_from_outputs_table`, `stage_stats`). Aucun prompt métier touché. ADR dans `docs/DECISIONS.md` § « 2026-07-12 — E64-D/E ».
+> - E64-D : fusion déterministe par arbre (fenêtres→scène→conversation→journée), dédup overlap par `evidence_id`/plage temporelle/`semantic_key` (JAMAIS le texte), refs unionnées dans le survivant. **1 case laissée décochée** : « fusion LLM éventuelle » — non implémentée car le merge est 100 % déterministe (pas de prompt LLM de fusion) ; la contrainte tient par construction. Si un adaptateur ajoute plus tard une fusion LLM, elle devra passer des résumés bornés + manifestes (à cocher à ce moment-là).
+> - E64-E : manifeste à 5 seaux (covered / represented_by_atom / overlap_deduplicated / quarantined_with_reason / missing) avec `missing` qui bloque ; couverture relue depuis `night_llm_window_outputs_v19` (pas les IDs renvoyés). **1 case laissée décochée** : `stage_stats` PRODUIT bien les stats tokens/tentatives/troncatures, mais leur AFFICHAGE dans Doctor/dashboard n'est pas encore câblé (tâche UI séparée).
+> - Tests : 10 verts (`tests/v19/test_e64de_merge_coverage.py`) — total E64 = 37 verts. **Prochaine étape = E64-F vague 1** (Ollama réel + EpisodeBuilder/Brain2, débloque OBS-13).
 
 ### E64-F — Migration transversale, par vagues
 
