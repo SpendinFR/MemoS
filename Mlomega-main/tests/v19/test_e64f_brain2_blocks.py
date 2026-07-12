@@ -102,6 +102,13 @@ def test_length_truncation_maps_to_length_kind():
     assert not out.ok and out.error_kind == "length"
 
 
+def test_real_client_truncated_output_kind_maps_to_length():
+    out = _llm(
+        _FakeResult(ok=False, error_kind="truncated_output")
+    ).generate("u", output_budget=512)
+    assert not out.ok and out.error_kind == "length"
+
+
 def test_invalid_json_maps_to_invalid_json_kind():
     out = _llm(_FakeResult(ok=False, error_kind="invalid_json")).generate("u", output_budget=512)
     assert out.error_kind == "invalid_json"

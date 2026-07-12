@@ -29,13 +29,18 @@ def _classify(result: Any) -> str:
     """Map an LLMResult's failure to an executor error_kind."""
     finish = str(getattr(result, "finish_reason", "") or "").lower()
     kind = str(getattr(result, "error_kind", "") or "").lower()
-    if finish in _LENGTH_FINISH or kind in {"length", "truncated", "truncation"}:
+    if finish in _LENGTH_FINISH or kind in {
+        "length", "truncated", "truncation", "truncated_output",
+    }:
         return "length"
     if kind in {"invalid_json", "json", "contract", "schema"}:
         return "invalid_json"
     if kind in {"timeout"}:
         return "timeout"
-    if kind in {"unavailable", "connection", "network", "provider"}:
+    if kind in {
+        "unavailable", "connection", "network", "provider",
+        "transient_runtime_error",
+    }:
         return "unavailable"
     # Unknown non-ok: treat as transient so it is retried, never applied.
     return "unavailable"
@@ -64,6 +69,7 @@ class OllamaWindowLLM:
         self._schema_hint = dict(schema_hint) if schema_hint else None
         self._format_schema = dict(format_schema) if format_schema else None
         self._timeout = float(timeout)
+        self.model = str(getattr(client, "model", "ollama-json"))
 
     @staticmethod
     def _prompt_text(prompt: Mapping[str, Any] | str) -> str:

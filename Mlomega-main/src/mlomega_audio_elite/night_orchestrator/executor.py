@@ -66,6 +66,7 @@ class WindowResult:
     state: str
     attempts: int = 0
     error_text: str | None = None
+    primary_refs: tuple[str, ...] = ()
 
 
 @dataclass
@@ -109,6 +110,7 @@ def run_windows(
     budget: ModelBudget,
     render: Callable[[Sequence[PlanUnit]], Mapping[str, Any]],
     validate: Callable[[Any], bool],
+    decorate_output: Callable[[Any, Sequence[PlanUnit]], Any] | None = None,
     target_units: int = 45,
     overlap: int = 4,
     prompt_overhead_tokens: int = 512,
@@ -123,7 +125,13 @@ def run_windows(
     ``outputs`` are the validated per-window outputs, in window order.
     """
     cp.ensure_schema(con)
+    # Checkpoints must survive a process kill or a later business-stage error.
+    # The executor owns this connection while it runs; every state transition is
+    # therefore committed deliberately instead of depending on an outer context
+    # manager that could roll the entire run back.
+    con.commit()
     sleeper = sleeper or (lambda _s: None)
+    decorate_output = decorate_output or (lambda output, _units: output)
     result = StageResult(stage_name=scope.stage_name)
 
     planned = plan_windows(
@@ -147,14 +155,19 @@ def run_windows(
         if not subs:
             return False
         cp.mark_state(con, key, cp.STATE_SUBDIVIDED, error_text=error_text or None)
+        con.commit()
         for sub in subs:
             _process(sub)
         return True
 
     def _quarantine(window: PlannedWindow, key: str, attempt: int, error_text: str) -> None:
         cp.mark_state(con, key, cp.STATE_QUARANTINED, error_text=error_text)
+        con.commit()
         result.windows.append(
-            WindowResult(key, window.spec.window_index, cp.STATE_QUARANTINED, attempt, error_text)
+            WindowResult(
+                key, window.spec.window_index, cp.STATE_QUARANTINED, attempt,
+                error_text, tuple(window.spec.primary_refs),
+            )
         )
 
     def _process(window: PlannedWindow) -> None:
@@ -170,7 +183,10 @@ def run_windows(
         # Resume: a leaf that already reached a durable end state is not redone.
         if state in (cp.STATE_COMPLETED, cp.STATE_QUARANTINED):
             result.windows.append(
-                WindowResult(key, window.spec.window_index, state, int(existing["attempts"])))
+                WindowResult(
+                    key, window.spec.window_index, state, int(existing["attempts"]),
+                    existing.get("error_text"), tuple(window.spec.primary_refs),
+                ))
             if state == cp.STATE_COMPLETED:
                 for out in cp.load_outputs(
                     con, person_id=scope.person_id, package_date=scope.package_date,
@@ -194,6 +210,7 @@ def run_windows(
             prompt_version=scope.prompt_version, model=scope.model,
             state=cp.STATE_RUNNING, input_tokens=input_tokens, output_budget=budget.output_reserve,
         )
+        con.commit()
 
         # Refuse over-budget: subdivide, or quarantine a single oversized unit.
         if input_tokens > budget.max_input_tokens:
@@ -204,14 +221,21 @@ def run_windows(
         last_error = ""
         for attempt in range(1, max_attempts + 1):
             cp.bump_attempt(con, key)
+            con.commit()
             call = llm.generate(render(window.units), output_budget=budget.output_reserve)
 
             if call.ok and validate(call.data):
-                digest = cp.record_output(con, key, call.data)
+                durable_output = decorate_output(call.data, window.primary_units)
+                digest = cp.record_output(con, key, durable_output)
                 cp.mark_state(con, key, cp.STATE_COMPLETED, output_digest=digest)
-                result.windows.append(WindowResult(key, window.spec.window_index,
-                                                    cp.STATE_COMPLETED, attempt))
-                result.outputs.append(call.data)
+                con.commit()
+                result.windows.append(
+                    WindowResult(
+                        key, window.spec.window_index, cp.STATE_COMPLETED, attempt,
+                        None, tuple(window.spec.primary_refs),
+                    )
+                )
+                result.outputs.append(durable_output)
                 return
 
             if call.ok and not validate(call.data):
@@ -235,8 +259,13 @@ def run_windows(
 
         # Exhausted transient retries: retryable error, NOT applied, resumable.
         cp.mark_state(con, key, cp.STATE_ERROR, error_text=last_error)
-        result.windows.append(WindowResult(key, window.spec.window_index,
-                                            cp.STATE_ERROR, max_attempts, last_error))
+        con.commit()
+        result.windows.append(
+            WindowResult(
+                key, window.spec.window_index, cp.STATE_ERROR, max_attempts,
+                last_error, tuple(window.spec.primary_refs),
+            )
+        )
 
     for window in planned:
         _process(window)

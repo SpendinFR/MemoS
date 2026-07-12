@@ -60,6 +60,14 @@ def test_planner_is_lossless_every_unit_primary_exactly_once():
     assert len(primary) == len(set(primary))  # each primary exactly once
 
 
+def test_input_digest_changes_when_payload_changes_under_same_ref():
+    old = [PlanUnit("u1", 10, content_digest="old")]
+    new = [PlanUnit("u1", 10, content_digest="new")]
+    old_window = plan_windows(old, stage_name="s", max_input_tokens=100)[0]
+    new_window = plan_windows(new, stage_name="s", max_input_tokens=100)[0]
+    assert old_window.spec.input_digest != new_window.spec.input_digest
+
+
 def test_overlap_units_are_marked_not_primary():
     units = _units(20, tokens=1)
     wins = plan_windows(units, stage_name="s", max_input_tokens=5, target_units=45, overlap=2)
@@ -236,6 +244,22 @@ def test_transient_unavailable_retries_then_errors_resumable():
                      budget=ModelBudget(context_window=1000, output_reserve=100),
                      render=_render, validate=lambda d: True, target_units=3, overlap=0)
     assert ok.all_completed
+
+
+def test_error_checkpoint_is_committed_and_survives_reopen(tmp_path):
+    path = tmp_path / "checkpoints.db"
+    con = sqlite3.connect(path)
+    run_windows(
+        _units(3), con=con, scope=_scope(), llm=FlakyThenDown(),
+        budget=ModelBudget(context_window=1000, output_reserve=100),
+        render=_render, validate=lambda d: True, target_units=3, overlap=0,
+        max_attempts=1,
+    )
+    con.close()
+    reopened = sqlite3.connect(path)
+    assert reopened.execute(
+        f"SELECT state FROM {cp.WINDOWS_TABLE}"
+    ).fetchone()[0] == cp.STATE_ERROR
 
 
 def test_window_key_is_idempotent_and_scope_sensitive():

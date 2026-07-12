@@ -25,6 +25,14 @@ from .llm_contracts_v15_18 import normalize_outcome_tracker, normalize_similar_c
 
 STRICT_VERSION = "13.2.0-brain2-strict-final"
 
+_BRAIN2_STRICT_SYSTEM = (
+    "Tu es un moteur local strict Brain 2.0. Tu remplis uniquement à partir des preuves fournies. "
+    "Aucune regex, aucune psychologie générique, aucune hypothèse non marquée. "
+    "Réponds uniquement en JSON valide suivant le schéma. "
+    "Chaque inférence doit avoir confidence et evidence/counter_evidence. "
+    "Si une information manque, indique missing_context au lieu d'inventer."
+)
+
 STRICT_EXTRA_TABLES = {
     "brain2_temporal_links",
     "brain2_object_links",
@@ -261,18 +269,11 @@ def ensure_strict_v13_schema() -> None:
 
 
 def _llm_require_json(engine_name: str, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
-    system = (
-        "Tu es un moteur local strict Brain 2.0. Tu remplis uniquement à partir des preuves fournies. "
-        "Aucune regex, aucune psychologie générique, aucune hypothèse non marquée. "
-        "Réponds uniquement en JSON valide suivant le schéma. "
-        "Chaque inférence doit avoir confidence et evidence/counter_evidence. "
-        "Si une information manque, indique missing_context au lieu d'inventer."
-    )
     client = OllamaJsonClient()
     timeout = float(os.environ.get("MLOMEGA_V13_ENGINE_TIMEOUT", "180"))
     try:
         data = client.require_json(
-            system,
+            _BRAIN2_STRICT_SYSTEM,
             prompt,
             schema_hint=schema,
             timeout=timeout,
@@ -289,7 +290,7 @@ def _llm_require_json(engine_name: str, prompt: str, schema: dict[str, Any]) -> 
         except ValueError:
             retry_tokens = 8192
         data = client.require_json(
-            system,
+            _BRAIN2_STRICT_SYSTEM,
             prompt,
             schema_hint=schema,
             timeout=timeout,
@@ -593,7 +594,12 @@ def _materialize_episodes_from_qwen(con, conversation_id: str, output: dict[str,
             "truth_status": "inferred",
             "importance_score": _clamp(ep.get("importance_score", ep.get("confidence"))),
             "lifecycle_status": "active",
-            "metadata_json": json_dumps({"strict_v13_2": True, "missing_context": _as_list(output.get("missing_context"))}),
+            "metadata_json": json_dumps({
+                "strict_v13_2": True,
+                "episode_source": STRICT_VERSION,
+                "coverage_status": "complete",
+                "missing_context": _as_list(output.get("missing_context")),
+            }),
             "created_at": now,
             "updated_at": now,
         }, "episode_id")
@@ -677,10 +683,10 @@ def _ensure_episodes_strict(con, conversation_id: str, *, person_id: str) -> int
             person_id=resolved_owner,
             package_date=package_date,
             safe_prompt=_safe_prompt_payload,
-            llm_call=_llm_require_json,
             materialize=_materialize_episodes_from_qwen,
             mission=_EPISODE_MISSION,
             schema=STRICT_EPISODE_SCHEMA,
+            system=_BRAIN2_STRICT_SYSTEM,
         )
         _record_engine(
             con,

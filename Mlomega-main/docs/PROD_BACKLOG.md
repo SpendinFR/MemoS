@@ -640,13 +640,22 @@ Le problème est transversal : tout stage nocturne qui concatène un jour, une c
 - [ ] **Vague 3** : coordination BrainLive↔Brain2, Life Model, longitudinal, reconciliation, live-ready, prédictions/outcomes/self-schema pour tout appel LLM identifié en E64-A.
 - [ ] Les stages déterministes sans LLM restent inchangés mais publient leurs `EvidenceRef`/manifestes dans le même protocole.
 
-> **Suivi E64-F vague 1 — FAIT 2026-07-12 (code câblé + testé ; validation run réel Ollama = étape suivante) :**
+> **Suivi E64-F vague 1 — code corrigé 2026-07-12 (validation Ollama réelle encore ouverte) :**
 > - Règle Codex respectée : prompt V13 conservé, exécuté par fenêtres autonomes, sorties fusionnées avec preuve de couverture persistée, flag de rollback `MLOMEGA_E64_NIGHT_ORCHESTRATOR` (défaut ON, `=0` = legacy).
 > - **Morceau 1** — `brainlive_event_assembler_v15_14.py::_vision_pseudo_turns` : 1 pseudo-tour par `VisionChangeAtom` au lieu de ~945 par observation (via `reduce_vision_timeline`), forme/`speaker_label`/`evidence_role` inchangés, `metadata.source_refs` garde tous les `observation_id`, fallback legacy sûr.
-> - **Morceau 2** — `brain2_strict_v13_2.py::_ensure_episodes_strict` : branche gardée (`should_window`) → `brain2_episode_windowing.build_episodes_windowed` exécute le **même prompt/system/schéma V13** par fenêtre (`plan_windows` ~45 tours, overlap 3), fusionne les épisodes par `evidence_turn_ids` identiques, matérialise une fois. Mission V13 extraite en constante `_EPISODE_MISSION` (aucune modif de prompt). Petites conversations = chemin legacy inchangé.
-> - **Morceau 3** — table `night_llm_coverage_v19` (`coverage.persist_coverage`) : preuve de couverture par conversation, un `missing` non vide lève.
-> - Détails/limites (ex. épisode scindé à une frontière de fenêtre) dans `docs/DECISIONS.md` § « 2026-07-12 — E64-F vague 1 ». Tests : 7 `tests/v19/test_e64f_wiring.py` + 8 briques + non-régression `test_e37_nightly`/`test_ollama_context_budget` = 13 → **total E64 = 54 verts**.
-> - **RESTE (non couvert par la case)** : validation bout-en-bout sur un VRAI run Ollama (harnais `--with-close-day` sur la vraie vidéo) puis dashboard — le code est prouvé avec un faux LLM, pas encore contre Ollama réel. Vagues 2/3 = autres stages.
+> - **Morceau 2 corrigé après contre-audit** — le premier câblage `ccec994` appelait directement `plan_windows` + `_llm_require_json` et contournait donc E64-C. Le chemin produit passe désormais par `run_windows` + `OllamaWindowLLM` : budgets entrée/sortie, vraie classification `truncated_output→length`, subdivision, retries, quarantaine, checkpoints et reprise. Les checkpoints sont commités à chaque transition durable et `input_digest` inclut le contenu réel, pas seulement les IDs. Le prompt/system/schéma V13 reste inchangé.
+> - **Morceau 3 corrigé** — chaque sortie validée est persistée avec son manifeste de preuves primaires ; la couverture est ensuite RELUE depuis `night_llm_window_outputs_v19`. Les parents des atomes vision sont développés : la fixture 40 tours + 945 observations prouve bien **985 preuves sources**, pas seulement ~160 unités réduites. Un échec/timeout n'est ni crédité ni matérialisé.
+> - **Frontières** — les épisodes partiels compatibles fusionnent par clé métier structurelle + intersection de preuves (jamais texte, pas seulement ensembles identiques). Les épisodes matérialisés portent `episode_source` + `coverage_status=complete`, donc une reprise ne les détruit/recrée pas.
+> - Tests : **60 E64 verts** ; avec `test_e37_nightly.py` + `test_ollama_context_budget.py`, **73 verts**. Cela couvre aussi checkpoint réellement survivant après réouverture SQLite, changement de digest sous même ID, mapping du vrai `truncated_output`, 985 preuves et frontière partielle.
+> - **Tentative réelle 2026-07-12 à ne pas surinterpréter** : les 301 s de vidéo ont traversé le live (15 077 chunks, 30 tours, 3 clips), mais la fermeture a échoué AVANT création du job recovery/CloseDay (`end_session=error`, `close_day=not_started`, aucune table `night_llm_*`). E64-F n'a donc pas encore été exercé par Ollama. La base scratch est conservée et doit être reprise par la recovery sans rejouer la vidéo. Dashboard interdit avant cette preuve.
+
+### E64-F0 — Frontière fermeture révélée avant le premier run F réel
+
+- [ ] Identifier précisément quel drain (`device receipts`, audio ingress, final worker ou transport) dépasse son budget ; le statut doit nommer la phase et l'exception, jamais enregistrer une chaîne vide.
+- [ ] Empêcher le harnais `--with-close-day` de poller CloseDay pendant 30 minutes lorsque `end_session` a déjà échoué ou que `close_day=not_started`.
+- [ ] Reprendre la base scratch existante via `recover_abandoned_phoneonly_sessions`, puis seulement valider les checkpoints E64-F, les épisodes et le manifeste.
+
+**Référence humaine de la vidéo (documentation de diagnostic uniquement ; NE PAS modifier le scénario ASR/VIKI)** : 0:00–1:30 ami/canapé et conversation ; 1:30–2:00 lever + table avec lunettes/téléphone ; 2:00 clés posées puis regard table/tête tournée ; 2:30–2:38 texte fixé ; 2:38–3:20 changements de pièces puis retour salon/table ; 3:34 lunettes déplacées près du meuble ; 3:57–4:10 machine à café ; 4:10 terrasse ; 4:24–fin seconde personne et conversation. Cette vérité sert à interpréter la fragmentation vision ; `tools/harness/scenarios/real_video_session.json` reste inchangé.
 
 ### E64-G — Tests préventifs obligatoires
 

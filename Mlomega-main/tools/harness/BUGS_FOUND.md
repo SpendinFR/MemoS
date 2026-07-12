@@ -197,6 +197,34 @@ couverture finale. Il faut appliquer cette politique à tous les stages LLM de l
 nuit, pas corriger EpisodeBuilder seul. Le CloseDay réel reste `blocked` au stage
 Brain2 ; le dashboard n'a volontairement pas été lancé comme si le run était vert.
 
+## OBS-14 — Le run réel post-E64 n'a jamais atteint CloseDay (OUVERT)
+
+**Symptôme mesuré.** La vidéo de 301 s passe entièrement : 15 077 chunks audio,
+30 tours BrainLive, 7 239 frames reçues et 3 clips indexés. En revanche le POST
+`/session/end` expire ; la session reste `active`, `end_session=error`,
+`close_day=not_started`, aucun job `phoneonly_session_recovery_v19` et aucune
+table `night_llm_*`. Ce run ne valide donc ni E64-F ni le dashboard.
+
+**Faux coût de 30 minutes identifié.** Après le timeout de `/session/end`,
+`run_harness.py --with-close-day` continue de poller CloseDay pendant 1 800 s
+même lorsque son état reste explicitement `not_started`. Cette attente ne mesure
+pas la nuit : elle masque l'échec de fermeture et doit s'arrêter immédiatement.
+
+**Indices produit.** `recent_errors` contient des `TimeoutError` rendus en chaînes
+vides et des échecs répétés de `close_transport`; le log montre aussi que
+LiveDiscourse sollicite Ollama en arrière-plan avec cartes invalides/tronquées.
+La phase exacte (drain receipts/audio/final ou transport) n'est pas enregistrée :
+instrumenter le statut par phase avant de choisir le correctif, ne pas simplement
+augmenter le timeout. La base `tools/harness/_run/harness_memory.db` est conservée
+et récupérable par `recover_abandoned_phoneonly_sessions`, sans rejouer le média.
+
+**Contexte vidéo uniquement pour interpréter la vision — scénario ASR inchangé.**
+Canapé/ami jusqu'à 1:30 ; table téléphone/lunettes puis clés à 2:00 ; texte fixé
+2:30–2:38 ; changements de pièces et retour table jusqu'à 3:20 ; lunettes
+déplacées vers 3:34 ; machine à café 3:57–4:10 ; terrasse puis seconde personne
+à 4:24 jusqu'à la fin. Cette description ne doit pas modifier
+`scenarios/real_video_session.json`.
+
 ## Notes that are NOT bugs (expected, documented so future runs don't chase them)
 
 - **`ai_ready=false` / `/health` 200 with `pairing_ready=true`.** Expected on a

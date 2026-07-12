@@ -208,6 +208,17 @@ def _poll_close_day(host: str, port: int, report: dict[str, Any], *, timeout_s: 
         if state in {"completed", "error"}:
             report["server_close_day"] = state
             return
+        # A failed end can never start CloseDay. Waiting the full 30-minute
+        # nightly budget here hid the real transport/drain failure and produced
+        # a bogus performance measurement. Preserve the explicit boundary and
+        # return immediately so assertions report the right failure.
+        if active.get("end_session") == "error" and state == "not_started":
+            report["server_close_day"] = state
+            report["end_session_status"] = "error"
+            report.setdefault("errors", []).append(
+                "close_day_not_started_after_end_session_error"
+            )
+            return
         time.sleep(5.0)
 
 

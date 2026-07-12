@@ -18,6 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
+from .evidence_ref import content_digest
+
 
 @dataclass(frozen=True)
 class MergeItem:
@@ -90,7 +92,9 @@ def resolve_overlap(items: Sequence[MergeItem]) -> OverlapResult:
                 time_start=min(surv.time_start, item.time_start) if item.time_start else surv.time_start,
                 time_end=max(surv.time_end or surv.time_start, item.time_end or item.time_start),
                 payload=surv.payload,
-                parent_items=surv.parent_items + (item.item_id,),
+                parent_items=tuple(dict.fromkeys(
+                    surv.parent_items + (item.item_id,) + item.parent_items
+                )),
             )
             dropped[item.item_id] = surv.item_id
     return OverlapResult(survivors=tuple(survivors), dropped_to_survivor=dropped)
@@ -116,7 +120,10 @@ def default_combine(key: str, members: Sequence[MergeItem]) -> MergeItem:
     starts = [m.time_start for m in members if m.time_start]
     ends = [m.time_end or m.time_start for m in members if (m.time_end or m.time_start)]
     return MergeItem(
-        item_id=f"merge_{key}",
+        item_id="merge_" + content_digest({
+            "key": key,
+            "members": [m.item_id for m in members],
+        })[:20],
         semantic_key=key,
         evidence_refs=evidence,
         time_start=min(starts) if starts else "",

@@ -30,6 +30,10 @@ class PlanUnit:
     tokens: int
     boundary: bool = False  # a hard boundary STARTS at this unit (opens a window)
     ts: str = ""
+    # Stable digest of the actual payload represented by ref_id. Without it, a
+    # corrected transcript retaining the same durable ID would incorrectly
+    # resume an output produced from the old text.
+    content_digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -79,13 +83,17 @@ def plan_windows(
             overlap_units = windows[idx - 1].primary_units[-overlap:]
         primary_ids = tuple(u.ref_id for u in primary)
         overlap_ids = tuple(u.ref_id for u in overlap_units)
+        input_fingerprints = [
+            {"ref_id": u.ref_id, "content_digest": u.content_digest or u.ref_id}
+            for u in (*overlap_units, *primary)
+        ]
         in_tokens = sum(u.tokens for u in overlap_units) + sum(u.tokens for u in primary)
         spec = WindowSpec(
             stage_name=stage_name,
             window_index=idx,
             primary_refs=primary_ids,
             overlap_refs=overlap_ids,
-            input_digest=content_digest(list(overlap_ids) + list(primary_ids)),
+            input_digest=content_digest(input_fingerprints),
         )
         oversized = len(primary) == 1 and primary[0].tokens > max_input_tokens
         windows.append(
@@ -127,12 +135,16 @@ def subdivide(window: PlannedWindow, *, stage_name: str) -> list[PlannedWindow]:
     out: list[PlannedWindow] = []
     for i, half in enumerate(halves):
         ids = tuple(u.ref_id for u in half)
+        input_fingerprints = [
+            {"ref_id": u.ref_id, "content_digest": u.content_digest or u.ref_id}
+            for u in half
+        ]
         spec = WindowSpec(
             stage_name=stage_name,
             window_index=window.spec.window_index * 1000 + i + 1,
             primary_refs=ids,
             overlap_refs=(),
-            input_digest=content_digest(list(ids)),
+            input_digest=content_digest(input_fingerprints),
         )
         out.append(
             PlannedWindow(
