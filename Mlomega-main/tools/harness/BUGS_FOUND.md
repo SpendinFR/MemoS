@@ -275,6 +275,35 @@ preuve primaire et sépare contexte lu / responsabilité de sortie : overlap 2
 et cohérentes. Les benchmarks accidentels 4B/4k ont été identifiés via `ollama ps`
 et ne sont PAS retenus. Reste : reprise complète, manifeste vert et dashboard.
 
+## OBS-18 — Les sorties d'anciens adaptateurs contaminaient le merge (CORRIGÉ — 2026-07-12)
+
+Les 79 fenêtres v4 ont toutes fini au premier essai, mais la relecture finale
+filtrait seulement `(person,jour,stage_name)`. Les dix sorties v2 conservées pour
+audit entraient donc dans le merge v4 : dicts `location/channel` anciens puis
+erreur SQLite, et surtout risque de couverture faussement verte. `load_outputs`
+accepte désormais l'ensemble exact des clés feuilles du run courant ; couverture
+et matérialisation passent obligatoirement ces clés. Preuve réelle après reprise :
+**1 433 attendues = 26 audio couvertes + 1 407 vision représentées, 0 missing,
+0 quarantaine** ; compteur v4 inchangé à 79 tentatives, donc aucun rappel Ollama.
+
+## OBS-19 — Les FK inventées par V13 bloquaient après EpisodeBuilder (CORRIGÉ EN CODE, REPRISE OUVERTE)
+
+Le premier moteur aval `capture_engine` a renvoyé un `turn_id` absent et le writer
+l'a envoyé directement dans `audio_prosody_events.turn_id` : `FOREIGN KEY
+constraint failed`. Audit du bloc complet : limites de tours, liens d'épisodes,
+pensées, transitions d'état, outcome/intention et cas similaires avaient la même
+classe de risque. Les FK venant du LLM sont maintenant acceptées uniquement si le
+parent existe (et, pour un turn, appartient à la conversation) ; un événement
+prosodique sans tour valide est ignoré, une FK optionnelle invalide devient NULL.
+`thought_type` absent reçoit le type neutre `hypothesis` exigé par la table.
+
+Autre gap révélé : les 16 moteurs V13 par épisode étaient dans une seule transaction.
+Une erreur tardive rejouait tous les appels précédents. Chaque moteur + ses writers
+est maintenant commit atomiquement ; reprise par `(engine,episode,prompt hash)` et
+sortie validée. Test négatif FK + reprise exacte vert. Volume observé restant à
+arbitrer sans supprimer de passes : 19 épisodes v4 × 16 moteurs = 304 appels.
+Suite ciblée complète : 55 tests verts.
+
 ## Notes that are NOT bugs (expected, documented so future runs don't chase them)
 
 - **`ai_ready=false` / `/health` 200 with `pairing_ready=true`.** Expected on a

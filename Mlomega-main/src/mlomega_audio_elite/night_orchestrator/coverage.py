@@ -123,6 +123,7 @@ def covered_refs_from_outputs_table(
     package_date: str,
     stage_name: str,
     extract_refs: Callable[[Any], Iterable[str]],
+    window_keys: set[str] | None = None,
 ) -> set[str]:
     """Re-read persisted, VALIDATED outputs and extract their evidence refs.
 
@@ -133,7 +134,8 @@ def covered_refs_from_outputs_table(
     """
     refs: set[str] = set()
     for row in cp.load_outputs(
-        con, person_id=person_id, package_date=package_date, stage_name=stage_name
+        con, person_id=person_id, package_date=package_date, stage_name=stage_name,
+        window_keys=window_keys,
     ):
         for ref in extract_refs(row["output"]):
             refs.add(str(ref))

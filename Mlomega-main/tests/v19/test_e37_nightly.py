@@ -312,6 +312,92 @@ def test_bundle_reexport_supersedes_every_previous_active_export(tmp_path, monke
     assert fake_status == "superseded"
 
 
+def test_v13_llm_foreign_keys_are_validated_before_materialization(tmp_path, monkeypatch):
+    _env(tmp_path, monkeypatch)
+    from mlomega_audio_elite.brain2_strict_v13_2 import (
+        _load_completed_engine_output,
+        _put_engine_payload,
+        _record_engine,
+        ensure_strict_v13_schema,
+    )
+    from mlomega_audio_elite.db import connect
+    from mlomega_audio_elite.utils import now_iso
+
+    ensure_strict_v13_schema()
+    stamp = now_iso()
+    with connect() as con:
+        con.execute(
+            "INSERT INTO conversations(conversation_id,title,started_at,created_at) VALUES(?,?,?,?)",
+            ("conv-fk", "fk guard", stamp, stamp),
+        )
+        con.execute(
+            "INSERT INTO turns(turn_id,conversation_id,idx,text) VALUES(?,?,?,?)",
+            ("turn-valid", "conv-fk", 0, "bonjour"),
+        )
+        con.execute(
+            """INSERT INTO episodes(
+                   episode_id,episode_type,source_conversation_id,start_turn_id,
+                   end_turn_id,situation_summary,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?)""",
+            ("episode-fk", "other", "conv-fk", "turn-valid", "turn-valid", "test", stamp, stamp),
+        )
+
+        # Invalid model IDs are never written into FK columns. A valid cited turn
+        # in the same conversation still materializes normally.
+        made = _put_engine_payload(con, "capture_engine", "episode-fk", "me", {
+            "confidence": 0.8,
+            "prosody_events": [
+                {"turn_id": "hallucinated-turn", "event_type": "pause"},
+                {"turn_id": "turn-valid", "event_type": "emphasis"},
+            ],
+        })
+        assert made == 1
+        assert con.execute(
+            "SELECT turn_id FROM audio_prosody_events"
+        ).fetchall()[0][0] == "turn-valid"
+
+        _put_engine_payload(con, "episode_builder", "episode-fk", "me", {
+            "episode_boundaries": [
+                {"boundary_type": "start", "turn_id": "hallucinated-turn"}
+            ],
+            "links_to_other_episodes": [
+                {"to_episode_id": "hallucinated-episode", "relation_type": "related"}
+            ],
+        })
+        assert con.execute("SELECT COUNT(*) FROM episode_boundaries").fetchone()[0] == 0
+        assert con.execute("SELECT COUNT(*) FROM episode_links").fetchone()[0] == 0
+
+        _put_engine_payload(con, "internal_state_engine", "episode-fk", "me", {
+            "thought_hypotheses": [
+                {"content": "hypothèse", "turn_id": "hallucinated-turn"}
+            ],
+            # No before/after snapshots: a transition must not reference parents
+            # that were never materialized.
+            "state_transitions": [{"from": "a", "to": "b"}],
+        })
+        assert con.execute("SELECT turn_id FROM thought_hypotheses").fetchone()[0] is None
+        assert con.execute("SELECT COUNT(*) FROM state_transitions").fetchone()[0] == 0
+
+        prompt = '{"episode":"episode-fk","task":"capture"}'
+        _record_engine(
+            con, engine="capture_engine", conversation_id="conv-fk",
+            episode_id="episode-fk", person_id="me", prompt=prompt,
+            output={"capture_quality": {"level": "ok"}}, status="ok",
+        )
+        con.commit()
+
+    # A committed engine output is resumed only for the exact same prompt.
+    with connect() as con:
+        assert _load_completed_engine_output(
+            con, engine="capture_engine", conversation_id="conv-fk",
+            episode_id="episode-fk", prompt=prompt,
+        ) == {"capture_quality": {"level": "ok"}}
+        assert _load_completed_engine_output(
+            con, engine="capture_engine", conversation_id="conv-fk",
+            episode_id="episode-fk", prompt=prompt + " changed",
+        ) is None
+
+
 # ============================================================ 3. owner
 class _FakeEmbedder:
     """Deterministic per-file embedder: same bytes → same vector (cosine==1)."""

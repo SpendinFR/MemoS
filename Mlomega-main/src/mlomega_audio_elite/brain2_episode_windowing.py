@@ -547,6 +547,7 @@ def build_episodes_windowed(
 
     # Anti-loss proof comes ONLY from validated outputs re-read from the durable
     # output table. It never trusts the planner's in-memory primary list.
+    current_window_keys = {window.window_key for window in stage.windows}
     covered = covered_refs_from_outputs_table(
         con,
         person_id=person_id,
@@ -554,6 +555,7 @@ def build_episodes_windowed(
         stage_name=scoped_stage,
         extract_refs=lambda stored: stored.get("evidence_refs", [])
         if isinstance(stored, dict) else (),
+        window_keys=current_window_keys,
     )
     expected, atom_parent_index = _source_coverage(turns)
     quarantined = {
@@ -583,6 +585,7 @@ def build_episodes_windowed(
 
     persisted = cp.load_outputs(
         con, person_id=person_id, package_date=package_date, stage_name=scoped_stage,
+        window_keys=current_window_keys,
     )
     all_eps: list[Mapping[str, Any]] = []
     missing_context: list[Any] = []

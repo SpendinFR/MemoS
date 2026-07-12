@@ -200,8 +200,21 @@ def record_output(con: Any, key: str, output: Any) -> str:
     return digest
 
 
-def load_outputs(con: Any, *, person_id: str, package_date: str, stage_name: str) -> list[dict[str, Any]]:
-    """Re-read validated outputs for a stage (merge input / coverage source)."""
+def load_outputs(
+    con: Any,
+    *,
+    person_id: str,
+    package_date: str,
+    stage_name: str,
+    window_keys: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Re-read validated outputs for a stage (merge input / coverage source).
+
+    ``stage_name`` alone is not a version boundary: old adapter/prompt/model
+    checkpoints intentionally remain auditable under the same business stage.
+    A current execution must therefore pass its exact leaf ``window_keys`` when
+    outputs are used for coverage or materialisation.
+    """
     cur = con.execute(
         f"""SELECT o.window_key, o.output_json
               FROM {OUTPUTS_TABLE} o
@@ -213,5 +226,7 @@ def load_outputs(con: Any, *, person_id: str, package_date: str, stage_name: str
     )
     out: list[dict[str, Any]] = []
     for window_key_, output_json in cur.fetchall():
+        if window_keys is not None and window_key_ not in window_keys:
+            continue
         out.append({"window_key": window_key_, "output": json.loads(output_json)})
     return out

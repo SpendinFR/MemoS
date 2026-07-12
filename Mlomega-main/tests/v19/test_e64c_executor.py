@@ -149,6 +149,33 @@ def test_prompt_overhead_is_removed_from_planning_budget():
     assert states == {"completed": 2}
 
 
+def test_output_reload_is_scoped_to_current_adapter_window_keys():
+    con = _con()
+    keys = []
+    for adapter, marker in (("old-v2", "stale"), ("current-v4", "fresh")):
+        key = cp.window_key(
+            person_id="me", package_date="2026-01-01", stage_name="same-stage",
+            input_digest=marker, window_index=0, adapter_version=adapter,
+            prompt_version="p", model="m",
+        )
+        cp.upsert_window(
+            con, key=key, person_id="me", package_date="2026-01-01",
+            stage_name="same-stage", input_digest=marker, window_index=0,
+            adapter_version=adapter, prompt_version="p", model="m",
+            state=cp.STATE_RUNNING, input_tokens=10, output_budget=10,
+        )
+        digest = cp.record_output(con, key, {"marker": marker})
+        cp.mark_state(con, key, cp.STATE_COMPLETED, output_digest=digest)
+        keys.append(key)
+    con.commit()
+
+    current = cp.load_outputs(
+        con, person_id="me", package_date="2026-01-01", stage_name="same-stage",
+        window_keys={keys[1]},
+    )
+    assert [row["output"]["marker"] for row in current] == ["fresh"]
+
+
 def test_resume_skips_completed_windows_no_double_output():
     con = _con()
     scope = _scope()

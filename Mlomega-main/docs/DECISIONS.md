@@ -897,6 +897,14 @@ Périmètre strict PC (`services/live-pc/change_attention.py` + câblage `live_p
 
 **Mesures.** 158 tours réels : 130 806 → 68 343 tokens (-47,8 %), sans perte des 1 407 refs vision. Le test intermédiaire 4B/4k a été invalidé après inspection d'`ollama ps`; seule la phase post-stop 9B/16k fait foi. Fenêtre réelle froide : 68,8 s, chaude : 8,7 s, toutes deux `finish=stop` et contenu cohérent. Le planificateur retire aussi le coût fixe mission+schéma avant de construire les fenêtres. 53 tests ciblés verts. Gate encore ouvert : CloseDay complet, couverture finale et Dashboard.
 
+## 2026-07-12 — E64-F : versionner la relecture et checkpoint chaque moteur V13 (ADR)
+
+**Isolation de version.** `stage_name` est une identité métier, pas une frontière d'adaptateur : les sorties v2 restent auditées sous le même nom que v4. Couverture et merge doivent donc relire uniquement les `window_key` feuilles produites/reprises par l'exécution courante. Une sortie d'ancien adaptateur ne peut plus créditer une preuve ni entrer dans le résultat courant.
+
+**Frontière FK.** Un identifiant généré par le LLM n'est jamais une preuve que son parent existe. Chaque FK V13 dynamique est validée avant writer ; les turns doivent en plus appartenir à la conversation. Une référence optionnelle inconnue devient NULL, une observation qui exige cette preuve (prosodie/boundary) est ignorée. Les parents déterministes créés par code restent inchangés.
+
+**Reprise fine.** EpisodeBuilder couvert est commité avant la matrice V13. Chaque couple `(episode,engine,prompt_hash)` commit ensuite atomiquement sortie validée + projections. Une reprise recharge `v13_engine_outputs` seulement si run status `ok`, validation `valid` et hash identique ; elle réinjecte la sortie dans le contexte des moteurs suivants sans rappeler Ollama. Cela conserve les 16 passes mais supprime les replays après crash. Le coût restant (19×16 appels sur la fixture) est un sujet de performance, pas une autorisation à supprimer des moteurs.
+
 **Décision lossless.** Une `vision_frames` brute ne constitue pas un changement sémantique. Elle est rattachée à l'observation sémantique temporellement la plus proche, puis conservée dans `source_refs`/`frame_refs` de l'atome. Seules les observations sémantiques ouvrent/ferment les plages. Si une timeline ne contient que des frames brutes, elles deviennent une plage de preuves unique plutôt que des événements pilotés par noms de fichiers. Aucun fichier, ID, hash ou observation n'est supprimé.
 
 **Preuves.** Sur la DB scratch réelle : 1 407 entrées → **132 `VisionChangeAtom`**, 1 407 `source_refs` uniques, max 207 observations sémantiques dans une plage ; export produit immuable : **162 tours (132 vision + 30 audio)** contre 1 433. Tests dédiés : interleaving raw/semantic, camera-only, provenance exacte ; 35 ciblés verts et 44 avec E37.

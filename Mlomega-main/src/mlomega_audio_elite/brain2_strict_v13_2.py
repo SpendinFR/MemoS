@@ -518,6 +518,33 @@ def _record_engine(con, *, engine: str, conversation_id: str | None, episode_id:
     return run_id
 
 
+def _load_completed_engine_output(
+    con,
+    *,
+    engine: str,
+    conversation_id: str,
+    episode_id: str,
+    prompt: str,
+) -> dict[str, Any] | None:
+    """Resume one V13 engine only when prompt+validated output match exactly."""
+    run_id = stable_id(
+        "v13stricteng", STRICT_VERSION, engine, conversation_id, episode_id,
+        _hash_payload(prompt)[:16],
+    )
+    row = con.execute(
+        """SELECT r.status,o.output_json,o.validation_status
+             FROM v13_engine_runs r
+             JOIN v13_engine_outputs o ON o.engine_run_id=r.engine_run_id
+            WHERE r.engine_run_id=? AND r.input_hash=?
+            ORDER BY o.created_at DESC LIMIT 1""",
+        (run_id, _hash_payload(prompt)),
+    ).fetchone()
+    if not row or str(row["status"]) != "ok" or str(row["validation_status"]) != "valid":
+        return None
+    parsed = json_loads(row["output_json"], None)
+    return parsed if isinstance(parsed, dict) else None
+
+
 def _insert_object_link(con, conversation_id: str | None, episode_id: str | None, from_table: str, from_id: str, to_table: str, to_id: str, relation: str, engine: str | None, confidence: float = 1.0, evidence: list[Any] | None = None) -> None:
     upsert(con, "brain2_object_links", {
         "object_link_id": stable_id("objlink", from_table, from_id, to_table, to_id, relation),
@@ -721,6 +748,26 @@ def _put_engine_payload(con, engine: str, episode_id: str, person_id: str, outpu
     conv_id = ep["source_conversation_id"] if ep else None
     conf = _clamp(output.get("confidence"))
 
+    def existing_id(table: str, column: str, value: Any) -> str | None:
+        """Accept an LLM-provided FK only when its parent row really exists."""
+        if not isinstance(value, (str, int)) or not str(value).strip():
+            return None
+        candidate = str(value)
+        row = con.execute(
+            f"SELECT 1 FROM {table} WHERE {column}=? LIMIT 1", (candidate,)
+        ).fetchone()
+        return candidate if row else None
+
+    def conversation_turn_id(value: Any) -> str | None:
+        if not isinstance(value, (str, int)) or not str(value).strip() or not conv_id:
+            return None
+        candidate = str(value)
+        row = con.execute(
+            "SELECT 1 FROM turns WHERE turn_id=? AND conversation_id=? LIMIT 1",
+            (candidate, conv_id),
+        ).fetchone()
+        return candidate if row else None
+
     def link(table: str, oid: str, rel: str = "produced_from") -> None:
         _insert_object_link(con, conv_id, episode_id, "episodes", episode_id, table, oid, rel, engine, conf, _as_list(output.get("evidence")))
 
@@ -742,8 +789,10 @@ def _put_engine_payload(con, engine: str, episode_id: str, person_id: str, outpu
                 count += 1
         for b in _as_list(output.get("episode_boundaries")):
             if isinstance(b, dict) and b.get("boundary_type"):
-                tid = b.get("turn_id")
-                turn = con.execute("SELECT idx, text FROM turns WHERE turn_id=?", (tid,)).fetchone() if tid else None
+                tid = conversation_turn_id(b.get("turn_id"))
+                if not tid:
+                    continue
+                turn = con.execute("SELECT idx, text FROM turns WHERE turn_id=?", (tid,)).fetchone()
                 bid = stable_id("epbound", episode_id, engine, b.get("boundary_type"), tid or b.get("reason"))
                 upsert(con, "episode_boundaries", {
                     "boundary_id": bid, "conversation_id": conv_id, "episode_id": episode_id,
@@ -754,11 +803,14 @@ def _put_engine_payload(con, engine: str, episode_id: str, person_id: str, outpu
                 }, "boundary_id")
                 count += 1
         for l in _as_list(output.get("links_to_other_episodes")):
-            if isinstance(l, dict) and l.get("to_episode_id") and l.get("to_episode_id") != episode_id:
-                lid = stable_id("eplink", episode_id, l.get("relation_type") or "related", l.get("to_episode_id"))
+            target_episode_id = existing_id(
+                "episodes", "episode_id", l.get("to_episode_id")
+            ) if isinstance(l, dict) else None
+            if target_episode_id and target_episode_id != episode_id:
+                lid = stable_id("eplink", episode_id, l.get("relation_type") or "related", target_episode_id)
                 upsert(con, "episode_links", {
                     "episode_link_id": lid, "from_episode_id": episode_id, "relation_type": l.get("relation_type") or "related",
-                    "to_episode_id": l.get("to_episode_id"), "confidence": _clamp(l.get("confidence", conf)),
+                    "to_episode_id": target_episode_id, "confidence": _clamp(l.get("confidence", conf)),
                     "evidence_text": json_dumps(_as_list(output.get("evidence"))), "metadata_json": json_dumps({"source": "strict_v13_2_episode_builder_engine"}),
                     "created_at": now,
                 }, "episode_link_id")
@@ -769,8 +821,11 @@ def _put_engine_payload(con, engine: str, episode_id: str, person_id: str, outpu
         if _as_list(output.get("prosody_events")):
             for ev in _as_list(output.get("prosody_events")):
                 if isinstance(ev, dict) and ev.get("event_type"):
-                    oid = stable_id("prosody", episode_id, ev.get("turn_id"), ev.get("event_type"), ev.get("interpretation"))
-                    upsert(con, "audio_prosody_events", {"prosody_event_id": oid, "conversation_id": conv_id, "turn_id": ev.get("turn_id"), "source_asset_id": None, "person_id": person_id, "start_s": ev.get("start_s"), "end_s": ev.get("end_s"), "event_type": ev.get("event_type"), "feature_json": json_dumps({"value": ev.get("value"), "capture_quality": cap}), "interpretation": ev.get("interpretation"), "confidence": _clamp(ev.get("confidence")), "source_method": "qwen_or_acoustic_feature", "evidence_json": json_dumps(_as_list(output.get("evidence"))), "created_at": now}, "prosody_event_id")
+                    turn_id = conversation_turn_id(ev.get("turn_id"))
+                    if not turn_id:
+                        continue
+                    oid = stable_id("prosody", episode_id, turn_id, ev.get("event_type"), ev.get("interpretation"))
+                    upsert(con, "audio_prosody_events", {"prosody_event_id": oid, "conversation_id": conv_id, "turn_id": turn_id, "source_asset_id": None, "person_id": person_id, "start_s": ev.get("start_s"), "end_s": ev.get("end_s"), "event_type": ev.get("event_type"), "feature_json": json_dumps({"value": ev.get("value"), "capture_quality": cap}), "interpretation": ev.get("interpretation"), "confidence": _clamp(ev.get("confidence")), "source_method": "qwen_or_acoustic_feature", "evidence_json": json_dumps(_as_list(output.get("evidence"))), "created_at": now}, "prosody_event_id")
                     link("audio_prosody_events", oid)
                     count += 1
         if cap.get("missing_audio_signals"):
@@ -812,12 +867,22 @@ def _put_engine_payload(con, engine: str, episode_id: str, person_id: str, outpu
         for th in _as_list(output.get("thought_hypotheses")):
             if isinstance(th, dict) and th.get("content"):
                 oid = stable_id("thought", episode_id, person_id, th.get("content")[:120])
-                upsert(con, "thought_hypotheses", {"thought_id": oid, "person_id": person_id, "episode_id": episode_id, "thought_type": th.get("thought_type"), "content": th.get("content"), "turn_id": th.get("turn_id"), "consciousness_level": th.get("consciousness_level"), "evidence_text": json_dumps(_as_list(th.get("evidence") or output.get("evidence"))), "trigger_summary": th.get("trigger"), "related_need": th.get("related_need"), "related_fear": th.get("related_fear"), "related_goal": th.get("related_goal"), "truth_status": "inferred", "confidence": _clamp(th.get("confidence")), "metadata_json": json_dumps({}), "created_at": now, "updated_at": now}, "thought_id")
+                upsert(con, "thought_hypotheses", {"thought_id": oid, "person_id": person_id, "episode_id": episode_id, "thought_type": th.get("thought_type") or "hypothesis", "content": th.get("content"), "turn_id": conversation_turn_id(th.get("turn_id")), "consciousness_level": th.get("consciousness_level"), "evidence_text": json_dumps(_as_list(th.get("evidence") or output.get("evidence"))), "trigger_summary": th.get("trigger"), "related_need": th.get("related_need"), "related_fear": th.get("related_fear"), "related_goal": th.get("related_goal"), "truth_status": "inferred", "confidence": _clamp(th.get("confidence")), "metadata_json": json_dumps({}), "created_at": now, "updated_at": now}, "thought_id")
                 link("thought_hypotheses", oid); count += 1
         for ev in _as_list(output.get("state_transitions")):
             if isinstance(ev, dict):
+                from_state_id = existing_id(
+                    "internal_state_snapshots", "state_id",
+                    stable_id("state", episode_id, person_id, "before"),
+                )
+                to_state_id = existing_id(
+                    "internal_state_snapshots", "state_id",
+                    stable_id("state", episode_id, person_id, "after"),
+                )
+                if not from_state_id or not to_state_id:
+                    continue
                 oid = stable_id("statetr", episode_id, ev.get("from"), ev.get("to"), ev.get("trigger"))
-                upsert(con, "state_transitions", {"transition_id": oid, "person_id": person_id, "from_state_id": stable_id("state", episode_id, person_id, "before"), "to_state_id": stable_id("state", episode_id, person_id, "after"), "transition_type": "qwen_state_transition", "change_summary": json_dumps({"from": ev.get("from"), "to": ev.get("to")}), "trigger_summary": ev.get("trigger"), "confidence": _clamp(ev.get("confidence")), "metadata_json": json_dumps({"episode_id": episode_id, "evidence": _as_list(ev.get("evidence") or output.get("evidence"))}), "created_at": now}, "transition_id")
+                upsert(con, "state_transitions", {"transition_id": oid, "person_id": person_id, "from_state_id": from_state_id, "to_state_id": to_state_id, "transition_type": "qwen_state_transition", "change_summary": json_dumps({"from": ev.get("from"), "to": ev.get("to")}), "trigger_summary": ev.get("trigger"), "confidence": _clamp(ev.get("confidence")), "metadata_json": json_dumps({"episode_id": episode_id, "evidence": _as_list(ev.get("evidence") or output.get("evidence"))}), "created_at": now}, "transition_id")
                 link("state_transitions", oid); count += 1
         if output.get("dominant_emotion"):
             oid = stable_id("emoev", episode_id, person_id, output.get("dominant_emotion"))
@@ -900,7 +965,7 @@ def _put_engine_payload(con, engine: str, episode_id: str, person_id: str, outpu
         for ch in _as_list(output.get("choices")) or _as_list(output.get("choice_episodes")):
             if isinstance(ch, dict) and (ch.get("choice_context") or ch.get("chosen_option") or ch.get("options")):
                 cid = stable_id("choice", episode_id, person_id, ch.get("choice_context"), ch.get("chosen_option"))
-                upsert(con, "choice_episodes", {"choice_id": cid, "episode_id": episode_id, "person_id": person_id, "choice_context": ch.get("choice_context"), "options_json": json_dumps(_as_list(ch.get("options"))), "criteria_json": json_dumps(_as_list(ch.get("criteria"))), "preferred_option_before": ch.get("preferred_option_before"), "chosen_option": ch.get("chosen_option"), "rejected_options_json": json_dumps(_as_list(ch.get("rejected_options"))), "decision_time": ch.get("decision_time"), "confidence_before": _clamp(ch.get("confidence_before")), "confidence_after": _clamp(ch.get("confidence_after")), "reason_given": ch.get("reason_given"), "real_reason_hypothesis": ch.get("real_reason_hypothesis"), "outcome_id": ch.get("outcome_id"), "satisfaction_after": ch.get("satisfaction_after"), "regret_after": ch.get("regret_after"), "created_at": now, "updated_at": now}, "choice_id")
+                upsert(con, "choice_episodes", {"choice_id": cid, "episode_id": episode_id, "person_id": person_id, "choice_context": ch.get("choice_context"), "options_json": json_dumps(_as_list(ch.get("options"))), "criteria_json": json_dumps(_as_list(ch.get("criteria"))), "preferred_option_before": ch.get("preferred_option_before"), "chosen_option": ch.get("chosen_option"), "rejected_options_json": json_dumps(_as_list(ch.get("rejected_options"))), "decision_time": ch.get("decision_time"), "confidence_before": _clamp(ch.get("confidence_before")), "confidence_after": _clamp(ch.get("confidence_after")), "reason_given": ch.get("reason_given"), "real_reason_hypothesis": ch.get("real_reason_hypothesis"), "outcome_id": existing_id("action_outcomes", "outcome_id", ch.get("outcome_id")), "satisfaction_after": ch.get("satisfaction_after"), "regret_after": ch.get("regret_after"), "created_at": now, "updated_at": now}, "choice_id")
                 link("choice_episodes", cid); count += 1
                 for opt in _as_list(ch.get("options")):
                     oid = stable_id("choiceopt", cid, str(opt))
@@ -921,7 +986,7 @@ def _put_engine_payload(con, engine: str, episode_id: str, person_id: str, outpu
         for oc in normalized_outcome["outcomes"]:
             if isinstance(oc, dict) and (oc.get("action_taken") or oc.get("result")):
                 oid = stable_id("outcome", episode_id, person_id, oc.get("action_taken"), oc.get("result"))
-                upsert(con, "action_outcomes", {"outcome_id": oid, "intention_id": oc.get("intention_id"), "episode_id": episode_id, "person_id": person_id, "action_taken": oc.get("action_taken"), "result": oc.get("result"), "success_level": _clamp(oc.get("success_level")), "delay_text": oc.get("delay"), "obstacle_encountered": oc.get("obstacle_encountered"), "emotion_after": oc.get("emotion_after"), "lesson": oc.get("lesson"), "evidence_text": json_dumps(_as_list(oc.get("evidence") or output.get("evidence"))), "truth_status": "inferred", "confidence": _clamp(oc.get("confidence", conf)), "metadata_json": json_dumps({"v15_18_contract_fix": True, "raw": oc.get("raw")}), "created_at": now, "updated_at": now}, "outcome_id")
+                upsert(con, "action_outcomes", {"outcome_id": oid, "intention_id": existing_id("action_intentions", "intention_id", oc.get("intention_id")), "episode_id": episode_id, "person_id": person_id, "action_taken": oc.get("action_taken"), "result": oc.get("result"), "success_level": _clamp(oc.get("success_level")), "delay_text": oc.get("delay"), "obstacle_encountered": oc.get("obstacle_encountered"), "emotion_after": oc.get("emotion_after"), "lesson": oc.get("lesson"), "evidence_text": json_dumps(_as_list(oc.get("evidence") or output.get("evidence"))), "truth_status": "inferred", "confidence": _clamp(oc.get("confidence", conf)), "metadata_json": json_dumps({"v15_18_contract_fix": True, "raw": oc.get("raw")}), "created_at": now, "updated_at": now}, "outcome_id")
                 link("action_outcomes", oid); count += 1
 
     elif engine == "similar_case_retrieval":
@@ -932,7 +997,7 @@ def _put_engine_payload(con, engine: str, episode_id: str, person_id: str, outpu
             if isinstance(sc, dict):
                 case_id = sc.get("case_id") or sc.get("episode_id") or stable_id("case", person_id, json_dumps(sc)[:160])
                 if not con.execute("SELECT 1 FROM prediction_cases WHERE case_id=?", (case_id,)).fetchone():
-                    upsert(con, "prediction_cases", {"case_id": case_id, "case_type": "llm_similar_case_reference", "episode_id": sc.get("episode_id"), "person_id": person_id, "context_summary": sc.get("why_similar") or sc.get("summary") or "LLM referenced similar case; canonical case auto-created by V15.18", "situation_vector_json": json_dumps({}), "state_vector_json": json_dumps({}), "action_taken": None, "speech_next": None, "emotion_next": None, "thought_next_hypothesis": None, "outcome": None, "usable_for_prediction": 0, "quality_score": normalize_similar_case_score(sc), "evidence_json": json_dumps({"source": "similar_case_retrieval", "raw": sc, "usable_note": "not empirical until linked to observed episode/outcome"}), "created_at": now, "updated_at": now}, "case_id")
+                    upsert(con, "prediction_cases", {"case_id": case_id, "case_type": "llm_similar_case_reference", "episode_id": existing_id("episodes", "episode_id", sc.get("episode_id")), "person_id": person_id, "context_summary": sc.get("why_similar") or sc.get("summary") or "LLM referenced similar case; canonical case auto-created by V15.18", "situation_vector_json": json_dumps({}), "state_vector_json": json_dumps({}), "action_taken": None, "speech_next": None, "emotion_next": None, "thought_next_hypothesis": None, "outcome": None, "usable_for_prediction": 0, "quality_score": normalize_similar_case_score(sc), "evidence_json": json_dumps({"source": "similar_case_retrieval", "raw": sc, "usable_note": "not empirical until linked to observed episode/outcome"}), "created_at": now, "updated_at": now}, "case_id")
                 sid = stable_id("simscore", rid, case_id, normalize_similar_case_score(sc))
                 upsert(con, "similar_case_scores", {"similar_case_id": sid, "prediction_id": None, "case_id": case_id, "person_id": person_id, "prediction_target": output.get("target") or "all", "semantic_similarity": _clamp(sc.get("semantic_similarity")), "situation_similarity": _clamp(sc.get("situation_similarity")), "state_similarity": _clamp(sc.get("state_similarity")), "relationship_similarity": _clamp(sc.get("relationship_similarity")), "outcome_similarity": _clamp(sc.get("outcome_similarity")), "language_similarity": _clamp(sc.get("language_similarity")), "final_score": normalize_similar_case_score(sc), "explanation": sc.get("why_similar"), "metadata_json": json_dumps({"episode_id": sc.get("episode_id"), "why_not_identical": sc.get("why_not_identical"), "retrieval_run_id": rid}), "created_at": now}, "similar_case_id")
                 count += 1
@@ -1034,6 +1099,10 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
             con, conversation_id, person_id=person_id
         )
         _create_readiness_checks(con, conversation_id)
+        # EpisodeBuilder is a complete, independently covered stage. Keep its
+        # materialized episodes durable before the per-episode engine matrix so a
+        # later engine failure never forces EpisodeBuilder materialization again.
+        con.commit()
         episodes = [dict(r) for r in con.execute("SELECT episode_id FROM episodes WHERE source_conversation_id=? ORDER BY start_time, created_at", (conversation_id,))]
         if max_episodes is not None:
             episodes = episodes[:max_episodes]
@@ -1044,6 +1113,18 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
             episode_counts: Counter[str] = Counter()
             for engine in ENGINE_ORDER:
                 prompt = _engine_prompt(engine, bundle, outputs)
+                resumed_output = _load_completed_engine_output(
+                    con,
+                    engine=engine,
+                    conversation_id=conversation_id,
+                    episode_id=episode_id,
+                    prompt=prompt,
+                )
+                if resumed_output is not None:
+                    outputs[engine] = resumed_output
+                    episode_counts[f"{engine}_resumed"] += 1
+                    counts[f"engine_{engine}_resumed"] += 1
+                    continue
                 try:
                     out = _llm_require_json(engine, prompt, ENGINE_SCHEMAS[engine])
                     _record_engine(con, engine=engine, conversation_id=conversation_id, episode_id=episode_id, person_id=person_id, prompt=prompt, output=out, status="ok")
@@ -1056,6 +1137,9 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                 episode_counts[f"{engine}_rows"] += mat
                 counts[f"engine_{engine}"] += 1
                 counts[f"{engine}_rows"] += mat
+                # Engine output + all its materialized projections are one
+                # checkpoint. A crash after this commit resumes the next engine.
+                con.commit()
             results.append({"episode_id": episode_id, "engines_run": len(ENGINE_ORDER), "counts": dict(episode_counts)})
         con.commit()
     return {"version": STRICT_VERSION, "mode": "strict_qwen_no_heuristics", "conversation_id": conversation_id, "episodes": len(results), "results": results, "counts": dict(counts), "audit_ok": audit["ok"], "audit_total": audit["total_items"], "audit_missing": audit["partial_or_missing"]}
