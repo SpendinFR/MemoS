@@ -640,6 +640,11 @@ Le problème est transversal : tout stage nocturne qui concatène un jour, une c
 - [ ] **Vague 3** : coordination BrainLive↔Brain2, Life Model, longitudinal, reconciliation, live-ready, prédictions/outcomes/self-schema pour tout appel LLM identifié en E64-A.
 - [ ] Les stages déterministes sans LLM restent inchangés mais publient leurs `EvidenceRef`/manifestes dans le même protocole.
 
+> **Suivi E64-F vague 1 — EN COURS 2026-07-12 (briques posées, câblage réel non fait) :**
+> - Point d'intégration identifié (lecture du vrai code) : les **945 pseudo-tours `context_vision_raw`** sont produits par `_pseudo_turns_for_bundle` dans `src/mlomega_audio_elite/brainlive_event_assembler_v15_14.py:793` (1 pseudo-tour par item de `vision_timeline_json`). Chaque item porte `source_id` (observation_id) + `frame_id` → réduction lossless possible au bon endroit.
+> - Briques additives livrées (NON câblées, aucun prompt métier touché) : `night_orchestrator/vision_atoms.py::reduce_vision_timeline` (collapse la forme bundle du timeline en `VisionChangeAtom`, réutilise le réducteur testé) et `night_orchestrator/ollama_window_llm.py::OllamaWindowLLM` (enveloppe le vrai `OllamaJsonClient` en `WindowLLM` : `length`→subdivise, transitoire→retry, thinking off). 8 tests `tests/v19/test_e64f_brain2_blocks.py` — total E64 = 47 verts.
+> - **Constat technique bloquant à valider** : la réduction SEULE ne suffit pas. 945→~120 atomes vision + 40 tours audio ≈ 160 tours ≈ ~64K tokens, ce qui dépasse encore `num_ctx` Brain2 (16384). Il faut donc AUSSI le fenêtrage `run_windows` (E64-C) dans le flux Brain2 — conforme au plan Codex. Le câblage réel (adapter EpisodeBuilder + reduce au producteur + run_windows + merge + verify_coverage dans `brain2_strict_v13_2`/`v18_brain2_context`) touche le close-day → à faire avec validation (checkpoint demandé).
+
 ### E64-G — Tests préventifs obligatoires
 
 - [ ] Fixture « 5 min réelle » : 40 tours audio + 945 observations vision ; **100 % des 985 preuves présentes au manifeste**, zéro prompt hors budget, aucune limite arbitraire du nombre final d'épisodes.

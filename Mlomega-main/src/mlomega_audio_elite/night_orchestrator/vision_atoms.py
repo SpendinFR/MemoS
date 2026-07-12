@@ -208,3 +208,35 @@ def reduce_vision_observations(
             cur_first = cur_last = ts
     _flush()
     return atoms
+
+
+def _timeline_item_to_observation(item: Mapping[str, Any], idx: int) -> dict[str, Any]:
+    """Map one ``vision_timeline_json`` item (event assembler shape) to the
+    canonical scene-observation shape ``reduce_vision_observations`` consumes.
+
+    The assembler item already carries ``source_id`` (the observation_id) and
+    ``frame_id``; objects/visible_text are already decoded lists. ``time`` is the
+    event time. This lets the SAME tested reducer collapse the bundle's vision
+    timeline without re-reading the DB.
+    """
+    return {
+        "observation_id": str(item.get("source_id") or f"vtl_{idx}"),
+        "frame_id": item.get("frame_id") or "",
+        "objects_json": item.get("objects") or [],
+        "people_count": item.get("people_count"),
+        "visible_text_json": item.get("visible_text") or [],
+        "location_hint": item.get("location_hint"),
+        "scene_summary": item.get("summary"),
+        "created_at": item.get("time") or "",
+    }
+
+
+def reduce_vision_timeline(items: Iterable[Mapping[str, Any]]) -> list[VisionChangeAtom]:
+    """Collapse the event assembler's ``vision_timeline`` items into atoms.
+
+    Same guarantees as ``reduce_vision_observations`` (lossless, deterministic,
+    confidence-agnostic) but for the bundle-side item shape. Used to feed Brain2
+    a few change atoms instead of ~945 per-frame pseudo-turns.
+    """
+    obs = [_timeline_item_to_observation(it, i) for i, it in enumerate(items)]
+    return reduce_vision_observations(obs)

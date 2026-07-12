@@ -25,7 +25,11 @@ from .stage_adapter import (
     WindowSpec,
     estimate_tokens_for_text,
 )
-from .vision_atoms import VisionChangeAtom, reduce_vision_observations
+from .vision_atoms import (
+    VisionChangeAtom,
+    reduce_vision_observations,
+    reduce_vision_timeline,
+)
 from .audio_atoms import AudioTurnAtom, build_audio_atoms
 from .multimodal_timeline import TimelineEntry, build_timeline
 from .window_planner import PlanUnit, PlannedWindow, plan_windows, subdivide
@@ -52,6 +56,7 @@ from .coverage import (
     covered_refs_from_outputs_table,
     stage_stats,
 )
+from .ollama_window_llm import OllamaWindowLLM
 
 __all__ = [
     "EvidenceRef",
@@ -63,6 +68,7 @@ __all__ = [
     "estimate_tokens_for_text",
     "VisionChangeAtom",
     "reduce_vision_observations",
+    "reduce_vision_timeline",
     "AudioTurnAtom",
     "build_audio_atoms",
     "TimelineEntry",
@@ -88,4 +94,5 @@ __all__ = [
     "build_coverage_report",
     "covered_refs_from_outputs_table",
     "stage_stats",
+    "OllamaWindowLLM",
 ]
