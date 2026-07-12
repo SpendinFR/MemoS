@@ -57,6 +57,7 @@ from .coverage import (
     stage_stats,
 )
 from .ollama_window_llm import OllamaWindowLLM
+from .prompt_projection import project_opaque_ref_lists
 
 __all__ = [
     "EvidenceRef",
@@ -95,4 +96,5 @@ __all__ = [
     "covered_refs_from_outputs_table",
     "stage_stats",
     "OllamaWindowLLM",
+    "project_opaque_ref_lists",
 ]

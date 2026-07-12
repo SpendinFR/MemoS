@@ -110,6 +110,9 @@ def run_windows(
     budget: ModelBudget,
     render: Callable[[Sequence[PlanUnit]], Mapping[str, Any]],
     validate: Callable[[Any], bool],
+    normalize_output: Callable[[Any, Sequence[PlanUnit]], Any] | None = None,
+    render_window: Callable[[PlannedWindow], Mapping[str, Any]] | None = None,
+    normalize_window_output: Callable[[Any, PlannedWindow], Any] | None = None,
     decorate_output: Callable[[Any, Sequence[PlanUnit]], Any] | None = None,
     target_units: int = 45,
     overlap: int = 4,
@@ -131,13 +134,20 @@ def run_windows(
     # manager that could roll the entire run back.
     con.commit()
     sleeper = sleeper or (lambda _s: None)
+    normalize_output = normalize_output or (lambda output, _units: output)
     decorate_output = decorate_output or (lambda output, _units: output)
     result = StageResult(stage_name=scope.stage_name)
 
+    # Plan against the same complete budget later enforced before the call.
+    # Previously the fixed prompt/schema overhead was added only after planning,
+    # which created doomed parent windows and needless recursive subdivisions.
+    planning_input_budget = max(
+        1, budget.max_input_tokens - max(0, int(prompt_overhead_tokens))
+    )
     planned = plan_windows(
         units,
         stage_name=scope.stage_name,
-        max_input_tokens=budget.max_input_tokens,
+        max_input_tokens=planning_input_budget,
         target_units=target_units,
         overlap=overlap,
     )
@@ -222,10 +232,26 @@ def run_windows(
         for attempt in range(1, max_attempts + 1):
             cp.bump_attempt(con, key)
             con.commit()
-            call = llm.generate(render(window.units), output_budget=budget.output_reserve)
+            prompt = (
+                render_window(window)
+                if render_window is not None
+                else render(window.units)
+            )
+            call = llm.generate(prompt, output_budget=budget.output_reserve)
 
-            if call.ok and validate(call.data):
-                durable_output = decorate_output(call.data, window.primary_units)
+            candidate = call.data
+            if call.ok:
+                try:
+                    candidate = (
+                        normalize_window_output(call.data, window)
+                        if normalize_window_output is not None
+                        else normalize_output(call.data, window.units)
+                    )
+                except Exception:
+                    candidate = None
+
+            if call.ok and validate(candidate):
+                durable_output = decorate_output(candidate, window.primary_units)
                 digest = cp.record_output(con, key, durable_output)
                 cp.mark_state(con, key, cp.STATE_COMPLETED, output_digest=digest)
                 con.commit()
@@ -238,7 +264,7 @@ def run_windows(
                 result.outputs.append(durable_output)
                 return
 
-            if call.ok and not validate(call.data):
+            if call.ok and not validate(candidate):
                 # Bounded repair: one more try, then quarantine. Never apply it.
                 last_error = "invalid output (contract)"
                 if attempt >= 2:

@@ -15,6 +15,16 @@ powershell -ExecutionPolicy Bypass -File scripts\START_QDRANT.ps1
 .\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -BindHost 0.0.0.0 -Port 8710
 ```
 
+> **Gate exploitation encore ouvert (E64-F0).** Le lanceur doit rendre le même
+> environnement disponible au live ET aux subprocess CloseDay/recovery : refuser
+> un proxy loopback mort tel que `127.0.0.1:9`, vérifier réellement le scope gated
+> Hugging Face/cache Pyannote et préparer les répertoires DLL CUDA/cuDNN (dont
+> `cudnn_ops_infer64_8.dll`). Le vrai entrypoint CloseDay sait actuellement
+> charger cuDNN, mais une commande Python directe ne l'hérite pas forcément.
+> Tant que cette case backlog n'est pas close, exécuter `DOCTOR -Full` et `/ready`
+> juste avant la première capture ; ne pas considérer un simple token HF ou une
+> DLL présente sur disque comme une preuve.
+
 La 3ᵉ commande exécute d'abord un préflight strict (DB, environnement CloseDay, modèles
 device, vraie session YOLOX CUDA, Whisper GPU, TTS, Ollama, Qdrant, ffmpeg et disque).
 Elle **refuse de lancer** SessionHub si une brique manque, avec la liste exacte. Quand le

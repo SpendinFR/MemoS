@@ -87,6 +87,17 @@ def test_should_window_only_for_oversized():
     assert should_window(_turns(2), budget_tokens=100000) is False
 
 
+def test_should_window_counts_metadata_not_only_transcript_text():
+    from mlomega_audio_elite.brain2_episode_windowing import should_window
+
+    turns = [{
+        "turn_id": "tiny-text-heavy-proof",
+        "text": "ok",
+        "metadata_json": json.dumps({"source_refs": [f"obs{i}" for i in range(500)]}),
+    }]
+    assert should_window(turns, budget_tokens=500) is True
+
+
 def test_source_coverage_expands_atoms_to_all_985_raw_proofs():
     from mlomega_audio_elite.brain2_episode_windowing import _source_coverage
 
@@ -109,6 +120,122 @@ def test_source_coverage_expands_atoms_to_all_985_raw_proofs():
     assert len(expected) == 985
     assert set(expected) == {f"t{i}" for i in range(40)} | set(raw_refs)
     assert len(atom_index) == 120
+
+
+def test_prompt_projection_keeps_semantics_but_not_opaque_raw_id_lists():
+    from mlomega_audio_elite.brain2_episode_windowing import _prompt_turn
+
+    original = {
+        "turn_id": "vision_atom_1",
+        "text": "personne puis clés sur la table",
+        "metadata_json": json.dumps({
+            "source": {
+                "vision_change_atom": True,
+                "state": {"labels": ["person", "keys"]},
+                "representative": {
+                    "objects": [{"label": "keys"}],
+                    "visible_text": ["CAFÉ"],
+                    "personal_relevance": "objet personnel",
+                    "image_path": "opaque/frame.jpg",
+                },
+                "source_refs": [f"obs{i}" for i in range(207)],
+                "frame_refs": [f"frame{i}" for i in range(207)],
+            }
+        }),
+    }
+    projected = _prompt_turn(original)
+    metadata = json.loads(projected["metadata_json"])
+    source = metadata["source"]
+    assert projected["turn_id"] == "vision_atom_1"
+    assert projected["text"] == original["text"]
+    assert source["state"] == {"labels": ["person", "keys"]}
+    assert source["representative_extras"] == {
+        "visible_text": ["CAFÉ"], "personal_relevance": "objet personnel"
+    }
+    assert "representative" not in source
+    assert source["source_refs_manifest"]["count"] == 207
+    assert source["frame_refs_manifest"]["count"] == 207
+    assert "source_refs" not in source and "frame_refs" not in source
+    # The durable source object is not mutated and remains available to coverage.
+    assert len(json.loads(original["metadata_json"])["source"]["source_refs"]) == 207
+
+
+def test_audio_prompt_projection_keeps_alignment_quality_without_duplicate_words():
+    from mlomega_audio_elite.brain2_episode_windowing import _prompt_turn
+
+    words = [
+        {"word": "rendez-vous", "start": 1.0, "end": 1.5, "score": 0.9},
+        {"word": "demain", "start": 1.6, "end": 2.0, "score": 0.7},
+    ]
+    original = {
+        "turn_id": "t1", "text": "rendez-vous demain", "start_s": 1.0, "end_s": 2.0,
+        "metadata_json": json.dumps({
+            "kind": "deep_audio_transcript",
+            "source": {
+                "words": words,
+                "whisperx_metadata": {
+                    "original_text": "rendez-vous demain",
+                    "segmentation_level": "atomic_utterance",
+                    "segmentation_version": "3.2.2",
+                    "whisperx_segment": {"words": words},
+                },
+                "offline_speaker_resolution": {"person_id": "UNKNOWN_VOICE_2"},
+            },
+        }),
+    }
+    projected = _prompt_turn(original)
+    source = json.loads(projected["metadata_json"])["source"]
+    assert projected["text"] == "rendez-vous demain"
+    assert source["offline_speaker_resolution"]["person_id"] == "UNKNOWN_VOICE_2"
+    assert source["word_alignment"]["count"] == 2
+    assert source["word_alignment"]["start"] == 1.0
+    assert source["word_alignment"]["end"] == 2.0
+    assert source["word_alignment"]["mean_score"] == 0.8
+    assert source["segmentation"] == {"level": "atomic_utterance", "version": "3.2.2"}
+    assert "words" not in source and "whisperx_metadata" not in source
+
+
+def test_episode_output_normalizer_extracts_ids_and_drops_uncited_meta_episode():
+    from mlomega_audio_elite.brain2_episode_windowing import _normalise_episode_output
+    from mlomega_audio_elite.night_orchestrator import PlanUnit
+
+    output = {
+        "episodes": [
+            {
+                "episode_type": "planning",
+                "situation_summary": "Rendez-vous avec Karim le 14",
+                "location": {},
+                "evidence_turn_ids": [
+                    {"turn_id": "t1", "text": "rendez-vous le 14"},
+                    {"turn_id": "outside", "text": "hors fenêtre"},
+                ],
+            },
+            {
+                "episode_type": "technical_validation",
+                "situation_summary": "commentaire du modèle",
+                "evidence_turn_ids": [],
+            },
+        ],
+        "missing_context": [],
+    }
+    normalized = _normalise_episode_output(output, [PlanUnit("t1", 10)])
+    assert normalized is not None
+    assert len(normalized["episodes"]) == 1
+    episode = normalized["episodes"][0]
+    assert episode["evidence_turn_ids"] == ["t1"]
+    assert episode["start_turn_id"] == episode["end_turn_id"] == "t1"
+    assert episode["location"] is None
+
+
+def test_episode_ollama_schema_forbids_verbose_evidence_objects():
+    from mlomega_audio_elite.brain2_episode_windowing import EPISODE_FORMAT_SCHEMA
+
+    episode = EPISODE_FORMAT_SCHEMA["properties"]["episodes"]["items"]
+    assert episode["additionalProperties"] is False
+    assert episode["properties"]["evidence_turn_ids"] == {
+        "type": "array", "items": {"type": "string"}
+    }
+    assert EPISODE_FORMAT_SCHEMA["additionalProperties"] is False
 
 
 def test_build_episodes_windowed_runs_per_window_merges_and_covers():

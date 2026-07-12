@@ -246,6 +246,35 @@ L'artifact Deep Audio inclut aussi le digest du contexte réduit dans son identi
 pour ne jamais reprendre l'ancienne conversation raffinée sous prétexte que les
 WAV n'ont pas changé.
 
+## OBS-16 — Deux exports actifs du même bundle bloquaient la recovery (CORRIGÉ — 2026-07-12)
+
+Après ré-export E64, la nouvelle conversation base et l'ancien export Deep Audio
+pouvaient rester simultanément `exported`. La reprise échouait alors avec
+`assembly/export cardinality mismatch`, bien que chaque export soit valide pris
+isolément. L'assembleur supersède désormais TOUTES les anciennes lignes actives
+du bundle avant d'activer la nouvelle version, désactive leurs scopes et invalide
+leurs descendants. L'historique n'est pas supprimé. Un test E37 reproduit deux
+anciens exports actifs et prouve qu'un seul reste autoritaire.
+
+## OBS-17 — EpisodeBuilder développait trop de JSON par fenêtre (CORRIGÉ EN CODE, RUN COMPLET OUVERT)
+
+Le run 9B réel a produit plusieurs fenêtres valides mais une fenêtre de 5 035
+tokens d'entrée a consommé 180 s puis fini `length`; attendre la troncature avant
+de subdiviser est un gaspillage. Le payload transportait aussi des copies
+techniques exactes : mots WhisperX présents trois fois et scène vision présente
+dans le texte puis `representative`. Aucun mot prononcé, aucun atome et aucune
+preuve n'ont été supprimés : la projection LLM garde texte exact, locuteur,
+timestamps, objets/actions/OCR, scores et digests ; les listes brutes restent en
+DB pour la couverture. Mesure vraie : 130 806 → 68 343 tokens (-47,8 %).
+
+Le contrat utilise maintenant un JSON Schema Ollama réel (`evidence_turn_ids`
+= chaînes), normalise les rares objets `{turn_id,text}`, refuse un épisode sans
+preuve primaire et sépare contexte lu / responsabilité de sortie : overlap 2
+`context_only`, cible 2 `primary_output`. Mesure autoritaire en phase post-stop,
+`qwen3.5:9b`, contexte 16k : 68,8 s à froid puis 8,7 s à chaud, sorties complètes
+et cohérentes. Les benchmarks accidentels 4B/4k ont été identifiés via `ollama ps`
+et ne sont PAS retenus. Reste : reprise complète, manifeste vert et dashboard.
+
 ## Notes that are NOT bugs (expected, documented so future runs don't chase them)
 
 - **`ai_ready=false` / `/health` 200 with `pairing_ready=true`.** Expected on a

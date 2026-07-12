@@ -110,6 +110,45 @@ def test_executor_completes_and_checkpoints_all_windows():
     assert dict(rows) == {"completed": 3}
 
 
+def test_executor_normalizes_before_contract_and_persistence():
+    con = _con()
+
+    class ShapeDriftLLM:
+        def generate(self, prompt, *, output_budget):
+            return LLMCallResult(ok=True, data={"value": {"id": "u0"}})
+
+    res = run_windows(
+        _units(1), con=con, scope=_scope(), llm=ShapeDriftLLM(),
+        budget=ModelBudget(context_window=1000, output_reserve=200),
+        render=_render,
+        normalize_output=lambda out, units: {"value": out["value"]["id"]},
+        validate=lambda out: out == {"value": "u0"},
+        prompt_overhead_tokens=0,
+    )
+    assert res.all_completed
+    assert res.outputs == [{"value": "u0"}]
+
+
+def test_prompt_overhead_is_removed_from_planning_budget():
+    con = _con()
+    # max input=700; each planned window must leave the declared 300-token
+    # prompt/schema overhead rather than creating a doomed 600+300 parent.
+    units = [PlanUnit("a", 300), PlanUnit("b", 300)]
+    llm = OkLLM()
+    res = run_windows(
+        units, con=con, scope=_scope(), llm=llm,
+        budget=ModelBudget(context_window=1000, output_reserve=200, safety_margin=100),
+        render=_render, validate=lambda out: True, target_units=10, overlap=0,
+        prompt_overhead_tokens=300,
+    )
+    assert res.all_completed
+    assert llm.calls == 2
+    states = dict(con.execute(
+        f"SELECT state, COUNT(*) FROM {cp.WINDOWS_TABLE} GROUP BY state"
+    ).fetchall())
+    assert states == {"completed": 2}
+
+
 def test_resume_skips_completed_windows_no_double_output():
     con = _con()
     scope = _scope()

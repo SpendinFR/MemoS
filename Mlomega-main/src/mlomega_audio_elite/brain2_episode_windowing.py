@@ -24,10 +24,12 @@ from .night_orchestrator import (
     ModelBudget,
     OllamaWindowLLM,
     PlanUnit,
+    PlannedWindow,
     StageScope,
     build_coverage_report,
     covered_refs_from_outputs_table,
     estimate_tokens_for_text,
+    project_opaque_ref_lists,
     resolve_overlap,
     run_windows,
 )
@@ -36,6 +38,56 @@ from .night_orchestrator.coverage import persist_coverage
 from .night_orchestrator.evidence_ref import content_digest
 
 STAGE_NAME = "brain2_episodes"
+
+# Real Ollama structured-output contract. STRICT_EPISODE_SCHEMA is the historic
+# business template shown to Brain2; this JSON Schema constrains decoding so the
+# model cannot replace evidence IDs with verbose copied turn objects or invent
+# extra meta fields until num_predict is exhausted.
+EPISODE_FORMAT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "episodes": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "episode_type": {"type": "string"},
+                    "start_turn_id": {"type": ["string", "null"]},
+                    "end_turn_id": {"type": ["string", "null"]},
+                    "start_time": {"type": ["string", "null"]},
+                    "end_time": {"type": ["string", "null"]},
+                    "participants": {"type": "array", "items": {}},
+                    "location": {"type": ["string", "null"]},
+                    "channel": {"type": ["string", "null"]},
+                    "topic": {"type": ["string", "null"]},
+                    "situation_summary": {"type": "string"},
+                    "trigger": {"type": ["string", "null"]},
+                    "user_state_before": {},
+                    "speech_or_action": {"type": ["string", "null"]},
+                    "target_person": {"type": ["string", "null"]},
+                    "target_reaction": {"type": ["string", "null"]},
+                    "user_state_after": {},
+                    "outcome": {"type": ["string", "null"]},
+                    "unresolved_tension": {"type": ["string", "null"]},
+                    "confidence": {"type": "number"},
+                    "evidence_turn_ids": {
+                        "type": "array", "items": {"type": "string"},
+                    },
+                    "evidence_texts": {
+                        "type": "array", "items": {"type": "string"},
+                    },
+                },
+                "required": ["episode_type", "situation_summary", "evidence_turn_ids"],
+                "additionalProperties": False,
+            },
+        },
+        "counter_evidence": {"type": "array", "items": {}},
+        "missing_context": {"type": "array", "items": {}},
+        "confidence": {"type": "number"},
+    },
+    "required": ["episodes", "missing_context"],
+    "additionalProperties": False,
+}
 
 
 def _source_coverage(
@@ -83,22 +135,94 @@ def _poststop_input_budget() -> int:
         return 9000
 
 
+def _prompt_turn(turn: Mapping[str, Any]) -> dict[str, Any]:
+    """Project one turn for the LLM without altering durable provenance.
+
+    Brain2 still sees the atom ID, semantic text, timestamps and state. Only the
+    opaque raw observation/frame ID arrays are replaced by count+digest
+    manifests. `_source_coverage` continues to read the untouched turns.
+    """
+    opaque_fields = {
+        "source_refs", "frame_refs", "source_event_ids",
+        "reconciles_live_turn_ids",
+    }
+    projected = project_opaque_ref_lists(dict(turn), field_names=opaque_fields)
+    metadata = projected.get("metadata_json")
+    if isinstance(metadata, str):
+        try:
+            parsed = json.loads(metadata)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, Mapping):
+            prompt_metadata = project_opaque_ref_lists(
+                parsed, field_names=opaque_fields
+            )
+            source = prompt_metadata.get("source")
+            if isinstance(source, dict):
+                # The full word list is already represented exactly by the turn
+                # text + start/end timestamps. WhisperX also embeds the same word
+                # list a second time. Preserve alignment quality/span as semantic
+                # metadata, not thousands of duplicate JSON tokens.
+                words = source.pop("words", None)
+                whisperx = source.pop("whisperx_metadata", None)
+                if isinstance(words, list) and words:
+                    scores = [
+                        float(word["score"])
+                        for word in words
+                        if isinstance(word, Mapping) and word.get("score") is not None
+                    ]
+                    source["word_alignment"] = {
+                        "count": len(words),
+                        "start": next((w.get("start") for w in words if isinstance(w, Mapping)), None),
+                        "end": next((w.get("end") for w in reversed(words) if isinstance(w, Mapping)), None),
+                        "mean_score": round(sum(scores) / len(scores), 4) if scores else None,
+                        "min_score": round(min(scores), 4) if scores else None,
+                        "digest": content_digest(words),
+                    }
+                if isinstance(whisperx, Mapping):
+                    source["segmentation"] = {
+                        "level": whisperx.get("segmentation_level"),
+                        "version": whisperx.get("segmentation_version"),
+                    }
+                if not source.get("live_speaker_hints"):
+                    source.pop("live_speaker_hints", None)
+
+                # For vision atoms, `turn.text` already contains summary,
+                # location, spatial context, objects, affordances and possible
+                # activities. Keep only representative fields not encoded there.
+                representative = source.get("representative")
+                if source.get("vision_change_atom") and isinstance(representative, Mapping):
+                    extras = {
+                        key: representative.get(key)
+                        for key in ("visible_text", "personal_relevance")
+                        if representative.get(key)
+                    }
+                    if extras:
+                        source["representative_extras"] = extras
+                    source.pop("representative", None)
+            projected["metadata_json"] = json.dumps(
+                prompt_metadata, ensure_ascii=False, sort_keys=True
+            )
+    return projected
+
+
 def _turn_units(turns: Sequence[Mapping[str, Any]]) -> tuple[list[PlanUnit], dict[str, Mapping[str, Any]]]:
     units: list[PlanUnit] = []
     by_id: dict[str, Mapping[str, Any]] = {}
     for i, t in enumerate(turns):
         ref = str(t.get("turn_id") or f"idx{t.get('idx', i)}")
-        # Budget the complete serialised turn, not only its text: metadata and
-        # source refs are part of the real prompt too.
-        payload_digest = content_digest(dict(t))
-        tokens = estimate_tokens_for_text(str(dict(t))) + 24
+        prompt_turn = _prompt_turn(t)
+        # Budget and checkpoint the exact LLM-facing projection. The untouched
+        # source refs remain in `turns` for the independent coverage proof.
+        payload_digest = content_digest(prompt_turn)
+        tokens = estimate_tokens_for_text(str(prompt_turn)) + 24
         units.append(
             PlanUnit(
                 ref_id=ref, tokens=tokens, ts=str(t.get("idx", i)),
                 content_digest=payload_digest,
             )
         )
-        by_id[ref] = t
+        by_id[ref] = prompt_turn
     return units, by_id
 
 
@@ -109,7 +233,10 @@ def should_window(turns: Sequence[Mapping[str, Any]], *, budget_tokens: int | No
     only oversized ones are windowed, minimising blast radius.
     """
     budget = budget_tokens or _poststop_input_budget()
-    total = sum(estimate_tokens_for_text(str(t.get("text") or "")) + 24 for t in turns)
+    # The legacy one-shot path serialises the complete turn, including metadata.
+    # Looking only at `text` previously let a short transcript with enormous raw
+    # vision/WhisperX metadata bypass the projection/windowing path.
+    total = sum(estimate_tokens_for_text(str(dict(t))) + 24 for t in turns)
     return total > budget
 
 
@@ -163,6 +290,73 @@ def _dedupe_episodes(episodes: Sequence[Mapping[str, Any]]) -> list[dict[str, An
     return merged
 
 
+def _scalar_text(value: Any) -> str | None:
+    """Coerce an optional schema scalar without leaking dicts into SQLite."""
+    if value is None or value == "" or value == {} or value == []:
+        return None
+    if isinstance(value, Mapping):
+        for key in ("name", "label", "text", "value", "person_id", "turn_id"):
+            if value.get(key):
+                return str(value[key])
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(item) for item in value if item) or None
+    return str(value)
+
+
+def _normalise_episode_output(
+    output: Any,
+    units: Sequence[PlanUnit],
+    primary_units: Sequence[PlanUnit] | None = None,
+) -> dict[str, Any] | None:
+    """Repair harmless Qwen shape drift, while rejecting unsupported claims.
+
+    Qwen may echo evidence as ``{turn_id, text}`` despite the V13 template
+    requesting IDs. Extracting the cited durable ID is lossless. Episodes with
+    no valid citation in the current window are excluded: they must never become
+    memory merely because the model emitted meta-commentary.
+    """
+    if not isinstance(output, Mapping):
+        return None
+    allowed = {unit.ref_id for unit in units}
+    primary = {
+        unit.ref_id for unit in (primary_units if primary_units is not None else units)
+    }
+    episodes: list[dict[str, Any]] = []
+    for raw in output.get("episodes") or []:
+        if not isinstance(raw, Mapping):
+            continue
+        refs: list[str] = []
+        for evidence in raw.get("evidence_turn_ids") or []:
+            ref = evidence.get("turn_id") if isinstance(evidence, Mapping) else evidence
+            if ref and str(ref) in allowed:
+                refs.append(str(ref))
+        refs = list(dict.fromkeys(refs))
+        if not refs or not primary.intersection(refs):
+            continue
+        episode = dict(raw)
+        episode["evidence_turn_ids"] = refs
+        start = _scalar_text(episode.get("start_turn_id"))
+        end = _scalar_text(episode.get("end_turn_id"))
+        episode["start_turn_id"] = start if start in allowed else refs[0]
+        episode["end_turn_id"] = end if end in allowed else refs[-1]
+        for field in (
+            "episode_type", "start_time", "end_time", "location", "channel",
+            "topic", "situation_summary", "trigger", "speech_or_action",
+            "target_person", "target_reaction", "outcome", "unresolved_tension",
+        ):
+            episode[field] = _scalar_text(episode.get(field))
+        if not episode.get("situation_summary") and not episode.get("topic"):
+            continue
+        episodes.append(episode)
+    return {
+        "episodes": episodes,
+        "counter_evidence": list(output.get("counter_evidence") or []),
+        "missing_context": list(output.get("missing_context") or []),
+        "confidence": output.get("confidence", 0.0),
+    }
+
+
 def build_episodes_windowed(
     con: Any,
     conversation_id: str,
@@ -180,8 +374,8 @@ def build_episodes_windowed(
     context_window: int | None = None,
     output_budget: int | None = None,
     budget_tokens: int | None = None,
-    target_turns: int = 45,
-    overlap: int = 3,
+    target_turns: int | None = None,
+    overlap: int | None = None,
 ) -> dict[str, Any]:
     """Run the V13 episode prompt per window, merge episodes, persist coverage.
 
@@ -190,6 +384,24 @@ def build_episodes_windowed(
     """
     turns = list(bundle.get("turns") or [])
     units, by_id = _turn_units(turns)
+
+    # EpisodeBuilder's verbose structured output is the limiting side of this
+    # stage. Real qwen3.5:9b telemetry showed four units exhausting the 4096-token
+    # answer budget in 66.6 s, while two scoped units completed in 8.3 s and
+    # 6.7 s. Start at that measured safe output responsibility; overlap remains
+    # readable context and is not credited as primary output.
+    if target_turns is None:
+        try:
+            target_turns = max(
+                1, int(os.environ.get("MLOMEGA_E64_EPISODE_TARGET_TURNS", "2"))
+            )
+        except ValueError:
+            target_turns = 2
+    if overlap is None:
+        try:
+            overlap = max(0, int(os.environ.get("MLOMEGA_E64_EPISODE_OVERLAP", "2")))
+        except ValueError:
+            overlap = 2
 
     from .config import get_settings
 
@@ -216,18 +428,59 @@ def build_episodes_windowed(
         except ValueError:
             timeout = 180.0
         window_llm = OllamaWindowLLM(
-            system=system, schema_hint=schema, timeout=timeout,
+            system=system, schema_hint=schema,
+            format_schema=EPISODE_FORMAT_SCHEMA, timeout=timeout,
         )
     model_name = str(model_name or getattr(window_llm, "model", "injected-window-llm"))
     scoped_stage = f"{STAGE_NAME}:{conversation_id}"
 
-    def render(window_units: Sequence[PlanUnit]) -> Mapping[str, Any]:
-        win_turns = [by_id[u.ref_id] for u in window_units if u.ref_id in by_id]
+    def _render_scoped(
+        window_units: Sequence[PlanUnit],
+        primary_units: Sequence[PlanUnit],
+    ) -> Mapping[str, Any]:
+        primary_ids = {unit.ref_id for unit in primary_units}
+        win_turns = []
+        for unit in window_units:
+            if unit.ref_id not in by_id:
+                continue
+            prompt_turn = dict(by_id[unit.ref_id])
+            prompt_turn["window_role"] = (
+                "primary_output" if unit.ref_id in primary_ids else "context_only"
+            )
+            win_turns.append(prompt_turn)
         win_bundle = dict(bundle)
         win_bundle["turns"] = win_turns
+        window_contract = {
+            "primary_turn_ids": [unit.ref_id for unit in primary_units],
+            "context_only_turn_ids": [
+                unit.ref_id for unit in window_units if unit.ref_id not in primary_ids
+            ],
+            "instruction": (
+                "Use every turn as context, but emit only episodes supported by "
+                "at least one primary_output turn. Never emit an episode based "
+                "only on context_only turns. evidence_turn_ids must contain IDs, "
+                "never copied turn objects."
+            ),
+        }
         return {"prompt": safe_prompt(
-            {"mission": mission, "conversation_bundle": win_bundle, "schema": schema}
+            {
+                "mission": mission,
+                "window_contract": window_contract,
+                "conversation_bundle": win_bundle,
+                "schema": schema,
+            }
         )}
+
+    def render(window_units: Sequence[PlanUnit]) -> Mapping[str, Any]:
+        return _render_scoped(window_units, window_units)
+
+    def render_planned_window(window: PlannedWindow) -> Mapping[str, Any]:
+        return _render_scoped(window.units, window.primary_units)
+
+    def normalise_planned_window(output: Any, window: PlannedWindow) -> Any:
+        return _normalise_episode_output(
+            output, window.units, primary_units=window.primary_units
+        )
 
     def validate(output: Any) -> bool:
         if not isinstance(output, dict):
@@ -255,7 +508,18 @@ def build_episodes_windowed(
     empty_bundle = dict(bundle)
     empty_bundle["turns"] = []
     prompt_overhead = estimate_tokens_for_text(
-        safe_prompt({"mission": mission, "conversation_bundle": empty_bundle, "schema": schema})
+        safe_prompt({
+            "mission": mission,
+            "window_contract": {
+                "primary_turn_ids": [], "context_only_turn_ids": [],
+                "instruction": (
+                    "Use every turn as context, but emit only episodes supported "
+                    "by at least one primary_output turn."
+                ),
+            },
+            "conversation_bundle": empty_bundle,
+            "schema": schema,
+        })
     )
     stage = run_windows(
         units,
@@ -264,14 +528,16 @@ def build_episodes_windowed(
             person_id=person_id,
             package_date=package_date,
             stage_name=scoped_stage,
-            adapter_version="e64f-episode-window-v2",
+            adapter_version="e64f-episode-window-v4",
             prompt_version="v13-episode-mission-unchanged-v1",
             model=model_name,
         ),
         llm=window_llm,
         budget=model_budget,
         render=render,
+        render_window=render_planned_window,
         validate=validate,
+        normalize_window_output=normalise_planned_window,
         decorate_output=durable_envelope,
         target_units=target_turns,
         overlap=overlap,
