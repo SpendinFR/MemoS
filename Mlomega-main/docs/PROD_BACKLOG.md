@@ -579,18 +579,20 @@ Le problème est transversal : tout stage nocturne qui concatène un jour, une c
 - [ ] **Owner/session corrects** : `person_id` toujours explicite ; transport session, BrainLive session et journée civile restent séparés.
 - [ ] **CloseDay honnête** : un stage n'est `completed` qu'après relecture de ses sorties et un manifeste de couverture complet.
 
-### E64-A — Inventaire et contrat commun des stages
+### E64-A — Inventaire et contrat commun des stages — FAIT 2026-07-12
 
-- [ ] Remonter avec `rg` tous les appels nocturnes LLM/VLM (`OllamaJsonClient`, `ollama_generate`, helpers `_llm_*`, Deep Vision, Brain2/V13, coordination, Life Model, longitudinal, reconciliation/live-ready). Produire une matrice : stage, table(s) source, unité atomique, ordre temporel, modèle/contexte, schéma de sortie, writer, stratégie de merge, comportement actuel sur troncature.
-- [ ] Créer un contrat `NightStageAdapter` commun : `stage_name`, `load_evidence`, `estimate_tokens`, `build_window_prompt`, `validate_window_output`, `merge_outputs`, `persist_outputs`, `verify_coverage`. Les prompts métier existants restent derrière ces adaptateurs ; l'exécuteur générique porte budget, retry, checkpoint et reprise.
-- [ ] Définir `EvidenceRef` stable et owner-scopé : `evidence_id`, `source_table`, `source_pk`, `modality`, `timestamp`, `digest`, `payload_kind`, `parent_refs`. L'ID ne dépend jamais d'une tentative LLM.
+- [x] Remonter avec `rg` tous les appels nocturnes LLM/VLM (`OllamaJsonClient`, `ollama_generate`, helpers `_llm_*`, Deep Vision, Brain2/V13, coordination, Life Model, longitudinal, reconciliation/live-ready). Produire une matrice : stage, table(s) source, unité atomique, ordre temporel, modèle/contexte, schéma de sortie, writer, stratégie de merge, comportement actuel sur troncature. → **Matrice dans [docs/E64_NIGHT_STAGE_INVENTORY.md](E64_NIGHT_STAGE_INVENTORY.md)** (stages, tables vérifiées contre la vraie DB 17 Mo, unité atomique, vague de migration).
+- [x] Créer un contrat `NightStageAdapter` commun : `stage_name`, `load_evidence`, `estimate_tokens`, `build_window_prompt`, `validate_window_output`, `merge_outputs`, `persist_outputs`, `verify_coverage`. Les prompts métier existants restent derrière ces adaptateurs ; l'exécuteur générique porte budget, retry, checkpoint et reprise. → `src/mlomega_audio_elite/night_orchestrator/stage_adapter.py` (ABC + `WindowSpec`, `CoverageManifest`, `compute_coverage`, `estimate_tokens_for_text`). **Contrat uniquement** ; l'exécuteur générique reste E64-C.
+- [x] Définir `EvidenceRef` stable et owner-scopé : `evidence_id`, `source_table`, `source_pk`, `modality`, `timestamp`, `digest`, `payload_kind`, `parent_refs`. L'ID ne dépend jamais d'une tentative LLM. → `night_orchestrator/evidence_ref.py` (`evidence_id = stable_id("evref", source_table, source_pk)`, digest de contenu séparé ; test `test_evidence_id_is_deterministic_and_payload_independent`).
 
-### E64-B — Réduction déterministe avant LLM, sans perte
+### E64-B — Réduction déterministe avant LLM, sans perte — FAIT 2026-07-12
 
-- [ ] **Audio** : tours atomiques WhisperX conservés intégralement avec timestamps, speaker/person et refs WAV/source ; aucun redécoupage au milieu d'un tour.
-- [ ] **Vision** : transformer les frames répétitives en `VisionChangeAtom` déterministes : apparition/disparition, changement de label/attribut, déplacement de track, changement de zone/scène, OCR, keyframe, interaction. Chaque atome référence toutes les observations/frame IDs couvertes ; les frames brutes restent en DB/replay.
-- [ ] Les états identiques consécutifs deviennent une plage `[first_seen,last_seen,count,digest,source_refs]`, pas 300 pseudo-tours. Un changement réel ouvre un nouvel atome ; la confiance seule ne crée pas un événement cognitif si l'identité/état ne change pas.
-- [ ] Joindre audio et vision par temps/BrainLive session dans une timeline multimodale ordonnée. Aucun aplatissement « une frame = un tour de conversation ».
+- [x] **Audio** : tours atomiques WhisperX conservés intégralement avec timestamps, speaker/person et refs WAV/source ; aucun redécoupage au milieu d'un tour. → `night_orchestrator/audio_atoms.py` (`build_audio_atoms`, 1 atome/segment, ordonné, WAV refs).
+- [x] **Vision** : transformer les frames répétitives en `VisionChangeAtom` déterministes : apparition/disparition, changement de label/attribut, déplacement de track, changement de zone/scène, OCR, keyframe, interaction. Chaque atome référence toutes les observations/frame IDs couvertes ; les frames brutes restent en DB/replay. → `night_orchestrator/vision_atoms.py` (transitions `entered`/`left`, `frame_refs`).
+- [x] Les états identiques consécutifs deviennent une plage `[first_seen,last_seen,count,digest,source_refs]`, pas 300 pseudo-tours. Un changement réel ouvre un nouvel atome ; la confiance seule ne crée pas un événement cognitif si l'identité/état ne change pas. → prouvé sur le run réel : **472 observations → 120 atomes, 100% lossless** ; tests `test_confidence_only_change_does_not_split`, `test_full_coverage_no_evidence_lost_across_changes`.
+- [x] Joindre audio et vision par temps/BrainLive session dans une timeline multimodale ordonnée. Aucun aplatissement « une frame = un tour de conversation ». → `night_orchestrator/multimodal_timeline.py` (`build_timeline`) + loaders read-only `loaders.py`.
+
+**État E64-A/B (2026-07-12)** : infrastructure + réduction livrées, **additives, non câblées** dans le close-day (aucun prompt métier touché, aucune preuve supprimée). 14 tests verts (`tests/v19/test_e64_night_orchestrator.py`) + validation sur la vraie DB (472→120 vision lossless, 60 audio intacts). **Prochaine étape = E64-C** (fenêtrage token-aware + checkpoints durables), puis E64-F vague 1 (câbler EpisodeBuilder/Brain2 pour débloquer OBS-13).
 
 ### E64-C — Fenêtrage token-aware et checkpoints durables
 
