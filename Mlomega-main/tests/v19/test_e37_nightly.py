@@ -29,6 +29,7 @@ full run is deferred to the close-day (ADR §E37).
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import wave
 from pathlib import Path
@@ -377,6 +378,24 @@ def test_v13_llm_foreign_keys_are_validated_before_materialization(tmp_path, mon
         })
         assert con.execute("SELECT turn_id FROM thought_hypotheses").fetchone()[0] is None
         assert con.execute("SELECT COUNT(*) FROM state_transitions").fetchone()[0] == 0
+
+        _put_engine_payload(con, "context_resolver", "episode-fk", "me", {
+            "situation": {
+                "situation_type": "domestic",
+                "place_explicit": {"room": "salon", "confidence": 0.7},
+                "channel": {"name": "brainlive_bundle"},
+                "stakes": ["faible", "observation"],
+                "trigger_event_id": "hallucinated-trigger",
+            }
+        })
+        situation = con.execute(
+            "SELECT place_explicit,channel,stakes,trigger_event_id FROM situation_episodes"
+        ).fetchone()
+        assert json.loads(situation[0]) == {"confidence": 0.7, "room": "salon"}
+        assert json.loads(situation[1]) == {"name": "brainlive_bundle"}
+        assert json.loads(situation[2]) == ["faible", "observation"]
+        # Optional unknown FK-like identifiers stay data only where the schema
+        # has no FK; actual declared FKs are validated generically.
 
         prompt = '{"episode":"episode-fk","task":"capture"}'
         _record_engine(

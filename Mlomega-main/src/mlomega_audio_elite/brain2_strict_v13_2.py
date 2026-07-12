@@ -10,7 +10,7 @@ regex/keyword analyst and no evidence-only cognitive mode.
 
 import os
 from collections import Counter
-from typing import Any
+from typing import Any, Mapping
 
 from .db import connect, init_db, upsert
 from .governance_v18 import DataAccessError, GovernanceError, ensure_v18_schema, strict_many, strict_one
@@ -747,6 +747,63 @@ def _put_engine_payload(con, engine: str, episode_id: str, person_id: str, outpu
     ep = con.execute("SELECT * FROM episodes WHERE episode_id=?", (episode_id,)).fetchone()
     conv_id = ep["source_conversation_id"] if ep else None
     conf = _clamp(output.get("confidence"))
+
+    # One schema-driven writer boundary for ALL 16 V13 engines. Qwen can drift a
+    # nominal scalar into an object/list (place, channel, stakes, etc.). SQLite
+    # cannot bind those Python objects, but their content is still valuable: TEXT
+    # columns receive deterministic JSON, numeric columns accept a contained
+    # scalar when present, and every FK is verified against its real parent.
+    _raw_upsert = globals()["upsert"]
+    _table_info_cache: dict[str, dict[str, dict[str, Any]]] = {}
+    _fk_cache: dict[str, list[dict[str, Any]]] = {}
+
+    def upsert(con_arg, table: str, values: Mapping[str, Any], pk: str) -> None:
+        info = _table_info_cache.get(table)
+        if info is None:
+            info = {
+                str(row["name"]): dict(row)
+                for row in con_arg.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            _table_info_cache[table] = info
+        clean: dict[str, Any] = {}
+        for column, value in values.items():
+            declared = str((info.get(column) or {}).get("type") or "").upper()
+            if isinstance(value, Mapping) or isinstance(value, (list, tuple, set)):
+                if "TEXT" in declared or not declared:
+                    value = json_dumps(value)
+                elif "REAL" in declared or "INT" in declared or "NUM" in declared:
+                    candidates = (
+                        [value.get(k) for k in ("value", "score", "confidence", "count")]
+                        if isinstance(value, Mapping) else list(value)
+                    )
+                    value = next(
+                        (candidate for candidate in candidates if isinstance(candidate, (int, float))),
+                        None,
+                    )
+                else:
+                    value = json_dumps(value)
+            elif value is not None and not isinstance(value, (str, int, float, bytes)):
+                value = str(value) if "TEXT" in declared else None
+            clean[column] = value
+
+        fks = _fk_cache.get(table)
+        if fks is None:
+            fks = [dict(row) for row in con_arg.execute(f"PRAGMA foreign_key_list({table})")]
+            _fk_cache[table] = fks
+        for fk in fks:
+            column = str(fk["from"])
+            value = clean.get(column)
+            if value is None:
+                continue
+            parent_table = str(fk["table"])
+            parent_column = str(fk["to"])
+            exists = con_arg.execute(
+                f"SELECT 1 FROM {parent_table} WHERE {parent_column}=? LIMIT 1",
+                (value,),
+            ).fetchone()
+            if not exists:
+                clean[column] = None
+        _raw_upsert(con_arg, table, clean, pk)
 
     def existing_id(table: str, column: str, value: Any) -> str | None:
         """Accept an LLM-provided FK only when its parent row really exists."""

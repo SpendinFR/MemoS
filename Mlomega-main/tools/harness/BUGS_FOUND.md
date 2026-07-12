@@ -295,7 +295,10 @@ pensées, transitions d'état, outcome/intention et cas similaires avaient la m�
 classe de risque. Les FK venant du LLM sont maintenant acceptées uniquement si le
 parent existe (et, pour un turn, appartient à la conversation) ; un événement
 prosodique sans tour valide est ignoré, une FK optionnelle invalide devient NULL.
-`thought_type` absent reçoit le type neutre `hypothesis` exigé par la table.
+`thought_type` absent reçoit le type neutre `hypothesis` exigé par la table. Une
+barrière unique, commune aux 16 writers, sérialise en JSON déterministe tout
+objet/liste destiné à une colonne TEXT (ex. `place_explicit`, `channel`, `stakes`),
+normalise les scalaires numériques et vérifie les FK déclarées par `PRAGMA`.
 
 Autre gap révélé : les 16 moteurs V13 par épisode étaient dans une seule transaction.
 Une erreur tardive rejouait tous les appels précédents. Chaque moteur + ses writers
