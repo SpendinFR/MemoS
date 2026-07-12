@@ -1,11 +1,10 @@
-# E63 harness — product observations (NOT fixed, per E63 rules)
+# E63 harness — observations produit et état des corrections
 
-The harness rule is: new files only, never touch a product file. Anything the
-harness surfaces about the product is recorded here for a separate owner to
-triage. None of these blocked a full minimal end-to-end run (the harness passes
-ALL base assertions), so they are robustness/ordering notes, not crashes.
+La première passe E63 consignait seulement les observations. La passe de finition
+du 2026-07-12 a été explicitement autorisée à corriger les défauts produit ;
+chaque entrée ci-dessous indique donc son état réel.
 
-## OBS-1 — Live DeliveryAdapter reads `brainlive_intervention_delivery_queue` before it is created (fresh DB)
+## OBS-1 — Delivery queue absente sur une DB neuve (CORRIGÉ — 2026-07-12)
 
 **Severity:** low (degrades cleanly, does not crash, does not fail the session).
 
@@ -38,34 +37,28 @@ creates the table. Subsequent sessions (after the first close-day) are fine.
 then inspect the emitted `tools/harness/_run/device_report.json` →
 `server_metrics_active.recent_errors`.
 
-**Suggested fix (for the owner, not applied here):** have the live pipeline /
-DeliveryAdapter run the `brainlive_intervention_delivery_queue` `CREATE TABLE IF
-NOT EXISTS` (or call the shared schema) at startup, the same way
-`phoneonly_runtime._RECOVERY_SCHEMA` is ensured before use.
+**Fix :** le DeliveryAdapter initialise désormais son schéma avant la première
+lecture. Le run minimal sur DB neuve ne perd plus les suggestions de la première
+session.
 
-## OBS-2 — /session/end 500 on drain timeout (CORRIGÉ — 2026-07-12)
+## OBS-2 — CloseDay dépassait le worker final après un timeout (CORRIGÉ — 2026-07-12)
 
-**Severity:** blocker (the whole end-of-session + close-day never ran).
+**Severity:** blocker (BrainLive était fermé pendant que des tours continuaient à arriver).
 
 **Where:** `services/live-pc/live_pipeline.py` `drain_final_processing`
 (`raise TimeoutError("final turn processing did not drain in 30.0s")`) →
 `services/live-pc/phoneonly_runtime.py` `end_session_only` call site.
 
-**Symptom (real-video run 2026-07-11):** `POST /session/end` → HTTP 500,
-`end_session: error`, `close_day: not_started`, `recovery: not_started`. The
-drain TimeoutError propagated out of `pipeline.end_session(strict=True)`, flipped
-`end_status` to `error`, and close-day was never triggered.
+**Symptom réel (run vidéo 5 min du 2026-07-12):** le correctif initial avalait
+le timeout de drain, marquait BrainLive terminé et lançait CloseDay alors que le
+worker final écrivait encore. Les erreurs suivantes apparaissaient ensuite :
+`conversation.ingest_segment: cannot ingest turn into non-active live session`.
 
-**Fix:** the end of session must NEVER fail because the final-turn worker did not
-drain — the turns are already durable in the DB and close-day reprocesses them.
-`end_session_only` now catches `TimeoutError` around the three drain-bearing
-calls (`flush_audio`, `pipeline.end_session`, `release_live_resources`), records
-it in the pipeline errors + `recent_errors`, and continues (best-effort
-post-drain flush via new `live_pipeline.end_session_after_drain_timeout`, which
-runs the discourse/WorldBrain summary without re-draining). The drain semantics
-themselves are unchanged. New regression:
-`tests/v19/test_phoneonly_runtime.py::test_drain_timeout_never_fails_end_session_and_still_closes_day`.
-Committed in the E63 real-video fix pass.
+**Fix final:** le drain s'attend réellement (budget produit 300 s). Un timeout
+reste un échec de fermeture retryable : BrainLive n'est pas terminé, `ended`
+reste faux et CloseDay demeure `not_started`. Le raccourci dangereux
+`end_session_after_drain_timeout` est supprimé. Régression :
+`test_drain_timeout_blocks_brainlive_end_and_close_day`.
 
 ## OBS-3 — WorldBrain service SQLite used cross-thread (CORRIGÉ — 2026-07-12)
 
@@ -99,77 +92,48 @@ broader refactor. New regression:
 back to `0.0`, counts `metrics["signal_parse_errors"]`, and reports the parse
 failure once (`_reported_conf_parse_error`). Existing tests unchanged.
 
-## OBS-5 — HARNESS media/transport drops at ~20s (OUVERT — 2026-07-12) — HANDOFF
+## OBS-5 — WebRTC tombait au premier device_transcript (~20 s) (CORRIGÉ — 2026-07-12)
 
-**Severity:** blocks the full-length `--with-close-day` validation (the session is
-starved to ~20s → close-day returns `blocked`, never `completed`). This is a
-**harness-side (aiortc) defect, NOT a product bug** — the product server log is
-clean on every run (no rejection, no teardown initiated server-side).
+**Severity:** blocker produit. Le symptôme ressemblait à un défaut média du faux
+device, mais la cause était dans le serveur PC.
 
-### Exact symptom (reproducible on EVERY run)
-- `audio_chunks_received` plateaus at ~1000 (≈20s of 20ms Opus frames) although
-  the media is 301.6s. `scenario_events_sent` = 2 of 13 (only t=20 and t=45 fire;
-  the connection is gone before t=70).
-- The fake device raises, on its own asyncio loop, roughly at t≈20–48s:
-  `ConnectionError: Cannot send encrypted data, not connected`
-  from `aiortc/rtcsctptransport.py::_transmit → rtcdtlstransport.py::_send_data`.
-  → the DTLS/SCTP transport on the FAKE DEVICE side closed; the next
-  `FrameEnvelope` DataChannel send then fails and the scenario loop stops.
-- `peer_state_log` (in the device report) shows: `connecting → connected` at ~t0,
-  then `closed` at ~t0+20–48s. No product/server error in `server.log`.
+Au premier `device_transcript` scénarisé, le callback DataChannel appelait
+`PhoneOnlyRuntime._on_receipt` synchroniquement sur la boucle aiortc. Le routage
+Intent/VLM pouvait bloquer assez longtemps pour faire expirer le consentement ICE
+et fermer DTLS. Un scénario sans commande tenait 60 s ; le même média avec la
+commande tombait à 20 s, preuve discriminante.
 
-### What was RULED OUT (do not re-chase)
-1. **The video file.** Same ~20s stall with the original WhatsApp VFR mp4 AND a
-   clean ffmpeg re-encode (`-c:v libx264 -profile:v baseline -pix_fmt yuv420p -r 24
-   -c:a aac -ar 48000`, saved as `tools/harness/_run/real_video_clean.mp4`).
-2. **The DB.** Same stall with a fresh scratch DB and after wiping
-   `harness_memory.db*`. The scratch DB is NOT the cause.
-3. **MediaPlayer queue interlock (single-player theory).** Split into two separate
-   `MediaPlayer` instances (audio from one, video from the other) in
-   `fake_xr_device.py` — did NOT fix it. (Change kept; it is correct hygiene.)
-4. **`disconnected` treated as terminal.** Already fixed earlier (only
-   `failed`/`closed` set `_stop`); not the cause of the ~20s drop.
+**Fix :** `gateway.py` planifie les receipts, les sérialise et exécute le callback
+synchrone via `asyncio.to_thread`. La fermeture draine ces tâches avant de couper
+le média. Le faux device sépare aussi réellement l'audio et la vidéo du MP4 en
+fichiers mono-track temporaires (hygiène déterministe, pas la cause racine).
 
-### LEADING HYPOTHESIS (next agent: start here)
-The fake device's **outbound video encoding** (aiortc RTCRtpSender encoding 720p
-frames) starves the device's own asyncio loop, so ICE **consent-freshness** STUN
-checks aren't sent/answered in time and aiortc tears the connection down after a
-few missed cycles (~20s). Evidence for: the drop is on the DEVICE side, timing is
-consistent regardless of file, and server `/metrics` polls stay prompt (server
-loop is NOT starved). **Cheapest thing to try first:** re-encode the media to
-low resolution + low fps (e.g. `-vf scale=480:-2 -r 10`) so the sender's encoder
-is cheap, and/or cap the sender via `RTCRtpSender.setParameters` if exposed. If a
-low-res clip streams the full 301s, the hypothesis is confirmed.
-Secondary ideas: pin the video sender to a worker thread; check the installed
-aiortc version for a known consent-freshness issue; try `MediaPlayer(..., decode=False)`
-is not applicable (server needs decoded frames). Also consider sending video at a
-lower height by pre-scaling — the pipeline only needs enough resolution to detect.
+**Preuve après fix :** le vrai scénario a traversé les 301 s du MP4 avec
+**14 857 chunks audio** et 2 tours conversationnels. Le test ciblé
+`test_slow_device_command_does_not_block_webrtc_event_loop` couvre la frontière.
 
-### Files touched THIS session (for whoever picks this up)
-Product (committed `93fb568`, the 3 real bugs — DONE, tested, 49 passed):
-- `services/live-pc/live_pipeline.py` — `end_session` split; new
-  `end_session_after_drain_timeout` / `_end_session_after_drain` (OBS-2).
-- `services/live-pc/phoneonly_runtime.py` — `end_session_only` swallows drain
-  `TimeoutError` around `flush_audio` / `end_session` / `release_live_resources`,
-  still triggers close-day (OBS-2).
-- `services/live-pc/worldbrain.py` — `_init_service_db(check_same_thread=False)` +
-  `self._db_lock` RLock around every `_svc_db` access (OBS-3).
-- `services/live-pc/hypothesis_engine.py` — `_safe_confidence` helper (OBS-4).
+## OBS-6 — AttributeMemory/HypothesisEngine SQLite cross-thread (CORRIGÉ — 2026-07-12)
 
-Harness (committed `93fb568`, media stall still OPEN):
-- `tools/harness/fake_xr_device.py` — two separate `MediaPlayer` instances
-  (`player_v`, `player_a`, stored in `self._players`, stopped in the finally
-  block). This is where the ~20s fix must land (see hypothesis above).
+Le worker final utilise ces moteurs hors du thread de construction. Leurs
+connexions SQLite levaient `SQLite objects created in a thread...`, masquant la
+mémoire fine malgré un transport vert. Connexions ouvertes avec
+`check_same_thread=False` et chaque accès protégé par un `RLock`, même politique
+que WorldBrain.
 
-### How to reproduce (Qdrant + Ollama must be up)
-```
-Remove-Item tools\harness\_run\harness_memory.db* -Force
-.venv-live\Scripts\python tools\harness\run_harness.py --port 8730 `
-  --media "<any mp4>" --scenario tools\harness\scenarios\real_video_session.json `
-  --duration 80        # short, no close-day: watch audio_chunks stop at ~1000
-```
-Inspect `tools/harness/_run/device_report.json` → `peer_state_log`, `errors`,
-`audio_chunks_received`, `scenario_events_sent`, and `tools/harness/_run/server.log`.
+## OBS-7 — Une reprise CloseDay `blocked` ne pouvait pas reprendre (CORRIGÉ — 2026-07-12)
+
+La récupération durable retrouvait correctement le job, mais ne passait
+`allow_rerun/force` que si un CloseDay était déjà `completed`. Un run `blocked`
+était donc refusé par `assert_run_resumable` à chaque redémarrage. Une recovery
+est désormais toujours un retry explicite (`allow_rerun=True`) ; le script ne
+réouvre un jour completed que s'il existe réellement.
+
+## Validation complète encore bloquée par la configuration machine
+
+Le CloseDay atteint WhisperX/Pyannote et CUDA, puis Hugging Face répond **403**
+sur `pyannote/speaker-diarization-3.1`: le token doit autoriser les dépôts publics
+gated et le compte doit avoir accepté les conditions du modèle. Ce n'est pas
+contourné : la validation `--with-close-day` reste ouverte jusqu'à ce droit.
 
 ## Notes that are NOT bugs (expected, documented so future runs don't chase them)
 

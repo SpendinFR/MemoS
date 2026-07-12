@@ -310,3 +310,46 @@ def test_hot_scene_context_respects_budget(tmp_path, monkeypatch):
     assert len(json.dumps(ctx, default=str)) <= cfg.hot_budget_chars + 200
     assert ctx["omissions"], "over-budget fields must be logged as omissions, not silently dropped"
     assert ctx["session_id"] == "s-e28" and ctx["as_of"]
+
+
+def test_ingest_scene_delta_is_thread_safe(tmp_path, monkeypatch):
+    """Regression: the service-local SQLite connection is created on the init
+    thread but ingest_scene_delta runs from the vision worker threads. Before the
+    fix this raised "SQLite objects created in a thread can only be used in that
+    same thread" 50+ times per session and killed scene ingestion. The connection
+    must allow cross-thread use and serialize all access under a lock."""
+    import threading
+
+    wb, _ = _wb(tmp_path, monkeypatch, publish_world_state=False)
+    wb.config.promote_min_observations = 1
+    errors: list[str] = []
+
+    def worker(worker_id: int) -> None:
+        # Non-overlapping, well-separated bboxes per worker so promotions do not
+        # merge across workers — the point is that every persist crosses a thread
+        # boundary and must not raise the cross-thread SQLite error.
+        base = worker_id * 1000
+        try:
+            for i in range(20):
+                x = base + i * 40
+                wb.ingest_scene_delta(
+                    _delta(
+                        f"w{worker_id}-f{i}",
+                        [_ent(f"w{worker_id}-t{i}", "cup", [x, 0, x + 20, 20])],
+                    )
+                )
+        except Exception as exc:  # pragma: no cover - failure path
+            errors.append(f"{type(exc).__name__}: {exc}")
+
+    threads = [threading.Thread(target=worker, args=(n,)) for n in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # The regression: NO "SQLite objects created in a thread ..." error from any
+    # of the 4 worker threads. Before the fix this raised on every persist.
+    assert not errors, f"ingest_scene_delta raised from worker threads: {errors}"
+    # Entities were promoted + persisted across the thread boundary (durable
+    # registry may merge same-label slots, so assert a healthy count, not exact).
+    assert len(wb.entities) >= 40

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
+import time
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -38,6 +39,29 @@ sessionhub_http = _load("sessionhub_http", "services/live-pc/sessionhub_http.py"
 
 aiortc_missing = not (gateway.AIORTC_AVAILABLE and fake.AIORTC_AVAILABLE)
 skip_no_aiortc = pytest.mark.skipif(aiortc_missing, reason="aiortc/av not installed")
+
+
+@skip_no_aiortc
+def test_slow_device_command_does_not_block_webrtc_event_loop():
+    async def run():
+        ingress = gateway.AiortcIngress(session_id="slow-receipt", standalone_signaling=False)
+        observed = []
+
+        def slow_callback(raw: str) -> None:
+            time.sleep(0.25)
+            observed.append(raw)
+
+        ingress.on_receipt = slow_callback
+        started = time.perf_counter()
+        task = asyncio.create_task(ingress._dispatch_receipt('{"type":"device_transcript"}'))
+        await asyncio.sleep(0.03)
+        # If the callback ran on aiortc's loop this sleep would take ~250 ms,
+        # long enough for repeated commands to starve ICE consent.
+        assert time.perf_counter() - started < 0.15
+        await task
+        assert observed == ['{"type":"device_transcript"}']
+
+    asyncio.run(run())
 
 SCENARIO_MP4 = ROOT / "simulators" / "scenarios" / "test_scene.mp4"
 SCENARIO_POSE = ROOT / "simulators" / "scenarios" / "test_scene_pose.jsonl"

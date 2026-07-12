@@ -44,6 +44,7 @@ shortcut and always wins.
 import json
 import sqlite3
 import sys
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -189,6 +190,7 @@ class HypothesisEngine:
         self._last_speaker_entity: str | None = None
         self._prev_speaker_entity: str | None = None
         self._hyp_seq = 0
+        self._db_lock = threading.RLock()
         self._svc_db = self._init_service_db(service_db_path)
         self._load_from_store()
         self.metrics = {
@@ -206,7 +208,7 @@ class HypothesisEngine:
 
     # -------------------------------------------------------- service-local store
     def _init_service_db(self, path: str | Path | None) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(path) if path else ":memory:")
+        conn = sqlite3.connect(str(path) if path else ":memory:", check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute(
             """CREATE TABLE IF NOT EXISTS hypothesis_engine_hypotheses(
@@ -226,10 +228,11 @@ class HypothesisEngine:
 
     def _load_from_store(self) -> None:
         try:
-            rows = self._svc_db.execute(
-                "SELECT * FROM hypothesis_engine_hypotheses WHERE person_id=?",
-                (self.person_id,),
-            ).fetchall()
+            with self._db_lock:
+                rows = self._svc_db.execute(
+                    "SELECT * FROM hypothesis_engine_hypotheses WHERE person_id=?",
+                    (self.person_id,),
+                ).fetchall()
         except Exception:
             return
         for r in rows:
@@ -249,22 +252,23 @@ class HypothesisEngine:
             self.hypotheses[_hyp_key(h.entity_id, h.attr_type, h.value)] = h
 
     def _persist(self, h: Hypothesis) -> None:
-        self._svc_db.execute(
-            """INSERT INTO hypothesis_engine_hypotheses(
-                 hypothesis_id, person_id, entity_id, attr_type, value, status,
-                 promoted_at, occurrences_json, updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(hypothesis_id) DO UPDATE SET
-                 entity_id=excluded.entity_id, status=excluded.status,
-                 promoted_at=excluded.promoted_at,
-                 occurrences_json=excluded.occurrences_json, updated_at=excluded.updated_at""",
-            (
-                h.hypothesis_id, self.person_id, h.entity_id, h.attr_type, h.value,
-                h.status, h.promoted_at,
-                json.dumps([o.to_dict() for o in h.occurrences]), _iso_now(),
-            ),
-        )
-        self._svc_db.commit()
+        with self._db_lock:
+            self._svc_db.execute(
+                """INSERT INTO hypothesis_engine_hypotheses(
+                     hypothesis_id, person_id, entity_id, attr_type, value, status,
+                     promoted_at, occurrences_json, updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(hypothesis_id) DO UPDATE SET
+                     entity_id=excluded.entity_id, status=excluded.status,
+                     promoted_at=excluded.promoted_at,
+                     occurrences_json=excluded.occurrences_json, updated_at=excluded.updated_at""",
+                (
+                    h.hypothesis_id, self.person_id, h.entity_id, h.attr_type, h.value,
+                    h.status, h.promoted_at,
+                    json.dumps([o.to_dict() for o in h.occurrences]), _iso_now(),
+                ),
+            )
+            self._svc_db.commit()
 
     # -------------------------------------------------------- conversation intake
     def note_turn(
@@ -581,16 +585,17 @@ class HypothesisEngine:
                 continue
             h = promoted_names[name]
             core_id = str(item.get("hypothesis_id") or item.get("item_id") or item.get("source_id") or "")
-            self._svc_db.execute(
-                """INSERT INTO hypothesis_engine_resolutions(
-                     person_id, core_hypothesis_id, entity_id, attr_type, value,
-                     source, evidence_json, resolved_at)
-                   VALUES(?,?,?,?,?,?,?,?)""",
-                (self.person_id, core_id, h.entity_id, h.attr_type, h.value,
-                 "machine_convergence",
-                 json.dumps([o.to_dict() for o in h.occurrences]), _iso_now()),
-            )
-            self._svc_db.commit()
+            with self._db_lock:
+                self._svc_db.execute(
+                    """INSERT INTO hypothesis_engine_resolutions(
+                         person_id, core_hypothesis_id, entity_id, attr_type, value,
+                         source, evidence_json, resolved_at)
+                       VALUES(?,?,?,?,?,?,?,?)""",
+                    (self.person_id, core_id, h.entity_id, h.attr_type, h.value,
+                     "machine_convergence",
+                     json.dumps([o.to_dict() for o in h.occurrences]), _iso_now()),
+                )
+                self._svc_db.commit()
             self.metrics["clarifications_resolved"] += 1
             out.append({
                 "core_hypothesis_id": core_id, "entity_id": h.entity_id,

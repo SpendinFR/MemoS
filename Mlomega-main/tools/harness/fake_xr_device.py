@@ -47,6 +47,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -88,6 +89,33 @@ def synth_media_mp4(dst: Path, *, duration: int = 60) -> Path:
     if proc.returncode != 0 or not dst.exists():
         raise RuntimeError(f"ffmpeg synth failed: {(proc.stderr or '')[-1500:]}")
     return dst
+
+
+def split_media_tracks(source: Path, destination: Path) -> tuple[Path, Path]:
+    """Create genuinely single-stream inputs for the two aiortc players.
+
+    Two MediaPlayer instances opened on one muxed MP4 still decode both streams
+    and queue unused raw frames. Splitting keeps the harness deterministic and
+    avoids needless decode work. It was not the root cause of the 20-second
+    disconnect (the synchronous product receipt callback was).
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError("ffmpeg not found on PATH; cannot split harness media")
+    destination.mkdir(parents=True, exist_ok=True)
+    video = destination / "video-only.mp4"
+    audio = destination / "audio-only.wav"
+    commands = [
+        [ffmpeg, "-y", "-v", "error", "-i", str(source), "-map", "0:v:0", "-an", "-c:v", "copy", str(video)],
+        [ffmpeg, "-y", "-v", "error", "-i", str(source), "-map", "0:a:0", "-vn", "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "1", str(audio)],
+    ]
+    for command in commands:
+        proc = subprocess.run(command, capture_output=True, text=True, check=False)
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg track split failed: {(proc.stderr or '')[-1200:]}")
+    if not video.exists() or not audio.exists():
+        raise RuntimeError("ffmpeg track split produced incomplete media")
+    return video, audio
 
 
 class FakeXrDevice:
@@ -305,14 +333,14 @@ class FakeXrDevice:
             def _on_message(message: Any) -> None:
                 self._on_downlink(message)
 
-            # Two SEPARATE MediaPlayer instances — one for audio, one for video.
-            # A single MediaPlayer demuxes both tracks on one worker thread with
-            # bounded per-track queues; if the two senders consume at different
-            # rates the slower track's queue fills, the demux thread blocks, and
-            # BOTH tracks stall (observed: media froze at ~21s regardless of the
-            # source file). Independent players give each track its own demuxer.
-            player_v = MediaPlayer(str(self.media))
-            player_a = MediaPlayer(str(self.media))
+            # Genuinely single-track inputs prevent each player from decoding and
+            # queuing a second stream it will never consume. This is harness
+            # hygiene; the former 20-second drop was fixed server-side.
+            media_tmp = tempfile.TemporaryDirectory(prefix="mlomega-harness-media-")
+            video_media, audio_media = split_media_tracks(self.media, Path(media_tmp.name))
+            self.report["media_inputs"] = {"video": str(video_media), "audio": str(audio_media)}
+            player_v = MediaPlayer(str(video_media))
+            player_a = MediaPlayer(str(audio_media))
             self._players = [player_v, player_a]
             if player_a.audio is not None:
                 pc.addTrack(player_a.audio)
@@ -397,6 +425,7 @@ class FakeXrDevice:
                 except Exception:
                     pass
             await pc.close()
+            media_tmp.cleanup()
         return self.report
 
 

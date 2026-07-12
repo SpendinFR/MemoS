@@ -274,9 +274,11 @@ def recover_abandoned_phoneonly_sessions(
                     person_id=person_id,
                     live_session_id=live_id,
                     package_date=day,
-                    allow_rerun=_completed_close_day_exists(
-                        person_id=person_id, package_date=day, db_path=path
-                    ),
+                    # Recovery is itself an explicit retry. The close-day core
+                    # requires force=True to resume a prior blocked/error run;
+                    # the subprocess maps allow_rerun to that force flag and
+                    # only reopens a completed day when one actually exists.
+                    allow_rerun=True,
                     db_path=path,
                 )
             except Exception as exc:
@@ -615,20 +617,23 @@ class PhoneOnlyRuntime:
                 return self.status()
             try:
                 self.end_status = "draining"
+                if hasattr(self.ingress, "drain_receipts"):
+                    # A receipt may still be executing an intent/VLM call off the
+                    # WebRTC loop. It must finish before BrainLive is sealed.
+                    receipt_timeout_s = max(
+                        float(drain_timeout_s),
+                        float(os.getenv("MLOMEGA_FINAL_DRAIN_TIMEOUT_S", "300")),
+                    )
+                    await self.ingress.drain_receipts(timeout_s=receipt_timeout_s)
                 if hasattr(self.ingress, "stop_accepting_media"):
                     await self.ingress.stop_accepting_media()
                 if hasattr(self.ingress, "drain_audio"):
                     await self.ingress.drain_audio(timeout_s=drain_timeout_s)
                 if hasattr(self.pipeline, "flush_audio"):
-                    # A drain timeout here leaves the final turns durable in the
-                    # DB; do not let it fail the end of session (close-day
-                    # reprocesses them).
-                    try:
-                        await asyncio.to_thread(self.pipeline.flush_audio)
-                    except TimeoutError as drain_exc:
-                        if hasattr(self.pipeline, "_report_error"):
-                            self.pipeline._report_error("flush_audio.drain_timeout", drain_exc)
-                        self.recent_errors.append(str(drain_exc)[:500])
+                    # LivePipeline waits up to five minutes for the semantic
+                    # worker. A timeout is a real incomplete close: propagate it
+                    # so neither BrainLive nor CloseDay can overtake pending turns.
+                    await asyncio.to_thread(self.pipeline.flush_audio)
                 await self.close_transport()
                 self.end_status = "ending_pipeline"
                 conversation = getattr(self.pipeline, "conversation", None)
@@ -646,21 +651,7 @@ class PhoneOnlyRuntime:
                         live_session_id=self.live_session_id,
                         db_path=self.db_path,
                     )
-                # A drain timeout must NEVER fail the end of session: the final
-                # turns are already durable in the DB and close-day reprocesses
-                # them. Swallow ONLY the TimeoutError, record it in the pipeline
-                # errors, and continue ending the session + triggering close-day.
-                try:
-                    await asyncio.to_thread(self.pipeline.end_session, strict=True)
-                except TimeoutError as drain_exc:
-                    if hasattr(self.pipeline, "_report_error"):
-                        self.pipeline._report_error("end_session.drain_timeout", drain_exc)
-                    self.recent_errors.append(str(drain_exc)[:500])
-                    # Best-effort finish of the session flush the drain gated on.
-                    if hasattr(self.pipeline, "end_session_after_drain_timeout"):
-                        await asyncio.to_thread(
-                            self.pipeline.end_session_after_drain_timeout
-                        )
+                await asyncio.to_thread(self.pipeline.end_session, strict=True)
                 self.live_session_id = getattr(conversation, "live_session_id", None)
                 if conversation is not None:
                     await asyncio.to_thread(
@@ -669,16 +660,7 @@ class PhoneOnlyRuntime:
                 if not self.live_session_id:
                     raise RuntimeError("BrainLive live_session_id was never created")
                 if hasattr(self.pipeline, "release_live_resources"):
-                    # release_live_resources re-drains via _stop_final_worker; a
-                    # drain timeout must not fail the end of session either.
-                    try:
-                        await asyncio.to_thread(self.pipeline.release_live_resources)
-                    except TimeoutError as drain_exc:
-                        if hasattr(self.pipeline, "_report_error"):
-                            self.pipeline._report_error(
-                                "release_live_resources.drain_timeout", drain_exc
-                            )
-                        self.recent_errors.append(str(drain_exc)[:500])
+                    await asyncio.to_thread(self.pipeline.release_live_resources)
                 await asyncio.to_thread(self._release_core_live_caches)
                 self.ended = True
                 self.end_status = "completed"
@@ -688,6 +670,13 @@ class PhoneOnlyRuntime:
             except Exception as exc:
                 self.recent_errors.append(str(exc)[:500])
                 self.end_status = "error"
+                # Media is already stopped (or stopping). Transport teardown is
+                # safe and prevents a failed close from accepting more input;
+                # the runtime remains retryable and CloseDay stays gated.
+                try:
+                    await self.close_transport()
+                except Exception as close_exc:
+                    self.recent_errors.append(("transport close: " + str(close_exc))[:500])
                 await asyncio.to_thread(self._stop_clip_recorder)
             return self.status()
 

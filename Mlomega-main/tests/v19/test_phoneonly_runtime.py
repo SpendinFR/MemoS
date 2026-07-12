@@ -121,6 +121,44 @@ def test_runtime_starts_pipeline_audio_and_explicit_close_day_once():
     asyncio.run(scenario())
 
 
+class DrainTimeoutPipeline(FakePipeline):
+    """Pipeline whose final worker is still busy when shutdown is requested."""
+
+    def __init__(self, *, ingress, **kwargs):
+        super().__init__(ingress=ingress, **kwargs)
+        self._reported = []
+
+    def _report_error(self, scope, exc):
+        self._reported.append((scope, str(exc)))
+
+    def end_session(self, **_kwargs):
+        self.end_calls += 1
+        raise TimeoutError("final turn processing did not drain in 30.0s")
+
+def test_drain_timeout_blocks_brainlive_end_and_close_day():
+    close_calls = []
+
+    async def scenario():
+        rt = runtime_mod.PhoneOnlyRuntime(
+            "transport-drain",
+            person_id="owner",
+            ingress_factory=FakeIngress,
+            pipeline_factory=DrainTimeoutPipeline,
+            close_day=lambda **kw: close_calls.append(kw) or {"status": "completed"},
+        )
+        await rt.start()
+        result = await rt.end_and_close_day()
+        # Pending final turns make this an incomplete close. BrainLive must stay
+        # retryable and CloseDay must never overtake the worker.
+        assert result["end_session"] == "error", result
+        assert result["close_day"] == "not_started", result
+        assert close_calls == []
+        assert rt.ended is False
+        assert any("did not drain" in e for e in rt.recent_errors)
+
+    asyncio.run(scenario())
+
+
 def test_single_phone_policy_refuses_second_active_session():
     async def scenario():
         manager = runtime_mod.SinglePhoneRuntimeManager(
@@ -570,6 +608,7 @@ def test_abandoned_session_recovery_is_durable_and_retryable(tmp_path, monkeypat
     )
     assert second["status"] == "completed"
     assert second["recovered"] == [live_id]
+    assert calls[1]["allow_rerun"] is True
     with connect(db) as con:
         recovery = con.execute(
             "SELECT state,attempts,completed_at FROM phoneonly_session_recovery_v19 WHERE live_session_id=?",

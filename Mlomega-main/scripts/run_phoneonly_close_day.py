@@ -27,6 +27,7 @@ See docs/DECISIONS.md §E47C for the ADR (why reopen-by-status, not delete/force
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -34,6 +35,38 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
+
+_CUDA_DLL_HANDLES: list = []
+
+
+def _configure_windows_cuda_dlls() -> None:
+    """Expose the cuDNN 8/cuBLAS DLLs installed by NVIDIA's Python wheels.
+
+    Same pattern as services/live-pc/audiort.py: the core venv's CTranslate2
+    (< 4.5, pinned by whisperx) needs the FULL cuDNN 8 set
+    (``cudnn_ops_infer64_8.dll`` etc., from the ``nvidia-cudnn-cu12==8.9.*``
+    wheel) but Windows does not search sibling Python packages for dependent
+    DLLs. Without this, the close-day subprocess aborts with
+    "Could not locate cudnn_ops_infer64_8.dll" (0xC0000409) as soon as the
+    WhisperX/faster-whisper model initialises on CUDA. Keep the directory
+    handles alive for the process lifetime."""
+    if sys.platform != "win32" or not hasattr(os, "add_dll_directory"):
+        return
+    site_packages = Path(sys.prefix) / "Lib" / "site-packages" / "nvidia"
+    discovered: list[str] = []
+    for component in ("cublas", "cudnn", "cuda_nvrtc"):
+        dll_dir = site_packages / component / "bin"
+        if dll_dir.is_dir():
+            _CUDA_DLL_HANDLES.append(os.add_dll_directory(str(dll_dir)))
+            discovered.append(str(dll_dir))
+    if discovered:
+        # CTranslate2 loads some libraries by name rather than as ordinary
+        # extension dependencies, so add_dll_directory alone is insufficient.
+        current = os.environ.get("PATH", "")
+        os.environ["PATH"] = os.pathsep.join(discovered + ([current] if current else []))
+
+
+_configure_windows_cuda_dlls()
 
 
 def _reopen_completed_close_day(*, person_id: str, package_date: str | None) -> dict:

@@ -87,7 +87,9 @@ REM Passe chaos (chaque scénario sur son propre serveur+DB)
 
 Prérequis mode minimal : `ffmpeg` sur le PATH (mp4 synthétique) ; **pas de GPU/Ollama/Qdrant requis** (`/health` renvoie `ai_ready=false` mais `pairing_ready=true` suffit au pairing/offer, le harnais l'attend). Le close-day complet (`--with-close-day`) est le seul chemin qui exige la chaîne IA + le core `.venv` + GPU.
 
-Résultat exécution réelle (2026-07-11) : run minimal = **ALL PASS** (session enregistrée+terminée, audio traversé, 1 clip indexé dans `visual_evidence_assets_v19`, 8 intents scriptés joués). Chaos (a)(c)(d) verts (`net_drop_reconnect`, `double_end`, `ollama_down`). Observation produit notée dans `tools/harness/BUGS_FOUND.md` (OBS-1, table `brainlive_intervention_delivery_queue` absente à la 1re session sur DB neuve) — non corrigée (règle E63).
+Résultat exécution réelle : run minimal = **ALL PASS** (session enregistrée+terminée, audio traversé, 1 clip indexé, 8 intents joués) ; chaos `net_drop_reconnect`, `double_end`, `ollama_down` verts. La passe vraie vidéo du 2026-07-12 a ensuite trouvé et corrigé plusieurs défauts que le synthétique court ne voyait pas : callback DataChannel bloquant la boucle aiortc au premier transcript, connexions SQLite AttributeMemory/HypothesisEngine utilisées cross-thread, faux succès de fermeture avant drain et recovery incapable de reprendre un run `blocked`. Après correction, les **301 s** du MP4 traversent WebRTC avec **14 857 chunks audio** et 2 tours. Tests ciblés : **31 passés**.
+
+Le verdict `--with-close-day` complet reste ouvert pour une configuration machine, pas pour le transport : Hugging Face renvoie `403 Forbidden` au token configuré sur le dépôt gated `pyannote/speaker-diarization-3.1`. Avant relance, accepter les conditions du modèle et autoriser les dépôts publics gated dans le token. Ne pas désactiver la diarisation pour rendre le harnais vert. Détails et preuves : `tools/harness/BUGS_FOUND.md` OBS-2/5/6/7.
 
 ## E60 — Corrections d'intégration pré-production (EN COURS — 2026-07-10)
 

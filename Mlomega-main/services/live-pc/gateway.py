@@ -316,6 +316,12 @@ class AiortcIngress:
         self.on_receipt: Callable[[str], Any] | None = None
         self.on_datachannel_open: Callable[[], Any] | None = None
         self.received_receipts = 0
+        # Device transcripts can synchronously invoke IntentRouter / VLM work.
+        # Never run that callback inside aiortc's DataChannel event handler: a
+        # single slow command otherwise blocks ICE consent and kills the peer.
+        self._receipt_lock = asyncio.Lock()
+        self._receipt_tasks: set[asyncio.Task[Any]] = set()
+        self.receipt_errors = 0
         self.on_audio_chunk: Callable[[Any, int], Any] | None = None
         self.audio_chunks_received = 0
         self.audio_chunks_dropped = 0
@@ -482,10 +488,10 @@ class AiortcIngress:
                 # Anything else is treated as a receipt/return channel message.
                 self.received_receipts += 1
                 if self.on_receipt is not None:
-                    try:
-                        self.on_receipt(message if isinstance(message, str) else json.dumps(payload))
-                    except Exception:
-                        pass
+                    raw = message if isinstance(message, str) else json.dumps(payload)
+                    task = asyncio.create_task(self._dispatch_receipt(raw))
+                    self._receipt_tasks.add(task)
+                    task.add_done_callback(self._receipt_tasks.discard)
 
         @pc.on("track")
         def _on_track(track: Any) -> None:  # noqa: ANN401
@@ -506,6 +512,27 @@ class AiortcIngress:
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
         return pc.localDescription.sdp, pc.localDescription.type
+
+    async def _dispatch_receipt(self, raw: str) -> None:
+        """Run ordered control/receipt work outside the WebRTC event loop."""
+        callback = self.on_receipt
+        if callback is None:
+            return
+        async with self._receipt_lock:
+            try:
+                result = await asyncio.to_thread(callback, raw)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                self.receipt_errors += 1
+
+    async def drain_receipts(self, *, timeout_s: float = 5.0) -> None:
+        pending = list(self._receipt_tasks)
+        if pending:
+            await asyncio.wait_for(
+                asyncio.gather(*pending, return_exceptions=True),
+                timeout=max(0.1, float(timeout_s)),
+            )
 
     async def _consume_track(self, track: Any, pc: Any) -> None:
         count = 0

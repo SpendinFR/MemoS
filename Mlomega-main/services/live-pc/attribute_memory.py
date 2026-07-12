@@ -43,6 +43,7 @@ other — no special person path.
 import json
 import sqlite3
 import sys
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -120,6 +121,7 @@ class AttributeMemory:
         self.worldbrain = worldbrain
         self.llm = llm
         self._now = now_fn or _iso_now
+        self._db_lock = threading.RLock()
         self._svc_db = self._init_service_db(service_db_path)
         self.metrics = {
             "observations": 0,
@@ -132,7 +134,7 @@ class AttributeMemory:
 
     # -------------------------------------------------------- store
     def _init_service_db(self, path: str | Path | None) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(path) if path else ":memory:")
+        conn = sqlite3.connect(str(path) if path else ":memory:", check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute(
             """CREATE TABLE IF NOT EXISTS attribute_memory_observations(
@@ -148,12 +150,13 @@ class AttributeMemory:
 
     def _latest_prior(self, subject: str, attribute: str, session: str) -> AttributeObservation | None:
         """Most recent observation of this (subject, attribute) from ANOTHER session."""
-        row = self._svc_db.execute(
-            """SELECT * FROM attribute_memory_observations
-               WHERE person_id=? AND subject=? AND attribute=? AND session<>?
-               ORDER BY observed_at DESC, obs_id DESC LIMIT 1""",
-            (self.person_id, subject, attribute, session),
-        ).fetchone()
+        with self._db_lock:
+            row = self._svc_db.execute(
+                """SELECT * FROM attribute_memory_observations
+                   WHERE person_id=? AND subject=? AND attribute=? AND session<>?
+                   ORDER BY observed_at DESC, obs_id DESC LIMIT 1""",
+                (self.person_id, subject, attribute, session),
+            ).fetchone()
         if not row:
             return None
         return AttributeObservation(
@@ -187,13 +190,14 @@ class AttributeMemory:
             subject=subject, attribute=attribute, value=value, source=source,
             session=session, observed_at=self._now(), evidence_ref=evidence_ref,
         )
-        self._svc_db.execute(
-            """INSERT INTO attribute_memory_observations(
-                 person_id, subject, attribute, value, source, session, observed_at, evidence_ref)
-               VALUES(?,?,?,?,?,?,?,?)""",
-            (self.person_id, subject, attribute, value, source, session, obs.observed_at, evidence_ref),
-        )
-        self._svc_db.commit()
+        with self._db_lock:
+            self._svc_db.execute(
+                """INSERT INTO attribute_memory_observations(
+                     person_id, subject, attribute, value, source, session, observed_at, evidence_ref)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (self.person_id, subject, attribute, value, source, session, obs.observed_at, evidence_ref),
+            )
+            self._svc_db.commit()
         self.metrics["observations"] += 1
         self.metrics[f"{source}_observations"] = self.metrics.get(f"{source}_observations", 0) + 1
         if prior is not None and _norm_value(prior.value).lower() != value.lower():
@@ -338,9 +342,10 @@ class AttributeMemory:
             clauses.append("attribute=?")
             params.append(attribute)
         params.append(limit)
-        rows = self._svc_db.execute(
-            "SELECT * FROM attribute_memory_observations WHERE " + " AND ".join(clauses)
-            + " ORDER BY observed_at DESC, obs_id DESC LIMIT ?",
-            tuple(params),
-        ).fetchall()
+        with self._db_lock:
+            rows = self._svc_db.execute(
+                "SELECT * FROM attribute_memory_observations WHERE " + " AND ".join(clauses)
+                + " ORDER BY observed_at DESC, obs_id DESC LIMIT ?",
+                tuple(params),
+            ).fetchall()
         return [dict(r) for r in rows]
