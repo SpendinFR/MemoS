@@ -489,9 +489,29 @@ def _active_live_prediction_hooks(con, person_id: str, limit: int = 120) -> list
     """, (person_id, limit))
 
 
-def _run_llm(system: str, payload: dict[str, Any], schema: dict[str, Any], *, timeout: float) -> tuple[dict[str, Any], str | None]:
+def _run_llm(
+    system: str,
+    payload: dict[str, Any],
+    schema: dict[str, Any],
+    *,
+    timeout: float,
+    stage_name: str,
+    person_id: str,
+    package_date: str,
+    source_ref: str,
+) -> tuple[dict[str, Any], str | None]:
     try:
-        out = OllamaJsonClient().require_json(system, json_dumps(payload), schema_hint=schema, timeout=timeout)
+        from .night_orchestrator import run_hierarchical_json
+        out = run_hierarchical_json(
+            stage_name=stage_name,
+            person_id=person_id,
+            package_date=package_date,
+            source_ref=source_ref,
+            system=system,
+            payload=payload,
+            schema=schema,
+            timeout=timeout,
+        )
         return out, None
     except Exception as exc:
         return {"llm_required": True, "error": str(exc)[:1200]}, str(exc)[:1200]
@@ -568,6 +588,10 @@ def create_brainlive_day_package(person_id: str = "me", *, package_date: str | N
             {"mission": "Prépare un paquet journalier pour Brain2: moments live importants, prédictions H0/H1/H2, interventions, silences, outcomes, incertitudes et éléments à consolider.", "brainlive_day_evidence": raw, "schema": DAY_PACKAGE_SCHEMA},
             DAY_PACKAGE_SCHEMA,
             timeout=timeout,
+            stage_name="coordination_day_package",
+            person_id=person_id,
+            package_date=day,
+            source_ref=f"{person_id}:{day}",
         )
         status = "llm_ready" if not error else "raw_ready_llm_required"
     else:
@@ -695,6 +719,10 @@ def compile_brain2_forecasts_to_live_bindings(person_id: str = "me", *, use_llm:
             {"mission": "Convertis les prédictions next/short/mid/long, forecasts V14, Life Model et watch queues en live watch bindings H0/H1/H2/day/week/long.", "brain2_forecast_evidence": evidence, "schema": WATCH_BINDING_SCHEMA},
             WATCH_BINDING_SCHEMA,
             timeout=timeout,
+            stage_name="coordination_watch_bindings",
+            person_id=person_id,
+            package_date=now[:10],
+            source_ref=f"{person_id}:watch_bindings",
         )
         items = out.get("watch_bindings") if not error and isinstance(out, dict) else []
         llm_required = 0 if items else 1
@@ -767,6 +795,10 @@ def reconcile_brainlive_with_brain2(person_id: str = "me", *, package_id: str | 
             {"mission": "Crée des verdicts de réconciliation: confirmé, contredit, partiel, trop tôt/tard, opportunité manquée, silence utile. Explique le delta d'apprentissage pour Brain2 et BrainLive.", "brainlive_package": live_payload, "brain2_material": brain2_payload, "recent_reconciliations": recent_recs, "schema": RECONCILIATION_SCHEMA},
             RECONCILIATION_SCHEMA,
             timeout=timeout,
+            stage_name="coordination_reconciliation",
+            person_id=person_id,
+            package_date=str(live_payload.get("package_date") or now_iso())[:10],
+            source_ref=str(live_payload.get("package_id") or f"{person_id}:latest"),
         )
         items = out.get("reconciliations") if not error and isinstance(out, dict) else []
         status = "llm_ready" if items else "raw_ready_llm_required"

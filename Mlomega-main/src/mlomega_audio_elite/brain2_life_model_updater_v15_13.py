@@ -374,7 +374,15 @@ def _summarize_strata(person_id: str) -> dict[str, Any]:
         return strata
 
 
-def synthesize_life_model_patch(current_model: dict[str, Any], delta_evidence: dict[str, Any], *, timeout: float = 180.0) -> tuple[dict[str, Any], str | None]:
+def synthesize_life_model_patch(
+    current_model: dict[str, Any],
+    delta_evidence: dict[str, Any],
+    *,
+    timeout: float = 180.0,
+    person_id: str | None = None,
+    package_date: str | None = None,
+    source_ref: str | None = None,
+) -> tuple[dict[str, Any], str | None]:
     try:
         client = OllamaJsonClient()
         system = (
@@ -384,7 +392,7 @@ def synthesize_life_model_patch(current_model: dict[str, Any], delta_evidence: d
             "Aucune psychologie générique, aucune regex, aucune certitude sans preuves. Une occurrence isolée crée au mieux candidate/watch_only, pas une vérité. "
             "Un modèle ne devient proactif live que s'il est actif/confirmé avec preuves, outcomes ou confirmations. JSON strict uniquement."
         )
-        prompt = json_dumps({
+        payload = {
             "mission": "Update William's canonical life model by patching it, not rebuilding it. Preserve stable knowledge unless new evidence confirms/contradicts it.",
             "current_life_model": current_model,
             "new_delta_evidence": delta_evidence,
@@ -398,8 +406,21 @@ def synthesize_life_model_patch(current_model: dict[str, Any], delta_evidence: d
                 "Output patch operations only; include evidence ids/snippets, counter-evidence, lifecycle and live_effect.",
             ],
             "schema": PATCH_SCHEMA,
-        })
-        return client.require_json(system, prompt, schema_hint=PATCH_SCHEMA, timeout=timeout), None
+        }
+        if person_id:
+            from .night_orchestrator import run_hierarchical_json
+            return run_hierarchical_json(
+                stage_name="life_model_patch",
+                person_id=person_id,
+                package_date=str(package_date or now_iso())[:10],
+                source_ref=str(source_ref or f"{person_id}:life_model_patch"),
+                system=system,
+                payload=payload,
+                schema=PATCH_SCHEMA,
+                timeout=timeout,
+                client=client,
+            ), None
+        return client.require_json(system, json_dumps(payload), schema_hint=PATCH_SCHEMA, timeout=timeout), None
     except Exception as exc:
         return {"llm_required": True, "error": str(exc)}, str(exc)
 
@@ -573,7 +594,11 @@ def run_brain2_life_model_update(person_id: str, *, period_start: str | None = N
     error: str | None = None
     patch: dict[str, Any]
     if use_llm:
-        patch, error = synthesize_life_model_patch(current, delta, timeout=timeout)
+        patch, error = synthesize_life_model_patch(
+            current, delta, timeout=timeout, person_id=person_id,
+            package_date=str(period_end or now_iso())[:10],
+            source_ref=stable_id("life_model_patch_input", person_id, period_start, period_end),
+        )
         status = "llm_patch_ready" if not error else "delta_ready_llm_required"
     else:
         patch = {"llm_required": True, "reason": "use_llm=false", "operations": []}

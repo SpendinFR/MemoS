@@ -81,8 +81,21 @@ def _hash_payload(payload: Any) -> str:
     return sha256_bytes(json_dumps(payload).encode("utf-8"))
 
 
-def _llm_json(system: str, payload: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
+def _llm_json(
+    system: str, payload: dict[str, Any], schema: dict[str, Any],
+    *, stage_context: dict[str, str] | None = None,
+) -> dict[str, Any]:
     client = OllamaJsonClient()
+    if stage_context:
+        from .night_orchestrator import run_hierarchical_json
+        return run_hierarchical_json(
+            stage_name=stage_context["stage_name"],
+            person_id=stage_context["person_id"],
+            package_date=stage_context["package_date"],
+            source_ref=stage_context["source_ref"],
+            system=system, payload=payload, schema=schema,
+            timeout=240.0, client=client,
+        )
     data = client.require_json(system, json_dumps(payload), schema_hint=schema)
     if not isinstance(data, dict):
         raise EliteLLMError("V13.4 autonomous engine returned non-object JSON")
@@ -164,9 +177,10 @@ def _bundle_for_autonomy(con, conversation_id: str, person_id: str) -> dict[str,
     placeholders = ",".join("?" for _ in episode_ids) or "''"
     ep_params = tuple(episode_ids)
     from .v18_brain2_context import conversation_context_addenda
+    from .brain2_episode_windowing import cognitive_prompt_turns
     return {
         "conversation": dict(conv),
-        "turns": many("SELECT turn_id, idx, person_id, speaker_label, start_s, end_s, text, metadata_json FROM turns WHERE conversation_id=? ORDER BY idx", (conversation_id,)),
+        "turns": cognitive_prompt_turns(many("SELECT turn_id, idx, person_id, speaker_label, start_s, end_s, text, metadata_json FROM turns WHERE conversation_id=? ORDER BY idx", (conversation_id,))),
         "context_addenda": conversation_context_addenda(con, conversation_id=conversation_id, person_id=person_id),
         "episodes": many("SELECT * FROM episodes WHERE source_conversation_id=? ORDER BY start_time, created_at", (conversation_id,)),
         "subtopics": many("SELECT * FROM conversation_subtopic_segments WHERE conversation_id=? ORDER BY start_time, created_at", (conversation_id,)),
@@ -217,7 +231,16 @@ def run_autonomous_insights(conversation_id: str, *, trigger_type: str = "post_i
         }
         run_id = stable_id("autonrun", AUTONOMOUS_VERSION, conversation_id, now)
         try:
-            out = _llm_json("Tu es le moteur autonome Brain 2.0 strict. Réponds uniquement en JSON valide.", payload, INSIGHT_SCHEMA)
+            out = _llm_json(
+                "Tu es le moteur autonome Brain 2.0 strict. Réponds uniquement en JSON valide.",
+                payload, INSIGHT_SCHEMA,
+                stage_context={
+                    "stage_name": "v13_autonomous_insights",
+                    "person_id": person_id,
+                    "package_date": now[:10],
+                    "source_ref": conversation_id,
+                },
+            )
             status = "ok"; err = None
         except Exception as exc:
             out = {"insights": [], "error": str(exc)}; status = "error"; err = str(exc)[:2000]

@@ -213,8 +213,22 @@ def _compact(rows: list[dict[str, Any]], limit: int = 80) -> list[dict[str, Any]
     return out
 
 
-def _llm_json(system: str, payload: dict[str, Any], schema: dict[str, Any], timeout: int = 480) -> dict[str, Any]:
-    data = OllamaJsonClient().require_json(system, json_dumps(payload), schema_hint=schema, timeout=timeout)
+def _llm_json(
+    system: str, payload: dict[str, Any], schema: dict[str, Any],
+    timeout: int = 480, *, stage_context: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    client = OllamaJsonClient()
+    if stage_context:
+        from .night_orchestrator import run_hierarchical_json
+        return run_hierarchical_json(
+            stage_name=stage_context["stage_name"],
+            person_id=stage_context["person_id"],
+            package_date=stage_context["package_date"],
+            source_ref=stage_context["source_ref"],
+            system=system, payload=payload, schema=schema,
+            timeout=float(timeout), client=client,
+        )
+    data = client.require_json(system, json_dumps(payload), schema_hint=schema, timeout=timeout)
     if not isinstance(data, dict):
         raise RuntimeError("Brain2 V14.6 returned non-object JSON")
     return data
@@ -408,7 +422,8 @@ def _conversation_payload(con, conversation_id: str, *, limit_turns: int = 180) 
     conv = con.execute("SELECT * FROM conversations WHERE conversation_id=?", (conversation_id,)).fetchone()
     if not conv:
         raise ValueError(f"conversation introuvable: {conversation_id}")
-    turns = _many(con, "SELECT * FROM turns WHERE conversation_id=? ORDER BY idx LIMIT ?", (conversation_id, limit_turns))
+    from .brain2_episode_windowing import cognitive_prompt_turns
+    turns = cognitive_prompt_turns(_many(con, "SELECT * FROM turns WHERE conversation_id=? ORDER BY idx LIMIT ?", (conversation_id, limit_turns)))
     utterance_analyses = _many(con, "SELECT * FROM utterance_analyses WHERE conversation_id=? ORDER BY created_at LIMIT ?", (conversation_id, limit_turns))
     speaker_matches = _many(con, "SELECT * FROM speaker_matches WHERE conversation_id=? ORDER BY created_at", (conversation_id,))
     from .v18_brain2_context import conversation_context_addenda
@@ -466,6 +481,12 @@ def analyze_interpersonal_state(conversation_id: str, *, person_id: str | None =
             payload,
             INTERPERSONAL_SCHEMA,
             timeout=540,
+            stage_context={
+                "stage_name": "v14_interpersonal_state",
+                "person_id": person_id,
+                "package_date": now[:10],
+                "source_ref": conversation_id,
+            },
         )
     except Exception as exc:
         status = "error"

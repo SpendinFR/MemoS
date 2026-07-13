@@ -111,6 +111,28 @@ La recovery a ensuite révélé et corrigé une collision de ré-export : une co
 
 **Verdict performance V13 : non viable en l'état.** Le découpage générique du schéma `internal_state_engine` (10 champs→4 tâches, fusion 10/10) élimine `finish=length`, et la projection prompt ramène 13 665→7 038 tokens sans retirer preuves/détails durables. Mesure réelle 9B : 195,8 s pour ce seul moteur/épisode. Les 304 appels V13 de la fixture précèdent encore Life Model/longitudinal. Ne pas lancer aveuglément le CloseDay complet : migrer vers moteur→batches d'épisodes token-aware et une applicabilité explicite (les épisodes capteur restent Vision/WorldBrain, pas psychologie), puis re-mesurer.
 
+### E64-F — passation exécutable après refonte Codex (PAUSE 2026-07-13)
+
+Le diagnostic « 304 appels » a été traité sans supprimer les moteurs. EpisodeBuilder v5 route 132 atomes capteur vers Vision/WorldBrain/Silent Life et conserve 12 épisodes humains. V13 exécute maintenant un pack par épisode : le bundle est sérialisé une fois, chaque moteur garde son schéma/writer, et les groupes de champs deviennent les seules unités de subdivision. Applicabilité : capture/language/context/causality pour tout épisode humain ; internal/social/contradiction/choice/outcome seulement sur les types/participants compatibles ; les six moteurs globaux restent conversation-scopés.
+
+La projection LLM ne contient plus les copies techniques WhisperX/vision. Les données brutes et refs restent en DB/manifeste ; texte, temps, speaker/person, alignement, segmentation, objets/actions/OCR restent au prompt. Mesure du cas difficile : 6 836→5 128 tokens, 104,1→28,75 s en Qwen3.5:9b/16k, six moteurs et huit groupes complets. Les 12 packs locaux ont été `completed`; un seul `finish=length` a été résolu par deux enfants sans partiel.
+
+Corrections de reprise indispensables déjà en code :
+
+1. `run_windows` inclut le digest de la requête rendue complète dans sa clé ; une modification du contexte commun ne reprend plus une sortie ancienne.
+2. Les fonctions V13 forcent `phase("post_stop_brain2_v13")`; un appel direct ne tombe plus silencieusement sur 4B/4k.
+3. `_stable_episode_source_bundle` exclut les lignes dérivées déjà matérialisées ; les sorties antérieures passent seulement par `prior_engine_outputs`. Une reprise ne peut plus se nourrir de ses propres writers.
+4. `hierarchical_json.py` fenêtre des capsules d'épisodes et garde leur couverture transitive. `length` sur preuve subdivise les capsules ; `length` sur merge remonte au caller, qui sépare les groupes de schémas. Une fusion sans progrès bloque immédiatement.
+5. La relecture reste filtrée par les `window_key` exactes. Ne jamais agréger par `stage_name` seul.
+
+**Commande de reprise conseillée (depuis `Mlomega-main`, une seule instance) :** utiliser le même entrypoint/harness CloseDay en phase post-stop, avec `MLOMEGA_DB=tools/harness/_run/harness_memory.db`, `MLOMEGA_OLLAMA_MODEL=qwen3.5:9b`, contexte post-stop 16 384 et sortie 4 096. Avant : `Get-Process python` doit être vide. Pendant : ne pas interrompre le wrapper sans tuer aussi son enfant Python. Après : relancer exactement V13 et prouver zéro nouvel appel/checkpoint/matérialisation.
+
+**État exact à la pause :** 43 tests centraux verts, puis **98 tests élargis passés** (E64 A–F, E37, budget Ollama, longitudinal et multi-session CloseDay ; 2 warnings SWIG seulement) + `py_compile` des modules V13/projection/executor/hierarchy. La première fenêtre globale réelle (10 capsules, 10 463 tokens) est verte. La fusion combinée a atteint `length`; le fallback par groupes de schémas est testé avec faux LLM, mais pas encore validé jusqu'au manifeste réel. Les trois anciens Python orphelins ont été arrêtés. Le dernier `profiles[...] is None` était un `return` déplacé lors de l'ajout du bundle stable ; corrigé et couvert par test, pas rejoué en réel.
+
+**Ne pas faire :** ne pas rejouer la vidéo, ne pas réduire le nombre de moteurs/épisodes, ne pas échantillonner les preuves, ne pas accepter un dashboard partiel, ne pas utiliser les timings 01:24–01:52 comme benchmark (runners concurrents). Reprendre la DB pour la correction fonctionnelle ; faire ensuite une exécution fraîche séparée pour la performance.
+
+**Suite obligatoire :** global V13 12/12 + six moteurs + couverture verte → rerun idempotent zéro appel → V14/Silent Life → coordination/Life Model/longitudinal/live-ready → CloseDay complet → dashboard. Le détail case par case et les métriques sont dans `PROD_BACKLOG` §E64-F « checkpoint de pause Codex » ; bugs dans `tools/harness/BUGS_FOUND.md` OBS-20 à OBS-24.
+
 ## E60 — Corrections d'intégration pré-production (EN COURS — 2026-07-10)
 
 La checklist canonique des **32 corrections** se trouve dans `docs/PROD_BACKLOG.md` §E60. Une case y représente la correction code/test ciblé ; la matrice S25 reste un gate transversal unique. Exécution imposée : petit lot cohérent → appel produit prouvé → tests ciblés du bon arbre → mise à jour simultanée du guide et du backlog → commit.

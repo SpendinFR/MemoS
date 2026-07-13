@@ -359,7 +359,14 @@ def _query(con, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         return []
 
 
-def synthesize_live_ready_model(raw_feed: dict[str, Any], *, timeout: float = 90.0) -> tuple[dict[str, Any], str | None]:
+def synthesize_live_ready_model(
+    raw_feed: dict[str, Any],
+    *,
+    timeout: float = 90.0,
+    person_id: str | None = None,
+    package_date: str | None = None,
+    source_ref: str | None = None,
+) -> tuple[dict[str, Any], str | None]:
     """Ask the local Brain2-style LLM to transform raw Brain2 material into live-ready cognition.
 
     This is where Brain2 becomes operational for BrainLive: not just rows, but
@@ -374,7 +381,7 @@ def synthesize_live_ready_model(raw_feed: dict[str, Any], *, timeout: float = 90
             "But: produire un modèle live exploitable pour anticiper William à H0/H1/H2: routines, lieux, actions, paroles, expressions, émotions passées/actuelles probables/futures, besoins, attentes, préférences, relations, scénarios et règles d'intervention. "
             "Chaque élément doit avoir preuves, contre-preuves si disponibles, confidence, et missing evidence. JSON strict."
         )
-        prompt = json_dumps({
+        payload = {
             "mission": "Compile Brain2 into a live-ready personal operating model for BrainLive. Think about 1000 situations, not one cigarette example: conversations, negotiation, work, fatigue, ideas, social, places, routines, needs, preferences, expectations, risks, opportunities.",
             "raw_brain2_feed": raw_feed,
             "horizons": {"H0": "0-10 seconds", "H1": "10 seconds-5 minutes", "H2": "5 minutes-2 hours", "day_week_long": "Brain2 trajectories that can become active now"},
@@ -385,8 +392,22 @@ def synthesize_live_ready_model(raw_feed: dict[str, Any], *, timeout: float = 90
                 "Prefer multiple hypotheses with missing evidence over certainty.",
                 "Make this directly useful to a live system that must decide observe/speak/wait.",
             ],
-        })
-        data = client.require_json(system, prompt, schema_hint=LIVE_READY_SCHEMA, timeout=timeout)
+        }
+        if person_id:
+            from .night_orchestrator import run_hierarchical_json
+            data = run_hierarchical_json(
+                stage_name="brainlive_live_ready",
+                person_id=person_id,
+                package_date=str(package_date or now_iso())[:10],
+                source_ref=str(source_ref or f"{person_id}:live_ready"),
+                system=system,
+                payload=payload,
+                schema=LIVE_READY_SCHEMA,
+                timeout=timeout,
+                client=client,
+            )
+        else:
+            data = client.require_json(system, json_dumps(payload), schema_hint=LIVE_READY_SCHEMA, timeout=timeout)
         return data, None
     except Exception as exc:
         return {"llm_required": True, "error": str(exc), "raw_feed_available": True}, str(exc)
@@ -410,7 +431,11 @@ def build_brain2_live_personal_model(
     error: str | None = None
     status = "raw_only_llm_disabled"
     if use_llm:
-        live_ready, error = synthesize_live_ready_model(raw, timeout=timeout)
+        live_ready, error = synthesize_live_ready_model(
+            raw, timeout=timeout, person_id=person_id,
+            package_date=now_iso()[:10],
+            source_ref=stable_id("live_ready_input", person_id, live_session_id or "global", now_iso()[:10]),
+        )
         status = "llm_ready" if not error else "raw_ready_llm_required"
     else:
         live_ready = {"llm_required": True, "reason": "use_llm=false", "raw_feed_available": True}

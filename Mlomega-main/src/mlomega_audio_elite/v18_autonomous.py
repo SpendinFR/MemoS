@@ -60,6 +60,12 @@ def install_autonomous(module: Any) -> dict[str, Any]:
                 "Tu es un générateur de candidats autonomes V18. JSON strict. Les sorties sont des hypothèses candidates, jamais des vérités ni des mutations automatiques.",
                 {"mission":"Proposer des hypothèses/predictions/interventions candidates. Citer des preuves et contre-preuves. Aucune mise à jour de mémoire canonique.","bundle":bundle,"schema":module.INSIGHT_SCHEMA},
                 module.INSIGHT_SCHEMA,
+                stage_context={
+                    "stage_name":"v18_autonomous_candidates",
+                    "person_id":person_id,
+                    "package_date":now_iso()[:10],
+                    "source_ref":conversation_id,
+                },
             )
             status="ok"; error=None
         except Exception as exc:

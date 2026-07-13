@@ -101,8 +101,22 @@ def ensure_brain2_flow_schema() -> None:
         con.commit()
 
 
-def _llm_json(system: str, payload: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
-    return OllamaJsonClient().require_json(system, json_dumps(payload), schema_hint=schema, timeout=240)
+def _llm_json(
+    system: str, payload: dict[str, Any], schema: dict[str, Any],
+    *, stage_context: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    client = OllamaJsonClient()
+    if stage_context:
+        from .night_orchestrator import run_hierarchical_json
+        return run_hierarchical_json(
+            stage_name=stage_context["stage_name"],
+            person_id=stage_context["person_id"],
+            package_date=stage_context["package_date"],
+            source_ref=stage_context["source_ref"],
+            system=system, payload=payload, schema=schema,
+            timeout=240.0, client=client,
+        )
+    return client.require_json(system, json_dumps(payload), schema_hint=schema, timeout=240)
 
 
 def build_subtopic_segments(conversation_id: str) -> dict[str, Any]:
@@ -126,8 +140,73 @@ def build_subtopic_segments(conversation_id: str) -> dict[str, Any]:
         conv = con.execute("SELECT * FROM conversations WHERE conversation_id=?", (conversation_id,)).fetchone()
         if not conv:
             raise ValueError(f"conversation_missing: {conversation_id}")
-        turns = [dict(r) for r in con.execute("SELECT turn_id, idx, person_id, speaker_label, start_s, end_s, text, metadata_json FROM turns WHERE conversation_id=? ORDER BY idx", (conversation_id,))]
-        episodes = [dict(r) for r in con.execute("SELECT episode_id, start_turn_id, end_turn_id, topic, situation_summary FROM episodes WHERE source_conversation_id=?", (conversation_id,))]
+        raw_turns = [dict(r) for r in con.execute("SELECT turn_id, idx, person_id, speaker_label, start_s, end_s, text, metadata_json FROM turns WHERE conversation_id=? ORDER BY idx", (conversation_id,))]
+        turns = []
+        for turn in raw_turns:
+            try:
+                metadata = json.loads(turn.get("metadata_json") or "{}")
+            except (TypeError, ValueError):
+                metadata = {}
+            if not isinstance(metadata, dict) or metadata.get("evidence_role") != "system_observation_not_user_speech":
+                turns.append(turn)
+        episodes = [dict(r) for r in con.execute(
+            "SELECT episode_id,episode_type,start_turn_id,end_turn_id,start_time,end_time,topic,situation_summary,confidence,metadata_json FROM episodes WHERE source_conversation_id=? ORDER BY start_time,created_at",
+            (conversation_id,),
+        )]
+        # E64: strict EpisodeBuilder has already performed this semantic split
+        # with durable evidence coverage. Re-asking another LLM to segment the
+        # same conversation duplicates work and can disagree with the canonical
+        # episodes. Project them losslessly into the legacy subtopic table.
+        covered_episodes = []
+        for episode in episodes:
+            try:
+                metadata = json.loads(episode.get("metadata_json") or "{}")
+            except (TypeError, ValueError):
+                metadata = {}
+            if (
+                isinstance(metadata, dict)
+                and metadata.get("episode_source")
+                and metadata.get("coverage_status") == "complete"
+            ):
+                covered_episodes.append(episode)
+        if covered_episodes:
+            now = now_iso()
+            ids = []
+            for episode in covered_episodes:
+                evidence = [
+                    str(row["turn_id"])
+                    for row in con.execute(
+                        "SELECT turn_id FROM episode_evidence WHERE episode_id=? AND turn_id IS NOT NULL ORDER BY created_at",
+                        (episode["episode_id"],),
+                    ).fetchall()
+                ]
+                sid = stable_id("subtopic", conversation_id, episode["episode_id"])
+                upsert(con, "conversation_subtopic_segments", {
+                    "subtopic_id": sid,
+                    "conversation_id": conversation_id,
+                    "episode_id": episode["episode_id"],
+                    "start_turn_id": episode.get("start_turn_id"),
+                    "end_turn_id": episode.get("end_turn_id"),
+                    "start_time": episode.get("start_time"),
+                    "end_time": episode.get("end_time"),
+                    "subtopic_title": episode.get("topic") or episode.get("situation_summary") or episode.get("episode_type") or "episode",
+                    "situation_type": episode.get("episode_type"),
+                    "summary": episode.get("situation_summary"),
+                    "independent_analysis_needed": 1,
+                    "evidence_turn_ids_json": json_dumps(evidence),
+                    "confidence": float(episode.get("confidence") or 0.0),
+                    "created_at": now,
+                    "updated_at": now,
+                }, "subtopic_id")
+                ids.append(sid)
+            con.commit()
+            return {
+                "conversation_id": conversation_id,
+                "subtopic_count": len(ids),
+                "subtopic_ids": ids,
+                "source": "covered_strict_episodes",
+                "llm_calls": 0,
+            }
         from .v18_brain2_context import conversation_context_addenda
         context_addenda = conversation_context_addenda(con, conversation_id=conversation_id)
         payload = {
@@ -138,7 +217,17 @@ def build_subtopic_segments(conversation_id: str) -> dict[str, Any]:
             "context_addenda": context_addenda,
             "schema": schema,
         }
-        out = _llm_json("Tu es le Conversation Subtopic Segmenter strict. Réponds en JSON valide uniquement.", payload, schema)
+        owner = str(conv["person_id"] if "person_id" in conv.keys() and conv["person_id"] else "me")
+        out = _llm_json(
+            "Tu es le Conversation Subtopic Segmenter strict. Réponds en JSON valide uniquement.",
+            payload, schema,
+            stage_context={
+                "stage_name": "v13_subtopics",
+                "person_id": owner,
+                "package_date": str(conv["started_at"] or now_iso())[:10],
+                "source_ref": conversation_id,
+            },
+        )
         now = now_iso(); ids = []
         for i, st in enumerate(out.get("subtopics") or []):
             if not isinstance(st, dict) or not st.get("title"):
@@ -188,7 +277,15 @@ def discover_latent_outcomes_from_conversation(conversation_id: str, *, limit_pe
         conv = con.execute("SELECT * FROM conversations WHERE conversation_id=?", (conversation_id,)).fetchone()
         if not conv:
             raise ValueError(f"conversation_missing: {conversation_id}")
-        turns = [dict(r) for r in con.execute("SELECT turn_id, idx, person_id, speaker_label, start_s, end_s, text, metadata_json FROM turns WHERE conversation_id=? ORDER BY idx", (conversation_id,))]
+        turns = []
+        for row in con.execute("SELECT turn_id, idx, person_id, speaker_label, start_s, end_s, text, metadata_json FROM turns WHERE conversation_id=? ORDER BY idx", (conversation_id,)):
+            turn = dict(row)
+            try:
+                metadata = json.loads(turn.get("metadata_json") or "{}")
+            except (TypeError, ValueError):
+                metadata = {}
+            if not isinstance(metadata, dict) or metadata.get("evidence_role") != "system_observation_not_user_speech":
+                turns.append(turn)
         from .v18_brain2_context import conversation_context_addenda
         context_addenda = conversation_context_addenda(con, conversation_id=conversation_id)
         pending: list[dict[str, Any]] = []
@@ -203,6 +300,25 @@ def discover_latent_outcomes_from_conversation(conversation_id: str, *, limit_pe
                     d = dict(r); d["_source_table"] = table; d["_source_id"] = d.get(id_col); d["_text"] = d.get(text_col); pending.append(d)
             except Exception:
                 continue
+        if not pending:
+            out = {
+                "resolved_items": [], "counter_evidence": [],
+                "missing_context": ["no_pending_items"], "confidence": 1.0,
+            }
+            run_id = stable_id("latentout", conversation_id, "no_pending_items")
+            upsert(con, "latent_outcome_search_runs", {
+                "run_id": run_id,
+                "conversation_id": conversation_id,
+                "searched_pending_items_json": "[]",
+                "qwen_output_json": json_dumps(out),
+                "created_at": now_iso(),
+            }, "run_id")
+            con.commit()
+            return {
+                "conversation_id": conversation_id, "run_id": run_id,
+                "links_created": 0, "link_ids": [], "raw": out,
+                "llm_calls": 0,
+            }
         payload = {
             "mission": "Dans cette nouvelle conversation, cherche uniquement les indices dispersés qui résolvent, contredisent ou nuancent d'anciennes intentions/prédictions/choix/engagements. Respecte metadata_json.kind/evidence_role: observation système ≠ parole de William. Ne crée rien sans preuve textuelle exacte.",
             "new_conversation": dict(conv),
@@ -211,7 +327,17 @@ def discover_latent_outcomes_from_conversation(conversation_id: str, *, limit_pe
             "pending_items": pending[:limit_pending],
             "schema": schema,
         }
-        out = _llm_json("Tu es le Latent Outcome Resolver strict. Réponds en JSON valide uniquement.", payload, schema)
+        owner = str(conv["person_id"] if "person_id" in conv.keys() and conv["person_id"] else "me")
+        out = _llm_json(
+            "Tu es le Latent Outcome Resolver strict. Réponds en JSON valide uniquement.",
+            payload, schema,
+            stage_context={
+                "stage_name": "v13_latent_outcomes",
+                "person_id": owner,
+                "package_date": str(conv["started_at"] or now_iso())[:10],
+                "source_ref": conversation_id,
+            },
+        )
         now = now_iso(); run_id = stable_id("latentout", conversation_id, now)
         upsert(con, "latent_outcome_search_runs", {"run_id": run_id, "conversation_id": conversation_id, "searched_pending_items_json": json_dumps(pending[:limit_pending]), "qwen_output_json": json_dumps(out), "created_at": now}, "run_id")
         links = []
@@ -367,7 +493,7 @@ def _run_brain2_stack_checkpointed(
         ("v13_subtopics", lambda: build_subtopic_segments(conversation_id)),
         ("latent_outcomes", lambda: discover_latent_outcomes_from_conversation(conversation_id)),
         ("v14_4_auto_verification", lambda: auto_verify_latent_outcome_predictions(conversation_id=conversation_id)),
-        ("v13_4_autonomous", lambda: run_autonomous_insights(conversation_id, trigger_type=trigger_type)),
+        ("v13_4_autonomous", lambda: run_autonomous_insights(conversation_id, person_id=person_id, trigger_type=trigger_type)),
         ("v14_pattern_mirror", lambda: run_pattern_mirror(conversation_id, trigger_type=trigger_type, scope="post_conversation_long_horizon")),
         ("v14_5_people_openloops", lambda: run_v14_5_post_conversation(conversation_id)),
         ("v14_6_interpersonal", lambda: run_v14_6_post_conversation(conversation_id)),
@@ -458,7 +584,7 @@ def run_brain2_deep_stack_for_conversation(
         results.setdefault("warnings", []).append({"step": "v14_4_auto_verification", "error": str(exc)[:500]})
 
     from .autonomous_v13_4 import run_autonomous_insights
-    run_autonomous_insights(conversation_id, trigger_type=trigger_type)
+    run_autonomous_insights(conversation_id, person_id=person_id, trigger_type=trigger_type)
     results["steps"].append("v13_4_autonomous")
 
     from .pattern_mirror_v14 import run_pattern_mirror

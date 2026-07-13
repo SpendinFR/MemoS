@@ -561,7 +561,7 @@ La conclusion ci-dessus est désormais historique. La basse résolution et les d
 
 ASR nocturne réel prouvé jusqu'au bout de Deep Audio : WhisperX `large-v3` CUDA float16, alignement, Pyannote et SpeechBrain ECAPA, **40 tours**, stage `completed`. Le scénario scripté Viki/Help Mode à t=240 n'est **pas encore certifié fonctionnel** : le run interrompu n'a pas écrit son rapport final et aucune ligne `help_mode_tasks` n'est présente. Le harnais injecte un `device_transcript` et ne valide jamais le wake word on-device ; ces deux gates restent distincts.
 
-## E64 — Orchestrateur nocturne LLM lossless et transversal (PLAN À VALIDER AVANT IMPLÉMENTATION)
+## E64 — Orchestrateur nocturne LLM lossless et transversal (EN COURS — PASSATION 2026-07-13)
 
 ### Problème confirmé
 
@@ -636,7 +636,7 @@ Le problème est transversal : tout stage nocturne qui concatène un jour, une c
 
 ### E64-F — Migration transversale, par vagues
 
-- [x] **Vague 1** : EpisodeBuilder + moteurs Brain2/V13, car ils bloquent le run réel. Aucun prompt V13 ne lit directement les 945 frames.
+- [ ] **Vague 1** : EpisodeBuilder + moteurs Brain2/V13, car ils bloquent le run réel. Aucun prompt V13 ne lit directement les 945 frames. **Migration locale réellement exercée, mais vague non close : fusion globale/matérialisation finale/run complet encore ouverts.**
 - [ ] **Vague 2** : Deep Vision, conversation post-stop et Silent Life ; réutiliser les mêmes fenêtres/atoms au lieu de refaire une sélection indépendante.
 - [ ] **Vague 3** : coordination BrainLive↔Brain2, Life Model, longitudinal, reconciliation, live-ready, prédictions/outcomes/self-schema pour tout appel LLM identifié en E64-A.
 - [ ] Les stages déterministes sans LLM restent inchangés mais publient leurs `EvidenceRef`/manifestes dans le même protocole.
@@ -655,6 +655,40 @@ Le problème est transversal : tout stage nocturne qui concatène un jour, une c
 > - **Reprise réelle suivante** : 79/79 fenêtres v4 `completed`, 79 tentatives, zéro retry/length/quarantaine. La relecture mélangeait toutefois les anciens outputs v2 au merge v4 ; elle est désormais restreinte aux clés feuilles courantes. Manifeste réel : **1 433/1 433** (26 audio directes + 1 407 vision transitives), zéro missing.
 > - **Writers V13 durcis** : barrière schéma commune aux 16 writers (objets/listes → JSON lossless pour TEXT, scalaires numériques bornés, FK vérifiées par `PRAGMA` et, pour un turn, appartenance conversation). Les 16 moteurs par épisode sont checkpoints atomiquement par hash de prompt ; une erreur au moteur N ne rejoue plus 1..N-1. **57 tests ciblés verts**, dont FK/objets imbriqués négatifs, splitter de champs et reprise exacte. Le volume actuel (**19 épisodes × 16 = 304 appels**) reste à mesurer/arbitrer sans supprimer de passe ; gate complet toujours ouvert.
 > - **Mesure de débit qui interdit de clore F** : `internal_state_engine` tronquait en monolithe ; le splitter générique par champs restitue 10/10 clés en 4 tâches et ramène son prompt 13 665→7 038 tokens, mais prend **195,8 s pour un épisode** en 9B. 304 appels ne sont que V13, avant Life Model. À faire : inverser la matrice en moteur→batches d'épisodes planifiés par tokens, garder l'owner/episode/provenance, et réserver les moteurs psychologiques aux épisodes humains/interactionnels (les événements capteur restent couverts par Vision/WorldBrain). Aucun moteur ni preuve supprimé ; exécution au bon niveau.
+
+#### E64-F — checkpoint de pause Codex 2026-07-13 (autoritaire pour la reprise)
+
+**Architecture livrée dans le working tree de ce commit :**
+
+- [x] Router les 132 atomes vision/capteur hors de la psychologie primaire, avec manifeste transitif conservant les 1 407 refs brutes ; garder les 26 tours Deep Audio humains, sans dédupliquer leurs répétitions parlées.
+- [x] EpisodeBuilder v5 produit sur la fixture réelle **12 épisodes humains** (client_request 3, conflict 1, emotional_reaction 2, planning 3, relationship_tension 1, self_reflection 2) et zéro épisode technique/capteur ; les épisodes psychologiques n'ont pas été supprimés.
+- [x] Remplacer la matrice locale « moteur × épisode » par **un pack cohérent par épisode** : tous les moteurs applicables et tous leurs schémas restent présents ; les groupes de champs sont fusionnés par code, et `length` subdivise les responsabilités sans supprimer preuve/champ/moteur.
+- [x] Applicabilité explicite : capture/language/context/causality sur chaque épisode humain ; internal/social/contradiction/choice/outcome seulement quand le type et les participants peuvent réellement les soutenir ; les six moteurs transversaux restent conversation-scopés.
+- [x] Projection prompt lossless : texte exact, timestamps, speaker/person, score d'alignement, segmentation, contenu vision/OCR restent visibles ; mots WhisperX dupliqués, IDs/digests opaques et copies de `representative` restent en DB/manifeste mais ne sont plus répétés au LLM. Cas difficile mesuré **6 836→5 128 tokens** et **104,1→28,75 s** en 9B/16k, tous les 6 moteurs/8 groupes complets.
+- [x] Checkpoint E64-C corrigé : la clé inclut désormais le digest de la **requête rendue complète** (bundle/règles/schéma/prior), pas uniquement les unités planifiées. Un changement de contexte commun ne peut plus reprendre une ancienne sortie verte.
+- [x] Forcer la phase interne `post_stop_brain2_v13` lors de la construction et de l'appel du client : un appel direct/outillage ne peut plus sélectionner silencieusement le modèle live 4B/4k alors que le planificateur budgète 16k.
+- [x] Bundle local source stable : épisode+tours+contexte immuables ; les tables matérialisées ne se réinjectent jamais dans leur propre prompt. Les dépendances passent uniquement par `prior_engine_outputs`. Cela empêche le hash de changer après chaque writer.
+- [x] Hiérarchie générique `hierarchical_json.py` migrée dans les helpers nocturnes non bornés : V14 post-stop, Silent Life, coordination, Life Model/bootstrap/updater/live-ready, Pattern Mirror week/month et wrappers V18. Deep Vision reste volontairement une image VLM checkpointée par appel, pas re-fenêtrée artificiellement.
+- [x] Politique de frontière distincte : `length` sur feuilles de preuves ⇒ subdiviser les capsules ; `length` sur une **fusion** ⇒ remonter à l'adaptateur et diviser les schémas/moteurs. Détection de fan-in sans progrès ; aucun arbre de douze fusions identiques.
+- [x] Tests ciblés au point de pause : **43 verts** (`test_e64c_executor.py` + `test_e64f_brain2_blocks.py`) et `py_compile` vert sur `brain2_strict_v13_2.py`, projection, exécuteur et hiérarchie. Validation élargie avant commit : **98 passed** (E64 A–F, E37, budget Ollama, longitudinal, multi-session CloseDay), 2 warnings SWIG de dépréciation.
+
+**Preuve réelle acquise, mais à ne pas confondre avec le gate final :**
+
+- [x] Les 12 packs locaux ont atteint `completed` sur Qwen3.5:9b/16k lors de la première exécution unique. Onze packs sont passés directement ; un run Qwen a dérivé jusqu'à `finish=length`, puis ses deux enfants ont couvert les six responsabilités. Aucun partiel promu.
+- [x] Première fenêtre globale : 10 capsules d'épisodes dans 10 463 tokens, sortie validée. Les capsules restantes et les fusions ont prouvé le déclenchement des subdivisions.
+- [ ] **Ne pas déclarer V13 réel terminé** : la fusion globale combinée a atteint `length`; le nouveau fallback par groupes de schémas a été testé avec faux client, mais le run 9B réel a été interrompu avant de prouver `roota/rootb`, matérialisation des six moteurs globaux et couverture finale des 12 capsules.
+- [ ] **Revalider la reprise stable** après le dernier correctif `_stable_episode_source_bundle` : lancer V13 une fois avec un seul processus, puis une seconde fois et prouver zéro nouvel appel local. Le dernier `profiles[...] is None` provenait d'un `return` déplacé pendant l'édition ; corrigé et couvert, mais pas rejoué en réel après la pause.
+- [ ] Les mesures globales entre 01:24 et 01:52 ne sont **pas** des benchmarks : interrompre le wrapper PowerShell a laissé trois Python orphelins solliciter Ollama et écrire des checkpoints simultanément. Ils ont été tués ; aucun processus Python ne tournait au moment de la pause. La DB scratch reste utile pour l'audit/reprise grâce aux clés exactes, mais faire une exécution fraîche séparée pour la performance.
+
+**Ordre obligatoire pour le prochain agent :**
+
+1. [ ] Rejouer les 43 tests ciblés, puis la suite E64/V13 élargie déjà utilisée auparavant ; ne lancer aucun nouveau média.
+2. [ ] Vérifier `Get-Process python` et n'avoir qu'un seul runner. Reprendre `tools/harness/_run/harness_memory.db` en phase post-stop ; ne jamais lancer deux writers sur cette DB.
+3. [ ] Finir le pack global réel : attendre la séparation par schémas, vérifier chaque moteur transversal, `night_llm_coverage_v19.ok=1`, 12/12 capsules, zéro missing/quarantaine finale.
+4. [ ] Relancer immédiatement V13 sur la même entrée et prouver la reprise : zéro appel Ollama local/global supplémentaire et aucune ligne métier doublée.
+5. [ ] Exécuter ensuite seulement le flux V14/post-stop (vague 2), puis coordination/Life Model/longitudinal/live-ready (vague 3). Vérifier les manifests à chaque frontière avant le stage suivant ; corriger le premier vrai échec, pas contourner un moteur.
+6. [ ] Lancer le CloseDay/harness complet jusqu'à `completed`, puis seulement le dashboard. Inspecter épisodes/personnes/événements vidéo/Life Model/prédictions/preuves ; ne pas présenter le dashboard d'une nuit partielle.
+7. [ ] Mesurer sur une exécution fraîche : temps EpisodeBuilder, V13 local, V13 global, V14, Life Model/longitudinal. Objectif de conception : **1 h de capture ≤ 1 h de consolidation** ; la fixture 5 min doit rester proche du temps de capture, sans sampling cognitif.
 
 ### E64-F0 — Frontière fermeture révélée avant le premier run F réel
 

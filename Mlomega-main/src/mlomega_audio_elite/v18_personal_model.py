@@ -81,7 +81,11 @@ def install(module: Any) -> dict[str, Any]:
         live_ready:dict[str,Any]
         error:str|None=None
         if use_llm:
-            live_ready,error=module.synthesize_live_ready_model(raw,timeout=timeout)
+            live_ready,error=module.synthesize_live_ready_model(
+                raw,timeout=timeout,person_id=person_id,
+                package_date=now_iso()[:10],
+                source_ref=stable_id("live_ready_input",person_id,live_session_id or "global",now_iso()[:10]),
+            )
             status="active" if not error else "quarantined_llm_error"
         else:
             live_ready={"llm_required":True,"raw_feed_available":True,"reason":"use_llm=false"}

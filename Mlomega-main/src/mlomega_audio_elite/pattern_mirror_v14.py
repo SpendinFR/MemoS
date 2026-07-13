@@ -248,8 +248,22 @@ def _hash_payload(payload: Any) -> str:
     return sha256_bytes(json_dumps(payload).encode("utf-8"))
 
 
-def _llm_json(system: str, payload: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
-    data = OllamaJsonClient().require_json(system, json_dumps(payload), schema_hint=schema, timeout=360)
+def _llm_json(
+    system: str, payload: dict[str, Any], schema: dict[str, Any],
+    *, stage_context: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    client = OllamaJsonClient()
+    if stage_context:
+        from .night_orchestrator import run_hierarchical_json
+        return run_hierarchical_json(
+            stage_name=stage_context["stage_name"],
+            person_id=stage_context["person_id"],
+            package_date=stage_context["package_date"],
+            source_ref=stage_context["source_ref"],
+            system=system, payload=payload, schema=schema,
+            timeout=360.0, client=client,
+        )
+    data = client.require_json(system, json_dumps(payload), schema_hint=schema, timeout=360)
     if not isinstance(data, dict):
         raise RuntimeError("V14 Pattern Mirror returned non-object JSON")
     return data
@@ -561,6 +575,8 @@ def _bundle(con, *, conversation_id: str | None, person_id: str, limit: int = 12
             marks = ",".join("?" for _ in active_ids)
             conversations = _many(con, f"SELECT * FROM conversations WHERE conversation_id IN ({marks}) ORDER BY started_at DESC, created_at DESC LIMIT ?", tuple(active_ids) + (limit,))
             turns = _many(con, f"SELECT turn_id, conversation_id, idx, person_id, speaker_label, start_s, end_s, text, metadata_json FROM turns WHERE conversation_id IN ({marks}) ORDER BY conversation_id, idx LIMIT ?", tuple(active_ids) + (limit * 3,))
+    from .brain2_episode_windowing import cognitive_prompt_turns
+    turns = cognitive_prompt_turns(turns)
     conv_ids = [c.get("conversation_id") for c in conversations if c.get("conversation_id")]
     conv_placeholders = ",".join("?" for _ in conv_ids) or "''"
     return {
@@ -857,7 +873,16 @@ def run_pattern_mirror(conversation_id: str | None = None, *, person_id: str | N
             "schema": MIRROR_SCHEMA,
         }
         try:
-            out = _llm_json("Tu es le V14 Pattern Mirror strict. Réponds uniquement en JSON valide.", payload, MIRROR_SCHEMA)
+            out = _llm_json(
+                "Tu es le V14 Pattern Mirror strict. Réponds uniquement en JSON valide.",
+                payload, MIRROR_SCHEMA,
+                stage_context={
+                    "stage_name": "v14_pattern_mirror",
+                    "person_id": person_id,
+                    "package_date": now[:10],
+                    "source_ref": conversation_id or f"{person_id}:all",
+                },
+            )
             status = "ok"; err = None
         except Exception as exc:
             out = {"error": str(exc), "mirror_cards": [], "confidence": 0.0}
@@ -979,7 +1004,16 @@ def run_periodic_mirror(*, person_id: str | None = None, period: str = "day", pe
             "v14_digest": pattern_mirror_digest(person_id=person_id, limit=60),
             "schema": PERIODIC_SCHEMA,
         }
-        out = _llm_json("Tu es V14 periodic Pattern Mirror. Réponds uniquement en JSON valide.", payload, PERIODIC_SCHEMA)
+        out = _llm_json(
+            "Tu es V14 periodic Pattern Mirror. Réponds uniquement en JSON valide.",
+            payload, PERIODIC_SCHEMA,
+            stage_context={
+                "stage_name": f"v14_periodic_mirror_{period}",
+                "person_id": person_id,
+                "package_date": str(end or now)[:10],
+                "source_ref": f"{person_id}:{period}:{start}:{end}",
+            },
+        )
         snap = out.get("periodic_snapshot") or {}
         if not isinstance(snap, dict) or not snap.get("overall_reading"):
             raise RuntimeError("V14 periodic mirror returned no periodic_snapshot.overall_reading")

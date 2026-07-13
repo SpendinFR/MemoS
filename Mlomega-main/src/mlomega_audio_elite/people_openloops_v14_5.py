@@ -180,8 +180,22 @@ def _safe_json(value: Any, default: Any = None) -> Any:
     return json_loads(str(value), default if default is not None else {})
 
 
-def _llm_json(system: str, payload: dict[str, Any], schema: dict[str, Any], timeout: int = 420) -> dict[str, Any]:
-    data = OllamaJsonClient().require_json(system, json_dumps(payload), schema_hint=schema, timeout=timeout)
+def _llm_json(
+    system: str, payload: dict[str, Any], schema: dict[str, Any],
+    timeout: int = 420, *, stage_context: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    client = OllamaJsonClient()
+    if stage_context:
+        from .night_orchestrator import run_hierarchical_json
+        return run_hierarchical_json(
+            stage_name=stage_context["stage_name"],
+            person_id=stage_context["person_id"],
+            package_date=stage_context["package_date"],
+            source_ref=stage_context["source_ref"],
+            system=system, payload=payload, schema=schema,
+            timeout=float(timeout), client=client,
+        )
+    data = client.require_json(system, json_dumps(payload), schema_hint=schema, timeout=timeout)
     if not isinstance(data, dict):
         raise RuntimeError("Brain2 V14.5 returned non-object JSON")
     return data
@@ -416,7 +430,8 @@ def _conversation_payload(con, conversation_id: str, *, limit_turns: int = 160) 
     conv = con.execute("SELECT * FROM conversations WHERE conversation_id=?", (conversation_id,)).fetchone()
     if not conv:
         raise ValueError(f"conversation introuvable: {conversation_id}")
-    turns = _many(con, "SELECT * FROM turns WHERE conversation_id=? ORDER BY idx LIMIT ?", (conversation_id, limit_turns))
+    from .brain2_episode_windowing import cognitive_prompt_turns
+    turns = cognitive_prompt_turns(_many(con, "SELECT * FROM turns WHERE conversation_id=? ORDER BY idx LIMIT ?", (conversation_id, limit_turns)))
     speaker_matches = _many(con, "SELECT * FROM speaker_matches WHERE conversation_id=? ORDER BY created_at", (conversation_id,))
     try:
         voice_observations = _many(con, "SELECT * FROM voice_observations WHERE conversation_id=? ORDER BY created_at", (conversation_id,))
@@ -479,7 +494,16 @@ def analyze_people_identity_hypotheses(conversation_id: str, *, person_id: str |
         }
     run_id = stable_id("v145people", conversation_id, person_id, now)
     try:
-        out = _llm_json("Tu es le People Identity Analyst strict. Réponds en JSON valide uniquement.", payload, IDENTITY_SCHEMA)
+        out = _llm_json(
+            "Tu es le People Identity Analyst strict. Réponds en JSON valide uniquement.",
+            payload, IDENTITY_SCHEMA,
+            stage_context={
+                "stage_name": "v14_people_identity",
+                "person_id": person_id,
+                "package_date": now[:10],
+                "source_ref": conversation_id,
+            },
+        )
         status = "ok"
         error = None
     except Exception as exc:
@@ -627,7 +651,16 @@ def track_personal_open_loops(conversation_id: str, *, person_id: str | None = N
         }
     run_id = stable_id("v145openlooprun", conversation_id, person_id, now)
     try:
-        out = _llm_json("Tu es le Personal Open Loop Solution Tracker strict. Réponds en JSON valide uniquement.", payload, OPEN_LOOP_SCHEMA)
+        out = _llm_json(
+            "Tu es le Personal Open Loop Solution Tracker strict. Réponds en JSON valide uniquement.",
+            payload, OPEN_LOOP_SCHEMA,
+            stage_context={
+                "stage_name": "v14_people_open_loops",
+                "person_id": person_id,
+                "package_date": now[:10],
+                "source_ref": conversation_id,
+            },
+        )
         status = "ok"
         error = None
     except Exception as exc:

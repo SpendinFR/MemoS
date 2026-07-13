@@ -324,6 +324,74 @@ journée plusieurs jours. Correction de fond suivante : boucle moteur→batch
 d'épisodes token-aware, résultats owner/episode-scopés, moteurs psychologiques non
 appliqués aux seuls événements capteur, sans supprimer les tables ni les preuves.
 
+### Mise à jour OBS-20 — refonte code faite, gate réel encore ouvert (2026-07-13)
+
+La refonte Codex remplace finalement la matrice par un pack **par épisode humain**,
+plus cohérent que moteur→batches : même preuve sérialisée une fois, tous les moteurs
+applicables présents sous des schémas séparés, subdivision par responsabilités si
+la sortie dérive. EpisodeBuilder v5 : 12 épisodes humains, 132 atomes capteur routés
+vers Vision/WorldBrain/Silent Life, 1 407 refs vision toujours couvertes. Première
+preuve réelle : 12 packs locaux `completed`; 11 directs, un subdivisé en deux.
+Cas difficile : 6 836→5 128 tokens et 104,1→28,75 s en 9B/16k, sans champ/moteur
+supprimé. Le statut reste ouvert tant que global V13, V14, Life Model et CloseDay
+ne sont pas verts sur une exécution unique.
+
+## OBS-21 — Un checkpoint ignorait le contexte commun rendu (CORRIGÉ — 2026-07-13)
+
+`night_llm_windows_v19.input_digest` venait des `PlanUnit` seulement. Modifier le
+bundle commun, le prior ou la projection sans changer les unités pouvait reprendre
+une ancienne sortie `completed` en 0,04 s : faux vert. `run_windows` rend maintenant
+la requête avant le lookup, digère sa forme exacte et combine ce digest avec celui
+du plan. Test : mêmes unités/scope + shared context différent ⇒ nouvelle clé et
+nouvel appel ; même contexte ⇒ reprise sans appel.
+
+## OBS-22 — Appel V13 direct pouvait utiliser 4B/4k avec un budget 16k (CORRIGÉ — 2026-07-13)
+
+Le modèle et `num_ctx` sont choisis selon le `ContextVar runtime_phase`, pas une
+variable shell arbitraire. Un benchmark direct hors `phase(post_stop)` a chargé
+`qwen3.5:4b`, contexte 4 096, alors que le planner acceptait 6 836 tokens : mesure
+invalide et risque de prompt tronqué par le provider. Les runners V13 construisent
+et appellent désormais le client sous `post_stop_brain2_v13`. `ollama ps`/`api/ps`
+a confirmé ensuite Qwen3.5:9b, contexte 16 384. Garder le modèle en VRAM ne garde
+aucun historique de prompt : les appels restent stateless et `think=false`.
+
+## OBS-23 — V13 se nourrissait de ses propres tables matérialisées (CORRIGÉ EN CODE, REPRISE RÉELLE OUVERTE)
+
+`_episode_bundle` expose les tables `situations/states/thoughts/causes/...`. Après
+un pack réussi, le prochain build les relisait dans son bundle source, changeait le
+hash et rappelait Ollama ; les nouveaux writers modifiaient encore l'entrée. La
+reprise n'était donc pas stable. `_stable_episode_source_bundle` garde seulement
+épisode/conversation/tours/contexte et des slots dérivés vides ; les dépendances
+circulent exclusivement dans `prior_engine_outputs`. Test ciblé vert. Le dernier
+échec `profiles[...] is None` venait de l'insertion mécanique de cette fonction
+avant le return de `_episode_evidence_profile`; return replacé et test total ajouté.
+À prouver encore : un run V13 réel, puis le même run immédiatement, zéro appel et
+zéro ligne métier supplémentaire.
+
+## OBS-24 — Une fusion full-schema pouvait subdiviser sans réduire le problème (CORRIGÉ EN CODE, RUN GLOBAL OUVERT)
+
+Le runner hiérarchique divisait les **entrées** sur tout `finish=length`, y compris
+au merge. Or chaque entrée de merge est déjà une sortie full-schema : créer deux
+fusions full-schema puis les refusionner peut reproduire le même JSON jusqu'à la
+profondeur maximale. Politique séparée : feuilles de preuves ⇒ subdivision ; merge
+⇒ `subdivide_on_length=False`, quarantaine/signal immédiat au caller, puis split des
+responsabilités `(engine,groupe_de_champs)`. Détection supplémentaire si le fan-in
+ne diminue pas. Tests faux LLM verts, y compris reprise d'un ancien parent
+`subdivided`. Preuve réelle partielle : fenêtre globale 10 capsules/10 463 tokens
+verte ; schéma combiné a atteint `length`. Le split réel par schémas et la
+couverture finale 12/12 restent le premier travail du prochain agent.
+
+## Incident de validation 2026-07-13 — timings concurrents NON AUTORITAIRES
+
+Trois interruptions du wrapper PowerShell ont laissé leurs enfants Python
+continuer en arrière-plan. Plusieurs anciennes versions ont alors sollicité le
+même Ollama et écrit des checkpoints dans la même DB entre 01:24 et 01:52. Les
+processus ont été identifiés par heure/PID puis arrêtés ; aucun Python ne tournait
+à la pause. Les clés exactes empêchent leurs outputs d'anciens inputs de créditer
+le run courant, mais ces timings ne mesurent pas la production. Pour la suite :
+un seul runner, ne jamais interrompre sans tuer l'enfant, DB actuelle pour reprise
+fonctionnelle puis DB fraîche séparée pour benchmark.
+
 ## Notes that are NOT bugs (expected, documented so future runs don't chase them)
 
 - **`ai_ready=false` / `/health` 200 with `pairing_ready=true`.** Expected on a

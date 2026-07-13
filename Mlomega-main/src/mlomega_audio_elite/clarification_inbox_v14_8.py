@@ -174,8 +174,22 @@ def _default_user(con) -> str:
     return row["person_id"] if row else "me"
 
 
-def _llm_json(system: str, payload: dict[str, Any], schema: dict[str, Any], timeout: int = 420) -> dict[str, Any]:
-    data = OllamaJsonClient().require_json(system, json_dumps(payload), schema_hint=schema, timeout=timeout)
+def _llm_json(
+    system: str, payload: dict[str, Any], schema: dict[str, Any],
+    timeout: int = 420, *, stage_context: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    client = OllamaJsonClient()
+    if stage_context:
+        from .night_orchestrator import run_hierarchical_json
+        return run_hierarchical_json(
+            stage_name=stage_context["stage_name"],
+            person_id=stage_context["person_id"],
+            package_date=stage_context["package_date"],
+            source_ref=stage_context["source_ref"],
+            system=system, payload=payload, schema=schema,
+            timeout=float(timeout), client=client,
+        )
+    data = client.require_json(system, json_dumps(payload), schema_hint=schema, timeout=timeout)
     if not isinstance(data, dict):
         raise RuntimeError("Brain2 V14.8 returned non-object JSON")
     return data
@@ -368,6 +382,32 @@ def run_clarification_inbox(conversation_id: str | None = None, *, person_id: st
         person_id = person_id or _default_user(con)
         policy = get_clarification_policy(person_id)["policy"]
         candidates = _collect_candidates(con, person_id=person_id, conversation_id=conversation_id, limit=limit)
+    actionable_keys = {
+        "pending_voice_identity_hypotheses", "relationship_hypotheses",
+        "people_context_profiles", "active_questions", "personal_open_loops",
+        "interpersonal_hypotheses", "interventions_needing_feedback",
+        "blindspots_and_open_questions",
+    }
+    actionable_count = sum(
+        len(value) for key, value in candidates.items()
+        if key in actionable_keys and isinstance(value, list)
+    )
+    if actionable_count == 0:
+        data = {"clarification_items": [], "reason": "no_actionable_candidates"}
+        with connect() as con:
+            upsert(con, "v14_8_clarification_runs", {
+                "run_id": run_id, "conversation_id": conversation_id,
+                "person_id": person_id, "trigger_type": trigger_type,
+                "status": "ok", "candidate_count": 0, "queued_count": 0,
+                "watching_count": 0, "skipped_count": 0, "error_text": None,
+                "qwen_output_json": json_dumps(data), "created_at": now,
+            }, "run_id")
+            con.commit()
+        return {
+            "version": V14_8_VERSION, "run_id": run_id,
+            "person_id": person_id, "queued": 0, "watching": 0,
+            "skipped": 0, "llm_calls": 0,
+        }
     try:
         payload = {
             "version": V14_8_VERSION,
@@ -383,6 +423,12 @@ def run_clarification_inbox(conversation_id: str | None = None, *, person_id: st
             payload,
             CLARIFICATION_SCHEMA,
             timeout=420,
+            stage_context={
+                "stage_name": "v14_clarification_inbox",
+                "person_id": person_id,
+                "package_date": now[:10],
+                "source_ref": conversation_id or f"{person_id}:global",
+            },
         )
         items = data.get("clarification_items") if isinstance(data.get("clarification_items"), list) else []
         queued = watching = skipped = 0

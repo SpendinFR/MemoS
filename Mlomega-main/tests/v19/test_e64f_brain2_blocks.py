@@ -9,6 +9,10 @@ and no close-day code is touched here.
 
 from __future__ import annotations
 
+import copy
+import json
+import sqlite3
+
 import pytest
 
 from mlomega_audio_elite.night_orchestrator import (
@@ -183,3 +187,344 @@ def test_dynamic_window_schema_overrides_adapter_default():
         output_budget=333,
     )
     assert client.last["schema_hint"] == {"task_field": []}
+
+
+def test_sensor_turns_are_routed_without_removing_human_psychological_evidence():
+    from mlomega_audio_elite.brain2_episode_windowing import (
+        _partition_cognitive_and_sensor_turns,
+    )
+
+    sensor = {
+        "turn_id": "vision-1", "text": "person detected",
+        "metadata_json": json.dumps({
+            "evidence_role": "system_observation_not_user_speech"
+        }),
+    }
+    human = {
+        "turn_id": "speech-1", "text": "je suis inquiet",
+        "metadata_json": json.dumps({
+            "evidence_role": "deep_audio_whisperx_pyannote_speechbrain_transcript"
+        }),
+    }
+    cognitive, routed = _partition_cognitive_and_sensor_turns([sensor, human])
+    assert [turn["turn_id"] for turn in cognitive] == ["speech-1"]
+    assert [turn["turn_id"] for turn in routed] == ["vision-1"]
+
+
+def test_whisper_word_arrays_are_projected_without_losing_alignment_proof():
+    from mlomega_audio_elite.brain2_episode_windowing import _prompt_turn
+
+    words = [
+        {"word": "bonjour", "start": 1.0, "end": 1.4, "score": 0.8},
+        {"word": "William", "start": 1.5, "end": 2.0, "score": 0.6},
+    ]
+    turn = {
+        "turn_id": "speech-1", "text": "bonjour William",
+        "metadata_json": json.dumps({
+            "kind": "deep_audio_transcript",
+            "evidence_role": "deep_audio_whisperx_pyannote_speechbrain_transcript",
+            "source": {
+                "words": words,
+                "source_event_ids": ["raw-1", "raw-2"],
+                "whisperx_metadata": {
+                    "segmentation_level": "atomic_utterance",
+                    "segmentation_version": "3.2.2",
+                    "whisperx_segment": {"words": words},
+                },
+            },
+        }),
+    }
+    projected = _prompt_turn(turn)
+    metadata = json.loads(projected["metadata_json"])
+    source = metadata["source"]
+    assert "words" not in source and "whisperx_metadata" not in source
+    assert source["word_alignment"]["count"] == 2
+    assert source["word_alignment"]["start"] == 1.0
+    assert source["word_alignment"]["end"] == 2.0
+    assert source["source_event_count"] == 2
+    assert "digest" not in source["word_alignment"]
+    assert projected["text"] == "bonjour William"
+
+
+def test_v13_engine_batches_by_local_index_and_keeps_every_episode_output():
+    from mlomega_audio_elite.brain2_strict_v13_2 import _run_engine_episode_batches
+
+    con = sqlite3.connect(":memory:")
+
+    class BatchLLM:
+        model = "fake-batch"
+
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, prompt, *, output_budget):
+            self.calls += 1
+            body = json.loads(prompt["prompt"])
+            schema = body["task_schema"]
+            return LLMCallResult(ok=True, data={
+                "results": [
+                    {"task_index": task["task_index"], "output": copy.deepcopy(schema)}
+                    for task in body["tasks"]
+                ]
+            })
+
+    llm = BatchLLM()
+    outputs = _run_engine_episode_batches(
+        con,
+        engine="context_resolver",
+        conversation_id="conv1",
+        person_id="me",
+        package_date="2026-07-13",
+        tasks={
+            f"ep{i}": ({"episode": {"episode_id": f"ep{i}"}}, {})
+            for i in range(3)
+        },
+        window_llm=llm,
+        context_window=16000,
+        output_budget=1000,
+    )
+    assert set(outputs) == {"ep0", "ep1", "ep2"}
+    assert all("situation" in output for output in outputs.values())
+    assert llm.calls == 2
+
+
+def test_v13_episode_pack_serializes_bundle_once_and_keeps_all_engines():
+    from mlomega_audio_elite.brain2_strict_v13_2 import _run_episode_engine_pack
+    from mlomega_audio_elite.brain2_complete_v13 import ENGINE_SCHEMAS
+
+    con = sqlite3.connect(":memory:")
+
+    class PackLLM:
+        model = "fake-pack"
+
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, prompt, *, output_budget):
+            self.calls += 1
+            body = json.loads(prompt["prompt"])
+            return LLMCallResult(ok=True, data={
+                "outputs": copy.deepcopy(body["output_schemas"])
+            })
+
+    llm = PackLLM()
+    outputs = _run_episode_engine_pack(
+        con,
+        episode_id="ep1",
+        conversation_id="conv1",
+        person_id="me",
+        package_date="2026-07-13",
+        bundle={"episode": {"episode_id": "ep1"}, "turns": [{"text": "bonjour"}]},
+        prior={},
+        engines=["capture_engine", "language_signature_engine", "context_resolver"],
+        window_llm=llm,
+        context_window=16000,
+        output_budget=2000,
+    )
+    assert set(outputs) == {
+        "capture_engine", "language_signature_engine", "context_resolver"
+    }
+    for engine, output in outputs.items():
+        assert set(ENGINE_SCHEMAS[engine]).issubset(output)
+    assert llm.calls == 1
+
+
+def test_v13_packed_source_bundle_never_feeds_materialized_outputs_back_in():
+    from mlomega_audio_elite.brain2_strict_v13_2 import _stable_episode_source_bundle
+
+    source = {
+        "episode": {"episode_id": "ep1"},
+        "conversation": {"conversation_id": "conv1"},
+        "turns": [{"turn_id": "t1", "text": "preuve"}],
+        "context_scope": {"episode_id": "ep1"},
+        "context_addenda": {"vision": "stable"},
+        "situations": [{"situation_id": "derived"}],
+        "states": [{"state_id": "derived"}],
+        "thoughts": [{"thought_id": "derived"}],
+        "causes": [{"edge_id": "derived"}],
+        "patterns": [{"pattern_id": "derived"}],
+    }
+    stable = _stable_episode_source_bundle(source)
+    assert {"episode", "conversation", "turns", "context_scope", "context_addenda"} <= set(stable)
+    assert stable["turns"][0]["turn_id"] == "t1"
+    assert stable["situations"] == [] and stable["states"] == []
+    assert stable["causes"] == [] and stable["patterns"] == []
+
+
+def test_v13_episode_evidence_profile_is_total_and_routes_sensor_rows():
+    from mlomega_audio_elite.brain2_strict_v13_2 import _episode_evidence_profile
+
+    con = sqlite3.connect(":memory:")
+    con.row_factory = sqlite3.Row
+    con.executescript("""
+        CREATE TABLE turns(
+            turn_id TEXT PRIMARY KEY, idx INTEGER, person_id TEXT,
+            speaker_label TEXT, metadata_json TEXT
+        );
+        CREATE TABLE episode_evidence(episode_id TEXT, turn_id TEXT);
+    """)
+    con.execute(
+        "INSERT INTO turns VALUES(?,?,?,?,?)",
+        ("human", 0, "me", "SPEAKER_00", json.dumps({
+            "evidence_role": "deep_audio_whisperx_pyannote_speechbrain_transcript"
+        })),
+    )
+    con.execute(
+        "INSERT INTO turns VALUES(?,?,?,?,?)",
+        ("sensor", 1, None, "VISION", json.dumps({
+            "evidence_role": "system_observation_not_user_speech"
+        })),
+    )
+    con.executemany(
+        "INSERT INTO episode_evidence VALUES(?,?)",
+        [("ep1", "human"), ("ep1", "sensor")],
+    )
+    profile = _episode_evidence_profile(con, "ep1")
+    assert profile["has_human_evidence"] is True
+    assert profile["sensor_only"] is False
+    assert profile["human_speaker_count"] == 1
+    assert profile["evidence_turn_ids"] == ["human", "sensor"]
+
+
+def test_v13_global_hierarchy_keeps_every_capsule_and_engine_contract():
+    from mlomega_audio_elite.brain2_strict_v13_2 import _run_global_engine_hierarchy
+    from mlomega_audio_elite.brain2_complete_v13 import ENGINE_SCHEMAS
+
+    class GlobalClient:
+        model = "fake-global"
+
+        def __init__(self):
+            self.calls = 0
+
+        def generate_json(self, system, prompt, schema_hint, timeout, *, max_output_tokens, format_schema=None):
+            self.calls += 1
+            return _FakeResult(ok=True, data=copy.deepcopy(schema_hint))
+
+    con = sqlite3.connect(":memory:")
+    client = GlobalClient()
+    engines = ["pattern_miner", "prediction_engine"]
+    outputs = _run_global_engine_hierarchy(
+        con,
+        conversation_id="conv1",
+        person_id="me",
+        package_date="2026-07-13",
+        conversation={"conversation_id": "conv1"},
+        episodes=[
+            {"episode_id": "ep1", "episode_type": "planning", "situation_summary": "plan"},
+            {"episode_id": "ep2", "episode_type": "conflict", "situation_summary": "désaccord"},
+        ],
+        profiles={
+            "ep1": {"has_human_evidence": True, "evidence_turn_ids": ["t1"]},
+            "ep2": {"has_human_evidence": True, "evidence_turn_ids": ["t2"]},
+        },
+        outputs_by_episode={
+            "ep1": {"context_resolver": {"evidence": ["t1"]}},
+            "ep2": {"context_resolver": {"evidence": ["t2"]}},
+        },
+        engines=engines,
+        client=client,
+    )
+    assert set(outputs) == set(engines)
+    for engine in engines:
+        assert set(ENGINE_SCHEMAS[engine]).issubset(outputs[engine])
+    assert client.calls == 1
+
+
+def test_v13_global_hierarchy_splits_output_responsibilities_after_length():
+    from mlomega_audio_elite.brain2_strict_v13_2 import _run_global_engine_hierarchy
+
+    class SplitClient:
+        model = "fake-global-split"
+
+        def __init__(self):
+            self.calls = 0
+
+        def generate_json(self, system, prompt, schema_hint, timeout, *, max_output_tokens, format_schema=None):
+            self.calls += 1
+            outputs = schema_hint["outputs"]
+            if len(outputs) > 1:
+                return _FakeResult(ok=False, finish_reason="length")
+            return _FakeResult(ok=True, data=copy.deepcopy(schema_hint))
+
+    client = SplitClient()
+    outputs = _run_global_engine_hierarchy(
+        sqlite3.connect(":memory:"),
+        conversation_id="conv-split", person_id="me",
+        package_date="2026-07-13", conversation={},
+        episodes=[{"episode_id": "ep1", "episode_type": "planning"}],
+        profiles={"ep1": {"has_human_evidence": True, "evidence_turn_ids": ["t1"]}},
+        outputs_by_episode={"ep1": {"context_resolver": {"evidence": ["t1"]}}},
+        engines=["pattern_miner", "prediction_engine"],
+        client=client,
+    )
+    assert set(outputs) == {"pattern_miner", "prediction_engine"}
+    assert client.calls == 3  # combined attempt, then one call per responsibility
+
+
+def test_hierarchical_merge_fails_fast_when_subdivision_cannot_reduce_fan_in():
+    from mlomega_audio_elite.night_orchestrator import run_hierarchical_json
+
+    class MergeClient:
+        model = "fake-no-progress"
+
+        def generate_json(self, system, prompt, schema_hint, timeout, *, max_output_tokens, format_schema=None):
+            body = json.loads(prompt)
+            partials = ((body.get("input") or {}).get("partial_outputs") or [])
+            if body.get("level", 0) > 0 and len(partials) > 1:
+                return _FakeResult(ok=False, finish_reason="length")
+            return _FakeResult(ok=True, data=copy.deepcopy(schema_hint))
+
+    payload = {
+        "mission": "analyse",
+        "evidence": [{"id": i, "text": "x" * 1200} for i in range(20)],
+    }
+    with pytest.raises(RuntimeError, match="(incomplete|merge)"):
+        run_hierarchical_json(
+            stage_name="no-progress", person_id="me", package_date="2026-07-13",
+            source_ref="fixture", system="SYS", payload=payload,
+            schema={"items": [], "confidence": 0.0}, timeout=1,
+            client=MergeClient(), context_window=4096, output_budget=512,
+            connection=sqlite3.connect(":memory:"),
+        )
+
+
+def test_hierarchical_json_windows_then_merges_with_final_source_coverage():
+    from mlomega_audio_elite.night_orchestrator import run_hierarchical_json
+
+    class SchemaClient:
+        model = "fake-hierarchy"
+
+        def __init__(self):
+            self.calls = 0
+
+        def generate_json(self, system, prompt, schema_hint, timeout, *, max_output_tokens, format_schema=None):
+            self.calls += 1
+            return _FakeResult(ok=True, data=copy.deepcopy(schema_hint))
+
+    con = sqlite3.connect(":memory:")
+    client = SchemaClient()
+    schema = {"items": [], "missing_context": [], "confidence": 0.0}
+    result = run_hierarchical_json(
+        stage_name="test_hierarchy",
+        person_id="me",
+        package_date="2026-07-13",
+        source_ref="fixture",
+        system="SYS",
+        payload={
+            "mission": "analyse",
+            "evidence": [{"id": i, "text": "x" * 900} for i in range(24)],
+            "schema": schema,
+        },
+        schema=schema,
+        timeout=1,
+        client=client,
+        context_window=4096,
+        output_budget=512,
+        connection=con,
+    )
+    assert set(result) == set(schema)
+    assert client.calls > 1
+    coverage = con.execute(
+        "SELECT expected_count,missing_count,ok FROM night_llm_coverage_v19 WHERE stage_name='test_hierarchy'"
+    ).fetchone()
+    assert coverage and coverage[0] == 24 and coverage[1:] == (0, 1)

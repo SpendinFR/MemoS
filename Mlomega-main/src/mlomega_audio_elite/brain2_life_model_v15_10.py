@@ -479,7 +479,14 @@ def collect_canonical_evidence(person_id: str, *, period_start: str | None = Non
         return feed
 
 
-def synthesize_canonical_life_model(raw_evidence: dict[str, Any], *, timeout: float = 180.0) -> tuple[dict[str, Any], str | None]:
+def synthesize_canonical_life_model(
+    raw_evidence: dict[str, Any],
+    *,
+    timeout: float = 180.0,
+    person_id: str | None = None,
+    package_date: str | None = None,
+    source_ref: str | None = None,
+) -> tuple[dict[str, Any], str | None]:
     try:
         client = OllamaJsonClient()
         system = (
@@ -489,7 +496,7 @@ def synthesize_canonical_life_model(raw_evidence: dict[str, Any], *, timeout: fl
             "Chaque élément doit citer les preuves fournies, les contre-preuves si présentes, les contextes où c'est faux/incertain, et une confidence. "
             "Si une conclusion n'a pas assez de preuves, place-la dans missing_evidence_for_magic ou do_not_infer_live_without. JSON strict uniquement."
         )
-        prompt = json_dumps({
+        payload = {
             "mission": "Compile Brain2 raw/deep evidence into canonical life-model tables for BrainLive. Think beyond examples: cigarette, negotiation, relationships, work, fatigue, ideas, routines, places, social timing, needs, future hooks.",
             "raw_evidence": raw_evidence,
             "hard_rules": [
@@ -500,8 +507,22 @@ def synthesize_canonical_life_model(raw_evidence: dict[str, Any], *, timeout: fl
                 "Prefer multiple competing hypotheses when needed.",
                 "Make outputs directly actionable for BrainLive H0/H1/H2.",
             ],
-        })
-        data = client.require_json(system, prompt, schema_hint=CANONICAL_SCHEMA, timeout=timeout)
+        }
+        if person_id:
+            from .night_orchestrator import run_hierarchical_json
+            data = run_hierarchical_json(
+                stage_name="life_model_bootstrap",
+                person_id=person_id,
+                package_date=str(package_date or now_iso())[:10],
+                source_ref=str(source_ref or f"{person_id}:life_model_bootstrap"),
+                system=system,
+                payload=payload,
+                schema=CANONICAL_SCHEMA,
+                timeout=timeout,
+                client=client,
+            )
+        else:
+            data = client.require_json(system, json_dumps(payload), schema_hint=CANONICAL_SCHEMA, timeout=timeout)
         return data, None
     except Exception as exc:
         return {"llm_required": True, "raw_evidence_available": True, "error": str(exc)}, str(exc)
@@ -669,7 +690,11 @@ def build_brain2_canonical_life_model(person_id: str, *, period_start: str | Non
         model = {"abstained": True, "reason": "missing_owner_proof"}
         status = "abstained_no_owner_evidence"
     elif use_llm:
-        model, error = synthesize_canonical_life_model(raw, timeout=timeout)
+        model, error = synthesize_canonical_life_model(
+            raw, timeout=timeout, person_id=person_id,
+            package_date=str(period_end or now_iso())[:10],
+            source_ref=stable_id("life_model_bootstrap_input", person_id, period_start, period_end),
+        )
         status = "llm_ready" if not error else "raw_ready_llm_required"
     else:
         model = {"llm_required": True, "raw_evidence_available": True, "reason": "use_llm=false"}

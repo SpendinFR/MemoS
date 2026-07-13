@@ -10,7 +10,7 @@ regex/keyword analyst and no evidence-only cognitive mode.
 
 import os
 from collections import Counter
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from .db import connect, init_db, upsert
 from .governance_v18 import DataAccessError, GovernanceError, ensure_v18_schema, strict_many, strict_one
@@ -24,6 +24,7 @@ from .brain2_complete_v13 import COMPLETE_TARGETS, ENGINE_ORDER, ENGINE_TABLES, 
 from .llm_contracts_v15_18 import normalize_outcome_tracker, normalize_similar_case_score, normalize_calibration_rows, normalize_intervention_plan
 
 STRICT_VERSION = "13.2.0-brain2-strict-final"
+EPISODE_BUILD_VERSION = "13.2.0-e64-cognitive-routing-v5"
 
 _BRAIN2_STRICT_SYSTEM = (
     "Tu es un moteur local strict Brain 2.0. Tu remplis uniquement à partir des preuves fournies. "
@@ -410,24 +411,52 @@ def _episode_bundle(con, episode_id: str) -> dict[str, Any]:
     missing: list[str] = []
     if conv_id:
         start_id, end_id = ep.get("start_turn_id"), ep.get("end_turn_id")
-        bounds = strict_many(con, "SELECT turn_id,idx FROM turns WHERE conversation_id=? AND turn_id IN (?,?)", (conv_id, start_id, end_id), purpose="episode bounds") if (start_id or end_id) else []
-        by_id={str(row["turn_id"]):int(row["idx"]) for row in bounds}
-        lo=by_id.get(str(start_id)) if start_id else None
-        hi=by_id.get(str(end_id)) if end_id else None
-        if lo is None or hi is None:
-            evidence = strict_many(con, "SELECT turn_id FROM episode_evidence WHERE episode_id=? AND turn_id IS NOT NULL", (episode_id,), purpose="episode evidence")
-            evidence_ids=[str(r["turn_id"]) for r in evidence]
-            if evidence_ids:
-                marks=strict_many(con, "SELECT turn_id,idx FROM turns WHERE conversation_id=? AND turn_id IN (%s)" % ",".join("?" for _ in evidence_ids), (conv_id,*evidence_ids), purpose="episode evidence bounds")
-                indices=[int(r["idx"]) for r in marks]
-                if indices:
-                    lo,hi=min(indices),max(indices)
+        evidence = strict_many(
+            con,
+            "SELECT turn_id FROM episode_evidence WHERE episode_id=? AND turn_id IS NOT NULL",
+            (episode_id,), purpose="episode evidence",
+        )
+        evidence_ids = [str(row["turn_id"]) for row in evidence]
+        evidence_marks = strict_many(
+            con,
+            "SELECT turn_id,idx FROM turns WHERE conversation_id=? AND turn_id IN (%s)"
+            % ",".join("?" for _ in evidence_ids),
+            (conv_id, *evidence_ids), purpose="episode evidence bounds",
+        ) if evidence_ids else []
+        evidence_indices = [int(row["idx"]) for row in evidence_marks]
+        if evidence_indices:
+            # Every cited proof stays present. Context is local to each proof,
+            # rather than the entire interval between two distant boundaries
+            # that may contain unrelated episodes.
+            selected_indices = sorted({
+                idx
+                for evidence_idx in evidence_indices
+                for idx in range(max(0, evidence_idx - 2), evidence_idx + 3)
+            })
+            marks = ",".join("?" for _ in selected_indices)
+            turns = strict_many(
+                con,
+                f"SELECT turn_id,idx,speaker_label,person_id,start_s,end_s,text,metadata_json FROM turns WHERE conversation_id=? AND idx IN ({marks}) ORDER BY idx",
+                (conv_id, *selected_indices), purpose="episode evidence-local turns",
+            )
+        else:
+            bounds = strict_many(
+                con,
+                "SELECT turn_id,idx FROM turns WHERE conversation_id=? AND turn_id IN (?,?)",
+                (conv_id, start_id, end_id), purpose="episode bounds",
+            ) if (start_id or end_id) else []
+            by_id = {str(row["turn_id"]): int(row["idx"]) for row in bounds}
+            lo = by_id.get(str(start_id)) if start_id else None
+            hi = by_id.get(str(end_id)) if end_id else None
             if lo is None or hi is None:
                 missing.append("episode_turn_bounds_missing")
-                lo,hi=0,-1
-        lo,hi=min(lo,hi),max(lo,hi)
-        # Small visible context before/after; no accidental full transcript.
-        turns=strict_many(con, "SELECT turn_id,idx,speaker_label,person_id,start_s,end_s,text,metadata_json FROM turns WHERE conversation_id=? AND idx BETWEEN ? AND ? ORDER BY idx", (conv_id,max(0,lo-2),hi+2), purpose="episode local turns")
+                lo, hi = 0, -1
+            lo, hi = min(lo, hi), max(lo, hi)
+            turns = strict_many(
+                con,
+                "SELECT turn_id,idx,speaker_label,person_id,start_s,end_s,text,metadata_json FROM turns WHERE conversation_id=? AND idx BETWEEN ? AND ? ORDER BY idx",
+                (conv_id, max(0, lo - 2), hi + 2), purpose="episode local turns",
+            )
     def scoped(table: str, *, predicate: str = "episode_id=?", params: tuple[Any,...] = (episode_id,)) -> list[dict[str, Any]]:
         try:
             return strict_many(con, f"SELECT * FROM {table} WHERE {predicate} LIMIT 200", params, purpose=f"episode {table}")
@@ -452,17 +481,22 @@ def _episode_bundle(con, episode_id: str) -> dict[str, Any]:
                 patterns.append(obj)
     except DataAccessError as exc:
         missing.append(f"patterns: {exc}")
+    # Keep complete WhisperX/vision provenance in SQLite.  The LLM-facing
+    # projection preserves text, timing, speaker and alignment quality/digest,
+    # while removing duplicated word arrays and opaque source-ID lists.
+    from .brain2_episode_windowing import _prompt_turn
+    prompt_turns = [_prompt_turn(turn) for turn in turns]
     return {
         "episode": ep,
         "conversation": _compact_conversation_for_prompt(conv) if conv else None,
-        "turns": turns,
+        "turns": prompt_turns,
         "situations": direct["situation_episodes"], "interactions": direct["interaction_episodes"],
         "states": direct["internal_state_snapshots"], "thoughts": direct["thought_hypotheses"],
         "speech_acts": direct["speech_acts"], "intentions": direct["action_intentions"],
         "outcomes": direct["action_outcomes"], "choices": direct["choice_episodes"],
         "causes": causes, "contradictions": direct["contradiction_events"], "patterns": patterns,
         "missing_context": missing,
-        "context_scope": {"episode_id":episode_id,"conversation_id":conv_id,"turn_count":len(turns),"local_only":True},
+        "context_scope": {"episode_id":episode_id,"conversation_id":conv_id,"turn_count":len(prompt_turns),"local_only":True},
     }
 
 def _engine_prompt(
@@ -646,6 +680,779 @@ def _run_engine_partitioned(
     return merged
 
 
+_CONVERSATION_SCOPE_ENGINES = {
+    "pattern_miner",
+    "similar_case_retrieval",
+    "prediction_engine",
+    "simulation_engine",
+    "calibration_engine",
+    "intervention_engine",
+}
+
+_INTERNAL_STATE_TYPES = {
+    "emotional_reaction", "relationship_tension", "conflict", "avoidance",
+    "commitment", "self_reflection",
+}
+_SOCIAL_TYPES = {"relationship_tension", "conflict", "client_request"}
+_CONTRADICTION_TYPES = {
+    "relationship_tension", "conflict", "decision_point", "commitment",
+    "self_reflection",
+}
+_CHOICE_TYPES = {"decision_point", "planning", "commitment"}
+_OUTCOME_TYPES = {"decision_point", "planning", "commitment", "client_request"}
+
+
+def _metadata_mapping(value: Any) -> Mapping[str, Any]:
+    if isinstance(value, Mapping):
+        return value
+    if isinstance(value, str):
+        parsed = json_loads(value, {})
+        return parsed if isinstance(parsed, Mapping) else {}
+    return {}
+
+
+def _episode_evidence_profile(con, episode_id: str) -> dict[str, Any]:
+    rows = [dict(row) for row in con.execute(
+        """SELECT t.turn_id,t.person_id,t.speaker_label,t.metadata_json
+             FROM episode_evidence ee
+             JOIN turns t ON t.turn_id=ee.turn_id
+            WHERE ee.episode_id=? ORDER BY t.idx""",
+        (episode_id,),
+    ).fetchall()]
+    human_rows: list[dict[str, Any]] = []
+    for row in rows:
+        metadata = _metadata_mapping(row.get("metadata_json"))
+        if str(metadata.get("evidence_role") or "") != "system_observation_not_user_speech":
+            human_rows.append(row)
+    speakers = {
+        str(row.get("person_id") or row.get("speaker_label") or "")
+        for row in human_rows
+        if row.get("person_id") or row.get("speaker_label")
+    }
+    return {
+        "sensor_only": bool(rows) and not human_rows,
+        "has_human_evidence": bool(human_rows),
+        "human_speaker_count": len(speakers),
+        "evidence_turn_ids": [str(row["turn_id"]) for row in rows],
+    }
+
+
+def _stable_episode_source_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
+    """Freeze the source side of a local engine pack.
+
+    `_episode_bundle` also exposes already-materialized engine tables for legacy
+    single-engine callers. Feeding those rows back into the packed executor makes
+    its prompt change after every successful materialization. Packed engines pass
+    dependencies explicitly through `prior_engine_outputs`, so only immutable
+    episode evidence belongs in their shared bundle.
+    """
+    stable = {
+        key: bundle.get(key)
+        for key in (
+            "episode", "conversation", "turns", "missing_context",
+            "context_scope", "context_addenda",
+        )
+        if key in bundle
+    }
+    # Preserve the legacy prompt shape without feeding any materialized row
+    # back. This also lets the first clean run's validated checkpoints remain
+    # reusable after the tables have been populated.
+    for key in (
+        "situations", "interactions", "states", "thoughts", "speech_acts",
+        "intentions", "outcomes", "choices", "causes", "contradictions",
+        "patterns",
+    ):
+        stable[key] = []
+    return stable
+
+
+def _engine_applies_to_episode(
+    engine: str, episode: Mapping[str, Any], profile: Mapping[str, Any]
+) -> tuple[bool, str]:
+    if profile.get("sensor_only") or not profile.get("has_human_evidence"):
+        return False, "sensor_only_routed_to_vision_worldbrain_silent_life"
+    episode_type = str(episode.get("episode_type") or "other")
+    if engine == "episode_builder":
+        return False, "already_materialized_by_conversation_episode_builder"
+    if engine in {"capture_engine", "language_signature_engine"}:
+        return True, "human_audio_episode_batched_by_engine"
+    if engine == "context_resolver" or engine == "causality_engine":
+        return True, "human_narrative_episode"
+    if engine == "internal_state_engine":
+        return episode_type in _INTERNAL_STATE_TYPES, "episode_type_has_state_evidence"
+    if engine == "social_model_engine":
+        applies = int(profile.get("human_speaker_count") or 0) >= 2 or episode_type in _SOCIAL_TYPES
+        return applies, "multi_speaker_or_social_episode"
+    if engine == "contradiction_engine":
+        return episode_type in _CONTRADICTION_TYPES, "episode_type_can_support_contradiction"
+    if engine == "choice_model_engine":
+        return episode_type in _CHOICE_TYPES, "episode_type_can_support_choice"
+    if engine == "outcome_tracker":
+        return episode_type in _OUTCOME_TYPES, "episode_type_can_support_intention_or_outcome"
+    return False, "conversation_scope_engine"
+
+
+def _conversation_engine_bundle(
+    con,
+    conversation_id: str,
+    episodes: Sequence[Mapping[str, Any]],
+    profiles: Mapping[str, Mapping[str, Any]],
+    outputs_by_episode: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    from .brain2_episode_windowing import _prompt_turn
+
+    base = _conversation_bundle(con, conversation_id)
+    human_turn_ids = {
+        turn_id
+        for episode_id, profile in profiles.items()
+        if profile.get("has_human_evidence")
+        for turn_id in profile.get("evidence_turn_ids", [])
+    }
+    turns = [
+        _prompt_turn(turn)
+        for turn in (base.get("turns") or [])
+        if str(turn.get("turn_id") or "") in human_turn_ids
+    ]
+    episode_summaries = [
+        {
+            key: episode.get(key)
+            for key in (
+                "episode_id", "episode_type", "start_time", "end_time", "topic",
+                "situation_summary", "trigger_summary", "outcome_summary",
+                "unresolved_tension",
+            )
+        }
+        for episode in episodes
+        if profiles.get(str(episode.get("episode_id")), {}).get("has_human_evidence")
+    ]
+    return {
+        "analysis_scope": "conversation_human_evidence",
+        "conversation": base.get("conversation"),
+        "turns": turns,
+        "episodes": episode_summaries,
+        "sensor_route_manifest": {
+            "policy": "raw sensor evidence remains in Vision/WorldBrain/Silent Life",
+            "sensor_episode_count": sum(
+                1 for profile in profiles.values() if profile.get("sensor_only")
+            ),
+        },
+    }
+
+
+def _schema_field_groups(schema: Mapping[str, Any]) -> list[dict[str, Any]]:
+    common = {
+        name: schema[name]
+        for name in ("evidence", "counter_evidence", "confidence")
+        if name in schema
+    }
+    business = [name for name in schema if name not in common]
+    if not business:
+        return [dict(schema)]
+    size = 3 if len(business) > 3 else len(business)
+    return [
+        {**{name: schema[name] for name in business[i:i + size]}, **common}
+        for i in range(0, len(business), size)
+    ]
+
+
+def _run_engine_episode_batches(
+    con,
+    *,
+    engine: str,
+    conversation_id: str,
+    person_id: str,
+    package_date: str,
+    tasks: Mapping[str, tuple[dict[str, Any], dict[str, Any]]],
+    window_llm: Any | None = None,
+    context_window: int | None = None,
+    output_budget: int | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Run one engine over token-bounded episode batches, preserving every field."""
+    from .config import get_settings
+    from .night_orchestrator import (
+        ModelBudget, OllamaWindowLLM, PlanUnit, StageScope,
+        build_coverage_report, covered_refs_from_outputs_table,
+        estimate_tokens_for_text, run_windows,
+    )
+    from .night_orchestrator import checkpoint_store as cp
+    from .night_orchestrator.coverage import persist_coverage
+
+    if not tasks:
+        return {}
+    cfg = get_settings()
+    context_window = int(context_window or cfg.ollama_context_poststop)
+    if output_budget is None:
+        try:
+            output_budget = max(256, int(os.environ.get("MLOMEGA_POSTSTOP_LLM_MAX_OUTPUT_TOKENS", "4096")))
+        except ValueError:
+            output_budget = 4096
+    if window_llm is None:
+        try:
+            timeout = float(os.environ.get("MLOMEGA_V13_ENGINE_TIMEOUT", "180"))
+        except ValueError:
+            timeout = 180.0
+        from .runtime_v18_7 import phase as runtime_phase_context
+        with runtime_phase_context("post_stop_brain2_v13"):
+            window_llm = OllamaWindowLLM(system=_BRAIN2_STRICT_SYSTEM, timeout=timeout)
+    model = str(getattr(window_llm, "model", "injected-window-llm"))
+    merged: dict[str, dict[str, Any]] = {episode_id: {} for episode_id in tasks}
+    evidence: dict[str, list[Any]] = {episode_id: [] for episode_id in tasks}
+    counter: dict[str, list[Any]] = {episode_id: [] for episode_id in tasks}
+    confidences: dict[str, list[float]] = {episode_id: [] for episode_id in tasks}
+
+    for group_index, task_schema in enumerate(_schema_field_groups(ENGINE_SCHEMAS[engine])):
+        payload_by_id = {
+            episode_id: {
+                "episode_id": episode_id,
+                "bundle": bundle,
+                "prior_engine_outputs": prior,
+            }
+            for episode_id, (bundle, prior) in tasks.items()
+        }
+        units = [
+            PlanUnit(
+                ref_id=episode_id,
+                tokens=estimate_tokens_for_text(json_dumps(payload)) + 32,
+                content_digest=_hash_payload(payload),
+            )
+            for episode_id, payload in payload_by_id.items()
+        ]
+        schema_hint = {"results": [{"task_index": 0, "output": task_schema}]}
+
+        def render(window_units) -> dict[str, Any]:
+            ids = [unit.ref_id for unit in window_units]
+            indexed_tasks = [
+                {**payload_by_id[episode_id], "task_index": index}
+                for index, episode_id in enumerate(ids)
+            ]
+            prompt = _safe_prompt_payload({
+                "engine_name": engine,
+                "mission": "Exécute ce moteur Brain 2.0 séparément pour chaque tâche. Retourne exactement une sortie par task_index fourni; ne mélange jamais les preuves entre tâches.",
+                "evidence_role_policy": "Les observations système sont du contexte capteur, jamais une déclaration ou un état psychologique de William.",
+                "task_schema": task_schema,
+                "tasks": indexed_tasks,
+            })
+            return {"prompt": prompt, "schema_hint": schema_hint}
+
+        def normalize(value: Any, primary) -> Any:
+            if not isinstance(value, Mapping) or not isinstance(value.get("results"), list):
+                return None
+            expected_ids = [unit.ref_id for unit in primary]
+            found: dict[int, dict[str, Any]] = {}
+            for item in value["results"]:
+                if not isinstance(item, Mapping):
+                    continue
+                task_index = item.get("task_index")
+                output = item.get("output")
+                if (
+                    isinstance(task_index, int)
+                    and 0 <= task_index < len(expected_ids)
+                    and isinstance(output, Mapping)
+                ):
+                    found[task_index] = dict(output)
+            if set(found) != set(range(len(expected_ids))):
+                return None
+            return {"results": [
+                {"episode_id": expected_ids[index], "output": found[index]}
+                for index in range(len(expected_ids))
+            ]}
+
+        def validate(value: Any) -> bool:
+            if not isinstance(value, Mapping) or not isinstance(value.get("results"), list):
+                return False
+            required = set(task_schema)
+            return all(
+                isinstance(item, Mapping)
+                and isinstance(item.get("output"), Mapping)
+                and required.issubset(item["output"])
+                for item in value["results"]
+            )
+
+        def envelope(value: Any, primary) -> dict[str, Any]:
+            return {
+                "episode_ids": [unit.ref_id for unit in primary],
+                "result": value,
+                "schema_fields": list(task_schema),
+            }
+
+        empty_prompt = _safe_prompt_payload({
+            "engine_name": engine,
+            "mission": "Exécute ce moteur Brain 2.0 séparément pour chaque tâche.",
+            "task_schema": task_schema,
+            "tasks": [],
+        })
+        scoped_stage = f"brain2_engine_batch:{conversation_id}:{engine}:g{group_index}"
+        from .runtime_v18_7 import phase as runtime_phase_context
+        with runtime_phase_context("post_stop_brain2_v13"):
+            stage = run_windows(
+                units,
+                con=con,
+                scope=StageScope(
+                    person_id=person_id,
+                    package_date=package_date,
+                    stage_name=scoped_stage,
+                    adapter_version="e64f-v13-engine-batch-v5-projected",
+                    prompt_version=f"{STRICT_VERSION}:{engine}:g{group_index}",
+                    model=model,
+                ),
+                llm=window_llm,
+                budget=ModelBudget(
+                    context_window=context_window,
+                    output_reserve=int(output_budget),
+                    safety_margin=768,
+                ),
+                render=render,
+                validate=validate,
+                normalize_output=normalize,
+                decorate_output=envelope,
+                target_units=2,
+                overlap=0,
+                prompt_overhead_tokens=estimate_tokens_for_text(empty_prompt),
+                sleeper=lambda _seconds: None,
+            )
+        current_keys = {window.window_key for window in stage.windows}
+        covered = covered_refs_from_outputs_table(
+            con,
+            person_id=person_id,
+            package_date=package_date,
+            stage_name=scoped_stage,
+            window_keys=current_keys,
+            extract_refs=lambda stored: stored.get("episode_ids", [])
+            if isinstance(stored, Mapping) else (),
+        )
+        report = build_coverage_report(
+            stage_name=scoped_stage,
+            expected_ids=tasks,
+            covered_refs=covered,
+        )
+        persist_coverage(
+            con, person_id=person_id, package_date=package_date,
+            source_ref=f"{conversation_id}:{engine}:g{group_index}", report=report,
+        )
+        con.commit()
+        if not stage.all_completed or not report.ok:
+            raise RuntimeError(
+                f"{scoped_stage} incomplete: missing={len(report.missing)} "
+                f"states={[window.state for window in stage.windows]}"
+            )
+        for stored in cp.load_outputs(
+            con, person_id=person_id, package_date=package_date,
+            stage_name=scoped_stage, window_keys=current_keys,
+        ):
+            envelope_value = stored.get("output") if isinstance(stored, Mapping) else None
+            result = envelope_value.get("result") if isinstance(envelope_value, Mapping) else None
+            for item in (result.get("results") if isinstance(result, Mapping) else []) or []:
+                if not isinstance(item, Mapping):
+                    continue
+                episode_id = str(item.get("episode_id") or "")
+                output = item.get("output")
+                if episode_id not in merged or not isinstance(output, Mapping):
+                    continue
+                for field in task_schema:
+                    if field in {"evidence", "counter_evidence", "confidence"}:
+                        continue
+                    if field in output:
+                        merged[episode_id][field] = output[field]
+                evidence[episode_id].extend(_as_list(output.get("evidence")))
+                counter[episode_id].extend(_as_list(output.get("counter_evidence")))
+                if isinstance(output.get("confidence"), (int, float)):
+                    confidences[episode_id].append(float(output["confidence"]))
+
+    def unique(values: Sequence[Any]) -> list[Any]:
+        seen: set[str] = set()
+        result: list[Any] = []
+        for value in values:
+            marker = json_dumps(value)
+            if marker not in seen:
+                seen.add(marker)
+                result.append(value)
+        return result
+
+    schema = ENGINE_SCHEMAS[engine]
+    for episode_id, output in merged.items():
+        if "evidence" in schema:
+            output["evidence"] = unique(evidence[episode_id])
+        if "counter_evidence" in schema:
+            output["counter_evidence"] = unique(counter[episode_id])
+        if "confidence" in schema:
+            vals = confidences[episode_id]
+            output["confidence"] = sum(vals) / len(vals) if vals else 0.0
+    return merged
+
+
+def _run_episode_engine_pack(
+    con,
+    *,
+    episode_id: str,
+    conversation_id: str,
+    person_id: str,
+    package_date: str,
+    bundle: Mapping[str, Any],
+    prior: Mapping[str, Any],
+    engines: Sequence[str],
+    pack_name: str = "local",
+    window_llm: Any | None = None,
+    context_window: int | None = None,
+    output_budget: int | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Execute all applicable local engines while serialising evidence once.
+
+    Each plan unit is one engine schema group.  A normal episode therefore uses
+    one coherent Qwen request.  If that response reaches its output limit, the
+    durable window executor splits by responsibilities (never by dropping
+    evidence) and retries only the smaller engine groups.
+    """
+    from .config import get_settings
+    from .night_orchestrator import (
+        ModelBudget, OllamaWindowLLM, PlanUnit, StageScope,
+        build_coverage_report, covered_refs_from_outputs_table,
+        estimate_tokens_for_text, run_windows,
+    )
+    from .night_orchestrator import checkpoint_store as cp
+    from .night_orchestrator.coverage import persist_coverage
+
+    ordered_engines = [engine for engine in ENGINE_ORDER if engine in set(engines)]
+    if not ordered_engines:
+        return {}
+    cfg = get_settings()
+    context_window = int(context_window or cfg.ollama_context_poststop)
+    if output_budget is None:
+        try:
+            output_budget = max(256, int(os.environ.get(
+                "MLOMEGA_POSTSTOP_LLM_MAX_OUTPUT_TOKENS", "4096"
+            )))
+        except ValueError:
+            output_budget = 4096
+    if window_llm is None:
+        try:
+            timeout = float(os.environ.get("MLOMEGA_V13_ENGINE_TIMEOUT", "180"))
+        except ValueError:
+            timeout = 180.0
+        from .runtime_v18_7 import phase as runtime_phase_context
+        with runtime_phase_context("post_stop_brain2_v13"):
+            window_llm = OllamaWindowLLM(system=_BRAIN2_STRICT_SYSTEM, timeout=timeout)
+    model = str(getattr(window_llm, "model", "injected-window-llm"))
+
+    specs: dict[str, tuple[str, dict[str, Any]]] = {}
+    units: list[PlanUnit] = []
+    for engine in ordered_engines:
+        for group_index, group_schema in enumerate(_schema_field_groups(ENGINE_SCHEMAS[engine])):
+            ref_id = f"{engine}:g{group_index}"
+            specs[ref_id] = (engine, group_schema)
+            units.append(PlanUnit(
+                ref_id=ref_id,
+                tokens=estimate_tokens_for_text(json_dumps(group_schema)) + 48,
+                content_digest=_hash_payload(group_schema),
+            ))
+
+    def render(window_units) -> dict[str, Any]:
+        refs = [unit.ref_id for unit in window_units]
+        schemas = {ref: specs[ref][1] for ref in refs}
+        prompt = _safe_prompt_payload({
+            "mission": (
+                "Analyse un seul épisode avec les responsabilités Brain 2.0 listées. "
+                "Exécute-les dans l'ordre fourni; une responsabilité ultérieure peut "
+                "utiliser les conclusions précédentes. Retourne chaque clé exactement "
+                "une fois, sans recopier le bundle ni les métadonnées brutes."
+            ),
+            "evidence_role_policy": (
+                "Une observation système est du contexte capteur, jamais une parole, "
+                "préférence ou émotion déclarée de William."
+            ),
+            "episode_id": episode_id,
+            "engine_order": refs,
+            "bundle": bundle,
+            "prior_engine_outputs": prior,
+            "output_schemas": schemas,
+        })
+        return {"prompt": prompt, "schema_hint": {"outputs": schemas}}
+
+    def validate(value: Any) -> bool:
+        if not isinstance(value, Mapping) or not isinstance(value.get("outputs"), Mapping):
+            return False
+        outputs = value["outputs"]
+        for ref_id, output in outputs.items():
+            if ref_id not in specs or not isinstance(output, Mapping):
+                return False
+            if not set(specs[ref_id][1]).issubset(output):
+                return False
+        return True
+
+    def normalize(value: Any, primary) -> Any:
+        if not isinstance(value, Mapping) or not isinstance(value.get("outputs"), Mapping):
+            return None
+        expected = {unit.ref_id for unit in primary}
+        outputs = value["outputs"]
+        if set(outputs) != expected:
+            return None
+        return {"outputs": {ref: outputs[ref] for ref in sorted(expected)}}
+
+    def envelope(value: Any, primary) -> dict[str, Any]:
+        return {
+            "engine_group_refs": [unit.ref_id for unit in primary],
+            "result": value,
+        }
+
+    overhead_prompt = _safe_prompt_payload({
+        "mission": "Analyse un seul épisode avec les responsabilités Brain 2.0 listées.",
+        "episode_id": episode_id,
+        "bundle": bundle,
+        "prior_engine_outputs": prior,
+        "output_schemas": {},
+    })
+    stage_name = f"brain2_episode_pack:{conversation_id}:{episode_id}:{pack_name}"
+    from .runtime_v18_7 import phase as runtime_phase_context
+    with runtime_phase_context("post_stop_brain2_v13"):
+        stage = run_windows(
+            units,
+            con=con,
+            scope=StageScope(
+                person_id=person_id,
+                package_date=package_date,
+                stage_name=stage_name,
+                adapter_version="e64f-v13-episode-pack-v1",
+                prompt_version=f"{STRICT_VERSION}:episode-pack-v1:{pack_name}",
+                model=model,
+            ),
+            llm=window_llm,
+            budget=ModelBudget(
+                context_window=context_window,
+                output_reserve=int(output_budget),
+                safety_margin=768,
+            ),
+            render=render,
+            validate=validate,
+            normalize_output=normalize,
+            decorate_output=envelope,
+            target_units=len(units),
+            overlap=0,
+            prompt_overhead_tokens=estimate_tokens_for_text(overhead_prompt),
+            sleeper=lambda _seconds: None,
+        )
+    current_keys = {window.window_key for window in stage.windows}
+    covered = covered_refs_from_outputs_table(
+        con,
+        person_id=person_id,
+        package_date=package_date,
+        stage_name=stage_name,
+        window_keys=current_keys,
+        extract_refs=lambda stored: stored.get("engine_group_refs", [])
+        if isinstance(stored, Mapping) else (),
+    )
+    report = build_coverage_report(
+        stage_name=stage_name,
+        expected_ids=specs,
+        covered_refs=covered,
+    )
+    persist_coverage(
+        con, person_id=person_id, package_date=package_date,
+        source_ref=f"{conversation_id}:{episode_id}:{pack_name}", report=report,
+    )
+    con.commit()
+    if not stage.all_completed or not report.ok:
+        raise RuntimeError(
+            f"{stage_name} incomplete: missing={len(report.missing)} "
+            f"states={[window.state for window in stage.windows]}"
+        )
+
+    partials: dict[str, list[Mapping[str, Any]]] = {
+        engine: [] for engine in ordered_engines
+    }
+    for stored in cp.load_outputs(
+        con, person_id=person_id, package_date=package_date,
+        stage_name=stage_name, window_keys=current_keys,
+    ):
+        envelope_value = stored.get("output") if isinstance(stored, Mapping) else None
+        result = envelope_value.get("result") if isinstance(envelope_value, Mapping) else None
+        outputs = result.get("outputs") if isinstance(result, Mapping) else None
+        if not isinstance(outputs, Mapping):
+            continue
+        for ref_id, output in outputs.items():
+            spec = specs.get(str(ref_id))
+            if spec and isinstance(output, Mapping):
+                partials[spec[0]].append(output)
+
+    def unique(values: Sequence[Any]) -> list[Any]:
+        seen: set[str] = set()
+        result: list[Any] = []
+        for value in values:
+            marker = json_dumps(value)
+            if marker not in seen:
+                seen.add(marker)
+                result.append(value)
+        return result
+
+    merged: dict[str, dict[str, Any]] = {}
+    for engine in ordered_engines:
+        output: dict[str, Any] = {}
+        evidence: list[Any] = []
+        counter: list[Any] = []
+        confidences: list[float] = []
+        for partial in partials[engine]:
+            for field, value in partial.items():
+                if field == "evidence":
+                    evidence.extend(_as_list(value))
+                elif field == "counter_evidence":
+                    counter.extend(_as_list(value))
+                elif field == "confidence" and isinstance(value, (int, float)):
+                    confidences.append(float(value))
+                else:
+                    output[field] = value
+        schema = ENGINE_SCHEMAS[engine]
+        if "evidence" in schema:
+            output["evidence"] = unique(evidence)
+        if "counter_evidence" in schema:
+            output["counter_evidence"] = unique(counter)
+        if "confidence" in schema:
+            output["confidence"] = (
+                sum(confidences) / len(confidences) if confidences else 0.0
+            )
+        if not set(schema).issubset(output):
+            raise RuntimeError(f"{stage_name} missing merged fields for {engine}")
+        merged[engine] = output
+    return merged
+
+
+def _run_global_engine_hierarchy(
+    con,
+    *,
+    conversation_id: str,
+    person_id: str,
+    package_date: str,
+    conversation: Mapping[str, Any] | None,
+    episodes: Sequence[Mapping[str, Any]],
+    profiles: Mapping[str, Mapping[str, Any]],
+    outputs_by_episode: Mapping[str, Mapping[str, Any]],
+    engines: Sequence[str],
+    client: Any | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Run cross-episode engines over durable episode capsules.
+
+    Capsules keep every local-engine output and evidence reference together. The
+    generic hierarchy windows by capsule for long days, merges validated partial
+    results, and proves that every capsule reached the final result. If Qwen
+    cannot emit all responsibilities together, only the output schemas are split.
+    """
+    from .night_orchestrator import run_hierarchical_json
+
+    ordered = [engine for engine in ENGINE_ORDER if engine in set(engines)]
+    specs: dict[str, tuple[str, dict[str, Any]]] = {}
+    for engine in ordered:
+        for group_index, group_schema in enumerate(_schema_field_groups(ENGINE_SCHEMAS[engine])):
+            specs[f"{engine}:g{group_index}"] = (engine, group_schema)
+
+    capsules: list[dict[str, Any]] = []
+    episode_by_id = {str(ep.get("episode_id")): ep for ep in episodes}
+    for episode_id, engine_outputs in outputs_by_episode.items():
+        profile = profiles.get(episode_id, {})
+        if not profile.get("has_human_evidence"):
+            continue
+        episode = episode_by_id.get(episode_id, {})
+        capsules.append({
+            "episode_id": episode_id,
+            "episode": {
+                key: episode.get(key)
+                for key in (
+                    "episode_type", "start_time", "end_time", "topic",
+                    "situation_summary", "trigger_summary", "outcome_summary",
+                    "unresolved_tension", "confidence",
+                )
+            },
+            "evidence_turn_ids": list(profile.get("evidence_turn_ids") or []),
+            "local_engine_outputs": dict(engine_outputs),
+        })
+
+    payload = {
+        "mission": (
+            "Exécute les moteurs Brain 2.0 transversaux sur tous les épisodes. "
+            "Chaque capsule est une synthèse locale validée avec ses preuves. "
+            "Préserve contradictions, contre-preuves et cas distincts; n'invente "
+            "aucune information absente."
+        ),
+        "engine_order": " -> ".join(ordered),
+        "conversation": conversation,
+        "episode_capsules": capsules,
+    }
+
+    def execute(refs: Sequence[str], branch: str) -> dict[str, Mapping[str, Any]]:
+        schemas = {ref: specs[ref][1] for ref in refs}
+        schema = {"outputs": schemas}
+        digest = _hash_payload(list(refs))[:10]
+        try:
+            from .runtime_v18_7 import phase as runtime_phase_context
+            with runtime_phase_context("post_stop_brain2_v13"):
+                result = run_hierarchical_json(
+                    stage_name=(
+                        f"brain2_global_pack:{conversation_id}:{branch}:{digest}"
+                    ),
+                    person_id=person_id,
+                    package_date=package_date,
+                    source_ref=f"{conversation_id}:global:{branch}:{digest}",
+                    system=_BRAIN2_STRICT_SYSTEM,
+                    payload=payload,
+                    schema=schema,
+                    timeout=float(os.environ.get("MLOMEGA_V13_ENGINE_TIMEOUT", "180")),
+                    client=client,
+                    connection=con,
+                )
+            outputs = result.get("outputs") if isinstance(result, Mapping) else None
+            if not isinstance(outputs, Mapping) or set(outputs) != set(refs):
+                raise RuntimeError("global engine pack output coverage mismatch")
+            return {str(ref): output for ref, output in outputs.items()}
+        except Exception:
+            if len(refs) <= 1:
+                raise
+            middle = len(refs) // 2
+            return {
+                **execute(refs[:middle], branch + "a"),
+                **execute(refs[middle:], branch + "b"),
+            }
+
+    partials = execute(list(specs), "root")
+
+    def unique(values: Sequence[Any]) -> list[Any]:
+        seen: set[str] = set()
+        result: list[Any] = []
+        for value in values:
+            marker = json_dumps(value)
+            if marker not in seen:
+                seen.add(marker)
+                result.append(value)
+        return result
+
+    merged: dict[str, dict[str, Any]] = {}
+    for engine in ordered:
+        output: dict[str, Any] = {}
+        evidence: list[Any] = []
+        counter: list[Any] = []
+        confidences: list[float] = []
+        for ref_id, partial in partials.items():
+            if specs[ref_id][0] != engine or not isinstance(partial, Mapping):
+                continue
+            for field, value in partial.items():
+                if field == "evidence":
+                    evidence.extend(_as_list(value))
+                elif field == "counter_evidence":
+                    counter.extend(_as_list(value))
+                elif field == "confidence" and isinstance(value, (int, float)):
+                    confidences.append(float(value))
+                else:
+                    output[field] = value
+        schema = ENGINE_SCHEMAS[engine]
+        if "evidence" in schema:
+            output["evidence"] = unique(evidence)
+        if "counter_evidence" in schema:
+            output["counter_evidence"] = unique(counter)
+        if "confidence" in schema:
+            output["confidence"] = (
+                sum(confidences) / len(confidences) if confidences else 0.0
+            )
+        if not set(schema).issubset(output):
+            raise RuntimeError(f"global hierarchy missing fields for {engine}")
+        merged[engine] = output
+    return merged
+
+
 def _record_engine(con, *, engine: str, conversation_id: str | None, episode_id: str | None, person_id: str | None, prompt: str, output: dict[str, Any] | None, status: str, error: str | None = None) -> str:
     now = now_iso()
     run_id = stable_id("v13stricteng", STRICT_VERSION, engine, conversation_id, episode_id, _hash_payload(prompt)[:16])
@@ -798,7 +1605,7 @@ def _materialize_episodes_from_qwen(con, conversation_id: str, output: dict[str,
             "lifecycle_status": "active",
             "metadata_json": json_dumps({
                 "strict_v13_2": True,
-                "episode_source": STRICT_VERSION,
+                "episode_source": EPISODE_BUILD_VERSION,
                 "coverage_status": "complete",
                 "missing_context_manifest": missing_manifest,
             }),
@@ -850,7 +1657,7 @@ def _ensure_episodes_strict(con, conversation_id: str, *, person_id: str) -> int
         complete = False
         for r in existing_rows:
             meta = json_loads(r.get("metadata_json"), {}) if isinstance(r.get("metadata_json"), str) else {}
-            if meta.get("episode_source") == STRICT_VERSION and meta.get("coverage_status") == "complete":
+            if meta.get("episode_source") == EPISODE_BUILD_VERSION and meta.get("coverage_status") == "complete":
                 complete = True
                 break
         if complete:
@@ -1335,51 +2142,221 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
         # materialized episodes durable before the per-episode engine matrix so a
         # later engine failure never forces EpisodeBuilder materialization again.
         con.commit()
-        episodes = [dict(r) for r in con.execute("SELECT episode_id FROM episodes WHERE source_conversation_id=? ORDER BY start_time, created_at", (conversation_id,))]
+        episodes = [dict(r) for r in con.execute(
+            "SELECT * FROM episodes WHERE source_conversation_id=? ORDER BY start_time, created_at",
+            (conversation_id,),
+        )]
         if max_episodes is not None:
             episodes = episodes[:max_episodes]
-        for ep_row in episodes:
-            episode_id = ep_row["episode_id"]
-            bundle = _episode_bundle(con, episode_id)
-            outputs: dict[str, Any] = {}
-            episode_counts: Counter[str] = Counter()
-            for engine in ENGINE_ORDER:
-                prompt = _engine_prompt(engine, bundle, outputs)
-                resumed_output = _load_completed_engine_output(
-                    con,
-                    engine=engine,
-                    conversation_id=conversation_id,
-                    episode_id=episode_id,
-                    prompt=prompt,
+        profiles = {
+            str(episode["episode_id"]): _episode_evidence_profile(con, str(episode["episode_id"]))
+            for episode in episodes
+        }
+        bundles = {
+            str(episode["episode_id"]): _stable_episode_source_bundle(
+                _episode_bundle(con, str(episode["episode_id"]))
+            )
+            for episode in episodes
+        }
+        outputs_by_episode: dict[str, dict[str, Any]] = {
+            str(episode["episode_id"]): {} for episode in episodes
+        }
+        episode_counts: dict[str, Counter[str]] = {
+            str(episode["episode_id"]): Counter() for episode in episodes
+        }
+        human_episode_ids = [
+            str(episode["episode_id"])
+            for episode in episodes
+            if profiles[str(episode["episode_id"])].get("has_human_evidence")
+        ]
+        anchor_episode_id = human_episode_ids[0] if human_episode_ids else None
+        conversation_outputs: dict[str, Any] = {}
+        conversation_row = con.execute(
+            "SELECT started_at FROM conversations WHERE conversation_id=?",
+            (conversation_id,),
+        ).fetchone()
+        package_date = str((conversation_row["started_at"] if conversation_row else None) or now_iso())[:10]
+
+        # Local engines share the exact same episode evidence. Execute their
+        # schema groups as one durable pack, then split by responsibility only
+        # when the model/provider reports a real size failure. This preserves all
+        # engines while avoiding 6-9 serialisations of the same episode.
+        local_engines = [
+            engine for engine in ENGINE_ORDER
+            if engine != "episode_builder" and engine not in _CONVERSATION_SCOPE_ENGINES
+        ]
+        for episode in episodes:
+            episode_id = str(episode["episode_id"])
+            pending: list[str] = []
+            resume_prefix = True
+            for engine in local_engines:
+                applies, _reason = _engine_applies_to_episode(
+                    engine, episode, profiles[episode_id]
                 )
-                if resumed_output is not None:
-                    outputs[engine] = resumed_output
-                    episode_counts[f"{engine}_resumed"] += 1
-                    counts[f"engine_{engine}_resumed"] += 1
+                if not applies:
+                    episode_counts[episode_id][f"{engine}_not_applicable"] += 1
+                    counts[f"engine_{engine}_not_applicable"] += 1
                     continue
-                try:
-                    out = _run_engine_partitioned(
-                        con,
-                        engine=engine,
-                        episode_id=episode_id,
-                        person_id=person_id,
-                        bundle=bundle,
-                        prior=outputs,
+                prior = {**conversation_outputs, **outputs_by_episode[episode_id]}
+                prompt = _engine_prompt(engine, bundles[episode_id], prior)
+                resumed_output = _load_completed_engine_output(
+                    con, engine=engine, conversation_id=conversation_id,
+                    episode_id=episode_id, prompt=prompt,
+                ) if resume_prefix else None
+                if resumed_output is not None:
+                    outputs_by_episode[episode_id][engine] = resumed_output
+                    episode_counts[episode_id][f"{engine}_resumed"] += 1
+                    counts[f"engine_{engine}_resumed"] += 1
+                else:
+                    resume_prefix = False
+                    pending.append(engine)
+
+            if not pending:
+                continue
+            pack_prior = {**conversation_outputs, **outputs_by_episode[episode_id]}
+            try:
+                packed = _run_episode_engine_pack(
+                    con,
+                    episode_id=episode_id,
+                    conversation_id=conversation_id,
+                    person_id=person_id,
+                    package_date=package_date,
+                    bundle=bundles[episode_id],
+                    prior=pack_prior,
+                    engines=pending,
+                )
+                for engine in pending:
+                    out = packed[engine]
+                    prior = {**conversation_outputs, **outputs_by_episode[episode_id]}
+                    prompt = _engine_prompt(engine, bundles[episode_id], prior)
+                    _record_engine(
+                        con, engine=engine, conversation_id=conversation_id,
+                        episode_id=episode_id, person_id=person_id,
+                        prompt=prompt, output=out, status="ok",
                     )
-                    _record_engine(con, engine=engine, conversation_id=conversation_id, episode_id=episode_id, person_id=person_id, prompt=prompt, output=out, status="ok")
+                    outputs_by_episode[episode_id][engine] = out
+                    mat = _put_engine_payload(con, engine, episode_id, person_id, out)
+                    episode_counts[episode_id][f"{engine}_rows"] += mat
+                    counts[f"engine_{engine}"] += 1
+                    counts[f"{engine}_rows"] += mat
+                con.commit()
+            except Exception as exc:
+                for engine in pending:
+                    prior = {**conversation_outputs, **outputs_by_episode[episode_id]}
+                    prompt = _engine_prompt(engine, bundles[episode_id], prior)
+                    _record_engine(
+                        con, engine=engine, conversation_id=conversation_id,
+                        episode_id=episode_id, person_id=person_id,
+                        prompt=prompt, output=None, status="error",
+                        error=str(exc)[:1000],
+                    )
+                con.commit()
+                raise
+
+        # Cross-episode engines also share one compact conversation package.
+        # Pack them once and let the same durable executor subdivide by engine
+        # schema only if Qwen cannot return the complete JSON in one response.
+        global_engines = [e for e in ENGINE_ORDER if e in _CONVERSATION_SCOPE_ENGINES]
+        if anchor_episode_id and global_engines:
+            for engine in global_engines:
+                for episode in episodes:
+                    episode_id = str(episode["episode_id"])
+                    if episode_id != anchor_episode_id:
+                        episode_counts[episode_id][f"{engine}_not_applicable"] += 1
+                        counts[f"engine_{engine}_not_applicable"] += 1
+            bundle = _conversation_engine_bundle(
+                con, conversation_id, episodes, profiles, outputs_by_episode
+            )
+            pending_globals: list[str] = []
+            resume_prefix = True
+            for engine in global_engines:
+                prior = {
+                    "conversation_outputs": conversation_outputs,
+                    "by_episode": {
+                        key: value for key, value in outputs_by_episode.items() if value
+                    },
+                }
+                prompt = _engine_prompt(engine, bundle, prior)
+                resumed_output = _load_completed_engine_output(
+                    con, engine=engine, conversation_id=conversation_id,
+                    episode_id=anchor_episode_id, prompt=prompt,
+                ) if resume_prefix else None
+                if resumed_output is not None:
+                    outputs_by_episode[anchor_episode_id][engine] = resumed_output
+                    conversation_outputs[engine] = resumed_output
+                    episode_counts[anchor_episode_id][f"{engine}_resumed"] += 1
+                    counts[f"engine_{engine}_resumed"] += 1
+                else:
+                    resume_prefix = False
+                    pending_globals.append(engine)
+
+            if pending_globals:
+                try:
+                    packed = _run_global_engine_hierarchy(
+                        con,
+                        conversation_id=conversation_id,
+                        person_id=person_id,
+                        package_date=package_date,
+                        conversation=bundle.get("conversation"),
+                        episodes=episodes,
+                        profiles=profiles,
+                        outputs_by_episode=outputs_by_episode,
+                        engines=pending_globals,
+                    )
+                    for engine in pending_globals:
+                        out = packed[engine]
+                        prior = {
+                            "conversation_outputs": conversation_outputs,
+                            "by_episode": {
+                                key: value for key, value in outputs_by_episode.items()
+                                if value
+                            },
+                        }
+                        prompt = _engine_prompt(engine, bundle, prior)
+                        _record_engine(
+                            con, engine=engine, conversation_id=conversation_id,
+                            episode_id=anchor_episode_id, person_id=person_id,
+                            prompt=prompt, output=out, status="ok",
+                        )
+                        outputs_by_episode[anchor_episode_id][engine] = out
+                        conversation_outputs[engine] = out
+                        mat = _put_engine_payload(
+                            con, engine, anchor_episode_id, person_id, out
+                        )
+                        episode_counts[anchor_episode_id][f"{engine}_rows"] += mat
+                        counts[f"engine_{engine}"] += 1
+                        counts[f"{engine}_rows"] += mat
+                    con.commit()
                 except Exception as exc:
-                    _record_engine(con, engine=engine, conversation_id=conversation_id, episode_id=episode_id, person_id=person_id, prompt=prompt, output=None, status="error", error=str(exc)[:1000])
+                    for engine in pending_globals:
+                        prior = {
+                            "conversation_outputs": conversation_outputs,
+                            "by_episode": {
+                                key: value for key, value in outputs_by_episode.items()
+                                if value
+                            },
+                        }
+                        prompt = _engine_prompt(engine, bundle, prior)
+                        _record_engine(
+                            con, engine=engine, conversation_id=conversation_id,
+                            episode_id=anchor_episode_id, person_id=person_id,
+                            prompt=prompt, output=None, status="error",
+                            error=str(exc)[:1000],
+                        )
                     con.commit()
                     raise
-                outputs[engine] = out
-                mat = _put_engine_payload(con, engine, episode_id, person_id, out)
-                episode_counts[f"{engine}_rows"] += mat
-                counts[f"engine_{engine}"] += 1
-                counts[f"{engine}_rows"] += mat
-                # Engine output + all its materialized projections are one
-                # checkpoint. A crash after this commit resumes the next engine.
-                con.commit()
-            results.append({"episode_id": episode_id, "engines_run": len(ENGINE_ORDER), "counts": dict(episode_counts)})
+
+        for episode in episodes:
+            episode_id = str(episode["episode_id"])
+            results.append({
+                "episode_id": episode_id,
+                "engines_run": sum(
+                    1 for key in episode_counts[episode_id]
+                    if key.endswith("_rows") or key.endswith("_resumed")
+                ),
+                "sensor_only": bool(profiles[episode_id].get("sensor_only")),
+                "counts": dict(episode_counts[episode_id]),
+            })
         con.commit()
     return {"version": STRICT_VERSION, "mode": "strict_qwen_no_heuristics", "conversation_id": conversation_id, "episodes": len(results), "results": results, "counts": dict(counts), "audit_ok": audit["ok"], "audit_total": audit["total_items"], "audit_missing": audit["partial_or_missing"]}
 

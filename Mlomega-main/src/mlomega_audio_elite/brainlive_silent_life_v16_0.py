@@ -262,7 +262,8 @@ def _llm_candidate(bundle: dict[str, Any], evidence: dict[str, Any], *, timeout:
         "Si les preuves sont faibles: memory_action=watch ou ignore. Si les preuves sont répétables/utiles: store. "
         "Chaque hypothèse doit citer des exact_evidence fournis dans l'entrée. JSON strict uniquement."
     )
-    prompt = json_dumps({
+    payload = {
+        "mission": "Analyse offline prudente d'un événement non verbal pour Silent Life.",
         "bundle": {k: bundle.get(k) for k in ("bundle_id", "start_time", "end_time", "title", "bundle_kind", "live_session_id", "brain2_conversation_id")},
         "transcript_chars": _transcript_chars(bundle),
         "place": evidence.get("place"),
@@ -280,8 +281,18 @@ def _llm_candidate(bundle: dict[str, Any], evidence: dict[str, Any], *, timeout:
             "Une seule occurrence devient watch_only/candidate sauf preuve très forte.",
             "Citer exact_evidence depuis les textes fournis."
         ],
-    })
-    out = OllamaJsonClient().require_json(system, prompt, schema_hint=SILENT_SCHEMA_HINT, timeout=timeout)
+    }
+    from .night_orchestrator import run_hierarchical_json
+    out = run_hierarchical_json(
+        stage_name="silent_life_bundle",
+        person_id=str(bundle.get("person_id") or "me"),
+        package_date=str(bundle.get("package_date") or bundle.get("start_time") or now_iso())[:10],
+        source_ref=str(bundle.get("bundle_id") or stable_id("silent_bundle", payload)),
+        system=system,
+        payload=payload,
+        schema=SILENT_SCHEMA_HINT,
+        timeout=timeout,
+    )
     return out if isinstance(out, dict) else {}
 
 

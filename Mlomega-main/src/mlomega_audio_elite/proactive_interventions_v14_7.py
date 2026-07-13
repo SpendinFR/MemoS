@@ -157,8 +157,22 @@ def _compact(rows: list[dict[str, Any]], limit: int = 40) -> list[dict[str, Any]
     return out
 
 
-def _llm_json(system: str, payload: dict[str, Any], schema: dict[str, Any], timeout: int = 480) -> dict[str, Any]:
-    data = OllamaJsonClient().require_json(system, json_dumps(payload), schema_hint=schema, timeout=timeout)
+def _llm_json(
+    system: str, payload: dict[str, Any], schema: dict[str, Any],
+    timeout: int = 480, *, stage_context: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    client = OllamaJsonClient()
+    if stage_context:
+        from .night_orchestrator import run_hierarchical_json
+        return run_hierarchical_json(
+            stage_name=stage_context["stage_name"],
+            person_id=stage_context["person_id"],
+            package_date=stage_context["package_date"],
+            source_ref=stage_context["source_ref"],
+            system=system, payload=payload, schema=schema,
+            timeout=float(timeout), client=client,
+        )
+    data = client.require_json(system, json_dumps(payload), schema_hint=schema, timeout=timeout)
     if not isinstance(data, dict):
         raise RuntimeError("Brain2 V14.7 returned non-object JSON")
     return data
@@ -331,7 +345,8 @@ def _context_for_intervention(con, *, person_id: str, conversation_id: str | Non
     turns: list[dict[str, Any]] = []
     episodes: list[dict[str, Any]] = []
     if conversation_id:
-        turns = _many(con, "SELECT * FROM turns WHERE conversation_id=? ORDER BY idx LIMIT ?", (conversation_id, 80))
+        from .brain2_episode_windowing import cognitive_prompt_turns
+        turns = cognitive_prompt_turns(_many(con, "SELECT * FROM turns WHERE conversation_id=? ORDER BY idx LIMIT ?", (conversation_id, 80)))
         episodes = _many(con, "SELECT * FROM episodes WHERE source_conversation_id=? ORDER BY created_at DESC LIMIT ?", (conversation_id, limit))
     from .v18_brain2_context import conversation_context_addenda
     context_addenda = (conversation_context_addenda(con, conversation_id=conversation_id, person_id=person_id) if conversation_id else {"entries": [], "budget": {"context_incomplete": False}})
@@ -413,7 +428,16 @@ def run_proactive_interventions(conversation_id: str | None = None, *, person_id
             "schema": INTERVENTION_SCHEMA,
         }
         try:
-            qwen_json = _llm_json("Tu es Brain2 V14.7 Proactive Intervention. Réponds uniquement en JSON valide.", payload, INTERVENTION_SCHEMA, timeout=480)
+            qwen_json = _llm_json(
+                "Tu es Brain2 V14.7 Proactive Intervention. Réponds uniquement en JSON valide.",
+                payload, INTERVENTION_SCHEMA, timeout=480,
+                stage_context={
+                    "stage_name": "v14_proactive_interventions",
+                    "person_id": person_id,
+                    "package_date": now[:10],
+                    "source_ref": conversation_id or f"{person_id}:global",
+                },
+            )
         except Exception as exc:
             status = "error"
             error_text = str(exc)[:2000]

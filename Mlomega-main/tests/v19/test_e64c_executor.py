@@ -195,6 +195,34 @@ def test_resume_skips_completed_windows_no_double_output():
     assert n == 3
 
 
+def test_shared_prompt_change_invalidates_completed_checkpoint():
+    con = _con()
+    scope = _scope("shared-context")
+    budget = ModelBudget(context_window=1000, output_reserve=200)
+    shared = {"revision": "old"}
+
+    def render(units):
+        return {"units": [unit.ref_id for unit in units], "shared": dict(shared)}
+
+    first_llm = OkLLM()
+    first = run_windows(
+        _units(2), con=con, scope=scope, llm=first_llm,
+        budget=budget, render=render, validate=lambda d: True,
+        target_units=10, overlap=0, prompt_overhead_tokens=0,
+    )
+    assert first.all_completed and first_llm.calls == 1
+
+    shared["revision"] = "new"
+    second_llm = OkLLM()
+    second = run_windows(
+        _units(2), con=con, scope=scope, llm=second_llm,
+        budget=budget, render=render, validate=lambda d: True,
+        target_units=10, overlap=0, prompt_overhead_tokens=0,
+    )
+    assert second.all_completed and second_llm.calls == 1
+    assert first.windows[0].window_key != second.windows[0].window_key
+
+
 # ------------------------------------------------- subdivision on truncation
 class TruncateUntilSmall:
     """Returns length-truncation until the window holds <= max_ok units."""
@@ -237,6 +265,42 @@ def test_single_unit_that_still_truncates_is_quarantined_not_applied():
     states = {r[0] for r in con.execute(f"SELECT DISTINCT state FROM {cp.WINDOWS_TABLE}")}
     # the 2-unit parent is 'subdivided'; its two single-unit leaves are quarantined
     assert states == {"subdivided", "quarantined"}
+
+
+def test_length_can_escalate_to_schema_split_without_input_subdivision():
+    con = _con()
+    res = run_windows(
+        _units(2), con=con, scope=_scope("merge"), llm=AlwaysTruncate(),
+        budget=ModelBudget(context_window=100000, output_reserve=200),
+        render=_render, validate=lambda d: True, target_units=2, overlap=0,
+        subdivide_on_length=False,
+    )
+    assert len(res.quarantined) == 1
+    assert res.outputs == []
+    states = con.execute(
+        f"SELECT state,COUNT(*) FROM {cp.WINDOWS_TABLE} GROUP BY state"
+    ).fetchall()
+    assert states == [("quarantined", 1)]
+
+
+def test_resume_can_promote_old_length_subdivision_to_schema_split():
+    con = _con()
+    scope = _scope("merge-resume")
+    first = run_windows(
+        _units(2), con=con, scope=scope, llm=TruncateUntilSmall(max_ok=1),
+        budget=ModelBudget(context_window=100000, output_reserve=200),
+        render=_render, validate=lambda d: True, target_units=2, overlap=0,
+    )
+    assert first.all_completed
+    healthy = OkLLM()
+    resumed = run_windows(
+        _units(2), con=con, scope=scope, llm=healthy,
+        budget=ModelBudget(context_window=100000, output_reserve=200),
+        render=_render, validate=lambda d: True, target_units=2, overlap=0,
+        subdivide_on_length=False,
+    )
+    assert len(resumed.quarantined) == 1
+    assert healthy.calls == 0
 
 
 # --------------------------------------------------- over-budget refusal

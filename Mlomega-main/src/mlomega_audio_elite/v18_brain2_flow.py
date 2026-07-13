@@ -77,6 +77,8 @@ def install(module: Any) -> dict[str, Any]:
             if not conv:
                 raise ValueError("conversation_missing")
             turns = strict_many(con, "SELECT turn_id,idx,person_id,speaker_label,start_s,end_s,text,metadata_json FROM turns WHERE conversation_id=? ORDER BY idx", (conversation_id,), purpose="latent outcome turns")
+            from .brain2_episode_windowing import cognitive_prompt_turns
+            turns = cognitive_prompt_turns(turns)
             turn_map = {str(row["turn_id"]): row for row in turns}
             pending: list[dict[str, Any]] = []
             for table, spec in _ALLOWED_LATENT.items():
@@ -93,7 +95,22 @@ def install(module: Any) -> dict[str, Any]:
                 "conversation": dict(conv), "turns": turns, "pending_items": pending,
                 "schema": schema,
             }
-            out = module._llm_json("Tu es le resolveur V18 d'outcomes, JSON strict.", payload, schema)
+            if pending:
+                out = module._llm_json(
+                    "Tu es le resolveur V18 d'outcomes, JSON strict.",
+                    payload, schema,
+                    stage_context={
+                        "stage_name":"v18_latent_outcomes",
+                        "person_id":person_id,
+                        "package_date":str(conv.get("started_at") or now_iso())[:10],
+                        "source_ref":conversation_id,
+                    },
+                )
+            else:
+                out = {
+                    "resolved_items": [], "counter_evidence": [],
+                    "missing_context": ["no_pending_items"], "confidence": 1.0,
+                }
             if not isinstance(out, dict):
                 raise ValueError("latent outcome LLM did not return object")
             run_id = stable_id("v18latent", conversation_id, person_id, now_iso())

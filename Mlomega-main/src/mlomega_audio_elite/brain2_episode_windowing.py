@@ -122,6 +122,58 @@ def _source_coverage(
     return list(dict.fromkeys(expected)), atom_parents
 
 
+def _turn_metadata(turn: Mapping[str, Any]) -> Mapping[str, Any]:
+    value = turn.get("metadata_json")
+    if isinstance(value, Mapping):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, Mapping) else {}
+    return {}
+
+
+def _is_sensor_only_turn(turn: Mapping[str, Any]) -> bool:
+    """Use the producer contract, never text heuristics, to route sensor evidence."""
+    metadata = _turn_metadata(turn)
+    return (
+        str(metadata.get("evidence_role") or "")
+        == "system_observation_not_user_speech"
+    )
+
+
+def _partition_cognitive_and_sensor_turns(
+    turns: Sequence[Mapping[str, Any]],
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    cognitive: list[Mapping[str, Any]] = []
+    sensor: list[Mapping[str, Any]] = []
+    for turn in turns:
+        (sensor if _is_sensor_only_turn(turn) else cognitive).append(turn)
+    return cognitive, sensor
+
+
+def cognitive_prompt_turns(
+    turns: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Shared E64 projection for every cognitive nocturnal stage."""
+    cognitive, _sensor = _partition_cognitive_and_sensor_turns(turns)
+    return [_prompt_turn(turn) for turn in cognitive]
+
+
+def _sensor_routing_coverage(
+    turns: Sequence[Mapping[str, Any]],
+) -> tuple[list[str], dict[str, list[str]], set[str]]:
+    expected, atom_parents = _source_coverage(turns)
+    direct_turn_ids = {
+        str(turn.get("turn_id"))
+        for turn in turns
+        if turn.get("turn_id") and str(turn.get("turn_id")) not in atom_parents
+    }
+    return expected, atom_parents, set(atom_parents) | direct_turn_ids
+
+
 def orchestrator_enabled() -> bool:
     """E64 night orchestrator flag. Default ON; set MLOMEGA_E64_NIGHT_ORCHESTRATOR=0 to roll back."""
     return os.environ.get("MLOMEGA_E64_NIGHT_ORCHESTRATOR", "1") != "0"
@@ -200,6 +252,60 @@ def _prompt_turn(turn: Mapping[str, Any]) -> dict[str, Any]:
                     if extras:
                         source["representative_extras"] = extras
                     source.pop("representative", None)
+            # The model needs semantic capture quality, not storage addresses.
+            # Durable provenance remains untouched in the source turn and in the
+            # independent coverage manifest.  Keep only meaning-bearing metadata
+            # in the prompt so a long WhisperX segment cannot dominate every
+            # downstream engine input.
+            semantic_top = {
+                key: prompt_metadata.get(key)
+                for key in ("kind", "evidence_role", "time", "end_time")
+                if prompt_metadata.get(key) is not None
+            }
+            source = prompt_metadata.get("source")
+            if isinstance(source, Mapping) and source.get("word_alignment"):
+                alignment = dict(source.get("word_alignment") or {})
+                alignment.pop("digest", None)
+                resolution = source.get("offline_speaker_resolution")
+                if isinstance(resolution, Mapping):
+                    resolution = {
+                        key: resolution.get(key)
+                        for key in (
+                            "decision", "person_id", "speaker_label",
+                            "known_score", "duration_s",
+                        )
+                        if resolution.get(key) is not None
+                    }
+                semantic_top["source"] = {
+                    "local_start_s": source.get("local_start_s"),
+                    "local_end_s": source.get("local_end_s"),
+                    "speaker_resolution": resolution,
+                    "word_alignment": alignment,
+                    "segmentation": source.get("segmentation"),
+                    "source_event_count": (
+                        source.get("source_event_ids_manifest") or {}
+                    ).get("count"),
+                    "reconciled_live_turn_count": (
+                        source.get("reconciles_live_turn_ids_manifest") or {}
+                    ).get("count"),
+                }
+                prompt_metadata = semantic_top
+            elif isinstance(source, Mapping) and source.get("vision_change_atom"):
+                semantic_top["source"] = {
+                    key: source.get(key)
+                    for key in (
+                        "vision_change_atom", "count", "first_seen", "last_seen",
+                        "representative_extras",
+                    )
+                    if source.get(key) is not None
+                }
+                semantic_top["source"]["source_ref_count"] = (
+                    source.get("source_refs_manifest") or {}
+                ).get("count")
+                semantic_top["source"]["frame_ref_count"] = (
+                    source.get("frame_refs_manifest") or {}
+                ).get("count")
+                prompt_metadata = semantic_top
             projected["metadata_json"] = json.dumps(
                 prompt_metadata, ensure_ascii=False, sort_keys=True
             )
@@ -383,7 +489,70 @@ def build_episodes_windowed(
     and ``coverage_ok``. Raises if any turn is left uncovered (missing).
     """
     turns = list(bundle.get("turns") or [])
-    units, by_id = _turn_units(turns)
+    cognitive_turns, sensor_turns = _partition_cognitive_and_sensor_turns(turns)
+    units, by_id = _turn_units(cognitive_turns)
+
+    # Sensor observations are not dialogue and must not independently create
+    # psychological/narrative episodes.  They remain durably routed to
+    # Vision/WorldBrain/Silent Life and a bounded local slice is exposed as
+    # context for nearby human speech.  Their raw parents are still proven by a
+    # separate deterministic coverage manifest below.
+    sensor_prompt_turns = [_prompt_turn(turn) for turn in sensor_turns]
+    ordered_sensor = sorted(
+        sensor_prompt_turns, key=lambda turn: int(turn.get("idx") or 0)
+    )
+    sensor_neighbors_by_turn: dict[str, list[dict[str, Any]]] = {}
+    for unit in units:
+        primary_idx = int(by_id[unit.ref_id].get("idx") or 0)
+        before = [turn for turn in ordered_sensor if int(turn.get("idx") or 0) <= primary_idx]
+        after = [turn for turn in ordered_sensor if int(turn.get("idx") or 0) >= primary_idx]
+        selected: dict[str, dict[str, Any]] = {}
+        for turn in ((before[-1] if before else None), (after[0] if after else None)):
+            if turn:
+                selected[str(turn.get("turn_id") or turn.get("idx"))] = turn
+        sensor_neighbors_by_turn[unit.ref_id] = list(selected.values())
+    units = [
+        PlanUnit(
+            ref_id=unit.ref_id,
+            tokens=unit.tokens + sum(
+                estimate_tokens_for_text(json.dumps(turn, ensure_ascii=False)) + 8
+                for turn in sensor_neighbors_by_turn.get(unit.ref_id, [])
+            ),
+            boundary=unit.boundary,
+            ts=unit.ts,
+            content_digest=content_digest({
+                "turn": by_id[unit.ref_id],
+                "sensor_context": sensor_neighbors_by_turn.get(unit.ref_id, []),
+            }),
+        )
+        for unit in units
+    ]
+    if not units:
+        sensor_expected, sensor_atom_parents, sensor_covered = _sensor_routing_coverage(sensor_turns)
+        sensor_report = build_coverage_report(
+            stage_name="brain2_sensor_routing",
+            expected_ids=sensor_expected,
+            covered_refs=sensor_covered,
+            atom_parent_index=sensor_atom_parents,
+        )
+        persist_coverage(
+            con, person_id=person_id, package_date=package_date,
+            source_ref=conversation_id, report=sensor_report,
+        )
+        con.commit()
+        if not sensor_report.ok:
+            raise RuntimeError(
+                f"brain2 sensor routing incomplete: missing={len(sensor_report.missing)}"
+            )
+        return {
+            "episodes": 0,
+            "windows": 0,
+            "coverage_ok": True,
+            "sensor_routing_ok": True,
+            "cognitive_turns": 0,
+            "sensor_turns": len(sensor_turns),
+            "merged_from": 0,
+        }
 
     # EpisodeBuilder's verbose structured output is the limiting side of this
     # stage. Real qwen3.5:9b telemetry showed four units exhausting the 4096-token
@@ -393,10 +562,10 @@ def build_episodes_windowed(
     if target_turns is None:
         try:
             target_turns = max(
-                1, int(os.environ.get("MLOMEGA_E64_EPISODE_TARGET_TURNS", "2"))
+                1, int(os.environ.get("MLOMEGA_E64_EPISODE_TARGET_TURNS", "8"))
             )
         except ValueError:
-            target_turns = 2
+            target_turns = 8
     if overlap is None:
         try:
             overlap = max(0, int(os.environ.get("MLOMEGA_E64_EPISODE_OVERLAP", "2")))
@@ -450,6 +619,32 @@ def build_episodes_windowed(
             win_turns.append(prompt_turn)
         win_bundle = dict(bundle)
         win_bundle["turns"] = win_turns
+        primary_indices = [
+            int(by_id[unit.ref_id].get("idx") or 0)
+            for unit in primary_units if unit.ref_id in by_id
+        ]
+        if primary_indices and sensor_prompt_turns:
+            # Temporal join, not arbitrary sampling: for every spoken primary
+            # turn retain its immediately preceding and following sensor state.
+            # This captures the scene around the utterance while the full sensor
+            # timeline remains routed and covered independently.
+            selected: dict[str, dict[str, Any]] = {}
+            for primary_idx in primary_indices:
+                primary_id = next(
+                    (
+                        unit.ref_id for unit in primary_units
+                        if int(by_id[unit.ref_id].get("idx") or 0) == primary_idx
+                    ),
+                    None,
+                )
+                for turn in sensor_neighbors_by_turn.get(primary_id or "", []):
+                    selected[str(turn.get("turn_id") or turn.get("idx"))] = turn
+            # Context only: never primary output, never an invented statement.
+            win_bundle["sensor_context"] = sorted(
+                selected.values(), key=lambda turn: int(turn.get("idx") or 0)
+            )
+        else:
+            win_bundle["sensor_context"] = []
         window_contract = {
             "primary_turn_ids": [unit.ref_id for unit in primary_units],
             "context_only_turn_ids": [
@@ -528,7 +723,7 @@ def build_episodes_windowed(
             person_id=person_id,
             package_date=package_date,
             stage_name=scoped_stage,
-            adapter_version="e64f-episode-window-v4",
+            adapter_version="e64f-episode-window-v5-cognitive-routing",
             prompt_version="v13-episode-mission-unchanged-v1",
             model=model_name,
         ),
@@ -557,7 +752,7 @@ def build_episodes_windowed(
         if isinstance(stored, dict) else (),
         window_keys=current_window_keys,
     )
-    expected, atom_parent_index = _source_coverage(turns)
+    expected, atom_parent_index = _source_coverage(cognitive_turns)
     quarantined = {
         source_ref: (window.error_text or "quarantined")
         for window in stage.quarantined
@@ -575,8 +770,22 @@ def build_episodes_windowed(
         con, person_id=person_id, package_date=package_date,
         source_ref=conversation_id, report=report,
     )
+
+    sensor_expected, sensor_atom_parents, sensor_covered = _sensor_routing_coverage(sensor_turns)
+    # Deterministic routing is itself the durable result: every sensor atom is
+    # already materialized as a turn and points to all of its raw parents.
+    sensor_report = build_coverage_report(
+        stage_name="brain2_sensor_routing",
+        expected_ids=sensor_expected,
+        covered_refs=sensor_covered,
+        atom_parent_index=sensor_atom_parents,
+    )
+    persist_coverage(
+        con, person_id=person_id, package_date=package_date,
+        source_ref=conversation_id, report=sensor_report,
+    )
     con.commit()
-    if not report.ok or not stage.all_completed:
+    if not report.ok or not sensor_report.ok or not stage.all_completed:
         raise RuntimeError(
             "brain2_episodes incomplete: "
             f"missing={len(report.missing)} quarantined={len(stage.quarantined)} "
@@ -602,5 +811,8 @@ def build_episodes_windowed(
         "episodes": count,
         "windows": len(stage.windows),
         "coverage_ok": report.ok,
+        "sensor_routing_ok": sensor_report.ok,
+        "cognitive_turns": len(cognitive_turns),
+        "sensor_turns": len(sensor_turns),
         "merged_from": len(all_eps),
     }

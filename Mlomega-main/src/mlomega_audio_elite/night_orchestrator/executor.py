@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from . import checkpoint_store as cp
+from .evidence_ref import content_digest
 from .window_planner import PlannedWindow, PlanUnit, plan_windows, subdivide
 
 
@@ -118,6 +119,7 @@ def run_windows(
     overlap: int = 4,
     prompt_overhead_tokens: int = 512,
     max_attempts: int = 3,
+    subdivide_on_length: bool = True,
     sleeper: Callable[[float], None] | None = None,
 ) -> StageResult:
     """Plan, execute and checkpoint every window for one stage.
@@ -181,9 +183,22 @@ def run_windows(
         )
 
     def _process(window: PlannedWindow) -> None:
+        # The plan digest covers per-unit content, but adapters also carry shared
+        # context (bundle, rules, schemas, prior outputs) in the rendered prompt.
+        # Fingerprint the exact LLM request before resume lookup so changing any
+        # common input can never reuse a stale validated checkpoint.
+        prompt = (
+            render_window(window)
+            if render_window is not None
+            else render(window.units)
+        )
+        effective_input_digest = content_digest({
+            "planned_input_digest": window.spec.input_digest,
+            "rendered_prompt_digest": content_digest(prompt),
+        })
         key = cp.window_key(
             person_id=scope.person_id, package_date=scope.package_date,
-            stage_name=scope.stage_name, input_digest=window.spec.input_digest,
+            stage_name=scope.stage_name, input_digest=effective_input_digest,
             window_index=window.spec.window_index, adapter_version=scope.adapter_version,
             prompt_version=scope.prompt_version, model=scope.model,
         )
@@ -207,6 +222,12 @@ def run_windows(
             return
         # Resume: a subdivided parent re-drives its children, no LLM call for it.
         if state == cp.STATE_SUBDIVIDED:
+            if not subdivide_on_length and str(existing.get("error_text") or "").startswith("llm_error:length"):
+                # A higher-level adapter may need to split OUTPUT schemas rather
+                # than input evidence. Convert an older/resumed subdivision into
+                # an explicit terminal signal and do not re-drive its children.
+                _quarantine(window, key, int(existing.get("attempts") or 0), str(existing.get("error_text") or "llm_error:length"))
+                return
             subs = subdivide(window, stage_name=scope.stage_name)
             for sub in subs:
                 _process(sub)
@@ -215,7 +236,7 @@ def run_windows(
         input_tokens = _estimate_input(window)
         cp.upsert_window(
             con, key=key, person_id=scope.person_id, package_date=scope.package_date,
-            stage_name=scope.stage_name, input_digest=window.spec.input_digest,
+            stage_name=scope.stage_name, input_digest=effective_input_digest,
             window_index=window.spec.window_index, adapter_version=scope.adapter_version,
             prompt_version=scope.prompt_version, model=scope.model,
             state=cp.STATE_RUNNING, input_tokens=input_tokens, output_budget=budget.output_reserve,
@@ -232,11 +253,6 @@ def run_windows(
         for attempt in range(1, max_attempts + 1):
             cp.bump_attempt(con, key)
             con.commit()
-            prompt = (
-                render_window(window)
-                if render_window is not None
-                else render(window.units)
-            )
             call = llm.generate(prompt, output_budget=budget.output_reserve)
 
             candidate = call.data
@@ -276,7 +292,9 @@ def run_windows(
             last_error = f"llm_error:{kind} finish={call.finish_reason}"
             if kind in ("length", "invalid_json", "contract"):
                 # Output too big / malformed -> subdivide the INPUT and retry.
-                if not _split_and_recurse(window, key, last_error):
+                if kind == "length" and not subdivide_on_length:
+                    _quarantine(window, key, attempt, last_error)
+                elif not _split_and_recurse(window, key, last_error):
                     _quarantine(window, key, attempt, last_error)
                 return
             # Transient (timeout / unavailable): backoff and retry.
