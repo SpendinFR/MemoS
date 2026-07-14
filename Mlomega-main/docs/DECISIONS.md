@@ -1100,3 +1100,24 @@ l'état courant : cinq appels à 16 k contre un appel de 13 326 tokens rendus à
 exacte avec `MLOMEGA_OLLAMA_CONTEXT_POSTSTOP`; serveur absent, valeur illisible ou
 mismatch rendent le ready faux. La preuve réelle est verte à 24 576 des deux côtés. Ce
 réglage ne remplace ni la projection ni les caps paginés à traiter en I3.
+
+## 2026-07-15 — E64-I/R3 : équivalence par responsabilité, prudence séparée du contenu
+
+**Le nom d'un consommateur n'est pas une preuve.** La matrice R3 couvre les 18 champs de
+responsabilité des quatre contrats et suit les wrappers production V18 jusque dans leurs
+délégués `old_*` qui exécutent réellement le SQL. Un champ doit avoir des faits sources,
+une règle de preuve, un writer et au moins un consommateur réel. La formulation peut
+changer; cette chaîne ne peut pas disparaître.
+
+**Une conversation conserve son détail sans devenir un pattern sûr.** Le premier audit
+shadow avait amélioré la provenance, mais persistait 0,85 pour un modèle relationnel et
+0,90 pour une boucle concernant un locuteur encore inconnu. Décision : conserver le JSON,
+les huit familles V14.6 et leurs refs, mais plafonner à 0,65 la confiance durable produite
+par une seule conversation. La promotion au-delà appartient au longitudinal sur preuves
+indépendantes, pas à Qwen au premier passage.
+
+**Preuve.** Le vrai output shadow a été rejoué dans les writers : huit familles, max 0,65,
+10/10 responsabilités et refs complètes. Les clones R2 donnent aussi 7/7 champs day,
+13/13 bindings résolus, coordination ok, Life 21→0 au replay et aucune source consommée
+manquante. 87 tests sont verts. Les flags restent OFF jusqu'à la pagination R4 et à la
+mesure globale; R3 ne transforme pas une fixture minute en certification huit heures.

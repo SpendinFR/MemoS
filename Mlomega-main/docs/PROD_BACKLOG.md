@@ -909,7 +909,7 @@ réduction statique de JSON comme une validation modèle.
     illisible ou mismatch bloquent le ready. Une promotion ambiguë reste derrière la
     validation stricte et pourra utiliser DeepSeek; ne pas repolir le prompt Qwen 9B.
 
-- [ ] **R3 — prouver l'équivalence avant activation.** Construire une matrice versionnée
+- [x] **R3 — prouver l'équivalence avant activation.** Construire une matrice versionnée
   `champ de schéma → fait/capacité source → preuve → writer historique → consommateur`.
   Exécuter baseline et shadow sur des clones, puis comparer par sens et provenance, pas
   par égalité de formulation. Exigences : chaque champ ancien encore justifié existe,
@@ -919,6 +919,24 @@ réduction statique de JSON comme une validation modèle.
   Mesurer appels, input/output tokens, latence et lignes écrites par stage. Garder les
   flags OFF si la couverture n'est pas 100 %, si le gain global I1+I2 n'atteint pas ×5
   contre les 169 appels, ou si la prudence épistémique baisse.
+
+  **R3 — verdict réel au 2026-07-15 :**
+  - [x] `equivalence_contract.py` couvre les **18/18 responsabilités** des quatre schémas
+    et suit les wrappers V18 jusque dans leur fonction `old_*`/requête SQL réelle. Aucun
+    champ, writer ou consommateur déclaré ne manque.
+  - [x] Comparaison V14 baseline/shadow : 10/10 responsabilités, couverture de preuve
+    shadow 100 % sur profils/modèles/boucles. Le premier verdict était rouge car un
+    locuteur non résolu recevait 0,85 de confiance relationnelle et 0,90 de boucle sur une
+    seule minute. Le writer conserve toutes les sorties mais borne désormais les huit
+    familles conversationnelles à 0,65; replay du vrai JSON shadow : huit familles
+    réécrites, max=0,65, comparaison finale sans régression.
+  - [x] Preuve runtime sur les deux clones R2 : paquet `compiled_ready` avec 7/7 champs;
+    13 bindings actifs et zéro source physique invalide; coordination `ok`, zéro paire
+    comparable; Life 21 sources consommées, zéro absente, replay à zéro et un watch
+    idempotent. **87 tests** élargis verts.
+  - [x] Les flags restent OFF : R3 prouve l'équivalence et la prudence, pas encore la
+    totalité au-delà des caps. L'activation et le nouveau chiffre global appels/tokens/
+    temps attendent R4/I3 et le harnais cinq minutes.
 
 - [ ] **R4 — retirer les caps sans créer de prompts géants.** Une fois R3 verte,
   remplacer les limites de coordination `200/160/120` et le `limit=120` Life par des

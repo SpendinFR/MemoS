@@ -627,6 +627,21 @@ Le préflight llama.cpp compare en outre le contexte post-stop au `n_ctx` réel 
 promotion ambiguë doit rester validée par provenance et peut être déléguée à DeepSeek;
 ne pas contourner le garde en repromptant Qwen jusqu'à obtenir un JSON plaisant.
 
+## OBS-44 — Une minute donnait 0,85/0,90 à un modèle relationnel non identifié (CORRIGÉ — R3)
+
+La comparaison exécutable baseline/shadow a d'abord échoué alors que les refs et les dix
+champs étaient présents : le shadow persistait une relation à 0,85 et une boucle à 0,90
+pour `UNKNOWN_VOICE_002`, parfois libellé « suspected Maxime ». Ce n'était pas une perte
+de champ mais une baisse de prudence, et ces lignes sont directement relues par le feed
+BrainLive.
+
+Correction : le raw model reste journalisé et aucune famille n'est supprimée, mais les
+huit writers V14.6 issus d'une conversation isolée plafonnent leur confiance durable à
+0,65. La répétition indépendante/longitudinale reste le seul chemin de promotion. Le
+vrai JSON shadow a été rejoué : huit familles écrites, max 0,65, couverture de preuve
+100 %, comparaison R3 verte. La matrice suit en outre 18/18 responsabilités jusque dans
+les consumers SQL réels; 87 tests élargis sont verts.
+
 ## Notes that are NOT bugs (expected, documented so future runs don't chase them)
 
 - **`ai_ready=false` / `/health` 200 with `pairing_ready=true`.** Expected on a

@@ -1013,3 +1013,33 @@ le défaut orchestrateur reste 16384. Il faut donc définir
 `MLOMEGA_OLLAMA_CONTEXT_POSTSTOP=24576` pour ce serveur. Le préflight compare maintenant
 la valeur au `n_ctx` réel de `/props`; 16 384 contre 24 576 est un échec bloquant, et non
 plus cinq subdivisions silencieuses d'un payload rendu de 13 326 tokens.
+
+### Checkpoint R3 — équivalence exécutable (2026-07-15)
+
+R3 ne compare pas la prose Qwen caractère par caractère. Le contrat versionné
+`night_orchestrator/equivalence_contract.py` relie chaque responsabilité à ses faits,
+sa politique de preuve, son writer et ses consommateurs. Il suit explicitement les
+wrappers V18 jusque dans la fonction `old_*` qui effectue la lecture SQL; le nom public
+d'une fonction n'est pas accepté comme preuve. Résultat : 18/18 responsabilités des
+schémas day package/watch/reconciliation/Life sont couvertes.
+
+La première comparaison des clones R1 a correctement échoué : malgré 10/10 champs et
+une couverture de refs shadow à 100 %, V14.6 avait persisté 0,85/0,90 pour un locuteur
+toujours inconnu, à partir d'une minute. Le JSON brut reste dans le journal, mais les
+huit writers conversationnels plafonnent maintenant une observation isolée à 0,65.
+Le replay du vrai output shadow dans `e64i-r3-writerproof-20260715.db` conserve les huit
+familles et toutes les preuves, avec max=0,65; la comparaison finale est verte.
+
+Preuve runtime séparée, sans nouveau CloseDay :
+
+- coordination `e64i-r2-coordination-20260715-001235.db` : package
+  `bldaypkg_fd732c6ed4b1f5a3` `compiled_ready`, 7/7 champs, run
+  `b2blrun_0340609821e0884a` `ok`, 13 bindings actifs, zéro source invalide et zéro
+  réconciliation nouvelle faute de paire comparable;
+- Life `e64i-r2-checkpoint-proof-20260715-0220.db` : 21 sources exactes consommées,
+  zéro absente, replay source_count=0, un watch occurrence=1/independent=1;
+- 87 tests E64/I2/Life/CloseDay/préflight/R3 verts.
+
+R3 est clos, mais les deux flags restent désactivés. La prochaine action est R4/I3 :
+remplacer les caps 200/160/120 par pagination complète et reprise atomique, puis seulement
+mesurer le harnais cinq minutes et le gain global.

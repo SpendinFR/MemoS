@@ -177,6 +177,18 @@ def _clamp(v: Any, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, f))
 
 
+def _conversation_hypothesis_confidence(value: Any) -> float:
+    """A single conversation can create a hypothesis, not a durable pattern.
+
+    The raw model confidence remains in the run journal.  Durable V14.6 rows stay
+    below the promotion boundary until longitudinal code sees independent
+    conversations/outcomes; this prevents a one-minute unknown speaker sample
+    from becoming a 0.9 relationship truth used by BrainLive.
+    """
+
+    return _clamp(value, hi=0.65)
+
+
 def _normalize_interpersonal_contract(value: dict[str, Any]) -> dict[str, Any]:
     """Normalize model leaf types to the declared contract before SQLite writers.
 
@@ -555,7 +567,7 @@ def analyze_interpersonal_state(conversation_id: str, *, person_id: str | None =
                     "social_intent_hypothesis": item.get("social_intent_hypothesis"),
                     "evidence_json": json_dumps((item.get("evidence_turn_ids") or []) + (item.get("evidence_texts") or [])),
                     "counter_evidence_json": json_dumps(item.get("counter_evidence") or []),
-                    "confidence": _clamp(item.get("confidence")),
+                    "confidence": _conversation_hypothesis_confidence(item.get("confidence")),
                     "created_at": now,
                     "updated_at": now,
                 }, "snapshot_id")
@@ -579,7 +591,7 @@ def analyze_interpersonal_state(conversation_id: str, *, person_id: str | None =
                     "latency": item.get("latency"),
                     "evidence_json": json_dumps(item.get("evidence") or []),
                     "counter_evidence_json": json_dumps(item.get("counter_evidence") or []),
-                    "confidence": _clamp(item.get("confidence")),
+                    "confidence": _conversation_hypothesis_confidence(item.get("confidence")),
                     "created_at": now,
                     "updated_at": now,
                 }, "coupling_id")
@@ -600,7 +612,7 @@ def analyze_interpersonal_state(conversation_id: str, *, person_id: str | None =
                     "life_domain_affected": item.get("life_domain_affected"),
                     "time_horizon": item.get("time_horizon"),
                     "evidence_json": json_dumps(item.get("evidence") or []),
-                    "confidence": _clamp(item.get("confidence")),
+                    "confidence": _conversation_hypothesis_confidence(item.get("confidence")),
                     "created_at": now,
                     "updated_at": now,
                 }, "impact_id")
@@ -621,7 +633,7 @@ def analyze_interpersonal_state(conversation_id: str, *, person_id: str | None =
                     "watch_until": item.get("watch_until"),
                     "evidence_json": json_dumps(item.get("evidence") or []),
                     "status": "open",
-                    "confidence": _clamp(item.get("confidence")),
+                    "confidence": _conversation_hypothesis_confidence(item.get("confidence")),
                     "created_at": now,
                     "updated_at": now,
                 }, "aftereffect_id")
@@ -651,7 +663,7 @@ def analyze_interpersonal_state(conversation_id: str, *, person_id: str | None =
                     "repair_conditions_json": json_dumps(item.get("repair_conditions") or []),
                     "evidence_json": json_dumps(item.get("evidence") or []),
                     "counter_evidence_json": json_dumps(item.get("counter_evidence") or []),
-                    "confidence": _clamp(item.get("confidence")),
+                    "confidence": _conversation_hypothesis_confidence(item.get("confidence")),
                     "created_at": created_at,
                     "updated_at": now,
                 }, "model_id")
@@ -677,7 +689,7 @@ def analyze_interpersonal_state(conversation_id: str, *, person_id: str | None =
                     "evidence_json": json_dumps(item.get("evidence") or []),
                     "counter_evidence_json": json_dumps(item.get("counter_evidence") or []),
                     "status": "hypothesis",
-                    "confidence": _clamp(item.get("confidence")),
+                    "confidence": _conversation_hypothesis_confidence(item.get("confidence")),
                     "created_at": created_at,
                     "updated_at": now,
                 }, "loop_id")
@@ -695,7 +707,7 @@ def analyze_interpersonal_state(conversation_id: str, *, person_id: str | None =
                     "when_to_use": item.get("when_to_use"),
                     "risk_if_used_wrong": item.get("risk_if_used_wrong"),
                     "status": "suggested",
-                    "confidence": _clamp(item.get("confidence")),
+                    "confidence": _conversation_hypothesis_confidence(item.get("confidence")),
                     "created_at": now,
                     "updated_at": now,
                 }, "suggestion_id")
@@ -718,7 +730,7 @@ def analyze_interpersonal_state(conversation_id: str, *, person_id: str | None =
                     "what_system_thinks_they_often_think_or_seek_json": json_dumps(item.get("what_system_thinks_they_often_think_or_seek") or []),
                     "what_is_uncertain_json": json_dumps(item.get("what_is_uncertain") or []),
                     "evidence_json": json_dumps(item.get("evidence") or []),
-                    "confidence": _clamp(item.get("confidence")),
+                    "confidence": _conversation_hypothesis_confidence(item.get("confidence")),
                     "created_at": created_at,
                     "updated_at": now,
                 }, "summary_id")
