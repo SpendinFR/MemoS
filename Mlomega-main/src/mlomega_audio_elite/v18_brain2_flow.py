@@ -265,11 +265,22 @@ def install(module: Any) -> dict[str, Any]:
             )
 
             def _clarifications() -> dict[str, Any]:
+                inbox = run_clarification_inbox(
+                    conversation_id, person_id=person_id, trigger_type=trigger_type
+                )
+                inbox_status = str(inbox.get("status") or "ok").strip().lower()
+                if inbox_status not in {"ok", "completed"}:
+                    raise StageGateError(
+                        f"v14 clarification inbox status={inbox_status}: "
+                        f"{str(inbox.get('error') or inbox.get('error_text') or '')[:1200]}"
+                    )
                 return {
-                    "inbox": run_clarification_inbox(
-                        conversation_id, person_id=person_id, trigger_type=trigger_type
-                    ),
-                    "export": export_clarification_inbox(),
+                    "inbox": inbox,
+                    # V18 deliberately disables legacy/default-owner lookup.
+                    # Keep the owner explicit across both halves of the stage;
+                    # otherwise the inbox analysis succeeds and the export
+                    # immediately fails closed on a fresh production run.
+                    "export": export_clarification_inbox(person_id=person_id),
                 }
 
             cases_cache: dict[str, Any] = {}

@@ -21,11 +21,13 @@ here.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from . import checkpoint_store as cp
 from .evidence_ref import content_digest
+from .stage_adapter import estimate_tokens_for_text
 from .window_planner import PlannedWindow, PlanUnit, plan_windows, subdivide
 
 
@@ -154,11 +156,17 @@ def run_windows(
         overlap=overlap,
     )
 
-    def _estimate_input(window: PlannedWindow) -> int:
-        # Budget on the units' DECLARED token cost (same basis as the planner),
-        # plus a fixed prompt/schema overhead. The adapter is responsible for
-        # PlanUnit.tokens reflecting the real per-unit prompt cost.
-        return sum(u.tokens for u in window.units) + prompt_overhead_tokens
+    def _estimate_input(window: PlannedWindow, prompt: Mapping[str, Any]) -> int:
+        # Enforce the budget against the concrete rendered request, not only the
+        # evidence units. Hierarchical adapters add paths, digests, refs, shared
+        # context and an executable schema; on V14 Interpersonal those wrappers
+        # made a real 24,347-token request look like 17,043 tokens. Keep declared
+        # accounting as a lower bound for adapters with opaque prompt objects.
+        declared = sum(u.tokens for u in window.units) + prompt_overhead_tokens
+        rendered = estimate_tokens_for_text(
+            json.dumps(prompt, ensure_ascii=False, sort_keys=True, default=str)
+        )
+        return max(declared, rendered)
 
     def _split_and_recurse(window: PlannedWindow, key: str, error_text: str) -> bool:
         """Subdivide a window into children and drive them. Returns False if the
@@ -233,7 +241,7 @@ def run_windows(
                 _process(sub)
             return
 
-        input_tokens = _estimate_input(window)
+        input_tokens = _estimate_input(window, prompt)
         cp.upsert_window(
             con, key=key, person_id=scope.person_id, package_date=scope.package_date,
             stage_name=scope.stage_name, input_digest=effective_input_digest,

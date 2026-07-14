@@ -58,7 +58,7 @@ from .coverage import (
 )
 from .ollama_window_llm import OllamaWindowLLM
 from .prompt_projection import project_opaque_ref_lists
-from .hierarchical_json import run_hierarchical_json
+from .hierarchical_json import build_evidence_leaf_index, run_hierarchical_json
 
 __all__ = [
     "EvidenceRef",
@@ -98,5 +98,6 @@ __all__ = [
     "stage_stats",
     "OllamaWindowLLM",
     "project_opaque_ref_lists",
+    "build_evidence_leaf_index",
     "run_hierarchical_json",
 ]

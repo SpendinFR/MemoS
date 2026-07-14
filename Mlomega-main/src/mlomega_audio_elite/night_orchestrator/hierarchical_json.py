@@ -10,11 +10,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from contextlib import nullcontext
+import math
 from typing import Any, Mapping, Sequence
 
 from ..config import get_settings
 from ..db import connect
-from ..utils import json_dumps, now_iso, sha256_bytes, stable_id
+from ..utils import json_dumps, json_loads, now_iso, sha256_bytes, stable_id
 from .coverage import (
     build_coverage_report,
     covered_refs_from_outputs_table,
@@ -50,7 +51,19 @@ def _extract_lists(value: Any, path: tuple[str, ...] = ()) -> tuple[Any, list[_L
             }:
                 base[str(key)] = child
                 continue
-            projected, child_leaves = _extract_lists(child, path + (str(key),))
+            # SQLite projections commonly persist large evidence collections as
+            # ``*_json`` text. Treating those strings as indivisible shared
+            # context repeated 100k+ tokens in every reconciliation window.
+            # Decode only explicitly JSON-named fields and preserve the exact
+            # parsed values as ordinary evidence leaves.
+            parsed_child = child
+            if isinstance(child, str) and str(key).endswith("_json"):
+                decoded = json_loads(child, None)
+                if isinstance(decoded, (list, dict)):
+                    parsed_child = decoded
+            projected, child_leaves = _extract_lists(
+                parsed_child, path + (str(key),)
+            )
             base[str(key)] = projected
             leaves.extend(child_leaves)
         return base, leaves
@@ -65,6 +78,33 @@ def _extract_lists(value: Any, path: tuple[str, ...] = ()) -> tuple[Any, list[_L
             ))
         return {"item_count": len(value), "items_supplied_by_window": True}, leaves
     return value, leaves
+
+
+def build_evidence_leaf_index(payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Resolve opaque night leaves back to the exact input rows they represent.
+
+    Business validators still own table and owner checks.  The digest alias is
+    accepted only when it is the exact, unique digest of a leaf in this payload;
+    this recovers a Qwen copy error observed with adjacent ``evidence_ref`` and
+    ``digest`` fields without trusting an invented identifier.
+    """
+    _, leaves = _extract_lists(dict(payload))
+    index: dict[str, dict[str, Any]] = {}
+    digest_entries: dict[str, dict[str, Any] | None] = {}
+    for leaf in leaves:
+        entry = {
+            "ref_id": leaf.ref_id,
+            "path": tuple(leaf.path),
+            "value": leaf.value,
+            "digest": leaf.digest,
+        }
+        index[leaf.ref_id] = entry
+        digest_key = f"nightleaf_{leaf.digest}"
+        digest_entries[digest_key] = (
+            None if digest_key in digest_entries else entry
+        )
+    index.update({key: entry for key, entry in digest_entries.items() if entry})
+    return index
 
 
 def _window_payload(base: Any, leaves: Sequence[_Leaf]) -> dict[str, Any]:
@@ -87,7 +127,71 @@ def _validate_schema_shape(value: Any, schema: Mapping[str, Any]) -> bool:
     return isinstance(value, Mapping) and set(schema).issubset(value)
 
 
-def run_hierarchical_json(
+def _lossless_array_union(
+    values: Sequence[Mapping[str, Any]], schema: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Union disjoint window findings without asking an LLM to copy JSON.
+
+    This is intentionally narrow and opt-in: every top-level field must be an
+    array or a numeric aggregate. Arrays preserve first-seen order and remove
+    exact canonical duplicates only; semantic near-duplicates and contradictions
+    remain. Numeric aggregates use the finite arithmetic mean.
+    """
+    merged: dict[str, Any] = {}
+    for key, template in schema.items():
+        present = [value.get(key) for value in values if key in value]
+        if isinstance(template, list):
+            if any(not isinstance(item, list) for item in present):
+                return None
+            seen: set[str] = set()
+            combined: list[Any] = []
+            for items in present:
+                for item in items:
+                    digest = _digest(item)
+                    if digest not in seen:
+                        seen.add(digest)
+                        combined.append(item)
+            merged[key] = combined
+            continue
+        if isinstance(template, (int, float)) and not isinstance(template, bool):
+            numbers = [
+                float(item) for item in present
+                if isinstance(item, (int, float)) and not isinstance(item, bool)
+                and math.isfinite(float(item))
+            ]
+            if len(numbers) != len(present) or not numbers:
+                return None
+            merged[key] = sum(numbers) / len(numbers)
+            continue
+        return None
+    return merged
+
+
+def _output_cardinality_guard(
+    schema: Mapping[str, Any], *, output_budget: int
+) -> dict[str, Any]:
+    """Describe a bounded *derived* projection without dropping source proof.
+
+    The raw evidence remains in its source tables and coverage manifest.  This
+    guard prevents a model from turning a small operational schema into an
+    unbounded catalogue that is guaranteed to hit the response limit.
+    """
+    top_level_lists = max(1, sum(isinstance(value, list) for value in schema.values()))
+    max_items = max(4, min(16, int(output_budget) // (180 * top_level_lists)))
+    return {
+        "max_response_tokens": max(256, int(output_budget) - 384),
+        "max_items_per_top_level_list": max_items,
+        "max_values_per_nested_list": 8,
+        "max_chars_per_free_text_field": 600,
+        "selection_rule": (
+            "Keep the most distinct, evidence-backed and operationally useful "
+            "items. Merge real duplicates; do not omit contradictions. This "
+            "bounds only the derived projection: source evidence remains durable."
+        ),
+    }
+
+
+def _run_hierarchical_json_single_schema(
     *,
     stage_name: str,
     person_id: str,
@@ -101,8 +205,16 @@ def run_hierarchical_json(
     context_window: int | None = None,
     output_budget: int | None = None,
     connection: Any | None = None,
+    lossless_array_merge: bool = False,
 ) -> dict[str, Any]:
     """Return one complete schema object or raise without applying a partial."""
+    # Legacy stages often embed the exact output schema in their payload. It is
+    # control metadata, not evidence: the renderer includes it in the business
+    # prompt and the provider also receives it as an executable JSON grammar.
+    # Drop only that identical transport duplicate.
+    payload = dict(payload)
+    if payload.get("schema") == schema:
+        payload.pop("schema", None)
     cfg = get_settings()
     context_window = int(context_window or cfg.ollama_context_poststop)
     if output_budget is None:
@@ -117,21 +229,39 @@ def run_hierarchical_json(
         output_reserve=int(output_budget),
         safety_margin=768,
     )
+    cardinality_guard = _output_cardinality_guard(
+        schema, output_budget=int(output_budget)
+    )
     llm = OllamaWindowLLM(
         system=system, client=client, schema_hint=dict(schema), timeout=timeout
     )
     model = str(getattr(llm, "model", "ollama-json"))
-    full_probe = json_dumps({
+    digest = _digest(payload)
+    complete_leaf = _Leaf(
+        stable_id("nightleaf", stage_name, digest), ("$",), dict(payload), digest
+    )
+    # Probe the exact level-0 envelope, not a smaller approximation.  The
+    # evidence-ref/digest/window wrapper is material on near-limit payloads: an
+    # earlier approximation admitted a 20,190-token clarification request into
+    # a 19,712-token budget and then quarantined it before the first call.
+    complete_probe = json_dumps({
         "mission": payload.get("mission"),
-        "hierarchical_instruction": "bounded complete input",
-        "input": payload,
+        "hierarchical_instruction": (
+            "Analyse uniquement cette fenÃªtre de preuves. Produis le "
+            "schÃ©ma mÃ©tier complet pour ce sous-ensemble; n'invente "
+            "aucune preuve absente."
+        ),
+        "level": 0,
+        "input": _window_payload({"complete_input_window": True}, [complete_leaf]),
         "schema": schema,
+        "output_cardinality_guard": cardinality_guard,
     })
-    if estimate_tokens_for_text(full_probe) <= budget.max_input_tokens:
-        digest = _digest(payload)
-        leaves = [_Leaf(
-            stable_id("nightleaf", stage_name, digest), ("$",), dict(payload), digest
-        )]
+    # ``run_windows`` budgets the complete request mapping, including the
+    # separately supplied schema hint. Mirror that calculation here; measuring
+    # only the prompt string still under-counted the clarification contract.
+    complete_request = {"prompt": complete_probe, "schema_hint": dict(schema)}
+    if estimate_tokens_for_text(json_dumps(complete_request)) <= budget.max_input_tokens:
+        leaves = [complete_leaf]
         base = {"complete_input_window": True}
     else:
         base, leaves = _extract_lists(dict(payload))
@@ -188,6 +318,7 @@ def run_hierarchical_json(
                         "level": level,
                         "input": body,
                         "schema": schema,
+                        "output_cardinality_guard": cardinality_guard,
                     }),
                     "schema_hint": dict(schema),
                 }
@@ -211,9 +342,15 @@ def run_hierarchical_json(
                 "level": level,
                 "input": {},
                 "schema": schema,
+                "output_cardinality_guard": cardinality_guard,
             })
             overhead_tokens = estimate_tokens_for_text(empty)
-            target_units = 10 if level == 0 else 4
+            # Use the planner's validated 40-50-unit operating point.  The old
+            # value of 10 created dozens of tiny calls even when the token
+            # budget could safely carry far more evidence.  Token accounting
+            # remains the hard limit, so this changes batching only, never
+            # evidence coverage.
+            target_units = 45 if level == 0 else 4
             expected_planned_count = len(plan_windows(
                 units,
                 stage_name=scoped_stage,
@@ -228,8 +365,8 @@ def run_hierarchical_json(
                     person_id=person_id,
                     package_date=package_date,
                     stage_name=scoped_stage,
-                    adapter_version="e64f-hierarchical-json-v1",
-                    prompt_version=f"{stage_name}:v1",
+                    adapter_version="e64f-hierarchical-json-v4-dense-windows",
+                    prompt_version=f"{stage_name}:v3-dense-cardinality",
                     model=model,
                 ),
                 llm=llm,
@@ -253,6 +390,23 @@ def run_hierarchical_json(
             outputs = [out for out in stage.outputs if isinstance(out, Mapping)]
             if not outputs:
                 raise RuntimeError(f"{scoped_stage} completed without output")
+            if lossless_array_merge and len(outputs) > 1:
+                partials = [
+                    out.get("result") for out in outputs
+                    if isinstance(out.get("result"), Mapping)
+                ]
+                merged = _lossless_array_union(partials, schema)
+                if merged is None or len(partials) != len(outputs):
+                    raise RuntimeError(
+                        f"{scoped_stage} is not eligible for lossless array merge"
+                    )
+                final_output = merged
+                final_parent_refs = list(dict.fromkeys(
+                    str(ref)
+                    for out in outputs
+                    for ref in out.get("evidence_refs", [])
+                ))
+                break
             if level > 0 and len(outputs) > expected_planned_count:
                 # The planner proved this merge level needed fewer calls. Extra
                 # outputs therefore came from response-length subdivision, not
@@ -310,3 +464,212 @@ def run_hierarchical_json(
             )
     assert final_output is not None
     return final_output
+
+
+def _schema_responsibility_parts(
+    schema: Mapping[str, Any], *, max_schema_chars: int = 1400,
+    max_list_fields: int = 2,
+) -> list[dict[str, Any]]:
+    """Partition a broad top-level contract into disjoint responsibilities.
+
+    Every part receives the same evidence.  Only output ownership is split, so
+    no event, prompt rule or business capability is removed.  The partition is
+    deterministic and preserves the original key order.
+    """
+    parts: list[dict[str, Any]] = []
+    current: dict[str, Any] = {}
+    current_family: str | None = None
+    current_list_fields = 0
+
+    def family(template: Any) -> str:
+        # Array/numeric contracts can be merged deterministically.  Never mix
+        # them with a semantic object: one such object disabled the lossless
+        # union for an otherwise array-only responsibility and made live-ready
+        # recursively regenerate the same large JSON during fan-in.
+        if isinstance(template, list) or (
+            isinstance(template, (int, float)) and not isinstance(template, bool)
+        ):
+            return "lossless"
+        if isinstance(template, Mapping):
+            return "object"
+        return "scalar"
+
+    for key, template in schema.items():
+        item_family = family(template)
+        candidate = {**current, str(key): template}
+        should_flush = bool(current) and (
+            len(json_dumps(candidate)) > max_schema_chars
+            or current_family != item_family
+            or (item_family == "lossless" and current_list_fields >= max_list_fields)
+            or item_family == "object"
+        )
+        if should_flush:
+            parts.append(current)
+            current = {str(key): template}
+            current_family = item_family
+            current_list_fields = 1 if item_family == "lossless" else 0
+        else:
+            current = candidate
+            current_family = item_family
+            if item_family == "lossless":
+                current_list_fields += 1
+    if current:
+        parts.append(current)
+    return parts
+
+
+def _requires_output_responsibility_split(schema: Mapping[str, Any]) -> bool:
+    """Identify contracts known to be too broad for one bounded JSON answer.
+
+    Real Qwen 9B runs showed the recurring failure boundary around the V14
+    Interpersonal and V15 Life-Model contracts (roughly 3k schema characters,
+    9+ independent top-level collections).  Small schemas remain on the normal
+    single-contract path, avoiding unnecessary duplicate evidence reads.
+    """
+    list_fields = sum(isinstance(value, list) for value in schema.values())
+    return len(json_dumps(schema)) >= 2000 or list_fields >= 8
+
+
+def _supports_lossless_window_union(schema: Mapping[str, Any]) -> bool:
+    return bool(schema) and all(
+        isinstance(value, list)
+        or (isinstance(value, (int, float)) and not isinstance(value, bool))
+        for value in schema.values()
+    )
+
+
+def run_hierarchical_json(
+    *,
+    stage_name: str,
+    person_id: str,
+    package_date: str,
+    source_ref: str,
+    system: str,
+    payload: Mapping[str, Any],
+    schema: Mapping[str, Any],
+    timeout: float,
+    client: Any | None = None,
+    context_window: int | None = None,
+    output_budget: int | None = None,
+    connection: Any | None = None,
+    lossless_array_merge: bool = False,
+) -> dict[str, Any]:
+    """Run a bounded JSON stage, splitting broad OUTPUT contracts centrally.
+
+    This is the shared prevention layer: large schemas are separated before an
+    inevitably truncated full-schema call.  Each responsibility sees the full
+    payload, produces disjoint keys, and is checkpointed independently.  The
+    final merge is a plain key union, therefore it cannot drop or reinterpret a
+    result from another responsibility.
+    """
+    schema = dict(schema)
+    if not _requires_output_responsibility_split(schema):
+        return _run_hierarchical_json_single_schema(
+            stage_name=stage_name,
+            person_id=person_id,
+            package_date=package_date,
+            source_ref=source_ref,
+            system=system,
+            payload=payload,
+            schema=schema,
+            timeout=timeout,
+            client=client,
+            context_window=context_window,
+            output_budget=output_budget,
+            connection=connection,
+            lossless_array_merge=lossless_array_merge,
+        )
+
+    parts = _schema_responsibility_parts(schema)
+    if len(parts) <= 1:
+        return _run_hierarchical_json_single_schema(
+            stage_name=stage_name,
+            person_id=person_id,
+            package_date=package_date,
+            source_ref=source_ref,
+            system=system,
+            payload=payload,
+            schema=schema,
+            timeout=timeout,
+            client=client,
+            context_window=context_window,
+            output_budget=output_budget,
+            connection=connection,
+            lossless_array_merge=lossless_array_merge,
+        )
+
+    merged: dict[str, Any] = {}
+    covered_responsibilities: list[str] = []
+    expected_responsibilities: list[str] = []
+    for index, part in enumerate(parts):
+        keys = tuple(part)
+        responsibility_ref = stable_id(
+            "nightresponsibility", stage_name, index, *keys
+        )
+        expected_responsibilities.append(responsibility_ref)
+        part_payload = dict(payload)
+        if part_payload.get("schema") == schema:
+            # The executable schema is already supplied out-of-band.  Never
+            # leave the original full contract inside a focused prompt.
+            part_payload.pop("schema", None)
+        key_tag = stable_id("responsibility", *keys)[-12:]
+        part_result = _run_hierarchical_json_single_schema(
+            stage_name=f"{stage_name}:responsibility_{index}_{key_tag}",
+            person_id=person_id,
+            package_date=package_date,
+            source_ref=f"{source_ref}:responsibility:{index}",
+            system=(
+                system
+                + "\nResponsabilit\u00e9 de sortie cibl\u00e9e: produis uniquement les "
+                  "cl\u00e9s du sch\u00e9ma fourni; les autres responsabilit\u00e9s sont "
+                  "trait\u00e9es s\u00e9par\u00e9ment sur les m\u00eames preuves."
+            ),
+            payload=part_payload,
+            schema=part,
+            timeout=timeout,
+            client=client,
+            context_window=context_window,
+            output_budget=output_budget,
+            connection=connection,
+            lossless_array_merge=(
+                lossless_array_merge or _supports_lossless_window_union(part)
+            ),
+        )
+        if set(part_result) != set(part):
+            raise RuntimeError(
+                f"{stage_name} responsibility {index} returned wrong keys: "
+                f"expected={sorted(part)} observed={sorted(part_result)}"
+            )
+        overlap = set(merged).intersection(part_result)
+        if overlap:
+            raise RuntimeError(
+                f"{stage_name} responsibility overlap: {sorted(overlap)}"
+            )
+        merged.update(part_result)
+        covered_responsibilities.append(responsibility_ref)
+
+    if set(merged) != set(schema):
+        raise RuntimeError(
+            f"{stage_name} responsibility coverage incomplete: "
+            f"missing={sorted(set(schema) - set(merged))}"
+        )
+    report = build_coverage_report(
+        stage_name=stage_name,
+        expected_ids=expected_responsibilities,
+        covered_refs=covered_responsibilities,
+    )
+    with (nullcontext(connection) if connection is not None else connect()) as con:
+        persist_coverage(
+            con,
+            person_id=person_id,
+            package_date=package_date,
+            source_ref=source_ref,
+            report=report,
+        )
+        con.commit()
+    if not report.ok:
+        raise RuntimeError(
+            f"{stage_name} responsibility manifest incomplete: "
+            f"missing={len(report.missing)}"
+        )
+    return {key: merged[key] for key in schema}

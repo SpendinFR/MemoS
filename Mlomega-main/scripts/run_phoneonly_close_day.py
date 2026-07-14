@@ -176,7 +176,11 @@ def main() -> int:
             "maintenance": maintenance,
         }
 
-    print(json.dumps(result, ensure_ascii=False))
+    # Windows consoles commonly use CP1252.  A valid CloseDay result may contain
+    # Greek, Cyrillic or emoji, so emitting raw Unicode can raise after every
+    # database stage has already completed and falsely report the whole run as
+    # failed.  Escaped JSON is transport-equivalent and console-safe.
+    print(json.dumps(result, ensure_ascii=True))
     return 0 if str(result.get("status")) == "completed" else 2
 
 

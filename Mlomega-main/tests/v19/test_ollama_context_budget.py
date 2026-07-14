@@ -1,6 +1,52 @@
 from __future__ import annotations
 
 
+def test_llamacpp_backend_uses_openai_json_schema(monkeypatch):
+    from mlomega_audio_elite import llm
+
+    captured = {}
+
+    def fake_chat(**kwargs):
+        captured.update(kwargs)
+        return {
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"content": '{"ok":true}'},
+                }
+            ]
+        }
+
+    monkeypatch.setenv("MLOMEGA_LLM_BACKEND", "llamacpp")
+    monkeypatch.setenv("MLOMEGA_LLAMACPP_MODEL", "qwen-test")
+    monkeypatch.setattr(llm, "llamacpp_chat_json", fake_chat)
+
+    client = llm.OllamaJsonClient()
+    assert client.require_json("system", "prompt", {"ok": True}) == {"ok": True}
+    assert client.backend == "llamacpp"
+    assert captured["model"] == "qwen-test"
+    assert captured["json_schema"]["required"] == ["ok"]
+
+
+def test_llamacpp_length_is_reported_as_truncation(monkeypatch):
+    from mlomega_audio_elite import llm
+
+    monkeypatch.setenv("MLOMEGA_LLM_BACKEND", "llamacpp")
+    monkeypatch.setattr(
+        llm,
+        "llamacpp_chat_json",
+        lambda **kwargs: {
+            "choices": [
+                {"finish_reason": "length", "message": {"content": '{"ok":'}}
+            ]
+        },
+    )
+    result = llm.OllamaJsonClient().generate_json("system", "prompt", {"ok": True})
+    assert result.ok is False
+    assert result.error_kind == "truncated_output"
+    assert result.finish_reason == "length"
+
+
 def test_ollama_uses_distinct_total_context_windows(monkeypatch):
     from mlomega_audio_elite import llm
     from mlomega_audio_elite.runtime_v18_7 import phase

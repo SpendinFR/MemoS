@@ -6,6 +6,27 @@ import pytest
 pytestmark = pytest.mark.memory
 
 
+def test_canonical_life_model_schema_requires_structured_evidence_refs():
+    from mlomega_audio_elite.brain2_life_model_v15_10 import CANONICAL_SCHEMA
+    from mlomega_audio_elite.v18_life_model import _CANONICAL_LIFE_LAYERS
+
+    canonical_layers = [
+        key for key, value in CANONICAL_SCHEMA.items()
+        if isinstance(value, list) and value and isinstance(value[0], dict)
+        and "evidence" in value[0]
+    ]
+    assert canonical_layers
+    assert set(canonical_layers) == set(_CANONICAL_LIFE_LAYERS)
+    assert "missing_evidence_for_magic" not in _CANONICAL_LIFE_LAYERS
+    assert "do_not_infer_live_without" not in _CANONICAL_LIFE_LAYERS
+    for layer in canonical_layers:
+        item = CANONICAL_SCHEMA[layer][0]
+        assert item["evidence"] == [{"source_table": "", "source_id": ""}]
+        assert item["counter_evidence"] == [
+            {"source_table": "", "source_id": ""}
+        ]
+
+
 def test_legacy_api_refuses_start_without_explicit_opt_in(monkeypatch):
     monkeypatch.delenv("MLOMEGA_ENABLE_LEGACY_API", raising=False)
     from mlomega_audio_elite import api
@@ -21,7 +42,13 @@ def test_v19_visual_schema_and_direct_evidence_source(tmp_path, monkeypatch):
 
     from mlomega_audio_elite.db import connect
     from mlomega_audio_elite.v19_visual_store import ensure_v19_visual_schema, store_visual_event
-    from mlomega_audio_elite.v18_life_model import _DIRECT_EVIDENCE_SOURCES, _owned_evidence_ref, validate_stratum_evidence
+    from mlomega_audio_elite.v18_life_model import (
+        _DIRECT_EVIDENCE_SOURCES,
+        _owned_evidence_ref,
+        _validate_evidence_refs,
+        validate_stratum_evidence,
+    )
+    from mlomega_audio_elite.night_orchestrator import build_evidence_leaf_index
 
     ensure_v19_visual_schema(db_path)
     event_id = store_visual_event({
@@ -40,8 +67,28 @@ def test_v19_visual_schema_and_direct_evidence_source(tmp_path, monkeypatch):
     assert _DIRECT_EVIDENCE_SOURCES["visual_events_v19"] == ("visual_event_id", "person_id", ("occurred_at", "created_at"))
     with connect(db_path) as con:
         ref = _owned_evidence_ref(con, person_id="person-a", table="visual_events_v19", source_id=event_id)
+        leaf_index = build_evidence_leaf_index({
+            "raw_evidence": {
+                "visual_events_v19": [{"visual_event_id": event_id}]
+            }
+        })
+        leaf_ref = next(
+            key for key in leaf_index
+            if len(key) == len("nightleaf_") + 16
+        )
+        resolved = _validate_evidence_refs(
+            con,
+            person_id="person-a",
+            refs=[{
+                "source_table": "raw_evidence.visual_events_v19",
+                "source_id": leaf_ref,
+            }],
+            leaf_index=leaf_index,
+        )
     assert ref["source_table"] == "visual_events_v19"
     assert ref["occurred_at"].startswith("2026-07-03T10:00:00")
+    assert resolved[0]["source_table"] == "visual_events_v19"
+    assert resolved[0]["source_id"] == event_id
     validate_stratum_evidence(refs=[ref], stratum="situational")
 
 

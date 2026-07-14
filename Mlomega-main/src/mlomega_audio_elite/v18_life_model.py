@@ -95,6 +95,34 @@ _SESSION_EVIDENCE_SOURCES: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "brainlive_active_contexts": ("active_context_id", "live_session_id", ("created_at",)),
 }
 
+# Logical feed names whose physical SQLite table deliberately differs.  These
+# keys are read from deterministic orchestrator paths, never from model text.
+_EVIDENCE_PATH_TABLE_ALIASES = {
+    "turns_recent": "turns",
+    "global_patterns_v17": "brain2_global_life_patterns_v17",
+    "personal_routine_models": "brain2_personal_routine_models",
+    "place_preference_models": "brain2_place_preference_models",
+    "action_preference_models": "brain2_action_preference_models",
+    "need_expectation_models": "brain2_need_expectation_models",
+    "expression_state_models": "brain2_expression_state_models",
+    "emotional_trajectory_models": "brain2_emotional_trajectory_models",
+    "contextual_self_models": "brain2_contextual_self_models",
+    "live_prediction_hooks": "brain2_live_prediction_hooks",
+    "live_affordance_preferences": "brain2_live_affordance_preferences",
+}
+
+_CANONICAL_LIFE_LAYERS = frozenset({
+    "personal_routine_models",
+    "place_preference_models",
+    "action_preference_models",
+    "need_expectation_models",
+    "expression_state_models",
+    "emotional_trajectory_models",
+    "contextual_self_models",
+    "live_prediction_hooks",
+    "live_affordance_preferences",
+})
+
 
 def _source_time_from_row(row: Mapping[str, Any], fields: tuple[str, ...]) -> str | None:
     # Prefer concrete stored event times and return no time when none exists;
@@ -170,7 +198,8 @@ def _owned_evidence_ref(con, *, person_id: str, table: str, source_id: str) -> d
 
 
 def _validate_evidence_refs(
-    con, *, person_id: str, refs: Any, required: bool = True
+    con, *, person_id: str, refs: Any, required: bool = True,
+    leaf_index: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -178,6 +207,37 @@ def _validate_evidence_refs(
     for raw in _safe_ref_list(refs):
         table = str(raw.get("source_table") or raw.get("table") or "").strip()
         source_id = str(raw.get("source_id") or raw.get("id") or "").strip()
+        if source_id.startswith("nightleaf_") and leaf_index is not None:
+            leaf = leaf_index.get(source_id)
+            if not leaf:
+                invalid.append(f"unknown evidence leaf: {source_id}")
+                continue
+            path = tuple(str(part) for part in (leaf.get("path") or ()))
+            all_sources = {
+                **_DIRECT_EVIDENCE_SOURCES,
+                **_CONVERSATION_EVIDENCE_SOURCES,
+                **_SESSION_EVIDENCE_SOURCES,
+            }
+            resolved_table = ""
+            for token in reversed(path):
+                candidate = _EVIDENCE_PATH_TABLE_ALIASES.get(token, token)
+                if candidate in all_sources:
+                    resolved_table = candidate
+                    break
+            value = leaf.get("value")
+            if not resolved_table or not isinstance(value, Mapping):
+                invalid.append(f"evidence leaf has no approved source path: {source_id}")
+                continue
+            primary_key = all_sources[resolved_table][0]
+            resolved_id = str(value.get(primary_key) or "").strip()
+            if not resolved_id:
+                invalid.append(
+                    f"evidence leaf row lacks {primary_key}: {source_id}"
+                )
+                continue
+            # Ignore the model's logical table/path.  The deterministic leaf path
+            # plus the owner-scoped lookup below are the only authorities.
+            table, source_id = resolved_table, resolved_id
         if not table or not source_id:
             invalid.append("missing source_table/source_id")
             continue
@@ -330,18 +390,37 @@ def install_canonical(module: Any) -> dict[str, Any]:
 
     def store_canonical_life_model(person_id:str,export_id:str,model:dict[str,Any])->None:
         ensure_life_model_schema(); scope=Scope(person_id=person_id,mode="maintenance")
+        from .night_orchestrator import build_evidence_leaf_index
+        with connect() as source_con:
+            export_row = source_con.execute(
+                "SELECT raw_evidence_json FROM brain2_life_model_exports WHERE export_id=? AND person_id=?",
+                (export_id, person_id),
+            ).fetchone()
+        raw_evidence = json_loads(export_row["raw_evidence_json"], {}) if export_row else {}
+        leaf_index = build_evidence_leaf_index({"raw_evidence": raw_evidence})
         # Validate every proposed item before the legacy materialized writer can
         # turn vague LLM text into an active canonical row.
         allowed:dict[str,Any]={}; quarantined=[]
         with connect() as con,write_transaction(con):
             for layer,items in (model or {}).items():
+                # Advisory/abstention collections such as
+                # ``missing_evidence_for_magic`` and
+                # ``do_not_infer_live_without`` remain in the durable export,
+                # but they are not canonical entities and have no materialized
+                # table identity.  Validating them as canonical rows caused a
+                # correct abstention to block the whole CloseDay.
+                if layer not in _CANONICAL_LIFE_LAYERS:
+                    continue
                 if not isinstance(items,list):
                     continue
                 keep=[]
                 for item in items:
                     if not isinstance(item,dict): continue
                     try:
-                        refs=_validate_evidence_refs(con,person_id=person_id,refs=item.get("evidence"),required=True)
+                        refs=_validate_evidence_refs(
+                            con, person_id=person_id, refs=item.get("evidence"),
+                            required=True, leaf_index=leaf_index,
+                        )
                         ident=_item_identity(layer,item)
                         if not ident: raise ScopeError("canonical item identity missing")
                         item=dict(item); item["evidence"]=refs; keep.append(item)
@@ -349,6 +428,12 @@ def install_canonical(module: Any) -> dict[str, Any]:
                         quarantined.append({"layer":layer,"item":item,"error":str(exc)})
                         quarantine_in_transaction(con,category="invalid_life_model_item",reason=str(exc),source_table="brain2_life_model_exports",source_id=export_id,person_id=person_id,raw_payload={"layer":layer,"item":item})
                 if keep: allowed[layer]=keep
+        if quarantined:
+            # Never materialize the valid-looking subset of a model response:
+            # doing so changes the next bootstrap input and can turn a failed
+            # checkpoint into a different patch-mode run.  Quarantine records
+            # remain durable, while canonical tables stay all-or-nothing.
+            raise ScopeError(f"{len(quarantined)} canonical Life Model items quarantined")
         if allowed:
             old_store(person_id,export_id,allowed)
             # Version all materialized items after the writer has established ids.
@@ -372,10 +457,6 @@ def install_canonical(module: Any) -> dict[str, Any]:
                     identity_key=f"{table}:{person_id}:{ident}", scope=scope,
                     source_payload={"export_id":export_id,"item":item},
                 )
-        if quarantined:
-            # Caller receives a failure signal through export audit instead of a
-            # silent partial model.
-            raise ScopeError(f"{len(quarantined)} canonical Life Model items quarantined")
 
     def latest_canonical_life_model(person_id:str)->dict[str,Any]|None:
         ensure_life_model_schema()

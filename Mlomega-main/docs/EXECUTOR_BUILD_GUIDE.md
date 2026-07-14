@@ -732,3 +732,38 @@ Grab-drag / resize / fermer / réduire des panneaux à la main. Zéro Kotlin (la
 
 - [ ] **Configuration du wake word (runtime, sans rebuild)** : aujourd'hui le mot d'éveil est cuit dans l'APK (`_wakeWord` de `MLOmegaPhoneOnly.asset`, défaut « omega ») et ne se change qu'en rebuildant. À faire : le rendre choisi à l'installation et poussé par le PC au pairing (message contrôle → `KeywordEncoder` runtime, l'encodeur le permet déjà) ; réintégrer alors la question « comment appeler l'assistant ? » (retirée de WELCOME/E51) avec l'avertissement « pas un mot trop courant ». Réf. backlog E51.
 - [ ] **Gates G1 XREAL sur lunettes physiques (E49 — CODE FAIT, matériel en attente)** : l'intégration SDK + l'adaptateur + le build lunettes sont faits (voir E49 ci-dessus, APK produite). Reste, quand l'utilisateur aura les lunettes : valider affichage stéréo, caméra Eye (RGB), pose 6DoF, sessions longues, batterie, et le plan B pose-only si l'Eye est absente. Réf. backlog E49.
+
+---
+
+## E64-F — état exécutable après le premier CloseDay complet (2026-07-14)
+
+La reprise scratch a terminé sans rejouer le média ni les stages déjà clos : run `run_v18_65bdecb7404f4e05abe16cf843f124e4`, dix stages CloseDay `completed`, manifeste observé/attendu `complete=1`, cleanup/tiering/rétention/maintenance `ok`. La dernière reprise n'a exécuté que `live_ready` puis le manifeste et le cleanup (7,7 s); ne jamais présenter ce chiffre comme le temps de toute la nuit. Le run complet contient les pauses et corrections de développement et n'est pas un benchmark.
+
+Backend de diagnostic réellement utilisé (le défaut produit reste Ollama) :
+
+```powershell
+$env:MLOMEGA_LLM_BACKEND = "llamacpp"
+$env:MLOMEGA_LLAMACPP_BASE_URL = "http://127.0.0.1:8080"
+$env:MLOMEGA_LLAMACPP_MODEL = "qwen9b-p1-24k-mlomega"
+$env:MLOMEGA_OLLAMA_CONTEXT_POSTSTOP = "24576"
+$env:MLOMEGA_POSTSTOP_LLM_MAX_OUTPUT_TOKENS = "4096"
+```
+
+Le serveur validé était Qwen3.5 9B Q4_K_M avec `--ctx-size 24576 --parallel 1 --cont-batching --gpu-layers auto --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --no-cache-prompt --reasoning off --jinja --metrics --perf`. Ne pas copier ce profil dans FIRST_TRY avant la décision E64-H; il sert à obtenir des mesures contrôlables et du JSON strict.
+
+Corrections structurantes à connaître :
+
+- le runner hiérarchique mesure la requête complète, décode les colonnes JSON persistées, sépare les responsabilités de sortie, borne la projection dérivée et planifie 45 unités utiles sous limite token dure;
+- Life Model résout toute preuve vers une vraie ligne owner-scopée avant une écriture atomique; les sections consultatives restent dans l'export mais ne polluent plus les tables canoniques;
+- `live_ready` compile désormais le Life Model canonique par code et conserve ses preuves. Le LLM n'est appelé que pour une ancienne DB dépourvue de modèle canonique;
+- le script CloseDay imprime un JSON ASCII-safe sous Windows, donc un caractère Unicode ne peut plus faire échouer un run déjà terminé.
+
+Verdicts ouverts à ne pas masquer :
+
+- Deep Vision : 1 image sélectionnée, 0 analysée, 1 quarantinée après 84,132 s (`JSONDecodeError`), mais le stage historique retourne `status=ok`. Vague 2 NON validée;
+- ASR : huit tours présents mais confiance 0 et fragments grec/russe probablement hallucinés; les sorties aval trop affirmatives ne valent pas vérité;
+- coordination/réconciliation : certaines contradictions sont déduites de l'absence de preuve visuelle; corriger le gate épistémique;
+- FIRST_TRY : le lock Python n'est pas encore aligné avec la version `transformers` requise par Qwen3 embedder; HF gated/proxy, Qdrant et CUDA/cuDNN doivent être vérifiés avant capture;
+- le dashboard et le gate 5 min complet restent ouverts. La DB `_audit` est une preuve de développement, pas une base produit à conserver.
+
+Pour poursuivre : lire `docs/PROD_BACKLOG.md` §E64-H et `tools/harness/BUGS_FOUND.md` OBS-25 à OBS-31. Aucun nouveau média avant d'avoir terminé l'audit coût/qualité et décidé quels appels sont réellement sémantiques, déterministes, redondants ou réutilisables.

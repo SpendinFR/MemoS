@@ -61,13 +61,19 @@ class WindowSpec:
 # that never under-counts a typical Qwen/Latin+accent payload.
 Tokenizer = Callable[[str], int]
 
-_DEFAULT_CHARS_PER_TOKEN = 3.5
+# Qwen's tokenizer is materially denser on nested JSON, identifiers and French
+# punctuation than the old prose-oriented 3.5 estimate. Real E64-F requests on
+# the production 9B model measured ~24.3k tokens where declared unit accounting
+# predicted ~17k. 2.5 is deliberately conservative until a provider tokenizer
+# is injected; over-estimating creates an extra safe window, under-estimating
+# spends a full call that can only end at the context boundary.
+_DEFAULT_CHARS_PER_TOKEN = 2.5
 
 
 def estimate_tokens_for_text(text: str, *, tokenizer: Tokenizer | None = None) -> int:
     """Deterministic token estimate for a text blob.
 
-    With no tokenizer, uses a conservative chars/token ratio (3.5) and rounds UP,
+    With no tokenizer, uses a conservative chars/token ratio (2.5) and rounds UP,
     so a real prompt is never silently under-budgeted. E64-C replaces the default
     with the model's own tokenizer via ``tokenizer=``.
     """

@@ -234,27 +234,30 @@ CREATE INDEX IF NOT EXISTS idx_b2lm_routines_person ON brain2_personal_routine_m
 CREATE INDEX IF NOT EXISTS idx_b2lm_places_person ON brain2_place_preference_models(person_id, status, confidence);
 """
 
+_CANONICAL_EVIDENCE_REF = {"source_table": "", "source_id": ""}
+
+
 CANONICAL_SCHEMA: dict[str, Any] = {
     "personal_routine_models": [
-        {"routine_name": "", "routine_type": "routine|cycle|habit|transition|social|work|regulation|place|unknown", "temporal_pattern": {}, "place_pattern": {}, "trigger_contexts": [], "observed_actions": [], "likely_needs": [], "preferred_conditions": [], "outcomes": [], "live_activation": {}, "evidence": [], "counter_evidence": [], "confidence": 0.0}
+        {"routine_name": "", "routine_type": "routine|cycle|habit|transition|social|work|regulation|place|unknown", "temporal_pattern": {}, "place_pattern": {}, "trigger_contexts": [], "observed_actions": [], "likely_needs": [], "preferred_conditions": [], "outcomes": [], "live_activation": {}, "evidence": [_CANONICAL_EVIDENCE_REF], "counter_evidence": [_CANONICAL_EVIDENCE_REF], "confidence": 0.0}
     ],
     "place_preference_models": [
-        {"place_key": "", "meaning_for_user": "", "common_actions": [], "preferred_affordances": [], "avoided_conditions": [], "time_patterns": {}, "live_use": {}, "evidence": [], "counter_evidence": [], "confidence": 0.0}
+        {"place_key": "", "meaning_for_user": "", "common_actions": [], "preferred_affordances": [], "avoided_conditions": [], "time_patterns": {}, "live_use": {}, "evidence": [_CANONICAL_EVIDENCE_REF], "counter_evidence": [_CANONICAL_EVIDENCE_REF], "confidence": 0.0}
     ],
     "action_preference_models": [
-        {"action_or_choice": "", "context_conditions": [], "preference_or_tendency": "", "why_it_matters": "", "what_helps": [], "what_hurts": [], "evidence": [], "counter_evidence": [], "confidence": 0.0}
+        {"action_or_choice": "", "context_conditions": [], "preference_or_tendency": "", "why_it_matters": "", "what_helps": [], "what_hurts": [], "evidence": [_CANONICAL_EVIDENCE_REF], "counter_evidence": [_CANONICAL_EVIDENCE_REF], "confidence": 0.0}
     ],
     "need_expectation_models": [
-        {"need_or_expectation": "", "kind": "need|expectation|preference|boundary|value|goal|avoidance|unknown", "activation_contexts": [], "surface_signals": [], "deeper_hypotheses": [], "good_responses": [], "bad_responses": [], "evidence": [], "counter_evidence": [], "confidence": 0.0}
+        {"need_or_expectation": "", "kind": "need|expectation|preference|boundary|value|goal|avoidance|unknown", "activation_contexts": [], "surface_signals": [], "deeper_hypotheses": [], "good_responses": [], "bad_responses": [], "evidence": [_CANONICAL_EVIDENCE_REF], "counter_evidence": [_CANONICAL_EVIDENCE_REF], "confidence": 0.0}
     ],
     "expression_state_models": [
-        {"expression_or_style": "", "contexts": [], "possible_meanings": [], "state_links": [], "response_implications": [], "evidence": [], "counter_evidence": [], "confidence": 0.0}
+        {"expression_or_style": "", "contexts": [], "possible_meanings": [], "state_links": [], "response_implications": [], "evidence": [_CANONICAL_EVIDENCE_REF], "counter_evidence": [_CANONICAL_EVIDENCE_REF], "confidence": 0.0}
     ],
     "emotional_trajectory_models": [
-        {"trajectory_name": "", "starting_conditions": [], "live_signals_to_watch": [], "likely_next_states": [], "risks": [], "opportunities": [], "intervention_windows": [], "evidence": [], "counter_evidence": [], "confidence": 0.0}
+        {"trajectory_name": "", "starting_conditions": [], "live_signals_to_watch": [], "likely_next_states": [], "risks": [], "opportunities": [], "intervention_windows": [], "evidence": [_CANONICAL_EVIDENCE_REF], "counter_evidence": [_CANONICAL_EVIDENCE_REF], "confidence": 0.0}
     ],
     "contextual_self_models": [
-        {"context_key": "", "self_state_summary": "", "strengths": [], "vulnerabilities": [], "needs": [], "best_moves": [], "evidence": [], "counter_evidence": [], "confidence": 0.0}
+        {"context_key": "", "self_state_summary": "", "strengths": [], "vulnerabilities": [], "needs": [], "best_moves": [], "evidence": [_CANONICAL_EVIDENCE_REF], "counter_evidence": [_CANONICAL_EVIDENCE_REF], "confidence": 0.0}
     ],
     "live_prediction_hooks": [
         {
@@ -276,13 +279,13 @@ CANONICAL_SCHEMA: dict[str, Any] = {
             "watch_signals": [],
             "proactive_options": [],
             "silence_policy": {},
-            "evidence": [],
-            "counter_evidence": [],
+            "evidence": [_CANONICAL_EVIDENCE_REF],
+            "counter_evidence": [_CANONICAL_EVIDENCE_REF],
             "confidence": 0.0
         }
     ],
     "live_affordance_preferences": [
-        {"affordance_type": "", "preferred_when": [], "personal_fit_criteria": [], "live_detection_needs": [], "intervention_value": {}, "evidence": [], "counter_evidence": [], "confidence": 0.0}
+        {"affordance_type": "", "preferred_when": [], "personal_fit_criteria": [], "live_detection_needs": [], "intervention_value": {}, "evidence": [_CANONICAL_EVIDENCE_REF], "counter_evidence": [_CANONICAL_EVIDENCE_REF], "confidence": 0.0}
     ],
     "missing_evidence_for_magic": [],
     "do_not_infer_live_without": [],
@@ -506,6 +509,7 @@ def synthesize_canonical_life_model(
                 "Separate observed action from inferred need/emotion/intention.",
                 "Prefer multiple competing hypotheses when needed.",
                 "Make outputs directly actionable for BrainLive H0/H1/H2.",
+                "For every canonical item, evidence and counter_evidence contain only exact {source_table, source_id} pairs copied from rows in this input window; never cite prose, an ordinal, or a nightleaf id.",
             ],
         }
         if person_id:

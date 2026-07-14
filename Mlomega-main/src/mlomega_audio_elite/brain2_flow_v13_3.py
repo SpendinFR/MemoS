@@ -391,17 +391,47 @@ def _record_brain2_step(
                WHERE pipeline_run_id=? AND conversation_id=? AND step_name=?""",
             (pipeline_run_id, conversation_id, step_name),
         ).fetchone()
+    def embedded_failure(value: Any) -> str | None:
+        if not isinstance(value, dict):
+            return None
+        status = str(value.get("status") or "").strip().lower()
+        if status in {
+            "error", "failed", "blocked", "retryable", "retryable_error",
+            "incomplete", "quarantined",
+        }:
+            return status
+        # Composite engines may wrap a real engine result together with an
+        # export/manifest.  Inspect only the known result-bearing wrappers: a
+        # blind recursive walk would mistake ordinary domain fields such as an
+        # entity's ``status=blocked`` for an engine failure.
+        for key in ("inbox", "people_identity", "open_loops"):
+            nested = value.get(key)
+            nested_status = embedded_failure(nested)
+            if nested_status is not None:
+                return f"{key}:{nested_status}"
+        return None
+
     if row and str(row["status"]) == "completed":
         try:
             cached = json.loads(row["result_json"] or "{}")
         except Exception:
             cached = {}
-        return {"status": "skipped_checkpoint", "result": cached}
+        # Legacy wrappers sometimes caught their own LLM exception and returned
+        # ``{"status":"error"}``. Treating that object as a completed durable
+        # step made CloseDay silently advance with no cognitive output.
+        if embedded_failure(cached) is None:
+            return {"status": "skipped_checkpoint", "result": cached}
 
     now = now_iso()
     step_run_id = stable_id("brain2_step_v187", pipeline_run_id, conversation_id, step_name)
     try:
         value = fn()
+        bad_status = embedded_failure(value)
+        if bad_status is not None:
+            detail = str(value.get("error") or value.get("error_text") or "")
+            raise RuntimeError(
+                f"Brain2 step {step_name} returned status={bad_status}: {detail[:1200]}"
+            )
     except Exception as exc:
         from .runtime_v18_7 import classify_failure
         failure = classify_failure(exc)
@@ -484,8 +514,10 @@ def _run_brain2_stack_checkpointed(
 
     def _clarifications() -> dict[str, Any]:
         return {
-            "inbox": run_clarification_inbox(conversation_id, trigger_type=trigger_type),
-            "export": export_clarification_inbox(),
+            "inbox": run_clarification_inbox(
+                conversation_id, person_id=person_id, trigger_type=trigger_type
+            ),
+            "export": export_clarification_inbox(person_id=person_id),
         }
 
     steps: list[tuple[str, Any]] = [

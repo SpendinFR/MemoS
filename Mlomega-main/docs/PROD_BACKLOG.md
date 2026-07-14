@@ -636,9 +636,9 @@ Le problème est transversal : tout stage nocturne qui concatène un jour, une c
 
 ### E64-F — Migration transversale, par vagues
 
-- [ ] **Vague 1** : EpisodeBuilder + moteurs Brain2/V13, car ils bloquent le run réel. Aucun prompt V13 ne lit directement les 945 frames. **Migration locale réellement exercée, mais vague non close : fusion globale/matérialisation finale/run complet encore ouverts.**
+- [x] **Vague 1** : EpisodeBuilder + moteurs Brain2/V13. Le run scratch réel du 2026-07-14 a traversé les packs locaux et globaux (`roota/rootb`), matérialisé V13, puis atteint un CloseDay `completed`; aucun prompt V13 ne lit directement les frames brutes. La qualité métier reste auditée séparément ci-dessous.
 - [ ] **Vague 2** : Deep Vision, conversation post-stop et Silent Life ; réutiliser les mêmes fenêtres/atoms au lieu de refaire une sélection indépendante.
-- [ ] **Vague 3** : coordination BrainLive↔Brain2, Life Model, longitudinal, reconciliation, live-ready, prédictions/outcomes/self-schema pour tout appel LLM identifié en E64-A.
+- [ ] **Vague 3** : coordination BrainLive↔Brain2, Life Model, longitudinal, reconciliation, live-ready, prédictions/outcomes/self-schema pour tout appel LLM identifié en E64-A. **Chemin configuré réellement traversé le 2026-07-14**, mais case laissée ouverte jusqu'à l'audit exhaustif des appels hors orchestrateur et aux corrections qualité OBS-28/29.
 - [ ] Les stages déterministes sans LLM restent inchangés mais publient leurs `EvidenceRef`/manifestes dans le même protocole.
 
 > **Suivi E64-F vague 1 — code corrigé 2026-07-12 (fenêtres Ollama réelles validées ; run complet encore ouvert) :**
@@ -676,7 +676,7 @@ Le problème est transversal : tout stage nocturne qui concatène un jour, une c
 
 - [x] Les 12 packs locaux ont atteint `completed` sur Qwen3.5:9b/16k lors de la première exécution unique. Onze packs sont passés directement ; un run Qwen a dérivé jusqu'à `finish=length`, puis ses deux enfants ont couvert les six responsabilités. Aucun partiel promu.
 - [x] Première fenêtre globale : 10 capsules d'épisodes dans 10 463 tokens, sortie validée. Les capsules restantes et les fusions ont prouvé le déclenchement des subdivisions.
-- [ ] **Ne pas déclarer V13 réel terminé** : la fusion globale combinée a atteint `length`; le nouveau fallback par groupes de schémas a été testé avec faux client, mais le run 9B réel a été interrompu avant de prouver `roota/rootb`, matérialisation des six moteurs globaux et couverture finale des 12 capsules.
+- [x] **V13 réel terminé sur la fixture scratch** : le run 9B réel a prouvé `roota/rootb`, la matérialisation des moteurs globaux, les packs locaux et le passage au stage V14 puis au CloseDay. Les anciens parents combinés `quarantined` restent auditables mais ne créditent pas le résultat courant.
 - [ ] **Revalider la reprise stable** après le dernier correctif `_stable_episode_source_bundle` : lancer V13 une fois avec un seul processus, puis une seconde fois et prouver zéro nouvel appel local. Le dernier `profiles[...] is None` provenait d'un `return` déplacé pendant l'édition ; corrigé et couvert, mais pas rejoué en réel après la pause.
 - [ ] Les mesures globales entre 01:24 et 01:52 ne sont **pas** des benchmarks : interrompre le wrapper PowerShell a laissé trois Python orphelins solliciter Ollama et écrire des checkpoints simultanément. Ils ont été tués ; aucun processus Python ne tournait au moment de la pause. La DB scratch reste utile pour l'audit/reprise grâce aux clés exactes, mais faire une exécution fraîche séparée pour la performance.
 
@@ -694,7 +694,7 @@ Le problème est transversal : tout stage nocturne qui concatène un jour, une c
 
 - [ ] Identifier précisément quel drain (`device receipts`, audio ingress, final worker ou transport) dépasse son budget ; le statut doit nommer la phase et l'exception, jamais enregistrer une chaîne vide.
 - [x] Empêcher le harnais `--with-close-day` de poller CloseDay pendant 30 minutes lorsque `end_session` a déjà échoué ou que `close_day=not_started`.
-- [ ] Reprendre la base scratch existante via `recover_abandoned_phoneonly_sessions`, puis seulement valider les checkpoints E64-F, les épisodes et le manifeste.
+- [x] Reprendre la base scratch existante sans rejouer le média : run `run_v18_65bdecb7404f4e05abe16cf843f124e4` terminé le 2026-07-14, dix stages `completed`, manifeste observé/attendu `complete=1`, cleanup autorisé.
 - [ ] **FIRST_TRY/RUN hermétique** : avant SessionHub, détecter un proxy loopback/mort (`127.0.0.1:9`) au lieu de le transmettre à HF ; vérifier compte + scope gated + cache Pyannote ; préparer le même `PATH` CUDA/cuDNN pour TOUS les subprocess (dont recovery/commandes manuelles) et charger réellement `cudnn_ops_infer64_8.dll`. Un échec bloque avant la capture avec correction guidée ; ne jamais découvrir HF/cuDNN après cinq minutes de session.
 
 > **Checkpoint de reprise réel avant optimisation** : E64-F a effectivement atteint Ollama 9B et prouvé 5 sorties `completed`, subdivisions entrée/sortie et absence de matérialisation partielle. Le run a été volontairement arrêté quand la DB a révélé 1 433 tours (dont 1 407 faux atomes unitaires) : continuer aurait exigé ≥32 fenêtres racines. Ces checkpoints restent pour audit sous l'ancien `conversation_id` et ne contaminent pas le nouvel export immuable.
@@ -702,6 +702,25 @@ Le problème est transversal : tout stage nocturne qui concatène un jour, une c
 > **Correctif de ré-export** : une nouvelle conversation base et l'ancien export Deep Audio pouvaient rester simultanément `exported`, puis faire échouer la reprise par `assembly/export cardinality mismatch`. Avant d'activer le nouvel export, l'assembleur supersède désormais toutes les anciennes lignes actives du bundle, désactive leurs scopes et invalide leurs descendants. Test de ré-export multiple ajouté ; aucune conversation historique n'est supprimée.
 
 **Référence humaine de la vidéo (documentation de diagnostic uniquement ; NE PAS modifier le scénario ASR/VIKI)** : 0:00–1:30 ami/canapé et conversation ; 1:30–2:00 lever + table avec lunettes/téléphone ; 2:00 clés posées puis regard table/tête tournée ; 2:30–2:38 texte fixé ; 2:38–3:20 changements de pièces puis retour salon/table ; 3:34 lunettes déplacées près du meuble ; 3:57–4:10 machine à café ; 4:10 terrasse ; 4:24–fin seconde personne et conversation. Cette vérité sert à interpréter la fragmentation vision ; `tools/harness/scenarios/real_video_session.json` reste inchangé.
+
+#### E64-F — validation réelle de chaîne et corrections de finisseur (2026-07-14)
+
+- [x] Un seul run autoritaire a traversé `post_stop → visual_consolidation → longitudinal → coordination → life_model → outcome_resolution → life_model_v19 → prediction_emission → self_schema → live_ready`. Run : `run_v18_65bdecb7404f4e05abe16cf843f124e4`; manifeste final `complete=1`; rétention/tiering/maintenance `ok`.
+- [x] Le client LLM supporte un backend direct llama.cpp **opt-in** (`MLOMEGA_LLM_BACKEND=llamacpp`) sans changer le défaut Ollama. Validation : Qwen3.5 9B Q4_K_M, contexte 24 576, sortie 4 096, `reasoning off`, JSON/Jinja, une seule requête parallèle. Cette configuration sert à mesurer et déboguer; le choix production attend l'audit E64-H.
+- [x] Prévention transversale des prompts non bornés : budget sur requête rendue complète, décodage des colonnes `*_json` persistées en vraies feuilles, split des responsabilités de sortie, garde de cardinalité de projection, fenêtres denses de 45 unités avec limite token dure, checkpoints versionnés, couverture relue en DB.
+- [x] Life Model durci : références de preuve structurées et résolues vers la vraie ligne owner-scopée; Unicode CLI Windows sûr; matérialisation atomique (aucune moitié écrite avant une erreur); les sections consultatives ne deviennent plus de faux objets canoniques. Le run a produit 92 objets canoniques actifs avec couverture `missing=0`.
+- [x] `live_ready` ne repaie plus un LLM pour reformuler 303 k caractères déjà compilés par V15.10. Le compilateur déterministe mappe les objets canoniques et leurs preuves vers l'index BrainLive; fallback LLM conservé pour une DB legacy sans modèle canonique. Stage réel : ~2,1 s; reprise finale complète + manifeste/cleanup : 7,7 s.
+- [ ] **Vague 2 non close** : Deep Vision a retourné `status=ok` malgré `selected=1`, `analyzed=0`, `quarantined=1`; l'unique image a consommé 84 132 ms puis JSON invalide. Corriger le statut/gate et le backend VLM avant toute extrapolation (OBS-28).
+- [ ] **Qualité non certifiée** : ASR stocké à confiance 0 avec fragments grec/russe probablement faux; coordination a transformé l'absence de preuve vision en contradiction et produit des conclusions trop certaines; Life Model a produit 92 objets sur une petite fixture. Ces sorties ne doivent pas être présentées comme vérité utilisateur avant OBS-29/30.
+- [ ] **Bootstrap FirstTry non hermétique** : aligner le lock `transformers` avec la version Qwen3 réellement requise, vérifier HF gated/proxy, Qdrant, CUDA/cuDNN et backend LLM/VLM avant capture; aucun téléchargement/découverte d'environnement après la session.
+
+### E64-H — audit coût/qualité avant décision locale ou cloud (EN COURS)
+
+- [ ] Mesurer, pour chaque moteur/prompt, appels réels, tokens entrée/sortie, durée, cardinalité entrée/sortie, retries/subdivisions et tables matérialisées; séparer les anciens essais abandonnés du chemin final.
+- [ ] Classer chaque passe : indispensable sémantique, transformation déterministe, doublon d'une sortie antérieure, contexte à compacter, moteur fusionnable, ou VLM réutilisable. Interdiction de supprimer une capacité ou une preuve pour gagner du temps.
+- [ ] Tester seulement les regroupements/fusions proposés contre les sorties réelles et la référence humaine; comparer 9B/4B par stage, jamais globalement, avec JSON strict et couverture identique.
+- [ ] Auditer les deux passages vision : réutiliser une observation profonde déjà calculée quand la preuve/image/modèle est identique; compter séparément les images réellement nécessaires avec hypothèse mesurée de 80 s/image.
+- [ ] Extrapoler une journée de 8 h : pipeline actuel, pipeline local refondu à qualité égale, et DeepSeek Pro sans refonte lourde. Donner temps, appels, tokens, images, coût et hypothèses; cible de conception `1 h capturée ≤ 1 h consolidation`.
 
 ### E64-G — Tests préventifs obligatoires
 

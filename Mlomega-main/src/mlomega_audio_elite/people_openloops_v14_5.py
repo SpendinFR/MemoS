@@ -474,6 +474,30 @@ def analyze_people_identity_hypotheses(conversation_id: str, *, person_id: str |
     now = now_iso()
     with connect() as con:
         person_id = person_id or _default_user(con)
+        # A conversation is immutable once it enters post-stop. Replaying a
+        # completed analysis used to feed its own persisted hypotheses back into
+        # ``background``, change the input digest and pay for the whole engine
+        # again after a crash between this function and the outer step marker.
+        # Reuse only a fully valid completed contract; errors remain retryable.
+        completed = con.execute(
+            """SELECT run_id,qwen_output_json,created_at
+               FROM v14_5_people_identity_runs
+               WHERE conversation_id=? AND person_id=? AND status='ok'
+               ORDER BY created_at DESC LIMIT 1""",
+            (conversation_id, person_id),
+        ).fetchone()
+        if completed:
+            cached = json_loads(completed["qwen_output_json"], {})
+            if isinstance(cached, dict) and set(IDENTITY_SCHEMA).issubset(cached):
+                return {
+                    "version": V14_5_VERSION,
+                    "run_id": completed["run_id"],
+                    "conversation_id": conversation_id,
+                    "status": "ok",
+                    "error": None,
+                    "raw": cached,
+                    "resumed": True,
+                }
         payload = {
             "mission": (
                 "Analyse l'identité relationnelle possible des personnes dans cette conversation. "
@@ -632,6 +656,27 @@ def track_personal_open_loops(conversation_id: str, *, person_id: str | None = N
     now = now_iso()
     with connect() as con:
         person_id = person_id or _default_user(con)
+        completed = con.execute(
+            """SELECT run_id,qwen_output_json,new_or_updated_count,created_at
+               FROM v14_5_open_loop_runs
+               WHERE conversation_id=? AND person_id=? AND status='ok'
+               ORDER BY created_at DESC LIMIT 1""",
+            (conversation_id, person_id),
+        ).fetchone()
+        if completed:
+            cached = json_loads(completed["qwen_output_json"], {})
+            if isinstance(cached, dict) and set(OPEN_LOOP_SCHEMA).issubset(cached):
+                return {
+                    "version": V14_5_VERSION,
+                    "run_id": completed["run_id"],
+                    "conversation_id": conversation_id,
+                    "person_id": person_id,
+                    "status": "ok",
+                    "new_or_updated_count": int(completed["new_or_updated_count"] or 0),
+                    "error": None,
+                    "raw": cached,
+                    "resumed": True,
+                }
         payload = {
             "mission": (
                 "Transforme les désirs, attentes, questions, incompréhensions, blocages, besoins et problèmes personnels exprimés "

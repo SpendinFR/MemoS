@@ -359,6 +359,235 @@ def _query(con, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         return []
 
 
+def _decoded_list(value: Any) -> list[Any]:
+    if value is None or value == "":
+        return []
+    decoded = json_loads(value, None) if isinstance(value, str) else value
+    if isinstance(decoded, list):
+        return decoded
+    if decoded is None:
+        # A legacy compacted JSON column can be truncated. Retain it as an
+        # opaque source value instead of silently deleting evidence.
+        return [value]
+    return [decoded]
+
+
+def _unique(values: list[Any]) -> list[Any]:
+    out: list[Any] = []
+    seen: set[str] = set()
+    for value in values:
+        key = json_dumps(value)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(value)
+    return out
+
+
+def _text(value: Any) -> str:
+    values = _decoded_list(value)
+    if not values:
+        return ""
+    if len(values) == 1 and isinstance(values[0], str):
+        return values[0]
+    return json_dumps(values)
+
+
+def _confidence(row: dict[str, Any]) -> float:
+    try:
+        return max(0.0, min(1.0, float(row.get("confidence") or 0.0)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def compile_canonical_live_ready(raw_feed: dict[str, Any]) -> dict[str, Any] | None:
+    """Losslessly project the canonical Life Model into BrainLive's hot schema.
+
+    V15.10 has already paid for semantic extraction and evidence validation.
+    Asking another LLM to restate those same rows was both slower and less
+    faithful. This compiler only renames/combines existing fields; it never
+    invents psychology. The complete raw feed remains stored beside the hot
+    projection. Legacy databases without canonical rows keep the LLM fallback.
+    """
+    canonical = raw_feed.get("brain2_canonical_life_model")
+    if not isinstance(canonical, dict):
+        return None
+    canonical_rows = sum(
+        len(value) for value in canonical.values() if isinstance(value, list)
+    )
+    if canonical_rows <= len(canonical.get("exports") or []):
+        return None
+
+    routines = []
+    for row in canonical.get("routines") or []:
+        routines.append({
+            "name": str(row.get("routine_name") or ""),
+            "when": _text(row.get("temporal_pattern_json")),
+            "where": _text(row.get("place_pattern_json")),
+            "trigger_contexts": _decoded_list(row.get("trigger_contexts_json")),
+            "usual_actions": _decoded_list(row.get("observed_actions_json")),
+            "likely_needs": _decoded_list(row.get("likely_needs_json")),
+            "preferred_conditions": _decoded_list(row.get("preferred_conditions_json")),
+            "future_prediction_use": _text(row.get("live_activation_json") or row.get("outcomes_json")),
+            "confidence": _confidence(row),
+            "evidence": _decoded_list(row.get("evidence_json")),
+            "counter_evidence": _decoded_list(row.get("counter_evidence_json")),
+        })
+
+    places = []
+    for row in canonical.get("places") or []:
+        places.append({
+            "place": str(row.get("place_key") or ""),
+            "meaning_for_william": str(row.get("meaning_for_user") or ""),
+            "usual_actions_there": _decoded_list(row.get("common_actions_json")),
+            "preferred_affordances": _decoded_list(row.get("preferred_affordances_json")),
+            "risks_or_opportunities": _unique(
+                _decoded_list(row.get("avoided_conditions_json"))
+                + _decoded_list(row.get("live_use_json"))
+            ),
+            "confidence": _confidence(row),
+            "evidence": _decoded_list(row.get("evidence_json")),
+        })
+
+    expressions = []
+    for row in canonical.get("expressions_states") or []:
+        expressions.append({
+            "expression_or_style": str(row.get("expression_or_style") or ""),
+            "personal_meaning": _text(row.get("possible_meanings_json")),
+            "contexts": _decoded_list(row.get("contexts_json")),
+            "emotions_or_needs_often_linked": _decoded_list(row.get("state_links_json")),
+            "response_implication": _text(row.get("response_implications_json")),
+            "confidence": _confidence(row),
+            "evidence": _decoded_list(row.get("evidence_json")),
+        })
+
+    needs = []
+    for row in canonical.get("needs_expectations") or []:
+        needs.append({
+            "item": str(row.get("need_or_expectation") or ""),
+            "kind": str(row.get("kind") or "need"),
+            "activation_contexts": _decoded_list(row.get("activation_contexts_json")),
+            "how_it_shows_up": _unique(
+                _decoded_list(row.get("surface_signals_json"))
+                + _decoded_list(row.get("deeper_hypotheses_json"))
+            ),
+            "what_helps": _decoded_list(row.get("good_responses_json")),
+            "what_hurts": _decoded_list(row.get("bad_responses_json")),
+            "confidence": _confidence(row),
+            "evidence": _decoded_list(row.get("evidence_json")),
+        })
+
+    emotional = []
+    for row in canonical.get("emotional_trajectories") or []:
+        emotional.append({
+            "state_or_pattern": str(row.get("trajectory_name") or ""),
+            "past_signals": _decoded_list(row.get("starting_conditions_json")),
+            "current_live_signals_to_watch": _decoded_list(row.get("live_signals_to_watch_json")),
+            "future_risk_or_need": _text(
+                _unique(
+                    _decoded_list(row.get("likely_next_states_json"))
+                    + _decoded_list(row.get("risks_json"))
+                    + _decoded_list(row.get("opportunities_json"))
+                )
+            ),
+            "confidence": _confidence(row),
+            "evidence": _decoded_list(row.get("evidence_json")),
+        })
+
+    relationships = []
+    relationship_feed = raw_feed.get("relationships") or {}
+    for row in relationship_feed.get("relationship_states") or []:
+        relationships.append({
+            "person_or_group": str(row.get("known_person_id") or row.get("person_hint") or ""),
+            "known_loops": _unique(
+                _decoded_list(row.get("their_typical_states_json"))
+                + _decoded_list(row.get("their_probable_needs_or_motives_json"))
+                + _decoded_list(row.get("how_user_affects_them_json"))
+                + _decoded_list(row.get("how_they_affect_user_json"))
+            ),
+            "good_moves": _unique(
+                _decoded_list(row.get("easy_topics_json"))
+                + _decoded_list(row.get("repair_conditions_json"))
+            ),
+            "bad_moves": _unique(
+                _decoded_list(row.get("sensitive_topics_json"))
+                + _decoded_list(row.get("their_common_avoidances_json"))
+            ),
+            "watch_signals": _decoded_list(row.get("their_typical_states_json")),
+            "confidence": _confidence(row),
+            "evidence": _decoded_list(row.get("evidence_json")),
+        })
+
+    hooks = []
+    operational_rules = []
+    for row in canonical.get("live_prediction_hooks") or []:
+        activation = _decoded_list(row.get("activation_conditions_json"))
+        watch = _decoded_list(row.get("watch_signals_json"))
+        options = _decoded_list(row.get("proactive_options_json"))
+        hooks.append({
+            "forecast": str(row.get("hook_name") or _text(row.get("predicts_json"))),
+            "horizon": str(row.get("horizon") or "H1"),
+            "activation_conditions": activation,
+            "intervention_options": options,
+            "confidence": _confidence(row),
+            "evidence": _decoded_list(row.get("evidence_json")),
+        })
+        rule = str(row.get("recommended_micro_move") or "")
+        if rule:
+            operational_rules.append({
+                "rule": rule,
+                "when_to_use": _unique(activation + watch),
+                "when_not_to_use": _decoded_list(row.get("do_not_say_json")),
+                "confidence": _confidence(row),
+                "evidence": _decoded_list(row.get("evidence_json")),
+            })
+
+    contextual = canonical.get("contextual_self") or []
+    summaries = _unique([
+        str(row.get("self_state_summary"))
+        for row in contextual if row.get("self_state_summary")
+    ])
+    traits = _unique([
+        item
+        for row in contextual
+        for item in _decoded_list(row.get("strengths_json"))
+    ])
+    identity_confidence = (
+        sum(_confidence(row) for row in contextual) / len(contextual)
+        if contextual else 0.0
+    )
+
+    missing = []
+    for key, values in (
+        ("routines", routines), ("places", places),
+        ("language_and_expressions", expressions),
+        ("needs_expectations_preferences", needs),
+        ("emotional_state_patterns", emotional),
+        ("relationship_live_packs", relationships),
+        ("forecast_hooks", hooks),
+    ):
+        if not values:
+            missing.append(key)
+
+    return {
+        "identity_model": {
+            "who_william_is_operationally": " | ".join(summaries),
+            "stable_traits": traits,
+            "current_unknowns": [],
+            "confidence": identity_confidence,
+        },
+        "routines": routines,
+        "places": places,
+        "language_and_expressions": expressions,
+        "needs_expectations_preferences": needs,
+        "emotional_state_patterns": emotional,
+        "relationship_live_packs": relationships,
+        "forecast_hooks": hooks,
+        "brainlive_operational_rules": operational_rules,
+        "missing_for_magic": missing,
+    }
+
+
 def synthesize_live_ready_model(
     raw_feed: dict[str, Any],
     *,
@@ -374,6 +603,9 @@ def synthesize_live_ready_model(
     principles. No fallback psychology is used.
     """
     try:
+        canonical_projection = compile_canonical_live_ready(raw_feed)
+        if canonical_projection is not None:
+            return canonical_projection, None
         client = OllamaJsonClient()
         system = (
             "Tu es Brain2→BrainLive Personal Model Compiler. "

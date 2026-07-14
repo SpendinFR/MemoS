@@ -726,7 +726,7 @@ def compile_brain2_forecasts_to_live_bindings(person_id: str = "me", *, use_llm:
         )
         items = out.get("watch_bindings") if not error and isinstance(out, dict) else []
         llm_required = 0 if items else 1
-        status = "llm_ready" if items else "raw_ready_llm_required"
+        status = "llm_ready" if not error else "raw_ready_llm_required"
     else:
         out = {"llm_required": True, "raw_evidence_available": True}
         error = None
@@ -775,7 +775,7 @@ def compile_brain2_forecasts_to_live_bindings(person_id: str = "me", *, use_llm:
             if is_valid:
                 created.append(binding_id)
         con.commit()
-    return {"version": VERSION, "person_id": person_id, "status": status, "bindings_created": len(created), "binding_ids": created, "source_counts": _count(evidence), "llm_output": out}
+    return {"version": VERSION, "person_id": person_id, "status": status, "error": error, "bindings_created": len(created), "binding_ids": created, "source_counts": _count(evidence), "llm_output": out}
 
 
 def reconcile_brainlive_with_brain2(person_id: str = "me", *, package_id: str | None = None, use_llm: bool = True, timeout: float = 180.0, limit: int = 100) -> dict[str, Any]:
@@ -801,7 +801,7 @@ def reconcile_brainlive_with_brain2(person_id: str = "me", *, package_id: str | 
             source_ref=str(live_payload.get("package_id") or f"{person_id}:latest"),
         )
         items = out.get("reconciliations") if not error and isinstance(out, dict) else []
-        status = "llm_ready" if items else "raw_ready_llm_required"
+        status = "llm_ready" if not error else "raw_ready_llm_required"
     else:
         out = {"llm_required": True, "raw_evidence_available": True}
         items = []
@@ -827,7 +827,7 @@ def reconcile_brainlive_with_brain2(person_id: str = "me", *, package_id: str | 
             }, "reconciliation_id")
             created.append(rec_id)
         con.commit()
-    return {"version": VERSION, "person_id": person_id, "package_id": (pkg or {}).get("package_id") if isinstance(pkg, dict) else package_id, "status": status, "reconciliations_created": len(created), "reconciliation_ids": created, "llm_output": out}
+    return {"version": VERSION, "person_id": person_id, "package_id": (pkg or {}).get("package_id") if isinstance(pkg, dict) else package_id, "status": status, "error": error if use_llm else None, "reconciliations_created": len(created), "reconciliation_ids": created, "llm_output": out}
 
 
 def update_life_model_lifecycle(person_id: str = "me") -> dict[str, Any]:
@@ -926,6 +926,21 @@ def run_brainlive_brain2_coordination(person_id: str = "me", *, package_date: st
         package = create_brainlive_day_package(person_id, package_date=package_date, use_llm=use_llm, timeout=timeout, limit=200)
         bindings = compile_brain2_forecasts_to_live_bindings(person_id, use_llm=use_llm, timeout=timeout, limit=160)
         reconciliation = reconcile_brainlive_with_brain2(person_id, package_id=package.get("package_id"), use_llm=use_llm, timeout=timeout, limit=120)
+        if use_llm:
+            failed_children = {
+                name: child.get("error") or child.get("status")
+                for name, child in {
+                    "package": package,
+                    "bindings": bindings,
+                    "reconciliation": reconciliation,
+                }.items()
+                if isinstance(child, dict)
+                and str(child.get("status") or "") != "llm_ready"
+            }
+            if failed_children:
+                raise RuntimeError(
+                    "coordination child LLM failure: " + json_dumps(failed_children)
+                )
         lifecycle = update_life_model_lifecycle(person_id)
         status = "ok"
         counts = {"day_package": package.get("source_counts", {}), "bindings_created": bindings.get("bindings_created"), "reconciliations_created": reconciliation.get("reconciliations_created"), "lifecycle_rows": lifecycle.get("lifecycle_rows_upserted")}

@@ -392,6 +392,97 @@ le run courant, mais ces timings ne mesurent pas la production. Pour la suite :
 un seul runner, ne jamais interrompre sans tuer l'enfant, DB actuelle pour reprise
 fonctionnelle puis DB fraîche séparée pour benchmark.
 
+## OBS-25 — Le runner générique répétait des blobs JSON et sous-estimait le vrai prompt (CORRIGÉ — 2026-07-14)
+
+Plusieurs tables stockent des collections dans des colonnes `*_json`. Le runner les
+traitait comme une chaîne indivisible, donc recopiait parfois la même collection dans
+chaque fenêtre. En parallèle, la décision de « tout tient » ne comptait pas toutes les
+enveloppes/schémas de la requête réellement envoyée. Correction commune : décoder les
+collections persistées en feuilles stables, budgéter la requête rendue complète, puis
+versionner le checkpoint. Une couverture relue en DB reste obligatoire; aucun élément
+source n'est échantillonné.
+
+## OBS-26 — Les grands schémas faisaient tronquer puis refusionner le même JSON (CORRIGÉ — 2026-07-14)
+
+V14/Life Model/live-ready demandaient plusieurs collections riches dans une seule
+sortie. Qwen pouvait atteindre `length`; une subdivision des preuves produisait ensuite
+plusieurs sorties full-schema presque aussi grandes à refusionner. Le runner sépare
+maintenant les responsabilités de sortie, isole les objets sémantiques des collections
+fusionnables losslessly, impose un budget explicite à la projection dérivée et utilise
+45 unités utiles par fenêtre sous limite token dure. Les preuves brutes et contradictions
+restent durables; seuls les doublons réels sont fusionnés.
+
+## OBS-27 — Life Model acceptait de fausses références et écrivait avant le verdict global (CORRIGÉ — 2026-07-14)
+
+Le modèle renvoyait parfois `nightleaf_*` avec un nom logique de table qui n'était pas
+la vraie table/PK. Le writer pouvait aussi matérialiser le sous-ensemble valide avant de
+lever sur les lignes invalides, puis la reprise changeait de mode bootstrap→patch.
+Correction : schéma de preuve structuré, résolution déterministe de la feuille vers la
+ligne source originale, validation owner/scope sur la DB réelle, validation de tout le
+lot avant la première écriture et exclusion des rubriques consultatives des tables
+canoniques. Le run réel a matérialisé 92 objets uniques, couverture `missing=0`. La
+cardinalité/qualité de ces 92 objets reste auditée dans OBS-30.
+
+## OBS-28 — Deep Vision est faux-vert quand toutes ses images échouent (OUVERT — BLOQUE VAGUE 2)
+
+Preuve DB réelle : `selected_keyframes=1`, `analyzed_keyframes=0`, observation
+`quarantined_vlm_error`, erreur `Expecting value: line 1 column 1`, latence **84 132 ms**,
+mais `brainlive_deep_vision_runs_v161.status='ok'`. Le CloseDay reprend alors cette
+sortie et continue. À corriger : statut `failed/retryable/degraded` selon politique,
+compteur minimum d'images analysées, JSON strict du backend VLM et réutilisation d'une
+analyse profonde existante quand image+digest+modèle sont identiques. Ne pas multiplier
+80 s par image tant que ce gate n'est pas fiable.
+
+## OBS-29 — ASR confiance nulle alimente pourtant des conclusions certaines (OUVERT)
+
+La conversation raffinée contient huit tours mais la coordination résume explicitement
+une confiance ASR à `0.0` et interprète des fragments grec/russe probablement issus du
+bruit. Des hooks et alertes relationnelles à confiance 0.85–0.98 sont néanmoins créés.
+À corriger transversalement : propager la qualité ASR/diarisation aux moteurs aval,
+interdire une confiance dérivée supérieure à la qualité de preuve sans corroboration,
+et mettre en quarantaine les changements de langue incohérents au lieu de les traiter
+comme faits. La validation voix réelle/enrôlée reste nécessaire.
+
+## OBS-30 — Réconciliation par absence de preuve et surproduction cognitive (OUVERT)
+
+La réconciliation a marqué des hypothèses `contradicted` parce que la vision ne les
+confirmait pas, alors que « non observé » n'est pas « faux ». Elle produit aussi des
+formulations de danger/conflit trop affirmatives. Le bootstrap Life Model matérialise
+92 objets sur cette petite fixture (dont 22 besoins), signe de duplication ou de
+sur-interprétation possible. À corriger avant base utilisateur : verdict `unknown` sur
+absence, exigence de contre-preuve positive pour `contradicted`, plafond de confiance
+épistémique, dédup sémantique contrôlée et revue qualité contre la transcription/vidéo.
+Ne pas réduire arbitrairement les objets : mesurer d'abord recouvrement et provenance.
+
+## OBS-31 — `live_ready` repayaient le LLM pour reformuler le modèle canonique (CORRIGÉ — 2026-07-14)
+
+Le feed réel faisait **302 900 caractères** : 101 lignes canoniques (162 643 chars),
+80 observations vision (53 337), relations (50 034), coordination et anciennes tables.
+Le LLM relisait ces données pour produire quasiment les mêmes routines/lieux/besoins,
+causant des dizaines d'appels et fusions. Correction : compilateur déterministe vers
+`LIVE_READY_SCHEMA`, preuves et raw feed conservés, LLM seulement en fallback legacy.
+Stage réel final ~2,1 s; aucune fonctionnalité cognitive n'est retirée puisque l'inférence
+a déjà eu lieu dans V15.10.
+
+## OBS-32 — Environnement FirstTry encore non hermétique (OUVERT / PARTIEL)
+
+Le run a nécessité HF gated accessible, Qdrant, chemins CUDA/cuDNN et une version
+`transformers` plus récente pour l'embedder Qwen3. Le venv local est passé à 4.57.6,
+mais le lock Windows du repo n'est pas encore aligné. Le proxy loopback mort rencontré
+précédemment et les subprocess manuels ne partagent pas toujours le bootstrap du vrai
+runner. FIRST_TRY/RUN/Doctor doivent échouer avant capture avec diagnostic précis si
+HF, modèle gated, Qdrant, DLL CUDA/cuDNN, espace disque, version Python ou backend
+LLM/VLM ne sont pas prêts.
+
+## OBS-33 — Premier CloseDay complet obtenu, mais gates diagnostics encore ouverts (PARTIEL)
+
+Le run `run_v18_65bdecb7404f4e05abe16cf843f124e4` a dix stages `completed`, manifeste
+observé/attendu `complete=1`, cleanup/tiering/rétention/maintenance `ok`. V13 local et
+global (`roota/rootb`) ont été traversés. Cependant d'anciens parents combinés restent
+quarantinés pour audit, Deep Vision est faux-vert, et certains checkpoints V13.4/V14
+avaient été fermés manuellement comme `AUDIT ONLY`. Ce run prouve la traversée du chemin
+configuré, pas encore l'équivalence de tous les moteurs ni le gate téléphone/5 min.
+
 ## Notes that are NOT bugs (expected, documented so future runs don't chase them)
 
 - **`ai_ready=false` / `/health` 200 with `pairing_ready=true`.** Expected on a

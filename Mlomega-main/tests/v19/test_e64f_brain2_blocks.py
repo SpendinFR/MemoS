@@ -24,6 +24,96 @@ from mlomega_audio_elite.night_orchestrator import (
 pytestmark = pytest.mark.memory
 
 
+def test_pattern_payload_accepts_contract_title_without_summary(tmp_path, monkeypatch):
+    """The global merge may return the documented ``title`` field only."""
+    from mlomega_audio_elite.brain2_strict_v13_2 import (
+        _put_engine_payload,
+        ensure_strict_v13_schema,
+    )
+    from mlomega_audio_elite.db import connect, write_transaction
+
+    db_path = tmp_path / "pattern-title.db"
+    monkeypatch.setenv("MLOMEGA_DB", str(db_path))
+    ensure_strict_v13_schema()
+    with connect(db_path) as con, write_transaction(con):
+        con.execute(
+            """INSERT INTO episodes(
+                   episode_id,episode_type,situation_summary,created_at,updated_at
+               ) VALUES(?,?,?,?,?)""",
+            ("episode-title", "planning", "test", "2026-07-14T00:00:00Z", "2026-07-14T00:00:00Z"),
+        )
+        count = _put_engine_payload(
+            con,
+            "pattern_miner",
+            "episode-title",
+            "me",
+            {
+                "confidence": 0.8,
+                "candidate_patterns": [
+                    {
+                        "pattern_type": "planning_habit",
+                        "pattern_key": "prepare_before_meeting",
+                        "title": "Prepare before meetings",
+                        "description": "The user prepares before important meetings.",
+                        "evidence_count": 2,
+                    }
+                ],
+            },
+        )
+        row = con.execute(
+            "SELECT pattern_key,title,description FROM candidate_patterns WHERE person_id='me'"
+        ).fetchone()
+
+    assert count == 1
+    assert tuple(row) == (
+        "prepare_before_meeting",
+        "Prepare before meetings",
+        "The user prepares before important meetings.",
+    )
+
+
+def test_hierarchical_json_does_not_repeat_embedded_schema(tmp_path, monkeypatch):
+    """A legacy payload schema is control metadata, never an evidence leaf."""
+    from mlomega_audio_elite.night_orchestrator import run_hierarchical_json
+    from mlomega_audio_elite.db import connect
+    from mlomega_audio_elite.llm import LLMResult
+
+    db_path = tmp_path / "schema-dedup.db"
+    monkeypatch.setenv("MLOMEGA_DB", str(db_path))
+    seen_prompts = []
+
+    class Client:
+        model = "fake-schema-dedup"
+
+        def generate_json(self, system, prompt, schema_hint, timeout, **kwargs):
+            seen_prompts.append(prompt)
+            return LLMResult(ok=True, data={"items": []}, finish_reason="stop")
+
+    schema = {"items": []}
+    with connect(db_path) as con:
+        result = run_hierarchical_json(
+            stage_name="schema_dedup",
+            person_id="me",
+            package_date="2026-07-14",
+            source_ref="test",
+            system="system",
+            payload={"mission": "test", "schema": schema, "evidence": "hello"},
+            schema=schema,
+            timeout=10,
+            client=Client(),
+            connection=con,
+        )
+
+    assert result == {"items": []}
+    assert seen_prompts
+    # One explicit output schema remains in the rendered prompt; the identical
+    # payload copy is absent from shared/complete input.
+    import json
+    rendered = json.loads(seen_prompts[0])
+    assert rendered["schema"] == schema
+    assert "schema" not in str(rendered["input"].get("shared_context", {}))
+
+
 # ------------------------------------------------- vision_timeline reduction
 def _tl(source_id, time, *, label="person", track="t1", conf=0.9, summary=None):
     """A vision_timeline_json item (event assembler shape)."""
@@ -528,3 +618,196 @@ def test_hierarchical_json_windows_then_merges_with_final_source_coverage():
         "SELECT expected_count,missing_count,ok FROM night_llm_coverage_v19 WHERE stage_name='test_hierarchy'"
     ).fetchone()
     assert coverage and coverage[0] == 24 and coverage[1:] == (0, 1)
+
+
+def test_hierarchical_json_splits_broad_output_schema_centrally_without_key_loss():
+    from mlomega_audio_elite.night_orchestrator import run_hierarchical_json
+
+    class ResponsibilityClient:
+        model = "fake-responsibility-split"
+
+        def __init__(self):
+            self.schemas = []
+
+        def generate_json(
+            self, system, prompt, schema_hint, timeout, *,
+            max_output_tokens, format_schema=None,
+        ):
+            self.schemas.append(tuple(schema_hint))
+            return _FakeResult(ok=True, data=copy.deepcopy(schema_hint))
+
+    schema = {
+        f"capability_{index}": [{"description": "x" * 320, "evidence": []}]
+        for index in range(10)
+    }
+    con = sqlite3.connect(":memory:")
+    client = ResponsibilityClient()
+    result = run_hierarchical_json(
+        stage_name="broad_contract",
+        person_id="me",
+        package_date="2026-07-14",
+        source_ref="fixture",
+        system="SYS",
+        payload={"mission": "analyse", "evidence": [{"id": "one"}]},
+        schema=schema,
+        timeout=1,
+        client=client,
+        connection=con,
+    )
+
+    assert set(result) == set(schema)
+    assert len(client.schemas) > 1
+    assert all(set(part) < set(schema) for part in client.schemas)
+    assert set().union(*(set(part) for part in client.schemas)) == set(schema)
+    coverage = con.execute(
+        "SELECT expected_count,missing_count,ok FROM night_llm_coverage_v19 "
+        "WHERE stage_name='broad_contract'"
+    ).fetchone()
+    assert coverage and coverage[0] == len(client.schemas) and coverage[1:] == (0, 1)
+
+
+def test_schema_responsibilities_do_not_mix_semantic_objects_with_array_unions():
+    from mlomega_audio_elite.night_orchestrator.hierarchical_json import (
+        _schema_responsibility_parts,
+    )
+
+    schema = {
+        "identity": {"summary": "", "confidence": 0.0},
+        "routines": [],
+        "places": [],
+        "expressions": [],
+        "needs": [],
+        "warnings": [],
+    }
+    parts = _schema_responsibility_parts(schema)
+
+    assert [list(part) for part in parts] == [
+        ["identity"],
+        ["routines", "places"],
+        ["expressions", "needs"],
+        ["warnings"],
+    ]
+    assert all(
+        not (any(isinstance(value, dict) for value in part.values())
+             and any(isinstance(value, list) for value in part.values()))
+        for part in parts
+    )
+
+
+def test_output_cardinality_guard_preserves_budget_for_json_termination():
+    from mlomega_audio_elite.night_orchestrator.hierarchical_json import (
+        _output_cardinality_guard,
+    )
+
+    guard = _output_cardinality_guard(
+        {"routines": [], "places": []}, output_budget=4096
+    )
+    assert guard["max_response_tokens"] == 3712
+    assert 4 <= guard["max_items_per_top_level_list"] <= 16
+    assert guard["max_values_per_nested_list"] == 8
+    assert "source evidence remains durable" in guard["selection_rule"]
+
+
+def test_live_ready_compiles_existing_canonical_model_without_another_llm(monkeypatch):
+    import mlomega_audio_elite.brainlive_personal_model_v15_9 as personal_model
+
+    raw = {
+        "brain2_canonical_life_model": {
+            "exports": [],
+            "routines": [{
+                "routine_name": "café du matin",
+                "trigger_contexts_json": '["réveil"]',
+                "observed_actions_json": '["prépare un café"]',
+                "likely_needs_json": '["énergie"]',
+                "preferred_conditions_json": "[]",
+                "evidence_json": '[{"source_table":"turns","source_id":"t1"}]',
+                "counter_evidence_json": "[]",
+                "confidence": 0.8,
+            }],
+            "places": [], "needs_expectations": [],
+            "expressions_states": [], "emotional_trajectories": [],
+            "contextual_self": [{
+                "self_state_summary": "préfère comprendre avant d'agir",
+                "strengths_json": '["analyse"]', "confidence": 0.7,
+            }],
+            "live_prediction_hooks": [], "affordance_preferences": [],
+        },
+        "relationships": {"relationship_states": []},
+    }
+
+    monkeypatch.setattr(
+        personal_model, "OllamaJsonClient",
+        lambda: (_ for _ in ()).throw(AssertionError("LLM must not be constructed")),
+    )
+    result, error = personal_model.synthesize_live_ready_model(raw)
+
+    assert error is None
+    assert result["routines"][0]["name"] == "café du matin"
+    assert result["routines"][0]["usual_actions"] == ["prépare un café"]
+    assert result["routines"][0]["evidence"][0]["source_id"] == "t1"
+    assert result["identity_model"]["stable_traits"] == ["analyse"]
+    assert set(result) == set(personal_model.LIVE_READY_SCHEMA)
+
+
+def test_hierarchical_json_windows_persisted_json_collections_instead_of_repeating_them():
+    from mlomega_audio_elite.night_orchestrator import run_hierarchical_json
+
+    class JsonColumnClient:
+        model = "fake-json-column"
+
+        def __init__(self):
+            self.calls = 0
+
+        def generate_json(
+            self, system, prompt, schema_hint, timeout, *,
+            max_output_tokens, format_schema=None,
+        ):
+            self.calls += 1
+            return _FakeResult(ok=True, data=copy.deepcopy(schema_hint))
+
+    con = sqlite3.connect(":memory:")
+    client = JsonColumnClient()
+    result = run_hierarchical_json(
+        stage_name="persisted_json_evidence",
+        person_id="me",
+        package_date="2026-07-14",
+        source_ref="fixture",
+        system="SYS",
+        payload={
+            "mission": "analyse",
+            "package": {
+                "events_json": json.dumps([
+                    {"id": index, "text": "x" * 700} for index in range(16)
+                ])
+            },
+        },
+        schema={"items": []},
+        timeout=1,
+        client=client,
+        context_window=4096,
+        output_budget=512,
+        connection=con,
+        lossless_array_merge=True,
+    )
+
+    assert result == {"items": []}
+    assert client.calls > 1
+    coverage = con.execute(
+        "SELECT expected_count,missing_count,ok FROM night_llm_coverage_v19 "
+        "WHERE stage_name='persisted_json_evidence'"
+    ).fetchone()
+    assert coverage == (16, 0, 1)
+
+
+def test_evidence_leaf_index_resolves_short_id_and_exact_digest_alias():
+    from mlomega_audio_elite.night_orchestrator import build_evidence_leaf_index
+
+    row = {"turn_id": "turn-1", "text": "preuve"}
+    index = build_evidence_leaf_index(
+        {"raw_evidence": {"language": {"turns_recent": [row]}}}
+    )
+    short = next(key for key in index if len(key) == len("nightleaf_") + 16)
+    entry = index[short]
+    digest_alias = "nightleaf_" + entry["digest"]
+    assert index[short]["value"] == row
+    assert index[digest_alias]["ref_id"] == short

@@ -670,7 +670,10 @@ def export_clarification_inbox(*, person_id: str | None = None, output_dir: str 
         person_id = person_id or _default_user(con)
     rows = list_clarifications(person_id=person_id, status="queued", limit=limit)["items"]
     watching = list_clarifications(person_id=person_id, status="watching", limit=limit)["items"]
-    out_dir = Path(output_dir) if output_dir else get_settings().data_dir / "exports"
+    # ``Settings`` exposes the repository/data root as ``root_dir``.  The old
+    # ``data_dir`` name never existed and made the real Brain2 V18 path fail
+    # only after the (costly) clarification analysis had completed.
+    out_dir = Path(output_dir) if output_dir else get_settings().root_dir / "exports"
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"clarification_inbox_{person_id}.md"
     lines: list[str] = []

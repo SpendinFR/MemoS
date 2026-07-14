@@ -108,6 +108,80 @@ def ollama_generate(
     )
 
 
+def llamacpp_chat_json(
+    *,
+    base_url: str,
+    model: str,
+    system: str,
+    prompt: str,
+    json_schema: dict[str, Any] | None,
+    max_output_tokens: int,
+    timeout: float,
+) -> dict[str, Any]:
+    """Call llama.cpp's OpenAI-compatible endpoint with a strict JSON grammar.
+
+    The direct backend is opt-in (``MLOMEGA_LLM_BACKEND=llamacpp``). It keeps
+    the same executable project contract as Ollama; only the local transport is
+    different.
+    """
+    url = base_url.rstrip("/") + "/v1/chat/completions"
+    effective_timeout_s = effective_ollama_timeout(timeout)
+    response_format: dict[str, Any]
+    if json_schema:
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "mlomega_contract",
+                "strict": True,
+                "schema": json_schema,
+            },
+        }
+    else:
+        response_format = {"type": "json_object"}
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": prompt + "\n\nReturn one compact JSON object only.",
+            },
+        ],
+        "stream": False,
+        "temperature": 0.0,
+        "max_tokens": int(max_output_tokens),
+        "response_format": response_format,
+    }
+
+    def request_once() -> dict[str, Any]:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json; charset=utf-8"},
+        )
+        with urllib.request.urlopen(req, timeout=effective_timeout_s) as response:
+            raw = response.read().decode("utf-8")
+        try:
+            outer = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise LLMInvalidJsonError(
+                f"llama.cpp outer response is not JSON: {exc}", raw=raw
+            ) from exc
+        if not isinstance(outer, dict):
+            raise LLMInvalidJsonError("llama.cpp outer response is not an object", raw=raw)
+        if outer.get("error"):
+            raise EliteLLMError(f"llama.cpp returned error: {outer['error']}")
+        return outer
+
+    record_phase_event(
+        "llamacpp_request",
+        component="llamacpp_json",
+        model=model,
+        timeout_s=effective_timeout_s,
+    )
+    return retry_operation(request_once, component="llamacpp_json")
+
+
 def ollama_unload(*, model: str | None = None, base_url: str | None = None) -> None:
     """Ask Ollama to expire a model after a heavyweight phase; best effort only."""
     settings = get_settings()
@@ -237,10 +311,27 @@ class OllamaJsonClient:
         settings = get_settings()
         if not settings.enable_ollama:
             raise EliteLLMError("MLOMEGA_ENABLE_OLLAMA=false refusé: l'analyse élite exige Ollama/Qwen.")
-        self.base_url = (base_url or settings.ollama_base_url).rstrip("/")
-        self.model = model or (
-            settings.ollama_model if _is_post_stop_phase() else settings.ollama_live_model
-        )
+        self.backend = os.environ.get("MLOMEGA_LLM_BACKEND", "ollama").strip().lower()
+        if self.backend == "llamacpp":
+            self.base_url = (
+                base_url
+                or os.environ.get("MLOMEGA_LLAMACPP_BASE_URL")
+                or "http://127.0.0.1:8080"
+            ).rstrip("/")
+            self.model = (
+                model
+                or os.environ.get("MLOMEGA_LLAMACPP_MODEL")
+                or "qwen9b-p3-mlomega"
+            )
+        elif self.backend == "ollama":
+            self.base_url = (base_url or settings.ollama_base_url).rstrip("/")
+            self.model = model or (
+                settings.ollama_model if _is_post_stop_phase() else settings.ollama_live_model
+            )
+        else:
+            raise EliteLLMError(
+                f"MLOMEGA_LLM_BACKEND inconnu: {self.backend!r} (ollama|llamacpp)"
+            )
 
     def generate_json(
         self,
@@ -290,16 +381,34 @@ class OllamaJsonClient:
         response_text = ""
         finish_reason: str | None = None
         try:
-            outer = ollama_generate(
-                payload,
-                base_url=self.base_url,
-                timeout=timeout,
-                component="ollama_json",
-            )
+            if self.backend == "llamacpp":
+                outer = llamacpp_chat_json(
+                    base_url=self.base_url,
+                    model=self.model,
+                    system=system,
+                    prompt=prompt,
+                    json_schema=json_schema,
+                    max_output_tokens=budget,
+                    timeout=timeout,
+                )
+                choices = outer.get("choices") or []
+                choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+                message = choice.get("message") if isinstance(choice, dict) else {}
+                response_text = str(
+                    message.get("content", "") if isinstance(message, dict) else ""
+                )
+                finish_reason = str(choice.get("finish_reason") or "") or None
+            else:
+                outer = ollama_generate(
+                    payload,
+                    base_url=self.base_url,
+                    timeout=timeout,
+                    component="ollama_json",
+                )
+                response_text = str(outer.get("response", ""))
+                finish_reason = str(outer.get("done_reason") or outer.get("finish_reason") or "") or None
             raw_outer = json.dumps(outer, ensure_ascii=False)
-            response_text = str(outer.get("response", ""))
-            finish_reason = str(outer.get("done_reason") or outer.get("finish_reason") or "") or None
-            if outer.get("done") is False or (finish_reason and finish_reason.lower() in {"length", "max_tokens", "token_limit", "limit"}):
+            if (self.backend == "ollama" and outer.get("done") is False) or (finish_reason and finish_reason.lower() in {"length", "max_tokens", "token_limit", "limit"}):
                 return LLMResult(
                     ok=False,
                     data={},
