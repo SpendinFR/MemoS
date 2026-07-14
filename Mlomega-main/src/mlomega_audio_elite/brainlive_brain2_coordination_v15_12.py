@@ -582,7 +582,29 @@ def create_brainlive_day_package(person_id: str = "me", *, package_date: str | N
     day = raw["package_date"]; start = raw["period_start"]; end = raw["period_end"]
     llm_summary: dict[str, Any]
     error: str | None = None
-    if use_llm:
+    from .brain2_shared_facts_v19 import shared_facts_enabled
+    if shared_facts_enabled():
+        from .night_orchestrator.daily_fact_projection import compile_day_package
+        from .night_orchestrator.prompt_projection import project_stage_payload
+        projection = project_stage_payload(
+            stage_name="coordination_day_package",
+            person_id=person_id,
+            source_ref=f"{person_id}:{day}",
+            payload={
+                "mission": "Compile observed daily evidence without inventing psychology.",
+                "brainlive_day_evidence": raw,
+                "schema": DAY_PACKAGE_SCHEMA,
+            },
+        )
+        llm_summary = compile_day_package(
+            raw, projection.payload["brainlive_day_evidence"]
+        )
+        from .night_orchestrator.contract_normalization import (
+            normalize_contract_output,
+        )
+        llm_summary = normalize_contract_output(llm_summary, DAY_PACKAGE_SCHEMA)
+        status = "compiled_ready"
+    elif use_llm:
         llm_summary, error = _run_llm(
             "Tu es le coordinateur BrainLive→Brain2. Résume uniquement les traces live observées; ne crée pas de psychologie sans preuves. Réponds en JSON strict.",
             {"mission": "Prépare un paquet journalier pour Brain2: moments live importants, prédictions H0/H1/H2, interventions, silences, outcomes, incertitudes et éléments à consolider.", "brainlive_day_evidence": raw, "schema": DAY_PACKAGE_SCHEMA},
@@ -713,7 +735,32 @@ def compile_brain2_forecasts_to_live_bindings(person_id: str = "me", *, use_llm:
     ensure_coordination_schema()
     evidence = collect_brain2_forecast_evidence(person_id, limit=limit)
     now = now_iso()
-    if use_llm:
+    from .brain2_shared_facts_v19 import shared_facts_enabled
+    if shared_facts_enabled():
+        from .night_orchestrator.daily_fact_projection import compile_watch_bindings
+        from .night_orchestrator.prompt_projection import project_stage_payload
+        projection = project_stage_payload(
+            stage_name="coordination_watch_bindings",
+            person_id=person_id,
+            source_ref=f"{person_id}:watch_bindings",
+            payload={
+                "mission": "Compile existing forecasts into live watch bindings.",
+                "brain2_forecast_evidence": evidence,
+                "schema": WATCH_BINDING_SCHEMA,
+            },
+        )
+        items = compile_watch_bindings(
+            evidence, section_table_map=SOURCE_SECTION_TABLE_MAP
+        )
+        out = {
+            "watch_bindings": items,
+            "missing_for_live_activation": [],
+            "projection": projection.purpose,
+        }
+        error = None
+        llm_required = 0
+        status = "compiled_ready"
+    elif use_llm:
         out, error = _run_llm(
             "Tu es le compilateur Brain2→BrainLive. Transforme les prédictions/hypothèses Brain2 existantes en hooks live surveillables. Ne crée pas de nouveau modèle de vie; ne fais que rendre actionnable ce qui existe déjà.",
             {"mission": "Convertis les prédictions next/short/mid/long, forecasts V14, Life Model et watch queues en live watch bindings H0/H1/H2/day/week/long.", "brain2_forecast_evidence": evidence, "schema": WATCH_BINDING_SCHEMA},
@@ -740,7 +787,14 @@ def compile_brain2_forecasts_to_live_bindings(person_id: str = "me", *, use_llm:
                 if sid:
                     source_table = _normalize_source_table(section)
                     items.append({"source_table": source_table, "source_id": sid, "hook_name": f"raw:{source_table}:{sid}", "horizon": r.get("horizon") or "H1", "activation_conditions": [], "predicts": {}, "watch_signals": [], "proactive_options": [], "silence_policy": {}, "evidence": [sid], "counter_evidence": [], "confidence": r.get("confidence") or r.get("probability") or 0.5})
+    if (shared_facts_enabled() or use_llm) and isinstance(out, dict):
+        from .night_orchestrator.contract_normalization import (
+            normalize_contract_output,
+        )
+        out = normalize_contract_output(out, WATCH_BINDING_SCHEMA)
+        items = out.get("watch_bindings") or []
     created: list[str] = []
+    deactivated = 0
     with connect() as con:
         for item in items or []:
             if not isinstance(item, dict):
@@ -774,8 +828,26 @@ def compile_brain2_forecasts_to_live_bindings(person_id: str = "me", *, use_llm:
             }, "binding_id")
             if is_valid:
                 created.append(binding_id)
+        if shared_facts_enabled():
+            if created:
+                placeholders = ",".join("?" for _ in created)
+                cursor = con.execute(
+                    f"""UPDATE brain2_live_watch_bindings
+                        SET status='inactive_source_not_watchable',updated_at=?
+                        WHERE person_id=? AND status='active'
+                          AND binding_id NOT IN ({placeholders})""",
+                    (now, person_id, *created),
+                )
+            else:
+                cursor = con.execute(
+                    """UPDATE brain2_live_watch_bindings
+                       SET status='inactive_source_not_watchable',updated_at=?
+                       WHERE person_id=? AND status='active'""",
+                    (now, person_id),
+                )
+            deactivated = max(0, int(cursor.rowcount or 0))
         con.commit()
-    return {"version": VERSION, "person_id": person_id, "status": status, "error": error, "bindings_created": len(created), "binding_ids": created, "source_counts": _count(evidence), "llm_output": out}
+    return {"version": VERSION, "person_id": person_id, "status": status, "error": error, "bindings_created": len(created), "bindings_deactivated": deactivated, "binding_ids": created, "source_counts": _count(evidence), "llm_output": out}
 
 
 def reconcile_brainlive_with_brain2(person_id: str = "me", *, package_id: str | None = None, use_llm: bool = True, timeout: float = 180.0, limit: int = 100) -> dict[str, Any]:
@@ -789,7 +861,47 @@ def reconcile_brainlive_with_brain2(person_id: str = "me", *, package_id: str | 
         live_payload = dict(pkg) if pkg else {"missing_package": True}
         brain2_payload = collect_brain2_forecast_evidence(person_id, limit=limit)
         recent_recs = _compact(_query(con, "SELECT * FROM brainlive_brain2_reconciliations WHERE person_id=? ORDER BY created_at DESC LIMIT 20", (person_id,)), 20)
-    if use_llm:
+    from .brain2_shared_facts_v19 import shared_facts_enabled
+    compiled_items: list[dict[str, Any]] = []
+    ambiguous_pairs: list[dict[str, Any]] = []
+    if shared_facts_enabled():
+        from .night_orchestrator.daily_fact_projection import (
+            build_reconciliation_candidates,
+        )
+        compiled_items, ambiguous_pairs = build_reconciliation_candidates(
+            live_payload, brain2_payload
+        )
+    if shared_facts_enabled() and not ambiguous_pairs:
+        out = {
+            "reconciliations": compiled_items,
+            "summary_for_brain2": [],
+            "summary_for_brainlive": [],
+        }
+        error = None
+        items = compiled_items
+        status = "compiled_ready" if items else "no_candidates"
+    elif shared_facts_enabled() and use_llm:
+        out, error = _run_llm(
+            "Tu es le juge de coordination BrainLive↔Brain2. Juge uniquement les paires explicitement comparables fournies; non observé reste inconnu.",
+            {
+                "mission": "Resolve only ambiguous prediction/outcome pairs.",
+                "candidate_pairs": ambiguous_pairs,
+                "recent_reconciliations": recent_recs,
+                "schema": RECONCILIATION_SCHEMA,
+            },
+            RECONCILIATION_SCHEMA,
+            timeout=timeout,
+            stage_name="coordination_reconciliation",
+            person_id=person_id,
+            package_date=str(live_payload.get("package_date") or now_iso())[:10],
+            source_ref=str(live_payload.get("package_id") or f"{person_id}:latest"),
+        )
+        llm_items = out.get("reconciliations") if not error and isinstance(out, dict) else []
+        items = compiled_items + list(llm_items or [])
+        out = dict(out)
+        out["reconciliations"] = items
+        status = "llm_ready" if not error else "raw_ready_llm_required"
+    elif use_llm:
         out, error = _run_llm(
             "Tu es le juge de coordination BrainLive↔Brain2. Compare ce que BrainLive a prédit/intervenu/observé avec les hypothèses et prédictions Brain2. Ne juge que ce qui est étayé par les données.",
             {"mission": "Crée des verdicts de réconciliation: confirmé, contredit, partiel, trop tôt/tard, opportunité manquée, silence utile. Explique le delta d'apprentissage pour Brain2 et BrainLive.", "brainlive_package": live_payload, "brain2_material": brain2_payload, "recent_reconciliations": recent_recs, "schema": RECONCILIATION_SCHEMA},
@@ -806,6 +918,12 @@ def reconcile_brainlive_with_brain2(person_id: str = "me", *, package_id: str | 
         out = {"llm_required": True, "raw_evidence_available": True}
         items = []
         status = "raw_only_llm_disabled"
+    if (shared_facts_enabled() or use_llm) and isinstance(out, dict):
+        from .night_orchestrator.contract_normalization import (
+            normalize_contract_output,
+        )
+        out = normalize_contract_output(out, RECONCILIATION_SCHEMA)
+        items = out.get("reconciliations") or []
     now = now_iso(); created: list[str] = []
     with connect() as con:
         for item in items or []:
@@ -935,7 +1053,9 @@ def run_brainlive_brain2_coordination(person_id: str = "me", *, package_date: st
                     "reconciliation": reconciliation,
                 }.items()
                 if isinstance(child, dict)
-                and str(child.get("status") or "") != "llm_ready"
+                and str(child.get("status") or "") not in {
+                    "llm_ready", "compiled_ready", "no_candidates"
+                }
             }
             if failed_children:
                 raise RuntimeError(

@@ -10,6 +10,7 @@ import shutil
 import sqlite3
 import struct
 import sys
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,60 @@ def _present(module: str) -> bool:
         return False
 
 
+def _probe_llm_context(
+    configured_context: int,
+    *,
+    backend: str | None = None,
+    base_url: str | None = None,
+    timeout_s: float = 3.0,
+) -> tuple[bool, dict[str, Any]]:
+    """Prove that the post-stop budget matches the running llama.cpp slot.
+
+    The orchestration budget is a total prompt+response window.  Letting it
+    silently differ from the server context caused useful 13k prompts to be
+    split into five calls even though the running server accepted 24k.  Ollama
+    owns its per-request ``num_ctx`` and therefore does not need this external
+    server check.
+    """
+    selected = (backend or os.environ.get("MLOMEGA_LLM_BACKEND", "ollama")).strip().lower()
+    detail: dict[str, Any] = {
+        "backend": selected,
+        "configured_poststop_context": int(configured_context),
+    }
+    if selected != "llamacpp":
+        detail["status"] = "not_applicable_per_request_context"
+        return True, detail
+
+    root = (
+        base_url
+        or os.environ.get("MLOMEGA_LLAMACPP_BASE_URL")
+        or "http://127.0.0.1:8080"
+    ).rstrip("/")
+    detail["base_url"] = root
+    try:
+        with urllib.request.urlopen(f"{root}/props", timeout=timeout_s) as response:
+            props = json.loads(response.read().decode("utf-8"))
+        settings = props.get("default_generation_settings") or {}
+        server_context = int(settings.get("n_ctx") or 0)
+        detail.update(
+            {
+                "server_context": server_context,
+                "model_alias": props.get("model_alias"),
+                "source": "/props.default_generation_settings.n_ctx",
+            }
+        )
+        if server_context <= 0:
+            detail["error"] = "running llama.cpp did not expose a positive n_ctx"
+            return False, detail
+        matches = server_context == int(configured_context)
+        if not matches:
+            detail["error"] = "orchestrator/server context mismatch"
+        return matches, detail
+    except Exception as exc:
+        detail["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
+        return False, detail
+
+
 def run() -> dict[str, Any]:
     checks: dict[str, dict[str, Any]] = {}
 
@@ -49,6 +104,7 @@ def run() -> dict[str, Any]:
     missing = [name for name in required if not _present(name)]
     record("deep_audio_imports", not missing, {"required": required, "missing": missing})
 
+    cfg = None
     try:
         from mlomega_audio_elite.config import get_settings
         from mlomega_audio_elite.v18_close_day import close_brainlive_day  # noqa: F401
@@ -64,6 +120,12 @@ def run() -> dict[str, Any]:
         )
     except Exception as exc:
         record("close_day_imports", False, f"{type(exc).__name__}: {str(exc)[:300]}")
+
+    if cfg is None:
+        record("llm_context_budget", False, "settings unavailable; context equality unproved")
+    else:
+        context_ok, context_detail = _probe_llm_context(cfg.ollama_context_poststop)
+        record("llm_context_budget", context_ok, context_detail)
 
     token = os.environ.get("MLOMEGA_HF_TOKEN") or os.environ.get("HF_TOKEN")
     token_ok = bool(token and not token.startswith("__") and len(token.strip()) >= 8)

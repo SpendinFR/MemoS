@@ -127,6 +127,20 @@ def _validate_schema_shape(value: Any, schema: Mapping[str, Any]) -> bool:
     return isinstance(value, Mapping) and set(schema).issubset(value)
 
 
+def _validate_top_level_cardinality(
+    value: Any, schema: Mapping[str, Any], guard: Mapping[str, Any]
+) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    maximum = int(guard.get("max_items_per_top_level_list") or 0)
+    for key, template in schema.items():
+        if isinstance(template, list):
+            items = value.get(key)
+            if not isinstance(items, list) or len(items) > maximum:
+                return False
+    return True
+
+
 def _lossless_array_union(
     values: Sequence[Mapping[str, Any]], schema: Mapping[str, Any]
 ) -> dict[str, Any] | None:
@@ -168,7 +182,8 @@ def _lossless_array_union(
 
 
 def _output_cardinality_guard(
-    schema: Mapping[str, Any], *, output_budget: int
+    schema: Mapping[str, Any], *, output_budget: int,
+    requested_max_items: int | None = None,
 ) -> dict[str, Any]:
     """Describe a bounded *derived* projection without dropping source proof.
 
@@ -178,6 +193,8 @@ def _output_cardinality_guard(
     """
     top_level_lists = max(1, sum(isinstance(value, list) for value in schema.values()))
     max_items = max(4, min(16, int(output_budget) // (180 * top_level_lists)))
+    if requested_max_items is not None:
+        max_items = max(0, min(max_items, int(requested_max_items)))
     return {
         "max_response_tokens": max(256, int(output_budget) - 384),
         "max_items_per_top_level_list": max_items,
@@ -230,7 +247,13 @@ def _run_hierarchical_json_single_schema(
         safety_margin=768,
     )
     cardinality_guard = _output_cardinality_guard(
-        schema, output_budget=int(output_budget)
+        schema, output_budget=int(output_budget),
+        requested_max_items=(
+            int((payload.get("output_cardinality") or {}).get("max_items_per_list"))
+            if isinstance(payload.get("output_cardinality"), Mapping)
+            and (payload.get("output_cardinality") or {}).get("max_items_per_list") is not None
+            else None
+        ),
     )
     llm = OllamaWindowLLM(
         system=system, client=client, schema_hint=dict(schema), timeout=timeout
@@ -372,7 +395,12 @@ def _run_hierarchical_json_single_schema(
                 llm=llm,
                 budget=budget,
                 render=render,
-                validate=lambda value: _validate_schema_shape(value, schema),
+                validate=lambda value: (
+                    _validate_schema_shape(value, schema)
+                    and _validate_top_level_cardinality(
+                        value, schema, cardinality_guard
+                    )
+                ),
                 decorate_output=envelope,
                 target_units=target_units,
                 overlap=0,
@@ -478,6 +506,13 @@ _STAGE_RESPONSIBILITY_KEYS: dict[str, tuple[tuple[str, ...], ...]] = {
             "missing_context", "confidence",
         ),
     ),
+    "life_model_patch": (
+        ("operations",),
+        (
+            "patch_intent", "strata_guidance", "missing_evidence_for_magic",
+            "do_not_update_without", "summary_for_brainlive",
+        ),
+    ),
 }
 
 
@@ -543,7 +578,9 @@ def _schema_responsibility_parts(
     return parts
 
 
-def _requires_output_responsibility_split(schema: Mapping[str, Any]) -> bool:
+def _requires_output_responsibility_split(
+    schema: Mapping[str, Any], *, stage_name: str | None = None
+) -> bool:
     """Identify contracts known to be too broad for one bounded JSON answer.
 
     Real Qwen 9B runs showed the recurring failure boundary around the V14
@@ -551,6 +588,11 @@ def _requires_output_responsibility_split(schema: Mapping[str, Any]) -> bool:
     9+ independent top-level collections).  Small schemas remain on the normal
     single-contract path, avoiding unnecessary duplicate evidence reads.
     """
+    registered = _STAGE_RESPONSIBILITY_KEYS.get(str(stage_name or ""))
+    if registered:
+        registered_keys = {key for part in registered for key in part}
+        if registered_keys == set(schema):
+            return True
     list_fields = sum(isinstance(value, list) for value in schema.values())
     return len(json_dumps(schema)) >= 2000 or list_fields >= 8
 
@@ -597,7 +639,7 @@ def run_hierarchical_json(
         connection=connection,
     )
     payload = projection.payload
-    if not _requires_output_responsibility_split(schema):
+    if not _requires_output_responsibility_split(schema, stage_name=stage_name):
         result = _run_hierarchical_json_single_schema(
             stage_name=stage_name,
             person_id=person_id,

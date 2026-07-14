@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 
@@ -69,3 +70,51 @@ def test_close_day_preflight_does_not_create_missing_paths(monkeypatch, tmp_path
     assert not report["checks"]["media_root"]["ok"]
     assert not missing_db.parent.exists()
     assert not missing_media.exists()
+
+
+def _load_close_day_preflight():
+    path = ROOT / "scripts" / "check_close_day_preflight.py"
+    spec = importlib.util.spec_from_file_location("e61_context_preflight", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_llamacpp_preflight_requires_exact_server_context(monkeypatch) -> None:
+    module = _load_close_day_preflight()
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "default_generation_settings": {"n_ctx": 24576},
+                    "model_alias": "qwen9b-p1-24k-mlomega",
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    ok, detail = module._probe_llm_context(
+        24576, backend="llamacpp", base_url="http://127.0.0.1:8080"
+    )
+    assert ok is True
+    assert detail["server_context"] == 24576
+
+    ok, detail = module._probe_llm_context(
+        16384, backend="llamacpp", base_url="http://127.0.0.1:8080"
+    )
+    assert ok is False
+    assert detail["error"] == "orchestrator/server context mismatch"
+
+
+def test_ollama_context_preflight_is_per_request() -> None:
+    module = _load_close_day_preflight()
+    ok, detail = module._probe_llm_context(16384, backend="ollama")
+    assert ok is True
+    assert detail["status"] == "not_applicable_per_request_context"

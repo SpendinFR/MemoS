@@ -1051,3 +1051,52 @@ mesure réelle du pack V13 parent restent ouverts; la cible −50 % tokens n'est
 I2 est néanmoins autorisé car le multiplicateur faux 10 parents a disparu. Ne pas annoncer
 un temps huit heures avant d'avoir mesuré les subdivisions du pack et supprimé les
 ré-inférences V14/coordination/Life via le contrat de faits partagé.
+
+## 2026-07-15 — E64-I2 : première occurrence Life compilée, promotion seulement sur répétition
+
+**Séparer observation et trait.** Une ligne `action_outcomes`, un événement non verbal ou
+une phrase ne devient pas immédiatement une préférence, un besoin ou un hook de William.
+La première source exacte est persistée dans `brain2_life_model_watch_candidates` avec
+son owner, sa table, sa PK, son épisode et son temps. Le replay de la même PK est
+idempotent. Deux groupes épisode/source indépendants rendent le candidat
+`promotion_ready`; eux seuls, un fait de soi explicite ou un pattern longitudinal
+confirmé peuvent ouvrir le jugement sémantique Life.
+
+**Le modèle ne choisit pas ses preuves.** Une opération doit citer au moins une nouvelle
+preuve durable du delta courant. Les références sont résolues contre la table réelle et
+le scope owner. Une création sans répétition suffisante est forcée
+`very_recent/candidate/watch_only`, même si le modèle réclame 0,95 ou
+`strong_live_hook`. La réponse entière est refusée si une opération recycle seulement un
+ancien fait. Ainsi, le fait local « est-ce Maxime ? » peut rester une bonne observation
+de contexte sans devenir une vérité longitudinale.
+
+**Pourquoi ne pas reprompter Qwen.** Sur le clone réel, le payload Life a été réduit de
+484 915 à 10 845 tokens en gardant les neuf couches et les manifests. Qwen 9B a pourtant
+associé l'outcome test à un ancien fait et omis la nouvelle PK, y compris dans une fenêtre
+unique. Le garde a bloqué toute écriture. Décision : ne pas ajouter des règles verbales
+fixture par fixture; compiler les cas mécaniques et réserver les promotions ambiguës à
+un modèle plus capable, local ou DeepSeek, sous le même validateur.
+
+**Entrée commune et contexte.** Le registre journalier partagé et les lignes owner-scopées
+sont projetés une fois. Les tours sans lien explicite restent durables mais ne sont pas
+rejoués au Life updater. Les faits des autres personnes restent dans leurs modèles
+Person/Relationship; seuls les éléments liés au même fait owner peuvent servir de
+contexte causal. Le writer historique reste le contrat de compatibilité, et sa PK
+`b2action_*` est désormais identique à celle du lifecycle.
+
+**Checkpoint par révision durable.** `period_start/period_end` borne le run, mais la
+consommation est désormais enregistrée par `(person_id, source_table, source_id, digest)`
+dans `brain2_life_model_consumed_sources`, avec synthèse familiale dans
+`brain2_life_model_checkpoints`. Le checkpoint n'avance qu'après writer réussi. Un replay
+exact ne repaye rien; une modification tardive de la même PK change le digest et repasse.
+V17 longitudinal, outcome resolution V19, store Life V19, prédictions, Self Schema et
+`live_ready` restent des consommateurs déterministes; ils ne deviennent pas
+artificiellement des appels LLM.
+
+**Budget modèle cohérent et bloquant.** Un serveur llama.cpp à 24 576 et un orchestrateur
+resté à 16 384 produisent des subdivisions inutiles et séparent le nouvel outcome de
+l'état courant : cinq appels à 16 k contre un appel de 13 326 tokens rendus à 24 k.
+`check_close_day_preflight.py` lit donc le `n_ctx` réel de `/props` et exige l'égalité
+exacte avec `MLOMEGA_OLLAMA_CONTEXT_POSTSTOP`; serveur absent, valeur illisible ou
+mismatch rendent le ready faux. La preuve réelle est verte à 24 576 des deux côtés. Ce
+réglage ne remplace ni la projection ni les caps paginés à traiter en I3.

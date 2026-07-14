@@ -596,6 +596,37 @@ comparer toutes les sorties/writers, puis appliquer le même contrat central à
 coordination, réconciliation, Life et longitudinal. Tant que cette équivalence n'est
 pas prouvée, le flag reste OFF et les gains statiques ne valent pas gain produit.
 
+Mise à jour 2026-07-15 : le run V14 réel passe de 20 à 3 appels, de 293 495 à
+36 898 tokens et de 569 à 136 s, avec writers et refs restaurés. Coordination est
+désormais compilée par code; Life est traité par OBS-43. Restent avant activation le
+contrat d'équivalence complet R3, la pagination R4 et le harnais cinq minutes.
+
+## OBS-43 — Life utilisait un outcome comme permis d'inventer un autre trait (CORRIGÉ — R2 CLOS)
+
+Sur un clone owner-scopé, l'ajout d'un seul `action_outcomes` déclenchait Life. Qwen 9B
+ignorait cette nouvelle ligne, recyclait « Maxime/Karim/clarification » depuis les tours
+ou le modèle courant, puis proposait deux traits à 0,95/`strong_live_hook`. Le premier run
+était en outre fragmenté en cinq appels parce que le serveur llama.cpp utilisait 24 576
+tokens et l'orchestrateur son défaut 16 384. Le validateur V18 a mis les opérations en
+quarantaine; aucune écriture canonique partielle n'a eu lieu.
+
+Correction architecturale : le registre Life partagé est de nouveau réellement appelé;
+les tours non cités par un fait owner restent hors prompt; toute opération doit citer une
+nouvelle PK durable du delta. Surtout, une première observation est compilée sans LLM
+dans `brain2_life_model_watch_candidates`. Rejouer la même PK n'incrémente rien; deux
+épisodes/sources indépendants donnent `promotion_ready`. Avant ce seuil, aucune ligne
+canonique n'est créée. Preuve réelle : 1,18 s, zéro fenêtre LLM, watch exact sur
+`action_outcomes/outcome-owner-test`. 82 tests ciblés/élargis verts après ajout des
+contrats checkpoint et préflight.
+
+Le delta est maintenant durable : 21 révisions exactes ont été consommées au premier run
+de preuve, puis zéro au replay (`compiled_no_life_delta`), sans incrémenter le watch ni
+ouvrir de fenêtre LLM. Le digest permet de retraiter une révision tardive de la même PK.
+Le préflight llama.cpp compare en outre le contexte post-stop au `n_ctx` réel : 24 576 =
+24 576 est vert; serveur absent, contexte illisible ou mismatch bloquent le ready. Une
+promotion ambiguë doit rester validée par provenance et peut être déléguée à DeepSeek;
+ne pas contourner le garde en repromptant Qwen jusqu'à obtenir un JSON plaisant.
+
 ## Notes that are NOT bugs (expected, documented so future runs don't chase them)
 
 - **`ai_ready=false` / `/health` 200 with `pairing_ready=true`.** Expected on a

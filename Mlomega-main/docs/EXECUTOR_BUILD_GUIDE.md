@@ -958,3 +958,58 @@ Augmenter les nombres ou envoyer toutes les lignes dans un prompt unique est int
 Le gate final de cette reprise est un seul harnais cinq minutes, après R1–R4 : comparer
 au total historique de 169 appels, vérifier le dashboard et recalculer les volumes 1 h/
 8 h. Avant ce gate, ni les 1,5 M tokens ni les 3–6 M ne sont des résultats certifiés.
+
+### Checkpoint d'exécution R1/R2 — 2026-07-15
+
+R1 est terminé sur clones séparés. Baseline V14 : 20 appels, 293 495 tokens d'entrée
+estimés, 569 s. Shadow I2 : 3 appels, 36 898 tokens, 136 s. Les dix sorties
+interpersonnelles et les IDs restaurés ont été relus; le shadow s'abstient d'inventer
+« Maxime » comme identité. `contract_normalization.py` est désormais la frontière entre
+les dictionnaires structurés du runner et les writers historiques V14.5/V14.6.
+
+R2 coordination est déterministe et validé sur clone : `compiled_ready`, 13 bindings
+actionnables, deux bindings obsolètes désactivés, zéro source non résolue et aucune paire
+de réconciliation réelle à soumettre au modèle. Fichiers centraux à lire :
+`night_orchestrator/daily_fact_projection.py`, `prompt_projection.py`, puis
+`brainlive_brain2_coordination_v15_12.py`.
+
+R2 Life et sa frontière de vérité sont validés :
+
+- le payload réel est passé de 484 915 à 10 845 tokens; les neuf couches sont présentes
+  comme index, tandis que la DB conserve le raw complet;
+- une première observation owner-scopée est compilée dans
+  `brain2_life_model_watch_candidates`, sans appel LLM ni objet canonique. Preuve sur
+  clone : 1,18 s, zéro `life_model_patch` window, occurrence=1/independent=1;
+- une source identique rejouée est idempotente; une deuxième source/épisode indépendant
+  rend le candidat `promotion_ready`;
+- tout patch doit citer une nouvelle ligne durable exacte. Une création insuffisamment
+  répétée est forcée `very_recent/candidate/watch_only`; une réponse qui recycle un ancien
+  fait est refusée en entier;
+- le writer V18 a été exercé avec une opération valide : modèle canonique et lifecycle
+  partagent la PK `b2action_*`; aucune moitié de patch n'est appliquée;
+- les tables `brain2_life_model_consumed_sources` et `brain2_life_model_checkpoints`
+  enregistrent la révision exacte de chaque source par digest. Sur le clone checkpoint,
+  le premier passage consomme 21 révisions; le replay immédiat donne
+  `compiled_no_life_delta`, source_count=0, watch occurrence=1 et zéro appel LLM. Une
+  même PK modifiée est volontairement retraitée;
+- le préflight CloseDay interroge `/props` pour llama.cpp et refuse serveur absent,
+  `n_ctx` illisible ou différent de `MLOMEGA_OLLAMA_CONTEXT_POSTSTOP`. Validation réelle :
+  budget configuré 24 576, serveur 24 576, alias `qwen9b-p1-24k-mlomega`, ready vert;
+- **82 tests** élargis E64/I2/Life/CloseDay/préflight sont verts.
+
+Ne pas relancer Qwen pour une première occurrence : c'est désormais un bug si une telle
+occurrence ouvre une fenêtre LLM. Le test Qwen 9B en une fenêtre a répondu en 15,3 s mais
+a choisi un ancien fait sans citer le nouvel outcome; la validation l'a bloqué. Ce
+résultat justifie le compilateur de watch, pas une nouvelle retouche fixture du prompt.
+Une promotion réellement ambiguë pourra être confiée à un modèle plus fort (dont
+DeepSeek), toujours derrière le même contrat de preuve.
+
+R2 est clos. Prochaine action exacte : R3, matrice
+champ→fait→preuve→writer→consommateur et comparaison baseline/shadow. Ne traiter les
+caps 200/160/120 qu'après cette équivalence.
+
+Attention configuration : le serveur de mesure tourne avec `ctx-size=24576`, tandis que
+le défaut orchestrateur reste 16384. Il faut donc définir
+`MLOMEGA_OLLAMA_CONTEXT_POSTSTOP=24576` pour ce serveur. Le préflight compare maintenant
+la valeur au `n_ctx` réel de `/props`; 16 384 contre 24 576 est un échec bloquant, et non
+plus cinq subdivisions silencieuses d'un payload rendu de 13 326 tokens.

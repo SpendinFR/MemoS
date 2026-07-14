@@ -29,6 +29,10 @@ class StagePromptProjection:
 _STAGE_PURPOSES = {
     "v14_people_identity": "people_identity",
     "v14_people_open_loops": "open_loops",
+    "coordination_day_package": "coordination_day_package",
+    "coordination_watch_bindings": "coordination_watch_bindings",
+    "coordination_reconciliation": "coordination_reconciliation",
+    "life_model_patch": "life_model_patch",
 }
 
 
@@ -83,23 +87,61 @@ def project_stage_payload(
         owned = connect()
         con = owned
     try:
-        stage_input = compact_stage_input(
-            con, source_ref, person_id=person_id, purpose=purpose
-        )
-        turn_id_by_ref = dict(stage_input.pop("_turn_id_map", {}))
         projected = dict(original)
-        if purpose in {"people_identity", "open_loops"}:
-            projected["conversation_data"] = stage_input
-            projected["background"] = {
-                "projection": stage_input["projection_version"],
-                "included_in_conversation_data": True,
-            }
-        elif purpose == "interpersonal":
-            projected["conversation_payload"] = stage_input
-            projected["background"] = {
-                "projection": stage_input["projection_version"],
-                "included_in_conversation_payload": True,
-            }
+        turn_id_by_ref: dict[str, str] = {}
+        if purpose in {"people_identity", "open_loops", "interpersonal"}:
+            stage_input = compact_stage_input(
+                con, source_ref, person_id=person_id, purpose=purpose
+            )
+            turn_id_by_ref = dict(stage_input.pop("_turn_id_map", {}))
+            if purpose in {"people_identity", "open_loops"}:
+                projected["conversation_data"] = stage_input
+                projected["background"] = {
+                    "projection": stage_input["projection_version"],
+                    "included_in_conversation_data": True,
+                }
+            else:
+                projected["conversation_payload"] = stage_input
+                projected["background"] = {
+                    "projection": stage_input["projection_version"],
+                    "included_in_conversation_payload": True,
+                }
+        else:
+            from .daily_fact_projection import (
+                load_daily_shared_registry,
+                project_day_evidence,
+                project_forecast_evidence,
+                project_life_patch_payload,
+                project_reconciliation_payload,
+            )
+            if purpose == "coordination_day_package":
+                raw = original.get("brainlive_day_evidence") or {}
+                package_date = str(raw.get("package_date") or source_ref.rsplit(":", 1)[-1])[:10]
+                registry = load_daily_shared_registry(
+                    con, person_id=person_id, package_date=package_date
+                )
+                projected["brainlive_day_evidence"] = project_day_evidence(
+                    raw, shared_registry=registry
+                )
+            elif purpose == "coordination_watch_bindings":
+                projected["brain2_forecast_evidence"] = project_forecast_evidence(
+                    original.get("brain2_forecast_evidence") or {}
+                )
+            elif purpose == "coordination_reconciliation":
+                projected = project_reconciliation_payload(original)
+            elif purpose == "life_model_patch":
+                delta = original.get("new_delta_evidence") or {}
+                package_date = str(
+                    delta.get("period_start") or delta.get("as_of") or ""
+                )[:10]
+                registry = load_daily_shared_registry(
+                    con, person_id=person_id, package_date=package_date
+                ) if package_date else {}
+                projected = project_life_patch_payload(
+                    original, shared_registry=registry,
+                    owner_person_id=person_id,
+                )
+                turn_id_by_ref = dict(projected.pop("_turn_id_map", {}))
         projected_tokens = estimate_tokens_for_text(json_dumps(projected))
         con.execute("""
             CREATE TABLE IF NOT EXISTS night_prompt_projections_v19(

@@ -31,6 +31,7 @@ from .llm import OllamaJsonClient
 from .utils import json_dumps, json_loads, now_iso, stable_id
 from .self_model_export_v14_3 import ensure_v14_3_schema
 from .auto_verification_v14_4 import ensure_v14_4_schema
+from .night_orchestrator.contract_normalization import normalize_contract_output
 
 V14_5_VERSION = "14.5.0-people-openloops-final"
 
@@ -528,6 +529,7 @@ def analyze_people_identity_hypotheses(conversation_id: str, *, person_id: str |
                 "source_ref": conversation_id,
             },
         )
+        out = normalize_contract_output(out, IDENTITY_SCHEMA)
         status = "ok"
         error = None
     except Exception as exc:
@@ -736,6 +738,8 @@ def track_personal_open_loops(conversation_id: str, *, person_id: str | None = N
             out = {"error": str(exc)[:2000]}
             status = "error"
             error = str(exc)[:2000]
+    if status == "ok":
+        out = normalize_contract_output(out, OPEN_LOOP_SCHEMA)
     loop_title_to_id: dict[str, str] = {}
     created_or_updated = 0
     with connect() as con:

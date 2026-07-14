@@ -108,8 +108,11 @@ def test_brain2_step_rejects_known_nested_engine_error(tmp_path, monkeypatch):
         )
 
 
-def test_interpersonal_contract_splits_disjoint_output_responsibilities(monkeypatch):
+def test_interpersonal_contract_delegates_disjoint_responsibilities_to_orchestrator(monkeypatch):
     from mlomega_audio_elite import interpersonal_state_v14_6 as module
+    from mlomega_audio_elite.night_orchestrator.hierarchical_json import (
+        _schema_responsibility_parts,
+    )
 
     calls = []
 
@@ -125,9 +128,67 @@ def test_interpersonal_contract_splits_disjoint_output_responsibilities(monkeypa
         package_date="2026-07-14",
     )
 
-    assert len(calls) == 2
-    assert set(calls[0][1]).isdisjoint(calls[1][1])
+    # The business adapter makes one full-contract delegation.  The shared
+    # orchestrator, not this module, owns the two output responsibilities.
+    assert len(calls) == 1
+    assert set(calls[0][1]) == set(module.INTERPERSONAL_SCHEMA)
+    parts = _schema_responsibility_parts(
+        module.INTERPERSONAL_SCHEMA, stage_name="v14_interpersonal_state"
+    )
+    assert len(parts) == 2
+    assert set(parts[0]).isdisjoint(parts[1])
+    assert set(parts[0]) | set(parts[1]) == set(module.INTERPERSONAL_SCHEMA)
     assert set(result) == set(module.INTERPERSONAL_SCHEMA)
+
+
+def test_interpersonal_writer_projection_normalizes_structured_text_without_fake_id():
+    from mlomega_audio_elite import interpersonal_state_v14_6 as module
+
+    value = {key: item for key, item in module.INTERPERSONAL_SCHEMA.items()}
+    value["other_person_state_snapshots"] = [{
+        "known_person_id": {"status": "unknown"},
+        "person_hint": {"label": "speaker A"},
+        "moment_state_summary": {"hypothesis": "guarded"},
+        "evidence_turn_ids": {"turn_id": "turn-1"},
+        "confidence": "0.8",
+    }]
+
+    normalized = module._normalize_interpersonal_contract(value)
+    snapshot = normalized["other_person_state_snapshots"][0]
+
+    assert snapshot["known_person_id"] is None
+    assert isinstance(snapshot["person_hint"], str)
+    assert isinstance(snapshot["moment_state_summary"], str)
+    assert snapshot["evidence_turn_ids"] == [{"turn_id": "turn-1"}]
+    assert snapshot["confidence"] == 0.8
+
+
+def test_people_writer_projection_normalizes_structured_text_without_fake_id():
+    from mlomega_audio_elite.people_openloops_v14_5 import IDENTITY_SCHEMA
+    from mlomega_audio_elite.night_orchestrator.contract_normalization import (
+        normalize_contract_output,
+    )
+
+    normalized = normalize_contract_output({
+        "speaker_identity_hypotheses": [],
+        "relationship_inferences": [],
+        "people_context_profiles": [{
+            "person_hint": {"label": "speaker A"},
+            "known_person_id": {"status": "unknown"},
+            "speaker_label": {"value": "UNKNOWN_VOICE_001"},
+            "what_you_often_talk_about": {"topic": "project"},
+            "confidence": "0.7",
+        }],
+        "missing_context": [],
+        "confidence": 0.5,
+    }, IDENTITY_SCHEMA)
+
+    profile = normalized["people_context_profiles"][0]
+    assert isinstance(profile["person_hint"], str)
+    assert profile["known_person_id"] is None
+    assert isinstance(profile["speaker_label"], str)
+    assert profile["what_you_often_talk_about"] == [{"topic": "project"}]
+    assert profile["confidence"] == 0.7
 
 
 def test_opt_in_lossless_array_merge_preserves_distinct_findings():

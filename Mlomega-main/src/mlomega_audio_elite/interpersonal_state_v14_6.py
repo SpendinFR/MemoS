@@ -25,6 +25,7 @@ from .db import connect, init_db, upsert
 from .llm import OllamaJsonClient
 from .utils import json_dumps, json_loads, now_iso, stable_id
 from .people_openloops_v14_5 import ensure_v14_5_schema
+from .night_orchestrator.contract_normalization import normalize_contract_output
 
 V14_6_VERSION = "14.6.0-interpersonal-state-final"
 
@@ -174,6 +175,18 @@ def _clamp(v: Any, lo: float = 0.0, hi: float = 1.0) -> float:
     except Exception:
         f = 0.0
     return max(lo, min(hi, f))
+
+
+def _normalize_interpersonal_contract(value: dict[str, Any]) -> dict[str, Any]:
+    """Normalize model leaf types to the declared contract before SQLite writers.
+
+    Hierarchical merges preserve JSON findings losslessly and can therefore expose a
+    structured hypothesis where the legacy SQLite column expects text.  The raw
+    window outputs remain durable in the orchestrator journal; this projection makes
+    only the historical writer shape-safe and refuses to invent person identifiers.
+    """
+
+    return normalize_contract_output(value, INTERPERSONAL_SCHEMA)
 
 
 def _safe_json(value: Any, default: Any = None) -> Any:
@@ -511,6 +524,7 @@ def analyze_interpersonal_state(conversation_id: str, *, person_id: str | None =
             conversation_id=conversation_id,
             package_date=now[:10],
         )
+        out = _normalize_interpersonal_contract(out)
     except Exception as exc:
         status = "error"
         error = str(exc)[:2000]

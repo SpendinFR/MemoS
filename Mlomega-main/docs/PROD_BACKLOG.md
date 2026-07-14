@@ -812,12 +812,13 @@ historique est donc inchangé tant que la validation shadow suivante n'est pas c
   Life Model, longitudinal et leurs writers doivent encore être classés champ par champ.
 - [ ] **I2.2b reste à faire** : étendre le contrat commun aux producteurs hors V13 et
   prouver, writer par writer, que les projections historiques restent équivalentes.
-- [ ] **I2.4b — prochain geste exact** : sur une copie de la DB minute, relancer seulement
-  identité puis interpersonnel avec les deux flags I1/I2. Attendu : identité bornée,
-  deux responsabilités interpersonnelles, zéro appel open-loops seulement si le
-  `valid_empty` V13 est présent. Relire `night_prompt_projections_v19`,
-  `night_llm_windows_v19`, les tables V14 et chaque ID de tour restauré. Comparer les
-  sorties ligne par ligne à la baseline avant de cocher I2.4.
+- [x] **I2.4b — V14 réel validé sur clones** : baseline 20 appels / 293 495 tokens
+  d'entrée estimés / 569 s; shadow I2 3 appels / 36 898 tokens / 136 s, soit −85 %
+  appels, −87,4 % entrée et −76,1 % temps. Les refs de tours sont restaurées, les dix
+  responsabilités interpersonnelles passent par les writers, et l'identité reste
+  `UNKNOWN` au lieu de promouvoir « Maxime » sans preuve. Les retours structurés du
+  runner sont normalisés avant les writers V14.5/V14.6; une liste vide open-loop n'est
+  réutilisée que si la capacité V13 est réellement `valid_empty`.
 - [ ] **I2.5/I2.6 restent ouverts** : étendre la politique dans l'orchestrateur et le
   registre de faits — pas par compactages ad hoc dans chaque moteur — puis construire
   la matrice d'équivalence coordination/réconciliation/Life. Ensuite seulement relancer
@@ -827,7 +828,7 @@ historique est donc inchangé tant que la validation shadow suivante n'est pas c
 séquentielles : ne pas lancer tout CloseDay entre chacune et ne pas considérer une
 réduction statique de JSON comme une validation modèle.
 
-- [ ] **R1 — valider le premier aval V14 avec le vrai 9B.** Travailler sur deux copies
+- [x] **R1 — valider le premier aval V14 avec le vrai 9B.** Travailler sur deux copies
   identiques de la DB minute : baseline flags OFF, shadow avec
   `MLOMEGA_E64_CONVERSATION_EPISODES=1` et `MLOMEGA_E64_SHARED_FACTS=1`. Appeler
   uniquement `run_v14_5_post_conversation` puis `run_v14_6_post_conversation`, pas Life
@@ -840,8 +841,10 @@ réduction statique de JSON comme une validation modèle.
   peut faire zéro appel seulement avec `outcome_tracker.open_loops=valid_empty`.
   **STOP** si la projection entraîne plus d'appels, un champ/writer vide par régression,
   une preuve invalide ou une conclusion moins prudente; sinon consigner le gain réel.
+  **Verdict acquis** : GO shadow avec les mesures I2.4b ci-dessus; aucune activation par
+  défaut avant l'équivalence globale R3.
 
-- [ ] **R2 — raccorder les quatre seuls agrégateurs LLM journaliers à I2.** Le runner
+- [x] **R2 — raccorder les quatre seuls agrégateurs LLM journaliers à I2.** Le runner
   `brainlive_brain2_coordination_v15_12.py` possède trois stages orchestrés :
   `coordination_day_package`, `coordination_watch_bindings` et
   `coordination_reconciliation`; `brain2_life_model_updater_v15_13.py` ajoute
@@ -872,6 +875,39 @@ réduction statique de JSON comme une validation modèle.
   V17 longitudinal, outcome watcher V19, store Life V19, émission de prédictions,
   Self Schema et `live_ready` restent des consommateurs déterministes tant qu'un appel
   réel distinct n'est pas démontré : ne pas les faire passer artificiellement au LLM.
+
+  **R2 — état réel au 2026-07-15 :**
+  - [x] Projection journalière centrale ajoutée pour les quatre buts. Le paquet jour,
+    les bindings et les paires exactes de réconciliation sont compilés par code. Sur le
+    clone réel : paquet `compiled_ready`, 13 bindings actionnables, deux anciennes
+    sources désactivées, zéro source non résolue, réconciliation `no_candidates` et
+    zéro appel LLM ajouté.
+  - [x] Life reçoit les neuf couches comme index courant et un delta owner-scopé; le
+    payload réel passe de **484 915 à 10 845 tokens** sans supprimer les lignes brutes.
+    Le registre partagé, devenu inatteignable après un mauvais placement de fonction,
+    est restauré. Les tours sans lien avec un fait durable restent en DB/manifeste et ne
+    peuvent plus devenir arbitrairement une préférence de William.
+  - [x] Premier indice compilé sans LLM dans
+    `brain2_life_model_watch_candidates` : preuve réelle 1,18 s, zéro fenêtre LLM,
+    `action_outcomes/outcome-owner-test` → `watching`, aucune ligne canonique. Rejouer la
+    même source reste à 1 occurrence; deux épisodes/sources indépendants donnent
+    `promotion_ready`. Une opération canonique V18 simulant la promotion a écrit la même
+    PK `b2action_*` dans modèle et lifecycle, avec preuves owner-scopées.
+  - [x] Garde de patch : chaque opération doit citer une nouvelle preuve durable du
+    delta; une création insuffisamment répétée est forcée `very_recent/candidate/
+    watch_only`, jamais `strong_live_hook`. Deux sorties Qwen ayant recyclé d'anciens
+    faits ont été refusées intégralement, sans écriture partielle.
+  - [x] Checkpoint durable par `(person_id, source_table, source_id, digest)` : les sources
+    ne sont consommées qu'après writer réussi, un replay exact produit
+    `compiled_no_life_delta`, et une révision tardive de la même PK est retraitée grâce
+    au digest. Preuve clone : 21 révisions consommées au premier passage, zéro au second,
+    occurrence watch inchangée à 1 et aucune fenêtre LLM.
+  - [x] Préflight contexte réel : en backend llama.cpp,
+    `check_close_day_preflight.py` lit `/props.default_generation_settings.n_ctx` et exige
+    l'égalité exacte avec `MLOMEGA_OLLAMA_CONTEXT_POSTSTOP`. Preuve sur le serveur actif :
+    24 576 = 24 576, alias `qwen9b-p1-24k-mlomega`, `ready=True`. Serveur absent, contexte
+    illisible ou mismatch bloquent le ready. Une promotion ambiguë reste derrière la
+    validation stricte et pourra utiliser DeepSeek; ne pas repolir le prompt Qwen 9B.
 
 - [ ] **R3 — prouver l'équivalence avant activation.** Construire une matrice versionnée
   `champ de schéma → fait/capacité source → preuve → writer historique → consommateur`.
