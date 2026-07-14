@@ -50,6 +50,8 @@ STRICT_EXTRA_TABLES = {
     "audio_preprocess_runs",
     "audio_segments",
     "conversation_subtopic_segments",
+    "episode_subthemes_v19",
+    "episode_subtheme_evidence_v19",
     "latent_outcome_search_runs",
     "latent_outcome_links",
     "direct_flow_jobs",
@@ -481,6 +483,40 @@ def _episode_bundle(con, episode_id: str) -> dict[str, Any]:
                 patterns.append(obj)
     except DataAccessError as exc:
         missing.append(f"patterns: {exc}")
+    subthemes: list[dict[str, Any]] = []
+    try:
+        subthemes = strict_many(
+            con,
+            """SELECT ordinal,subtheme_type,title,summary,start_turn_id,end_turn_id,
+                      participants_json,outcome_summary,unresolved_tension,confidence,
+                      metadata_json
+                 FROM episode_subthemes_v19
+                WHERE episode_id=? ORDER BY ordinal""",
+            (episode_id,),
+            purpose="episode conversation subthemes",
+        )
+        for subtheme in subthemes:
+            evidence_rows = strict_many(
+                con,
+                """SELECT turn_id,evidence_role
+                     FROM episode_subtheme_evidence_v19
+                    WHERE subtheme_id=(
+                        SELECT subtheme_id FROM episode_subthemes_v19
+                         WHERE episode_id=? AND ordinal=?
+                    ) ORDER BY evidence_role,turn_id""",
+                (episode_id, subtheme.get("ordinal")),
+                purpose="episode subtheme evidence",
+            )
+            subtheme["membership_turn_ids"] = [
+                row["turn_id"] for row in evidence_rows
+                if row.get("evidence_role") == "membership"
+            ]
+            subtheme["evidence_turn_ids"] = [
+                row["turn_id"] for row in evidence_rows
+                if row.get("evidence_role") == "primary_citation"
+            ]
+    except DataAccessError as exc:
+        missing.append(f"episode_subthemes_v19: {exc}")
     # Keep complete WhisperX/vision provenance in SQLite.  The LLM-facing
     # projection preserves text, timing, speaker and alignment quality/digest,
     # while removing duplicated word arrays and opaque source-ID lists.
@@ -490,6 +526,7 @@ def _episode_bundle(con, episode_id: str) -> dict[str, Any]:
         "episode": ep,
         "conversation": _compact_conversation_for_prompt(conv) if conv else None,
         "turns": prompt_turns,
+        "subthemes": subthemes,
         "situations": direct["situation_episodes"], "interactions": direct["interaction_episodes"],
         "states": direct["internal_state_snapshots"], "thoughts": direct["thought_hypotheses"],
         "speech_acts": direct["speech_acts"], "intentions": direct["action_intentions"],
@@ -737,6 +774,24 @@ def _episode_evidence_profile(con, episode_id: str) -> dict[str, Any]:
     }
 
 
+def _episode_semantic_types(episode: Mapping[str, Any]) -> set[str]:
+    """Include durable subtheme types when the row is a conversation parent."""
+    types = {str(episode.get("episode_type") or "other")}
+    metadata = _metadata_mapping(episode.get("metadata_json"))
+    raw = metadata.get("subtheme_types")
+    if isinstance(raw, list):
+        types.update(str(item) for item in raw if item)
+    # E64-I uses readable topic families. Map only the families that imply an
+    # existing cognitive capability; ordinary work/media/identity conversation
+    # does not automatically become psychology.
+    mapped = {
+        "relationship": "relationship_tension",
+        "technical": "technical_validation",
+    }
+    types.update(mapped[item] for item in list(types) if item in mapped)
+    return types
+
+
 def _stable_episode_source_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
     """Freeze the source side of a local engine pack.
 
@@ -749,7 +804,7 @@ def _stable_episode_source_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
     stable = {
         key: bundle.get(key)
         for key in (
-            "episode", "conversation", "turns", "missing_context",
+            "episode", "conversation", "turns", "subthemes", "missing_context",
             "context_scope", "context_addenda",
         )
         if key in bundle
@@ -771,7 +826,7 @@ def _engine_applies_to_episode(
 ) -> tuple[bool, str]:
     if profile.get("sensor_only") or not profile.get("has_human_evidence"):
         return False, "sensor_only_routed_to_vision_worldbrain_silent_life"
-    episode_type = str(episode.get("episode_type") or "other")
+    episode_types = _episode_semantic_types(episode)
     if engine == "episode_builder":
         return False, "already_materialized_by_conversation_episode_builder"
     if engine in {"capture_engine", "language_signature_engine"}:
@@ -779,16 +834,16 @@ def _engine_applies_to_episode(
     if engine == "context_resolver" or engine == "causality_engine":
         return True, "human_narrative_episode"
     if engine == "internal_state_engine":
-        return episode_type in _INTERNAL_STATE_TYPES, "episode_type_has_state_evidence"
+        return bool(episode_types & _INTERNAL_STATE_TYPES), "episode_type_has_state_evidence"
     if engine == "social_model_engine":
-        applies = int(profile.get("human_speaker_count") or 0) >= 2 or episode_type in _SOCIAL_TYPES
+        applies = int(profile.get("human_speaker_count") or 0) >= 2 or bool(episode_types & _SOCIAL_TYPES)
         return applies, "multi_speaker_or_social_episode"
     if engine == "contradiction_engine":
-        return episode_type in _CONTRADICTION_TYPES, "episode_type_can_support_contradiction"
+        return bool(episode_types & _CONTRADICTION_TYPES), "episode_type_can_support_contradiction"
     if engine == "choice_model_engine":
-        return episode_type in _CHOICE_TYPES, "episode_type_can_support_choice"
+        return bool(episode_types & _CHOICE_TYPES), "episode_type_can_support_choice"
     if engine == "outcome_tracker":
-        return episode_type in _OUTCOME_TYPES, "episode_type_can_support_intention_or_outcome"
+        return bool(episode_types & _OUTCOME_TYPES), "episode_type_can_support_intention_or_outcome"
     return False, "conversation_scope_engine"
 
 
@@ -1605,8 +1660,14 @@ def _materialize_episodes_from_qwen(con, conversation_id: str, output: dict[str,
             "lifecycle_status": "active",
             "metadata_json": json_dumps({
                 "strict_v13_2": True,
-                "episode_source": EPISODE_BUILD_VERSION,
+                "episode_source": ep.get("episode_contract") or EPISODE_BUILD_VERSION,
                 "coverage_status": "complete",
+                "subtheme_count": len(_as_list(ep.get("subthemes"))),
+                "subtheme_types": list(dict.fromkeys(
+                    str(item.get("subtheme_type") or "other")
+                    for item in _as_list(ep.get("subthemes"))
+                    if isinstance(item, dict)
+                )),
                 "missing_context_manifest": missing_manifest,
             }),
             "created_at": now,
@@ -1626,6 +1687,61 @@ def _materialize_episodes_from_qwen(con, conversation_id: str, output: dict[str,
                 "created_at": now,
             }, "episode_evidence_id")
             _insert_object_link(con, conversation_id, episode_id, "episodes", episode_id, "turns", turn_id, "supported_by", "episode_builder", _clamp(ep.get("confidence")))
+        for ordinal, subtheme in enumerate(_as_list(ep.get("subthemes"))):
+            if not isinstance(subtheme, dict):
+                continue
+            turn_ids = [str(x) for x in _as_list(subtheme.get("turn_ids")) if x]
+            cited_ids = {
+                str(x) for x in _as_list(subtheme.get("evidence_turn_ids")) if x
+            }
+            if not turn_ids:
+                continue
+            subtheme_id = stable_id("episode-subtheme-v19", episode_id, ordinal)
+            upsert(con, "episode_subthemes_v19", {
+                "subtheme_id": subtheme_id,
+                "episode_id": episode_id,
+                "ordinal": ordinal,
+                "subtheme_type": subtheme.get("subtheme_type") or "other",
+                "title": subtheme.get("title") or f"Sous-thème {ordinal + 1}",
+                "summary": subtheme.get("summary") or "",
+                "start_turn_id": subtheme.get("start_turn_id") or turn_ids[0],
+                "end_turn_id": subtheme.get("end_turn_id") or turn_ids[-1],
+                "participants_json": json_dumps(_as_list(subtheme.get("participants"))),
+                "outcome_summary": subtheme.get("outcome"),
+                "unresolved_tension": subtheme.get("unresolved_tension"),
+                "confidence": _clamp(subtheme.get("confidence")),
+                "metadata_json": json_dumps({
+                    "episode_contract": ep.get("episode_contract"),
+                    "membership_count": len(turn_ids),
+                    "primary_citation_count": len(cited_ids),
+                    "boundary_reason": subtheme.get("boundary_reason"),
+                }),
+                "created_at": now,
+                "updated_at": now,
+            }, "subtheme_id")
+            for turn_id in turn_ids:
+                upsert(con, "episode_subtheme_evidence_v19", {
+                    "subtheme_evidence_id": stable_id(
+                        "episode-subtheme-evidence-v19", subtheme_id, turn_id, "membership"
+                    ),
+                    "subtheme_id": subtheme_id,
+                    "turn_id": turn_id,
+                    "evidence_role": "membership",
+                    "confidence": _clamp(subtheme.get("confidence")),
+                    "created_at": now,
+                }, "subtheme_evidence_id")
+                if turn_id in cited_ids:
+                    upsert(con, "episode_subtheme_evidence_v19", {
+                        "subtheme_evidence_id": stable_id(
+                            "episode-subtheme-evidence-v19", subtheme_id, turn_id,
+                            "primary_citation",
+                        ),
+                        "subtheme_id": subtheme_id,
+                        "turn_id": turn_id,
+                        "evidence_role": "primary_citation",
+                        "confidence": _clamp(subtheme.get("confidence")),
+                        "created_at": now,
+                    }, "subtheme_evidence_id")
         for btype, tid in [("start", start_turn), ("end", end_turn)]:
             if tid:
                 turn = con.execute("SELECT idx, text FROM turns WHERE turn_id=?", (tid,)).fetchone()
@@ -1657,7 +1773,17 @@ def _ensure_episodes_strict(con, conversation_id: str, *, person_id: str) -> int
         complete = False
         for r in existing_rows:
             meta = json_loads(r.get("metadata_json"), {}) if isinstance(r.get("metadata_json"), str) else {}
-            if meta.get("episode_source") == EPISODE_BUILD_VERSION and meta.get("coverage_status") == "complete":
+            accepted_episode_sources = {EPISODE_BUILD_VERSION}
+            try:
+                from .brain2_conversation_episode import (
+                    CONVERSATION_EPISODE_BUILD_VERSION,
+                    conversation_episode_enabled,
+                )
+                if conversation_episode_enabled():
+                    accepted_episode_sources = {CONVERSATION_EPISODE_BUILD_VERSION}
+            except Exception:
+                pass
+            if meta.get("episode_source") in accepted_episode_sources and meta.get("coverage_status") == "complete":
                 complete = True
                 break
         if complete:
@@ -1673,6 +1799,36 @@ def _ensure_episodes_strict(con, conversation_id: str, *, person_id: str) -> int
     # structured episodes with a persisted coverage proof. The prompt text is
     # unchanged; small conversations keep the legacy single-call path below.
     resolved_owner = _default_user(con, conversation_id, explicit_person_id=person_id)
+    try:
+        from .brain2_conversation_episode import (
+            build_conversation_episode_v6,
+            conversation_episode_enabled,
+        )
+        use_conversation_episode = conversation_episode_enabled()
+    except Exception:
+        use_conversation_episode = False
+    if use_conversation_episode:
+        stats = build_conversation_episode_v6(
+            con,
+            conversation_id,
+            bundle=bundle,
+            safe_prompt=_safe_prompt_payload,
+            materialize=_materialize_episodes_from_qwen,
+            system=_BRAIN2_STRICT_SYSTEM,
+        )
+        _record_engine(
+            con,
+            engine="episode_builder",
+            conversation_id=conversation_id,
+            episode_id=None,
+            person_id=resolved_owner,
+            prompt=f"[e64i conversation parent x{stats.get('calls')}] {_EPISODE_MISSION}",
+            output={"conversation_episode": True, **{
+                key: value for key, value in stats.items() if key != "output"
+            }},
+            status="ok",
+        )
+        return int(stats.get("episodes") or 0)
     try:
         from .brain2_episode_windowing import (
             build_episodes_windowed,

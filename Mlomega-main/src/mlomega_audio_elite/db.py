@@ -861,6 +861,39 @@ CREATE TABLE IF NOT EXISTS episode_evidence (
   FOREIGN KEY(turn_id) REFERENCES turns(turn_id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS episode_subthemes_v19 (
+  subtheme_id TEXT PRIMARY KEY,
+  episode_id TEXT NOT NULL,
+  ordinal INTEGER NOT NULL,
+  subtheme_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  start_turn_id TEXT NOT NULL,
+  end_turn_id TEXT NOT NULL,
+  participants_json TEXT DEFAULT '[]',
+  outcome_summary TEXT,
+  unresolved_tension TEXT,
+  confidence REAL DEFAULT 0.0,
+  metadata_json TEXT DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(episode_id, ordinal),
+  FOREIGN KEY(episode_id) REFERENCES episodes(episode_id) ON DELETE CASCADE,
+  FOREIGN KEY(start_turn_id) REFERENCES turns(turn_id) ON DELETE RESTRICT,
+  FOREIGN KEY(end_turn_id) REFERENCES turns(turn_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS episode_subtheme_evidence_v19 (
+  subtheme_evidence_id TEXT PRIMARY KEY,
+  subtheme_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  evidence_role TEXT NOT NULL,
+  confidence REAL DEFAULT 0.0,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(subtheme_id) REFERENCES episode_subthemes_v19(subtheme_id) ON DELETE CASCADE,
+  FOREIGN KEY(turn_id) REFERENCES turns(turn_id) ON DELETE RESTRICT
+);
+
 CREATE TABLE IF NOT EXISTS episode_links (
   episode_link_id TEXT PRIMARY KEY,
   from_episode_id TEXT NOT NULL,

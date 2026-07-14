@@ -724,16 +724,90 @@ Le problème est transversal : tout stage nocturne qui concatène un jour, une c
 
 **Verdict H** : les gains E64 sont réels (l'ancien chemin 1,6 M caractères/985 pseudo-tours ne terminait pas; l'étape intermédiaire demandait déjà 304 appels V13). Mais le chemin terminé actuel amplifie 26 tours en 10 épisodes fragiles, ~324 lignes V13 et 92 objets Life Model. Ne pas basculer tout en 4B ou DeepSeek. Corriger vérité/cardinalité et tester la refonte ci-dessous sans supprimer preuve ni capacité.
 
-### E64-I — refonte sémantique à qualité conservée (PLAN DÉCIDÉ, CODE À FAIRE)
+### E64-I — refonte sémantique à qualité conservée (PLAN D'EXÉCUTION — 2026-07-14)
 
-- [ ] **I0 — Gates de vérité avant performance** : Deep Vision non vert si zéro image analysée; `product_validated/degraded/abstained/failed` par sous-moteur; ASR/diarisation propagés; absence de preuve ≠ contradiction; aucune promotion plus certaine que ses sources.
-- [ ] **I1 — EpisodeBuilder fiable** : corriger frontières temps/sujet, citation primaire et réutilisation cross-topic. Fixture de référence : environ quatre sujets humains cohérents; conserver séparément les événements visuels/non verbaux. Comparer l'ancien et le nouveau résultat avant migration.
-- [ ] **I2 — Contrat de faits typés partagé** : chaque inférence chère est produite une fois avec provenance puis matérialise les tables V13/V14 compatibles. Fusionner les responsabilités compatibles par épisode, mais conserver schémas, writers, preuves et capacités. Unifier aussi candidats d'intervention V13/V14/coordination/Life et leur scoring.
-- [ ] **I3 — Supprimer les caps silencieux sans prompt géant** : coordination ne lit plus seulement 200 observations brutes; Life Model ne coupe plus chaque famille à 120. Utiliser atomes, pagination/fenêtres et manifeste source complet; promotion seulement sur répétition/corroboration.
-- [ ] **I4 — Vision lourde fiable et réutilisable** : Qwen3-VL `think=false`, JSON strict, cache hash+modèle+prompt, sélection sémantique des changements/OCR/actions/personnes avec couverture. Rebenchmarker les sorties valides; ne pas confondre `visual_consolidation` déterministe avec un second VLM.
-- [ ] **I5 — Routage modèles mesuré** : garder 9B pour épisodes, humain/interne/causal/social/réconciliation/Life; tester 4B sur normalisation, chronologie, wording de clarification et ranking. Accepter un 4B seulement si couverture et verdicts égalent le 9B sur fixtures difficiles.
-- [ ] **I6 — Réemploi/déclenchement conditionnel** : embeddings/reranker sans LLM; similar-case seulement si match; calibration seulement après outcome; people identity 9B seulement si ambigu; open loops/interpersonal/Life réutilisent les faits V13 au lieu de les ré-inférer.
-- [ ] **I7 — Validation et décision backend** : fixture cinq minutes complète, puis 1 h et 8 h; métriques natives appels/tokens/GPU/images/retries/temps et comparaison qualité. Seulement ensuite choisir Ollama/llama.cpp/hybride DeepSeek sous budget. Cible : `1 h capturée ≤ 1 h consolidée`, perte de qualité démontrée nulle ou explicitement quantifiée.
+**Pourquoi cette refonte est obligatoire.** La mesure autoritaire n'est pas une estimation de prompt : sur la minute auditée, 26 tours Deep Audio ont produit 10 épisodes, puis **169 appels / 1,119 M tokens d'entrée estimés / 218 k de sortie / 83 min de calcul texte / 92 objets Life Model actifs**. L'extrapolation actuelle à huit heures (19 469 appels, 159 h texte, hors VLM) est donc non viable. La cible précédente de 884 appels et 2–3 h texte est une **hypothèse de dimensionnement**, pas une promesse : le premier prototype ci-dessous doit prouver au moins un gain ×5 avant qu'on extrapole la refonte entière. L'objectif produit reste `1 h capturée ≤ 1 h consolidée`; le premier passage peut accepter jusqu'à 8 h pour une journée de 8 h, mais jamais 159 h masquées par un manifeste vert.
+
+**Invariants non négociables (la vitesse ne peut pas les acheter).**
+
+- [ ] Les tours, frames, observations, WAV/MP4 et sorties de moteurs restent durables et immuables; une réduction de prompt garde un manifeste transitoire vers **100 %** des parents bruts.
+- [ ] Aucun échantillonnage, `LIMIT`, `rows[:N]`, résumé ou déduplication textuelle ne peut être crédité comme couverture; seuls pagination complète, atomes lossless et doublons prouvés par identité/provenance sont admis.
+- [ ] Chaque capacité métier, schéma, writer et preuve V13/V14/V15/V17/V18/V19 reste disponible. Une inférence déjà faite peut être réutilisée ou compilée par code; une inférence distincte ne peut pas disparaître pour faire baisser le compteur.
+- [ ] Qwen 9B reste la référence des tâches humaines nuancées. Ni 4B, ni cloud, ni réduction du nombre de sorties ne passe sans comparaison aveugle sur les mêmes preuves et le même contrat.
+- [ ] Un stage `completed` ne vaut pas produit : chaque sous-moteur expose `product_validated`, `degraded`, `abstained` ou `failed`, avec la cause et la couverture relue en base.
+
+#### I0 — vérité avant optimisation (bloque toute certification)
+
+- [ ] **I0.1 Deep Vision** : dans l'override réellement appelé, forcer `think=false`, JSON strict et `analyzed_keyframes > 0` lorsque des images sont sélectionnées; zéro analyse devient `retryable|degraded|failed`, jamais `ok` (OBS-28).
+- [ ] **I0.2 Qualité des preuves** : propager confiance ASR, diarisation, langue et alignement jusqu'aux faits; une confiance dérivée ne dépasse pas sa meilleure preuve sans corroboration indépendante; fragments linguistiques incohérents en quarantaine (OBS-29).
+- [ ] **I0.3 Épistémologie** : `non_observed` reste `unknown`; seul un fait positif incompatible peut donner `contradicted`; toute promotion Life Model commence `watch` et exige répétition ou sources indépendantes (OBS-30/37).
+- [ ] **I0.4 Manifeste de capacité** : agréger les verdicts des sous-moteurs et interdire `complete=1` si une capacité obligatoire est bypassée, abstentionniste ou faux-verte (OBS-38).
+- [ ] **I0.5 Préflight FirstTry** : avant capture, vérifier HF gated/proxy, Qdrant, Ollama/llama.cpp, modèle/format JSON, version `transformers`, CUDA/cuDNN, VLM, disque et venv nocturne; aucun téléchargement ou diagnostic tardif après `end_session` (OBS-32).
+- [ ] **I0.6 Recherche spatiale produit** : distinguer ingestion et consommation. VisionRT/WorldBrain stockent bien des positions, mais `FocusSearchSkill.Locate`, `spatial.answer_find` et `VisionRtRequestSender` ne sont pas appelés/assignés en production; brancher « où est X ? » sur la dernière observation durable, avec fraîcheur/confiance et fallback honnête. Le focus de frame courante ne vaut pas dernière position connue.
+
+#### I1 — mini-plan 1 : un épisode conversationnel, des sous-thèmes ordonnés
+
+- [x] **I1.0 Baseline figée** : DB `tools/harness/_audit/one_minute_memory_v1.db`, 1 bundle actif, 26 tours Deep Audio utiles, 10 épisodes défectueux, EpisodeBuilder 4 appels / 20 210 tokens entrée estimés / 3 420 sortie / 229,9 s. Défauts : mêmes débuts, fins nulles, citations réutilisées entre sujets et mélange Karim/Netflix (OBS-34). Ne pas relancer la nuit pour retrouver cette baseline.
+- [ ] **I1.1 Contrat sémantique v6** : une conversation continue devient **un parent conversationnel**, contenant des sous-thèmes ordonnés et cités. Créer un autre parent seulement sur frontière dure prouvée : changement de conversation/session, silence long configuré, changement d'interaction/personnes, action/lieu indépendant ou fin explicite — jamais « un mot = un épisode » ni une durée arbitraire.
+- [ ] **I1.2 Sous-thème durable** : stocker pour chaque sous-thème ordre, titre/résumé, bornes de tours, participants, état d'issue, confiance et refs primaires. Chaque tour humain appartient à exactement un sous-thème primaire; il peut être contexte d'un voisin mais ne peut pas soutenir deux affirmations incompatibles. Le parent porte l'union 26/26 et les événements capteur restent des liens contextuels séparés, jamais de la psychologie attribuée à William.
+- [ ] **I1.3 Appel borné sans troncature** : envoyer la projection compacte complète si elle tient; sinon produire des fragments de sous-thèmes par fenêtres puis assembler le parent par code/provenance. Ne pas demander plusieurs épisodes full-schema par tranche. Préflight sur taille d'entrée **et** cardinalité de sortie; aucun premier appel voué à `length`.
+- [ ] **I1.4 Compatibilité et migration** : versionner prompt, schéma, checkpoint et writer; exécuter d'abord en shadow sur une copie de DB. Conserver le chemin v5 pour comparaison/rollback jusqu'au verdict. Les consommateurs V13 lisent le parent et ses sous-thèmes; aucun ancien checkpoint v5 ne peut valider une sortie v6.
+- [ ] **I1.5 Tests structuraux** : 26/26 tours couverts, ordre/bornes réels, un tour primaire dans un seul sous-thème, frontière traversant deux fenêtres fusionnée une fois, aucun merge par texte, aucune FK inventée, capteur-only sans épisode psychologique, reprise sans nouvel appel ni doublon.
+- [ ] **I1.6 Gate réel stop/go** : sur la minute, viser **1 parent + environ 4 sous-thèmes**, Karim et Netflix séparés, toutes les assertions relisibles dans les tours, ASR incertain visible; **≤2 appels**, entrée ≤50 % des 20 210 tokens, sortie ≤3 420 tokens et temps chaud ≤50 % des 229,9 s. `GO` seulement si couverture=100 % et qualité au moins égale; `STOP/REDESIGN` si gain appels <×2 sur EpisodeBuilder, gain projeté chaîne <×5, ou une preuve/capacité manque.
+- [ ] **I1.7 Projection après mesure uniquement** : mesurer combien de packs V13 et d'objets aval le parent remplace réellement. Ne pas multiplier naïvement le gain EpisodeBuilder : si les sous-thèmes exigent encore dix analyses distinctes, I2 doit les mutualiser avant toute promesse 8 h.
+
+**Résultat réel mini-plan 1 — shadow 9B/llama.cpp (2026-07-14, non activé en production).**
+
+- [x] Contrat v2 implémenté derrière `MLOMEGA_E64_CONVERSATION_EPISODES=1` (défaut `0`) : deux tâches bornées, d'abord frontières seules, puis détail sur segments verrouillés. Le deuxième appel ne peut ni déplacer ni fusionner les tours; le writer matérialise un parent, des sous-thèmes ordonnés, l'appartenance exacte et les citations primaires dans `episode_subthemes_v19` / `episode_subtheme_evidence_v19`.
+- [x] Mesure sur une **copie** de `one_minute_memory_v1.db`, Qwen3.5 9B llama.cpp 24k : **2 appels, 15 956 tokens entrée estimés (3 284 segmentation + 12 672 détail), 41,50 s, 1 parent + 6 sous-thèmes, 26/26 tours distincts**. Baseline : 4 appels, 20 210 tokens, 229,9 s, 10 épisodes. Gains prouvés : appels −50 %, entrée −21,05 %, temps −81,95 % / **×5,54**, épisodes parents −90 %. `speaker_identity_unenrolled` est ajouté par code; aucun fait n'est attribué à William.
+- [x] Le premier essai monolithique (1 appel, 12 472 tokens, 35,48 s) a prouvé le débit mais mal placé quatre tours substantifs; il est rejeté comme voie produit. La séparation frontières/détail ajoute ~6 s mais supprime cette liberté au second appel. Le résultat deux passes est sémantiquement complet; 6 sous-thèmes au lieu d'environ 4 signale encore une légère sur-fragmentation du 9B, améliorable sans changer l'architecture.
+- [x] Deux pertes de qualité silencieuses antérieures à I1 ont été corrigées dans la projection commune : `state` des atomes vision, manifeste count+digest des refs et `offline_speaker_resolution` restent visibles au LLM, sans recopier les listes opaques.
+- [x] Pont V13 corrigé : le parent `episode_type=conversation` expose ses `subtheme_types` et les sous-thèmes au bundle. L'applicabilité des moteurs est calculée sur l'union parent+sous-thèmes; capture, langue, contexte, causalité, social, interne, contradiction, choix et outcome ne peuvent pas disparaître à cause du nouveau conteneur. Test explicite vert.
+- [ ] **Gate I1 non clos** : la cible entrée ≤50 % n'est pas atteinte (−21 %), le comportement long doit encore produire/fusionner des segments par fenêtres checkpointées, et le nombre réel de subdivisions du pack V13 parent n'a pas été benchmarké. Ne pas activer le flag ni extrapoler huit heures. Le gain de temps est néanmoins supérieur au seuil ×2 EpisodeBuilder et la réduction du multiplicateur 10→1 autorise le prototype I2.
+- [ ] **Projection honnête** : le pack local V13 passe statiquement de 10 parents à 1 parent, mais peut demander plusieurs appels si ses 7–9 responsabilités dépassent la sortie. V14/coordination/Life continuent aujourd'hui à ré-inférer; le mini-plan 1 seul ne transforme donc pas 169 appels en 17. I2 doit mesurer le pack parent, produire les faits une fois et démontrer le gain chaîne ≥×5 avant tout calcul 8 h.
+
+#### I2 — faits typés partagés, une inférence chère payée une fois
+
+- [ ] **I2.1 Inventaire exécutable** : pour chaque champ de chaque moteur V13/V14/coordination/réconciliation/Life, marquer `inférence_unique`, `projection`, `agrégation`, `critique` ou `promotion`; associer tables, PK, preuves, consommateurs et coût mesuré. Aucun moteur supprimé sur similitude de nom.
+- [ ] **I2.2 Contrat commun** : matérialiser des faits typés versionnés (`fact_type`, sujet/objet, temps, statut épistémique, confidence ceiling, evidence/counter-evidence, producteur). Les writers historiques projettent ces faits vers les tables existantes afin de préserver API/dashboard/BrainLive.
+- [ ] **I2.3 Pack sémantique parent** : un appel 9B par parent produit ensemble les responsabilités compatibles (capture, chronologie, interne, causal, social, choix, issue) avec sections indépendamment validées. Split seulement par responsabilité qui dépasse la sortie; jamais répéter le bundle complet pour chaque moteur.
+- [ ] **I2.4 Portée conversation/jour** : identité personnes, open loops, interpersonnel et synthèses globales lisent les faits des sous-thèmes puis font seulement le raisonnement cross-épisodes absent; ils ne ré-analysent pas les tours bruts.
+- [ ] **I2.5 Réconciliation/coordination/Life** : construire le paquet journalier par code depuis les faits; appeler le 9B uniquement pour collisions réelles, ambiguïtés et promotions longitudinales. Unifier les candidats d'intervention et leur scoring au lieu de quatre réinférences.
+- [ ] **I2.6 Équivalence** : matrice champ-par-champ anciens/nouveaux writers, preuves identiques ou plus précises, aucun compteur de capacité à zéro. Toute fusion qui omet un verdict revient à l'ancien chemin.
+
+#### I3 — totalité d'une journée sans caps silencieux
+
+- [ ] **I3.1 Coordination** : remplacer `collect_day_evidence(limit=200)` et `_compact(...200)` par pagination complète des `VisionChangeAtom` + parents; la vidéo 5 min doit couvrir les 698 observations, pas seulement les 200 premières (OBS-35).
+- [ ] **I3.2 Life Model** : supprimer les `LIMIT 120`/`rows[:120]` comme sémantique; collecteur paginé lossless, fenêtres de promotion et manifeste par famille. Augmenter 120 n'est pas une correction (OBS-36).
+- [ ] **I3.3 Mémoire bornée** : streaming/page/checkpoint par clé stable, pas un prompt géant ni toute la journée en RAM; reprise après kill au dernier lot atomique.
+
+#### I4 — vision lourde : analyser moins de pixels, pas moins d'événements
+
+- [ ] **I4.1 Sélection avec couverture** : keyframe sur changement de scène/objet/action/personne, OCR, demande utilisateur et intervalle de sécurité; chaque frame écartée pointe vers la keyframe/atome représentatif. Les 11 images de la vidéo référence servent de baseline, pas de quota arbitraire.
+- [ ] **I4.2 Backend et cache** : Qwen3-VL 8B local, `think=false`, format strict, budget sortie mesuré; cache seulement par `sha(image)+modèle+version prompt`. Un retry ne repaye pas une image déjà validée.
+- [ ] **I4.3 Réemploi** : VisionRT live fournit détection/tracking; Deep Vision ajoute la sémantique aux keyframes; `visual_consolidation` réutilise ces sorties par code et n'est pas supprimé comme faux doublon.
+- [ ] **I4.4 Gate** : 11/11 images référence valides ou dégradation explicite; comparer événements humains/OCR/objets à la vérité de la vidéo. Mesurer froid, chaud, images/heure et temps GPU avant projection.
+
+#### I5 — modèle et backend choisis par tâche, après preuve
+
+- [ ] Garder le 9B pour EpisodeBuilder, états internes, causalité, social, réconciliation et promotion Life; tester le 4B uniquement sur chronologie/normalisation, formulation de clarification et ranking.
+- [ ] Pour chaque candidat 4B : mêmes entrées/schéma, JSON strict, couverture identique, comparaison des confusions de locuteurs/contradictions/nuances. Le gain benchmarké 1,34× ne justifie aucune baisse globale.
+- [ ] Comparer Ollama et llama.cpp sans confondre vitesse et quantité de sortie : tokens utiles, constats, JSON valide et qualité par seconde. Tester P1/P2/P3 seulement si la VRAM laisse BrainLive intact.
+- [ ] Évaluer DeepSeek Pro après I1–I4 : critique final des seuls cas incertains ou backend nocturne candidat. Mesurer qualité, latence et coût sur le graphe réel; budget visé ≤2 EUR/jour, jamais calculé sur une cardinalité encore fausse.
+
+#### I6 — déclenchement conditionnel et calculs déterministes
+
+- [ ] Embeddings/reranker sans LLM; `similar-case` seulement avec candidats; calibration seulement après issue; identity 9B seulement si cluster/noms ambigus; clarification seulement sur champ réellement manquant.
+- [ ] Assemblage, couverture, statistiques prosodiques/langue, n-grams, projections et `live_ready` restent déterministes. Un LLM ne reformule pas une table canonique qu'un writer peut mapper exactement.
+- [ ] Enregistrer la raison de chaque appel (`why_called`, facts lus/produits, cache hit, tokens, latence) pour prouver qu'un jour calme coûte moins sans rater un événement.
+
+#### I7 — validation progressive et décision de production
+
+- [ ] **Gate A — minute shadow** : I1 réel versus baseline, puis estimation aval recalculée depuis les cardinalités observées.
+- [ ] **Gate B — cinq minutes** : scénario VIKI inchangé + vidéo de référence; chaîne complète, dashboard, preuves audio/vision, reprise et comparaison qualité. Cible intermédiaire : appels réduits ≥×5 contre chemin mesuré, aucune capacité perdue.
+- [ ] **Gate C — une heure synthétique réaliste** : alternance silence/conversation/déplacements/OCR/personnes, chaos réseau/LLM/VLM/disque et reprise. Prouver `1 h capture ≤1 h consolidation` sur la RTX 3070 ou mesurer précisément l'écart.
+- [ ] **Gate D — huit heures** : base fraîche, multi-session/jour, aucun cap, mémoire/VRAM bornées, manifeste complet, reprise idempotente, coût cloud si utilisé. Seulement ici annoncer le temps d'une nuit.
+- [ ] **Décision stop/go** : si I1+I2 ne donnent pas au moins ×5 sans perte, ne pas poursuivre les micro-optimisations; comparer architecture cloud/hybride ou matériel. Si les gates passent, fixer le backend FIRST_TRY et rendre ses préflights bloquants.
 
 ### E64-G — Tests préventifs obligatoires
 

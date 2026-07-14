@@ -428,6 +428,7 @@ def test_v13_packed_source_bundle_never_feeds_materialized_outputs_back_in():
         "turns": [{"turn_id": "t1", "text": "preuve"}],
         "context_scope": {"episode_id": "ep1"},
         "context_addenda": {"vision": "stable"},
+        "subthemes": [{"ordinal": 0, "title": "Karim"}],
         "situations": [{"situation_id": "derived"}],
         "states": [{"state_id": "derived"}],
         "thoughts": [{"thought_id": "derived"}],
@@ -437,6 +438,7 @@ def test_v13_packed_source_bundle_never_feeds_materialized_outputs_back_in():
     stable = _stable_episode_source_bundle(source)
     assert {"episode", "conversation", "turns", "context_scope", "context_addenda"} <= set(stable)
     assert stable["turns"][0]["turn_id"] == "t1"
+    assert stable["subthemes"] == [{"ordinal": 0, "title": "Karim"}]
     assert stable["situations"] == [] and stable["states"] == []
     assert stable["causes"] == [] and stable["patterns"] == []
 

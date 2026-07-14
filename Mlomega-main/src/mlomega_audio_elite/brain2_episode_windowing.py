@@ -279,7 +279,7 @@ def _prompt_turn(turn: Mapping[str, Any]) -> dict[str, Any]:
                 semantic_top["source"] = {
                     "local_start_s": source.get("local_start_s"),
                     "local_end_s": source.get("local_end_s"),
-                    "speaker_resolution": resolution,
+                    "offline_speaker_resolution": resolution,
                     "word_alignment": alignment,
                     "segmentation": source.get("segmentation"),
                     "source_event_count": (
@@ -294,17 +294,17 @@ def _prompt_turn(turn: Mapping[str, Any]) -> dict[str, Any]:
                 semantic_top["source"] = {
                     key: source.get(key)
                     for key in (
-                        "vision_change_atom", "count", "first_seen", "last_seen",
+                        "vision_change_atom", "count", "first_seen", "last_seen", "state",
                         "representative_extras",
                     )
                     if source.get(key) is not None
                 }
-                semantic_top["source"]["source_ref_count"] = (
+                semantic_top["source"]["source_refs_manifest"] = (
                     source.get("source_refs_manifest") or {}
-                ).get("count")
-                semantic_top["source"]["frame_ref_count"] = (
+                )
+                semantic_top["source"]["frame_refs_manifest"] = (
                     source.get("frame_refs_manifest") or {}
-                ).get("count")
+                )
                 prompt_metadata = semantic_top
             projected["metadata_json"] = json.dumps(
                 prompt_metadata, ensure_ascii=False, sort_keys=True

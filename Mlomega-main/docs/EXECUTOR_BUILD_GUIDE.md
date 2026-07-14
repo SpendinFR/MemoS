@@ -807,3 +807,26 @@ le VLM : ne pas le supprimer comme doublon. Le backend llama.cpp direct est un o
 mesure opt-in; ne pas modifier le défaut FIRST_TRY avant I7. DeepSeek Pro ne résout pas
 le chemin actuel (~68 EUR/jour texte seul) et reste au mieux un critique borné après
 refonte. Le plan à cocher est `docs/PROD_BACKLOG.md` §E64-I.
+
+---
+
+## E64-I — reprise après mini-plan 1 (2026-07-14)
+
+Le prototype `brain2_conversation_episode.py` est **shadow/opt-in**, jamais activé par
+défaut. Ne pas refaire les trois essais : le verdict retenu est la passe deux appels sur
+une copie de `tools/harness/_audit/one_minute_memory_v1.db` : 2 appels, 15 956 tokens,
+41,50 s, 1 parent, 6 sous-thèmes et 26/26 appartenances. Baseline EpisodeBuilder :
+4 appels, 20 210 tokens, 229,9 s, 10 épisodes. Détails et seuils dans §E64-I du backlog.
+
+Architecture retenue : appel segmentation (bornes uniquement), puis appel détail sur
+segments immuables. `episode_subthemes_v19` contient l'ordre/résumé; la table evidence
+sépare `membership` de `primary_citation`. Le parent conserve tous les tours et expose
+`subtheme_types`; `_engine_applies_to_episode` les lit pour ne jamais sauter un moteur
+V13 conditionnel. `_episode_bundle` transmet aussi les sous-thèmes au pack aval.
+
+État de validation : 54 tests ciblés E64-F/I verts. Le flag
+`MLOMEGA_E64_CONVERSATION_EPISODES=1` reste OFF tant que (a) les grandes conversations
+ne sont pas fenêtrées/checkpointées sans perte, et (b) le pack V13 parent n'a pas été
+mesuré réellement. Prochaine action utile : I2 prototype sur ce parent, compter appels,
+tokens, sorties/writers et comparer au lot baseline. Ne pas repolir les six sous-thèmes
+avant cette mesure : la finesse du modèle est séparable de la cardinalité architecturale.

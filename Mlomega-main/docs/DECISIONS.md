@@ -984,3 +984,38 @@ substitut à une cardinalité incorrecte.
 **Plan autoritaire.** `docs/PROD_BACKLOG.md` §E64-I. Mesures, hypothèses, tableau par
 moteur, analyse qualité et tarifs : `docs/E64_H_COST_QUALITY_AUDIT.md`. Bugs nouveaux :
 `tools/harness/BUGS_FOUND.md` OBS-34 à OBS-38.
+
+## 2026-07-14 — E64-I mini-plan 1 : parent conversationnel + frontières séparées (ADR)
+
+**Décision.** Une conversation continue n'est plus destinée à devenir une collection
+d'épisodes concurrents. Le prototype opt-in produit un seul parent et des sous-thèmes
+ordonnés. Les preuves ne sont pas résumées hors base : les 26 tours appartiennent chacun
+à exactement un sous-thème durable, les citations primaires sont distinctes et le parent
+porte leur union. Les observations capteur restent du contexte séparé.
+
+**Pourquoi deux appels et non un.** Le premier essai réel en une requête était rapide
+(1 appel, 12 472 tokens, 35,48 s), mais Qwen avait placé quatre questions substantielles
+dans un sous-thème dont le résumé ne les couvrait pas. Retoucher un prompt fixture par
+fixture aurait donné un faux gain. Le contrat retenu sépare : (1) bornes contiguës et
+lossless uniquement; (2) détail sémantique sur ces bornes verrouillées. Le second modèle
+ne peut plus déplacer les tours. Cette séparation reste dans le gate ≤2 appels.
+
+**Mesure shadow.** Sur une copie de la minute autoritaire : 2 appels, 15 956 tokens
+d'entrée estimés, 41,50 s, 1 parent + 6 sous-thèmes, 26/26 appartenances. Par rapport à
+EpisodeBuilder actuel (4 appels, 20 210 tokens, 229,9 s, 10 épisodes) : −50 % appels,
+−21,05 % entrée, −81,95 % temps (×5,54), −90 % parents. Six sous-thèmes au lieu des
+quatre approximatifs restent une sur-fragmentation légère, pas une perte de preuve.
+
+**Compatibilité et non-régression.** Le chemin est derrière
+`MLOMEGA_E64_CONVERSATION_EPISODES=1`, défaut OFF. Les tables v19 stockent sous-thèmes,
+appartenances et citations. Le bundle V13 contient ces sous-thèmes; l'applicabilité des
+moteurs conditionnels utilise l'union de leurs types, afin que le conteneur
+`episode_type=conversation` ne coupe pas internal/social/contradiction/choice/outcome.
+La projection E64 commune conserve à nouveau l'état vision, les manifests count+digest
+et la résolution offline du locuteur; les IDs opaques restent seulement en base.
+
+**Limite et suite.** I1 n'est pas production-ready : fenêtres/checkpoints longs et
+mesure réelle du pack V13 parent restent ouverts; la cible −50 % tokens n'est pas atteinte.
+I2 est néanmoins autorisé car le multiplicateur faux 10 parents a disparu. Ne pas annoncer
+un temps huit heures avant d'avoir mesuré les subdivisions du pack et supprimé les
+ré-inférences V14/coordination/Life via le contrat de faits partagé.
