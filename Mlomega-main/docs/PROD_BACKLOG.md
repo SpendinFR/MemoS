@@ -823,6 +823,77 @@ historique est donc inchangé tant que la validation shadow suivante n'est pas c
   la matrice d'équivalence coordination/réconciliation/Life. Ensuite seulement relancer
   le harnais 5 min, le dashboard et recalculer la projection 8 h.
 
+**Feuille de reprise obligatoire — les quatre prochaines étapes réelles.** Elles sont
+séquentielles : ne pas lancer tout CloseDay entre chacune et ne pas considérer une
+réduction statique de JSON comme une validation modèle.
+
+- [ ] **R1 — valider le premier aval V14 avec le vrai 9B.** Travailler sur deux copies
+  identiques de la DB minute : baseline flags OFF, shadow avec
+  `MLOMEGA_E64_CONVERSATION_EPISODES=1` et `MLOMEGA_E64_SHARED_FACTS=1`. Appeler
+  uniquement `run_v14_5_post_conversation` puis `run_v14_6_post_conversation`, pas Life
+  ni CloseDay complet. Les stages attendus sont `v14_people_identity`,
+  `v14_people_open_loops` et `v14_interpersonal_state`. Relire
+  `night_prompt_projections_v19` et `night_llm_windows_v19` pour appels/tokens/temps,
+  puis les tables `v14_5_*` et `v14_6_*`. Vérifier : tous les IDs de tours restaurés,
+  toutes les listes du schéma présentes, dix responsabilités interpersonnelles écrites,
+  aucune identité inventée et aucun feedback de la conversation courante. Open-loops
+  peut faire zéro appel seulement avec `outcome_tracker.open_loops=valid_empty`.
+  **STOP** si la projection entraîne plus d'appels, un champ/writer vide par régression,
+  une preuve invalide ou une conclusion moins prudente; sinon consigner le gain réel.
+
+- [ ] **R2 — raccorder les quatre seuls agrégateurs LLM journaliers à I2.** Le runner
+  `brainlive_brain2_coordination_v15_12.py` possède trois stages orchestrés :
+  `coordination_day_package`, `coordination_watch_bindings` et
+  `coordination_reconciliation`; `brain2_life_model_updater_v15_13.py` ajoute
+  `life_model_patch`. Construire une projection journalière centrale et paginée depuis
+  les faits/capacités I2, avec digest, PK sources, bornes temporelles et verdict de
+  couverture. Enregistrer ces quatre buts dans `prompt_projection`, puis leurs groupes
+  de responsabilités dans `hierarchical_json`; ne pas créer quatre compacteurs locaux.
+  Détail obligatoire par stage :
+  - `coordination_day_package` : compiler d'abord par code moments observés, prédictions,
+    interventions, silences et outcomes vers `DAY_PACKAGE_SCHEMA`; appeler le 9B
+    seulement pour un résumé ambigu réellement absent des faits. Writer conservé :
+    `brainlive_day_packages`;
+  - `coordination_watch_bindings` : tester une compilation déterministe des prédictions,
+    warnings, forecasts et hooks existants vers `WATCH_BINDING_SCHEMA`. Cette passe ne
+    doit créer aucune nouvelle psychologie; le LLM ne reste que si une décision de
+    routage non déterminable est prouvée. Writer : `brain2_live_watch_bindings`;
+  - `coordination_reconciliation` : construire par code les paires comparables
+    prédiction/outcome (cible, personne, horizon et temps), puis envoyer seulement les
+    collisions/ambiguïtés au 9B. `non_observed` reste `unknown`, jamais `contradicted`.
+    Writer : `brainlive_brain2_reconciliations`;
+  - `life_model_patch` : fournir le delta de faits depuis le dernier checkpoint et le
+    modèle courant comme état, pas toute la journée brute. Conserver toutes les couches
+    routine/place/action preference/need/expression/trajectory/contextual self/live
+    hook/affordance. L'orchestrateur peut séparer les sorties par responsabilité, mais
+    la projection d'entrée commune n'est payée qu'une fois. Premier indice=`watch`;
+    promotion uniquement sur répétition ou preuves indépendantes. Writers :
+    `brain2_life_model_patch_*`, strata, lifecycle et tables canoniques existantes.
+  V17 longitudinal, outcome watcher V19, store Life V19, émission de prédictions,
+  Self Schema et `live_ready` restent des consommateurs déterministes tant qu'un appel
+  réel distinct n'est pas démontré : ne pas les faire passer artificiellement au LLM.
+
+- [ ] **R3 — prouver l'équivalence avant activation.** Construire une matrice versionnée
+  `champ de schéma → fait/capacité source → preuve → writer historique → consommateur`.
+  Exécuter baseline et shadow sur des clones, puis comparer par sens et provenance, pas
+  par égalité de formulation. Exigences : chaque champ ancien encore justifié existe,
+  chaque champ nouveau pointe vers une vraie source owner/date-scopée, aucune capacité
+  ne passe de `produced|valid_empty|not_applicable` à « absente », aucun writer/API/
+  dashboard/BrainLive n'est contourné, et la reprise ne repaye aucun appel validé.
+  Mesurer appels, input/output tokens, latence et lignes écrites par stage. Garder les
+  flags OFF si la couverture n'est pas 100 %, si le gain global I1+I2 n'atteint pas ×5
+  contre les 169 appels, ou si la prudence épistémique baisse.
+
+- [ ] **R4 — retirer les caps sans créer de prompts géants.** Une fois R3 verte,
+  remplacer les limites de coordination `200/160/120` et le `limit=120` Life par des
+  pages complètes à clé stable, checkpoints atomiques et manifests
+  `{source_count,included_count,digest,first_pk,last_pk}`. La page limite la RAM, jamais
+  la vérité; toutes les pages doivent être parcourues ou le stage reste incomplet.
+  Ajouter des tests dépassant chaque ancien cap, un kill/restart entre pages et une
+  frontière d'événement traversant deux pages. Ensuite seulement relancer le harnais
+  cinq minutes et le dashboard : ce run donnera le premier nouveau total autoritaire
+  appels/tokens/temps, puis les projections 1 h/8 h local et DeepSeek.
+
 #### I3 — totalité d'une journée sans caps silencieux
 
 - [ ] **I3.1 Coordination** : remplacer `collect_day_evidence(limit=200)` et `_compact(...200)` par pagination complète des `VisionChangeAtom` + parents; la vidéo 5 min doit couvrir les 698 observations, pas seulement les 200 premières (OBS-35).

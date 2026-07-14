@@ -890,3 +890,71 @@ réductions statiques. Le test élargi `test_e64_night_orchestrator.py` possède
 une assertion ancienne de ratio caractères/tokens (attend 3,5 alors que la politique
 documentée est 2,5); elle est hors de ce diff et ne doit pas entraîner une modification
 opportuniste de l'estimateur pendant I2.
+
+### Reprise I2 — procédure opératoire R1 à R4
+
+Cette procédure complète le backlog autoritaire. Le gain majeur ne demande pas de
+réécrire tous les V13–V19 : il vise d'abord trois agrégateurs dans
+`brainlive_brain2_coordination_v15_12.py` et un dans
+`brain2_life_model_updater_v15_13.py`. Les tables et writers actuels restent le contrat
+de compatibilité.
+
+**R1, preuve V14 courte.** Dupliquer la DB shadow; conserver une copie baseline. Avec
+les deux flags opt-in, exécuter seulement :
+
+```python
+from mlomega_audio_elite.people_openloops_v14_5 import run_v14_5_post_conversation
+from mlomega_audio_elite.interpersonal_state_v14_6 import run_v14_6_post_conversation
+
+run_v14_5_post_conversation(CONVERSATION_ID, person_id="me")
+run_v14_6_post_conversation(CONVERSATION_ID, person_id="me")
+```
+
+Ne pas réutiliser les mêmes DB baseline/shadow pour éviter que l'historique de la
+première exécution pollue la seconde. Exporter avant/après les lignes
+`night_prompt_projections_v19`, `night_llm_windows_v19`, `v14_5_*` et `v14_6_*`.
+L'absence justifiée de loop est un résultat; l'absence d'un champ interpersonnel est une
+régression. Conserver les sorties brutes Qwen et les digests, sans les committer.
+
+**R2, extension centrale.** Ajouter un constructeur unique de paquet journalier dans
+la couche de faits partagés : pagination par PK/date, capacités et preuves, état du
+dernier checkpoint, aucun `LIMIT` sémantique. Dans `_STAGE_PURPOSES` enregistrer
+exactement `coordination_day_package`, `coordination_watch_bindings`,
+`coordination_reconciliation` et `life_model_patch`. Dans le registre des
+responsabilités hiérarchiques, déclarer leurs sous-schémas de sortie. Le déroulement
+doit rester : projection commune une fois → groupes de sortie conditionnels → merge
+validé → refs durables restaurées → writer historique. Ne jamais refaire la projection
+par groupe de sortie.
+
+Répartition de responsabilité :
+
+| Stage | Code déterministe d'abord | LLM encore légitime | Table relue après writer |
+|---|---|---|---|
+| `coordination_day_package` | chronologie, regroupement des traces, compteurs, liens prediction/intervention/outcome | résumé d'une ambiguïté non portée par les faits | `brainlive_day_packages` |
+| `coordination_watch_bindings` | mapping prediction/forecast/warning/hook vers horizon et source durable | routage réellement indécidable seulement | `brain2_live_watch_bindings` |
+| `coordination_reconciliation` | génération des paires comparables par cible/personne/horizon/temps | verdict sémantique sur collision réelle | `brainlive_brain2_reconciliations` |
+| `life_model_patch` | delta depuis checkpoint, dédup par source, modèle courant et états de cycle de vie | interprétation/promotion des nouveautés ambiguës | `brain2_life_model_patch_runs`, opérations, strata, lifecycle et tables canoniques |
+
+Les appels déterministes ne doivent pas être déclarés réussis par simple absence de
+LLM : valider leur schéma, leur manifeste et leurs FK exactement comme une sortie
+modèle. Pour Life, conserver les neuf couches du `PATCH_SCHEMA`; découper une sortie
+trop large dans l'orchestrateur, jamais en supprimant une couche. Pour réconciliation,
+l'absence de frame ou d'outcome est `unknown/too_early`, pas une contradiction.
+
+**R3, équivalence.** Ajouter une fixture/matrice qui relie chaque champ des quatre
+schémas aux faits sources et aux tables finales. Comparer baseline/shadow sur les mêmes
+preuves : présence des responsabilités, IDs, owners, dates, evidence/counter-evidence,
+confidence ceilings, statuts et nombres de lignes. La prose peut varier; une capacité,
+une preuve ou un writer manquant ne le peut pas. Faire ensuite un deuxième run shadow :
+les checkpoints doivent empêcher tout appel déjà validé et ne créer aucun doublon.
+
+**R4, totalité.** Seulement après équivalence, remplacer `limit=200` du paquet jour,
+`limit=160` des bindings, `limit=120` de la réconciliation et `limit=120` du Life Model
+par un lecteur paginé commun. Une page doit porter clé de reprise et digest; le manifeste
+global additionne toutes les pages. Tester au moins `cap+1`, plusieurs pages, kill après
+sortie avant commit, kill après commit avant marker et événement traversant la frontière.
+Augmenter les nombres ou envoyer toutes les lignes dans un prompt unique est interdit.
+
+Le gate final de cette reprise est un seul harnais cinq minutes, après R1–R4 : comparer
+au total historique de 169 appels, vérifier le dashboard et recalculer les volumes 1 h/
+8 h. Avant ce gate, ni les 1,5 M tokens ni les 3–6 M ne sont des résultats certifiés.
