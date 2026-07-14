@@ -654,6 +654,7 @@ def track_personal_open_loops(conversation_id: str, *, person_id: str | None = N
     """Track desires, questions, blocks and possible solutions from a conversation."""
     ensure_v14_5_schema()
     now = now_iso()
+    reuse_reason: str | None = None
     with connect() as con:
         person_id = person_id or _default_user(con)
         completed = con.execute(
@@ -677,15 +678,32 @@ def track_personal_open_loops(conversation_id: str, *, person_id: str | None = N
                     "raw": cached,
                     "resumed": True,
                 }
-        payload = {
+        try:
+            from .brain2_shared_facts_v19 import (
+                can_reuse_empty_v14_open_loops,
+                shared_facts_enabled,
+            )
+            if shared_facts_enabled():
+                can_reuse, reason = can_reuse_empty_v14_open_loops(con, conversation_id)
+                if can_reuse:
+                    reuse_reason = reason
+        except Exception:
+            reuse_reason = None
+        if reuse_reason:
+            conversation_data = None
+            background = None
+        else:
+            conversation_data = _conversation_payload(con, conversation_id)
+            background = _background_for_person(con, person_id, limit=90)
+        payload = None if reuse_reason else {
             "mission": (
                 "Transforme les désirs, attentes, questions, incompréhensions, blocages, besoins et problèmes personnels exprimés "
                 "dans la conversation en objets suivables. Cherche aussi si une nouvelle preuve résout, contredit ou explique un ancien blocage. "
                 "Propose des solutions candidates uniquement si elles sont appuyées par l'historique ou par un test concret."
             ),
             "user_person_id": person_id,
-            "conversation_data": _conversation_payload(con, conversation_id),
-            "background": _background_for_person(con, person_id, limit=90),
+            "conversation_data": conversation_data,
+            "background": background,
             "required_behavior": [
                 "Do not turn every casual sentence into a life-level issue.",
                 "Track explicit desires and explicit confusion strongly; inferred desires must have lower confidence.",
@@ -695,23 +713,29 @@ def track_personal_open_loops(conversation_id: str, *, person_id: str | None = N
             "schema": OPEN_LOOP_SCHEMA,
         }
     run_id = stable_id("v145openlooprun", conversation_id, person_id, now)
-    try:
-        out = _llm_json(
-            "Tu es le Personal Open Loop Solution Tracker strict. Réponds en JSON valide uniquement.",
-            payload, OPEN_LOOP_SCHEMA,
-            stage_context={
-                "stage_name": "v14_people_open_loops",
-                "person_id": person_id,
-                "package_date": now[:10],
-                "source_ref": conversation_id,
-            },
-        )
+    if reuse_reason:
+        from .brain2_shared_facts_v19 import empty_v14_open_loop_output
+        out = empty_v14_open_loop_output(reuse_reason)
         status = "ok"
         error = None
-    except Exception as exc:
-        out = {"error": str(exc)[:2000]}
-        status = "error"
-        error = str(exc)[:2000]
+    else:
+        try:
+            out = _llm_json(
+                "Tu es le Personal Open Loop Solution Tracker strict. Réponds en JSON valide uniquement.",
+                payload, OPEN_LOOP_SCHEMA,
+                stage_context={
+                    "stage_name": "v14_people_open_loops",
+                    "person_id": person_id,
+                    "package_date": now[:10],
+                    "source_ref": conversation_id,
+                },
+            )
+            status = "ok"
+            error = None
+        except Exception as exc:
+            out = {"error": str(exc)[:2000]}
+            status = "error"
+            error = str(exc)[:2000]
     loop_title_to_id: dict[str, str] = {}
     created_or_updated = 0
     with connect() as con:
@@ -841,7 +865,7 @@ def track_personal_open_loops(conversation_id: str, *, person_id: str | None = N
             "created_at": now,
         }, "run_id")
         con.commit()
-    return {"version": V14_5_VERSION, "run_id": run_id, "conversation_id": conversation_id, "person_id": person_id, "status": status, "new_or_updated_count": created_or_updated, "error": error, "raw": out}
+    return {"version": V14_5_VERSION, "run_id": run_id, "conversation_id": conversation_id, "person_id": person_id, "status": status, "new_or_updated_count": created_or_updated, "error": error, "raw": out, "reused_shared_facts": bool(reuse_reason)}
 
 
 def run_v14_5_post_conversation(conversation_id: str, *, person_id: str | None = None) -> dict[str, Any]:

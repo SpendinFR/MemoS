@@ -985,6 +985,38 @@ substitut à une cardinalité incorrecte.
 moteur, analyse qualité et tarifs : `docs/E64_H_COST_QUALITY_AUDIT.md`. Bugs nouveaux :
 `tools/harness/BUGS_FOUND.md` OBS-34 à OBS-38.
 
+## 2026-07-14 — E64-I2 : faits canoniques et cardinalité pilotée par l'orchestrateur
+
+**Décision d'architecture.** Les modules métier restent propriétaires de leur mission,
+schéma et writer. La cardinalité n'est plus corrigée fichier par fichier :
+`night_orchestrator.prompt_projection` choisit une projection de stage unique avant les
+fenêtres et sépare ensuite les responsabilités de sortie. Ajouter un moteur à I2 doit
+donc étendre le registre central et la projection de faits, pas introduire un nouveau
+résumé local divergent.
+
+**Contrat de vérité.** Une sortie V13 n'est réutilisable qu'après validation de schéma et
+round-trip canonique. Elle est conservée losslessly, puis exposée sous forme de faits
+typés, capacités (`produced`, `valid_empty`, `not_applicable`) et liens vers les tours.
+Une liste vide validée est une information; une capacité non exécutée n'en est pas une.
+Le writer historique consomme la sortie canonique relue afin de préserver les tables et
+consommateurs existants. Les embeddings vocaux, médias et IDs durables restent dans la
+base; seuls les blobs sans valeur sémantique pour le stage ne sont pas recopiés au
+prompt. Les références courtes sont réversibles et restaurées avant écriture.
+
+**Réemploi borné.** Le V14 open-loops peut s'abstenir d'appeler le modèle uniquement si
+un parent I1 complet et l'outcome tracker V13 prouvent un résultat vide valide. Identité
+et interpersonnel conservent tous les tours et reçoivent seulement les faits pertinents;
+les lignes historiques issues de la conversation courante sont exclues pour éviter une
+boucle d'auto-confirmation. Le stage interpersonnel garde ses dix champs, répartis par
+l'orchestrateur en deux responsabilités de sortie : aucun champ métier n'est supprimé.
+
+**État de preuve à la pause.** Le pack V13 parent réel a couvert 7/7 responsabilités en
+un appel (19 452 tokens, 22,656 s, missing=0). La projection centrale finale est testée
+structurellement, avec 60 tests ciblés verts; les dernières mesures pré-compactage final
+étaient 31 067→8 684 tokens pour identité et 37 578→11 186 pour interpersonnel. Le run
+Qwen réel de ces stages et l'extension coordination/réconciliation/Life restent ouverts.
+Le flag `MLOMEGA_E64_SHARED_FACTS` demeure donc désactivé par défaut.
+
 ## 2026-07-14 — E64-I mini-plan 1 : parent conversationnel + frontières séparées (ADR)
 
 **Décision.** Une conversation continue n'est plus destinée à devenir une collection

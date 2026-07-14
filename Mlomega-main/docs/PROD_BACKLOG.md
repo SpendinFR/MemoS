@@ -775,6 +775,54 @@ Le problème est transversal : tout stage nocturne qui concatène un jour, une c
 - [ ] **I2.5 Réconciliation/coordination/Life** : construire le paquet journalier par code depuis les faits; appeler le 9B uniquement pour collisions réelles, ambiguïtés et promotions longitudinales. Unifier les candidats d'intervention et leur scoring au lieu de quatre réinférences.
 - [ ] **I2.6 Équivalence** : matrice champ-par-champ anciens/nouveaux writers, preuves identiques ou plus précises, aucun compteur de capacité à zéro. Toute fusion qui omet un verdict revient à l'ancien chemin.
 
+**Checkpoint I2 — pause et passation du 2026-07-14.** Le flag
+`MLOMEGA_E64_SHARED_FACTS=1` reste opt-in et vaut `0` par défaut. Le chemin produit
+historique est donc inchangé tant que la validation shadow suivante n'est pas close.
+
+- [x] **I2.2a — noyau canonique implémenté** : les sorties V13 validées sont écrites
+  losslessly dans `brain2_shared_engine_sections_v19`, projetées en faits typés et liens
+  de preuve, et accompagnées d'un manifeste de capacités distinguant `produced`,
+  `valid_empty` et `not_applicable`. Les plafonds de confiance et statuts épistémiques
+  restent explicites. La sortie canonique relue alimente ensuite le writer historique
+  V13 : le dashboard, BrainLive et les API existantes ne sont pas contournés.
+- [x] **I2.3a — pack parent V13 mesuré** : sur le parent shadow de la minute de référence,
+  capture/langue/contexte/social/causalité/choix/outcome ont été traités en **1 appel
+  Qwen 9B, 19 452 tokens d'entrée, 22,656 s, 7/7 groupes couverts, missing=0**. Interne
+  et contradiction étaient réellement non applicables aux sous-thèmes, et non sautés
+  silencieusement. Avec les deux appels I1, ce bloc coûte 3 appels/~64,16 s contre
+  14 appels/~19,36 min pour l'ancien EpisodeBuilder+V13 sur la même référence.
+- [x] **I2.4a — cardinalité centralisée pour le premier trio V14** :
+  `run_hierarchical_json` appelle une projection commune avant tout split. Identité,
+  open loops et interpersonnel reçoivent tous les tours une fois, les faits V13 utiles,
+  l'outline parent/sous-thèmes et des références courtes réversibles; les embeddings
+  vocaux restent en base mais ne sont pas recopiés au prompt. Le stage interpersonnel
+  expose centralement deux responsabilités sémantiques au lieu d'entretenir un split
+  privé. Le V14 open-loops peut éviter l'appel uniquement si le V13 outcome tracker a
+  validé une liste vide sur l'unique parent complet.
+- [x] **Prévention qualité/tests ciblés** : aucune déduplication de texte ni suppression
+  de tour; `lossless_turn_manifest.omitted_turn_ids=[]`; les IDs courts sont restaurés
+  avant writer; le feedback historique de la conversation en cours est exclu pour ne
+  pas réinjecter sa propre sortie. **60 tests ciblés verts** (I1/I2/E64-F), compilation
+  comprise. Une première projection locale insuffisante (31 036→22 644 tokens identité)
+  a été rejetée; la politique centrale améliorée mesurait avant le dernier compactage
+  31 067→8 684 pour identité et 37 578→11 186 pour interpersonnel. Ces mesures sont
+  structurelles, pas encore un verdict Qwen aval.
+- [ ] **I2.1 reste partiel** : l'inventaire exécutable couvre le pack V13 et le trio
+  V14 ci-dessus. Pattern Mirror/clarification/V14.7, coordination, réconciliation,
+  Life Model, longitudinal et leurs writers doivent encore être classés champ par champ.
+- [ ] **I2.2b reste à faire** : étendre le contrat commun aux producteurs hors V13 et
+  prouver, writer par writer, que les projections historiques restent équivalentes.
+- [ ] **I2.4b — prochain geste exact** : sur une copie de la DB minute, relancer seulement
+  identité puis interpersonnel avec les deux flags I1/I2. Attendu : identité bornée,
+  deux responsabilités interpersonnelles, zéro appel open-loops seulement si le
+  `valid_empty` V13 est présent. Relire `night_prompt_projections_v19`,
+  `night_llm_windows_v19`, les tables V14 et chaque ID de tour restauré. Comparer les
+  sorties ligne par ligne à la baseline avant de cocher I2.4.
+- [ ] **I2.5/I2.6 restent ouverts** : étendre la politique dans l'orchestrateur et le
+  registre de faits — pas par compactages ad hoc dans chaque moteur — puis construire
+  la matrice d'équivalence coordination/réconciliation/Life. Ensuite seulement relancer
+  le harnais 5 min, le dashboard et recalculer la projection 8 h.
+
 #### I3 — totalité d'une journée sans caps silencieux
 
 - [ ] **I3.1 Coordination** : remplacer `collect_day_evidence(limit=200)` et `_compact(...200)` par pagination complète des `VisionChangeAtom` + parents; la vidéo 5 min doit couvrir les 698 observations, pas seulement les 200 premières (OBS-35).

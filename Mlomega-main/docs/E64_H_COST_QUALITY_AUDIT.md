@@ -342,3 +342,21 @@ fenêtre brute.
 6. Comparer sorties actuelles/refondues, 9B/4B, avec couverture identique.
 7. Exécuter la fixture cinq minutes complète, puis 1 h et 8 h avec métriques natives
    provider : appels, tokens, temps, GPU, images, retries, couverture et qualité.
+
+## Addendum I2 — mesure du premier pack partagé (2026-07-14)
+
+Le premier résultat de refonte réduit réellement le multiplicateur EpisodeBuilder/V13,
+mais ne valide pas encore la projection huit heures : deux appels I1 construisent le
+parent, puis **un appel** produit les sept responsabilités V13 applicables en 19 452
+tokens/22,656 s, avec couverture 7/7. L'ancien bloc correspondant demandait environ
+14 appels et 19,36 min sur la même référence; le nouveau bloc observé totalise trois
+appels et ~64,16 s. Ce gain local supérieur à ×18 autorise I2, il ne prouve pas que les
+stages journaliers aval auront la même pente.
+
+La duplication suivante a été localisée dans les payloads V14. Une première réduction
+31 036→22 644 tokens a été refusée; elle répétait encore tours/faits/historique. La
+projection centrale améliorée, avant son dernier compactage, mesurait 31 067→8 684 pour
+identité et 37 578→11 186 pour interpersonnel, sans omettre de tour. Le prochain chiffre
+autoritaire sera celui des appels Qwen et writers réels, pas ces seules tailles JSON.
+Les estimations « 884 appels / 2–3 h texte » du présent audit restent donc des objectifs
+de dimensionnement, inchangés et non certifiés.

@@ -573,6 +573,29 @@ appel : le fenêtrage checkpointé des frontières/détails n'est pas encore imp
 Le flag reste OFF. Le pack V13 parent peut aussi subdiviser ses 7–9 responsabilités;
 son nombre réel d'appels doit être mesuré avant toute extrapolation huit heures.
 
+## OBS-42 — Les stages aval repaient les tours et leurs propres sorties (PARTIELLEMENT CORRIGÉ — I2 EN COURS)
+
+La mesure réelle a montré que V14 identité, open-loops et interpersonnel reconstruisent
+chacun un gros payload depuis les mêmes tours, les mêmes sorties V13 et parfois des
+lignes historiques produites par la conversation courante. Le runner hiérarchique
+fenêtre ensuite ces duplications : le JSON reste techniquement borné, mais le modèle
+repaye la même preuve et peut auto-confirmer sa propre conclusion. Une première
+projection locale n'a réduit l'identité que de 31 036 à 22 644 tokens; elle a été
+rejetée comme correction cosmétique.
+
+Correction partielle livrée derrière `MLOMEGA_E64_SHARED_FACTS=1` : sorties V13
+canoniques lossless, faits typés, manifeste `produced|valid_empty|not_applicable`, refs
+de tours courtes et réversibles, tous les tours conservés, exclusion du feedback de la
+conversation courante et projection appliquée une seule fois par l'orchestrateur. Les
+mesures structurelles avant le dernier compactage étaient identité 31 067→8 684 et
+interpersonnel 37 578→11 186 tokens. L'open-loop ne saute son LLM que si un résultat
+vide V13 est réellement validé. 60 tests ciblés sont verts.
+
+Reste bloquant avant activation : faire le run Qwen réel identité/interpersonnel,
+comparer toutes les sorties/writers, puis appliquer le même contrat central à
+coordination, réconciliation, Life et longitudinal. Tant que cette équivalence n'est
+pas prouvée, le flag reste OFF et les gains statiques ne valent pas gain produit.
+
 ## Notes that are NOT bugs (expected, documented so future runs don't chase them)
 
 - **`ai_ready=false` / `/health` 200 with `pairing_ready=true`.** Expected on a

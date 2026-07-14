@@ -235,79 +235,32 @@ def _llm_json(
     return data
 
 
-_INTERPERSONAL_OUTPUT_PARTS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (
-        "moment_dynamics",
-        (
-            "other_person_state_snapshots",
-            "emotional_couplings",
-            "micro_interaction_impacts",
-            "social_aftereffects",
-        ),
-    ),
-    (
-        "relationship_model",
-        (
-            "relationship_state_models",
-            "interpersonal_loops",
-            "intervention_suggestions",
-            "person_model_summaries",
-            "missing_context",
-            "confidence",
-        ),
-    ),
-)
-
-
 def _run_interpersonal_contract(
     payload: dict[str, Any], *, person_id: str, conversation_id: str, package_date: str
 ) -> dict[str, Any]:
-    """Run the complete V14.6 contract as two bounded output responsibilities.
+    """Delegate cardinality and disjoint output responsibilities centrally."""
 
-    The original ten-family schema repeatedly filled the 4k answer budget even
-    after evidence subdivision. Both calls still see the same evidence; only the
-    response responsibility is separated, then the disjoint keys are joined
-    deterministically. No observation or output family is dropped.
-    """
-    merged: dict[str, Any] = {}
-    for part_name, keys in _INTERPERSONAL_OUTPUT_PARTS:
-        part_schema = {key: INTERPERSONAL_SCHEMA[key] for key in keys}
-        part_payload = dict(payload)
-        part_payload["output_focus"] = {
-            "part": part_name,
-            "required_output_keys": list(keys),
-            "instruction": (
-                "Analyse all supplied evidence through this output lens only. "
-                "Do not omit distinct evidence; the complementary lens is run separately."
-            ),
-        }
-        out = _llm_json(
-            (
-                "You are Brain2 V14.6 Interpersonal State Mirror. Return strict JSON only. "
-                "No diagnosis. No mind-reading. Hypotheses must include evidence, "
-                f"counter-evidence and confidence. Output responsibility: {part_name}."
-            ),
-            part_payload,
-            part_schema,
-            timeout=540,
-            stage_context={
-                "stage_name": f"v14_interpersonal_state_{part_name}",
-                "person_id": person_id,
-                "package_date": package_date,
-                "source_ref": conversation_id,
-                "lossless_array_merge": True,
-            },
-        )
-        missing = set(keys) - set(out)
-        if missing:
-            raise RuntimeError(
-                f"V14.6 {part_name} contract missing keys: {sorted(missing)}"
-            )
-        merged.update({key: out[key] for key in keys})
-    missing = set(INTERPERSONAL_SCHEMA) - set(merged)
+    out = _llm_json(
+        (
+            "You are Brain2 V14.6 Interpersonal State Mirror. Return strict JSON only. "
+            "No diagnosis. No mind-reading. Hypotheses must include evidence, "
+            "counter-evidence and confidence."
+        ),
+        payload,
+        INTERPERSONAL_SCHEMA,
+        timeout=540,
+        stage_context={
+            "stage_name": "v14_interpersonal_state",
+            "person_id": person_id,
+            "package_date": package_date,
+            "source_ref": conversation_id,
+            "lossless_array_merge": True,
+        },
+    )
+    missing = set(INTERPERSONAL_SCHEMA) - set(out)
     if missing:
-        raise RuntimeError(f"V14.6 partitioned contract incomplete: {sorted(missing)}")
-    return merged
+        raise RuntimeError(f"V14.6 orchestrated contract incomplete: {sorted(missing)}")
+    return out
 
 
 def ensure_v14_6_schema() -> None:

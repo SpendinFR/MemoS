@@ -2292,7 +2292,15 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
     audit = audit_strict_v13_plan(persist=True)
     counts: Counter[str] = Counter()
     results = []
+    try:
+        from . import brain2_shared_facts_v19 as shared_facts
+        use_shared_facts = shared_facts.shared_facts_enabled()
+    except Exception:
+        shared_facts = None
+        use_shared_facts = False
     with connect() as con:
+        if use_shared_facts and shared_facts is not None:
+            shared_facts.ensure_shared_fact_schema(con)
         person_id = _default_user(con, conversation_id, explicit_person_id=person_id)
         counts["episodes_created_by_qwen"] += _ensure_episodes_strict(
             con, conversation_id, person_id=person_id
@@ -2324,6 +2332,9 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
         episode_counts: dict[str, Counter[str]] = {
             str(episode["episode_id"]): Counter() for episode in episodes
         }
+        applicability_reasons: dict[str, dict[str, str]] = {
+            str(episode["episode_id"]): {} for episode in episodes
+        }
         human_episode_ids = [
             str(episode["episode_id"])
             for episode in episodes
@@ -2336,6 +2347,15 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
             (conversation_id,),
         ).fetchone()
         package_date = str((conversation_row["started_at"] if conversation_row else None) or now_iso())[:10]
+
+        if use_shared_facts and shared_facts is not None:
+            for episode in episodes:
+                shared_facts.record_episode_structure(
+                    con,
+                    person_id=person_id,
+                    conversation_id=conversation_id,
+                    episode_id=str(episode["episode_id"]),
+                )
 
         # Local engines share the exact same episode evidence. Execute their
         # schema groups as one durable pack, then split by responsibility only
@@ -2350,12 +2370,23 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
             pending: list[str] = []
             resume_prefix = True
             for engine in local_engines:
-                applies, _reason = _engine_applies_to_episode(
+                applies, reason = _engine_applies_to_episode(
                     engine, episode, profiles[episode_id]
                 )
+                applicability_reasons[episode_id][engine] = reason
                 if not applies:
                     episode_counts[episode_id][f"{engine}_not_applicable"] += 1
                     counts[f"engine_{engine}_not_applicable"] += 1
+                    if use_shared_facts and shared_facts is not None:
+                        shared_facts.record_engine_not_applicable(
+                            con,
+                            person_id=person_id,
+                            conversation_id=conversation_id,
+                            episode_id=episode_id,
+                            engine_name=engine,
+                            schema=ENGINE_SCHEMAS[engine],
+                            reason=reason,
+                        )
                     continue
                 prior = {**conversation_outputs, **outputs_by_episode[episode_id]}
                 prompt = _engine_prompt(engine, bundles[episode_id], prior)
@@ -2364,6 +2395,17 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                     episode_id=episode_id, prompt=prompt,
                 ) if resume_prefix else None
                 if resumed_output is not None:
+                    if use_shared_facts and shared_facts is not None:
+                        resumed_output = shared_facts.record_engine_output(
+                            con,
+                            person_id=person_id,
+                            conversation_id=conversation_id,
+                            episode_id=episode_id,
+                            engine_name=engine,
+                            output=resumed_output,
+                            schema=ENGINE_SCHEMAS[engine],
+                            applicability_reason=reason,
+                        )
                     outputs_by_episode[episode_id][engine] = resumed_output
                     episode_counts[episode_id][f"{engine}_resumed"] += 1
                     counts[f"engine_{engine}_resumed"] += 1
@@ -2387,6 +2429,17 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                 )
                 for engine in pending:
                     out = packed[engine]
+                    if use_shared_facts and shared_facts is not None:
+                        out = shared_facts.record_engine_output(
+                            con,
+                            person_id=person_id,
+                            conversation_id=conversation_id,
+                            episode_id=episode_id,
+                            engine_name=engine,
+                            output=out,
+                            schema=ENGINE_SCHEMAS[engine],
+                            applicability_reason=applicability_reasons[episode_id][engine],
+                        )
                     prior = {**conversation_outputs, **outputs_by_episode[episode_id]}
                     prompt = _engine_prompt(engine, bundles[episode_id], prior)
                     _record_engine(
@@ -2424,6 +2477,16 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                     if episode_id != anchor_episode_id:
                         episode_counts[episode_id][f"{engine}_not_applicable"] += 1
                         counts[f"engine_{engine}_not_applicable"] += 1
+                        if use_shared_facts and shared_facts is not None:
+                            shared_facts.record_engine_not_applicable(
+                                con,
+                                person_id=person_id,
+                                conversation_id=conversation_id,
+                                episode_id=episode_id,
+                                engine_name=engine,
+                                schema=ENGINE_SCHEMAS[engine],
+                                reason="conversation_scope_on_parent_anchor",
+                            )
             bundle = _conversation_engine_bundle(
                 con, conversation_id, episodes, profiles, outputs_by_episode
             )
@@ -2442,6 +2505,17 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                     episode_id=anchor_episode_id, prompt=prompt,
                 ) if resume_prefix else None
                 if resumed_output is not None:
+                    if use_shared_facts and shared_facts is not None:
+                        resumed_output = shared_facts.record_engine_output(
+                            con,
+                            person_id=person_id,
+                            conversation_id=conversation_id,
+                            episode_id=anchor_episode_id,
+                            engine_name=engine,
+                            output=resumed_output,
+                            schema=ENGINE_SCHEMAS[engine],
+                            applicability_reason="conversation_scope_parent",
+                        )
                     outputs_by_episode[anchor_episode_id][engine] = resumed_output
                     conversation_outputs[engine] = resumed_output
                     episode_counts[anchor_episode_id][f"{engine}_resumed"] += 1
@@ -2465,6 +2539,17 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                     )
                     for engine in pending_globals:
                         out = packed[engine]
+                        if use_shared_facts and shared_facts is not None:
+                            out = shared_facts.record_engine_output(
+                                con,
+                                person_id=person_id,
+                                conversation_id=conversation_id,
+                                episode_id=anchor_episode_id,
+                                engine_name=engine,
+                                output=out,
+                                schema=ENGINE_SCHEMAS[engine],
+                                applicability_reason="conversation_scope_parent",
+                            )
                         prior = {
                             "conversation_outputs": conversation_outputs,
                             "by_episode": {
@@ -2508,6 +2593,14 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
 
         for episode in episodes:
             episode_id = str(episode["episode_id"])
+            if use_shared_facts and shared_facts is not None:
+                shared_stats = shared_facts.finish_episode_fact_run(
+                    con, conversation_id=conversation_id, episode_id=episode_id
+                )
+                episode_counts[episode_id]["shared_fact_engines"] += shared_stats["engines"]
+                episode_counts[episode_id]["shared_fact_capabilities"] += shared_stats["capabilities"]
+                episode_counts[episode_id]["shared_facts"] += shared_stats["facts"]
+                episode_counts[episode_id]["shared_facts_uncited"] += shared_stats["uncited_facts"]
             results.append({
                 "episode_id": episode_id,
                 "engines_run": sum(

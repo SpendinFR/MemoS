@@ -466,8 +466,24 @@ def _run_hierarchical_json_single_schema(
     return final_output
 
 
+_STAGE_RESPONSIBILITY_KEYS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "v14_interpersonal_state": (
+        (
+            "other_person_state_snapshots", "emotional_couplings",
+            "micro_interaction_impacts", "social_aftereffects",
+        ),
+        (
+            "relationship_state_models", "interpersonal_loops",
+            "intervention_suggestions", "person_model_summaries",
+            "missing_context", "confidence",
+        ),
+    ),
+}
+
+
 def _schema_responsibility_parts(
-    schema: Mapping[str, Any], *, max_schema_chars: int = 1400,
+    schema: Mapping[str, Any], *, stage_name: str | None = None,
+    max_schema_chars: int = 1400,
     max_list_fields: int = 2,
 ) -> list[dict[str, Any]]:
     """Partition a broad top-level contract into disjoint responsibilities.
@@ -476,6 +492,15 @@ def _schema_responsibility_parts(
     no event, prompt rule or business capability is removed.  The partition is
     deterministic and preserves the original key order.
     """
+    registered = _STAGE_RESPONSIBILITY_KEYS.get(str(stage_name or ""))
+    if registered:
+        flattened = [key for part in registered for key in part]
+        if set(flattened) != set(schema) or len(flattened) != len(schema):
+            raise RuntimeError(
+                f"{stage_name} responsibility registry does not cover schema exactly"
+            )
+        return [{key: schema[key] for key in keys} for keys in registered]
+
     parts: list[dict[str, Any]] = []
     current: dict[str, Any] = {}
     current_family: str | None = None
@@ -563,8 +588,17 @@ def run_hierarchical_json(
     result from another responsibility.
     """
     schema = dict(schema)
+    from .prompt_projection import project_stage_payload, restore_stage_output
+    projection = project_stage_payload(
+        stage_name=stage_name,
+        person_id=person_id,
+        source_ref=source_ref,
+        payload=payload,
+        connection=connection,
+    )
+    payload = projection.payload
     if not _requires_output_responsibility_split(schema):
-        return _run_hierarchical_json_single_schema(
+        result = _run_hierarchical_json_single_schema(
             stage_name=stage_name,
             person_id=person_id,
             package_date=package_date,
@@ -579,10 +613,11 @@ def run_hierarchical_json(
             connection=connection,
             lossless_array_merge=lossless_array_merge,
         )
+        return restore_stage_output(result, projection)
 
-    parts = _schema_responsibility_parts(schema)
+    parts = _schema_responsibility_parts(schema, stage_name=stage_name)
     if len(parts) <= 1:
-        return _run_hierarchical_json_single_schema(
+        result = _run_hierarchical_json_single_schema(
             stage_name=stage_name,
             person_id=person_id,
             package_date=package_date,
@@ -597,6 +632,7 @@ def run_hierarchical_json(
             connection=connection,
             lossless_array_merge=lossless_array_merge,
         )
+        return restore_stage_output(result, projection)
 
     merged: dict[str, Any] = {}
     covered_responsibilities: list[str] = []
@@ -672,4 +708,4 @@ def run_hierarchical_json(
             f"{stage_name} responsibility manifest incomplete: "
             f"missing={len(report.missing)}"
         )
-    return {key: merged[key] for key in schema}
+    return restore_stage_output({key: merged[key] for key in schema}, projection)

@@ -830,3 +830,63 @@ ne sont pas fenêtrées/checkpointées sans perte, et (b) le pack V13 parent n'a
 mesuré réellement. Prochaine action utile : I2 prototype sur ce parent, compter appels,
 tokens, sorties/writers et comparer au lot baseline. Ne pas repolir les six sous-thèmes
 avant cette mesure : la finesse du modèle est séparable de la cardinalité architecturale.
+
+---
+
+## E64-I2 — passation exacte du chantier en pause (2026-07-14)
+
+Le chantier est volontairement arrêté après le noyau et avant un nouveau run nocturne.
+Deux flags sont nécessaires pour le shadow; **aucun n'est activé par défaut** :
+
+```powershell
+$env:MLOMEGA_E64_CONVERSATION_EPISODES = "1"
+$env:MLOMEGA_E64_SHARED_FACTS = "1"
+```
+
+Fichiers d'architecture à lire, dans cet ordre :
+
+1. `brain2_shared_facts_v19.py` : schéma canonique, capacités, preuves, projection
+   compacte et règle très stricte de réemploi open-loops;
+2. `brain2_strict_v13_2.py` : seul pont V13 production modifié; la sortie validée est
+   persistée puis relue avant le writer historique;
+3. `night_orchestrator/prompt_projection.py` : registre central des buts de stage et
+   raccourcissement réversible des refs de tours;
+4. `night_orchestrator/hierarchical_json.py` : projection avant fenêtre et registre
+   central des deux responsabilités interpersonnelles;
+5. `people_openloops_v14_5.py` et `interpersonal_state_v14_6.py` : seulement les règles
+   métier restantes; ne pas y remettre des compactages de prompt locaux;
+6. `tests/v19/test_e64i_shared_facts.py` : contrat minimal de non-perte.
+
+Preuve acquise : le parent minute a produit les sept sections V13 applicables en un
+appel Qwen (19 452 tokens, 22,656 s, 7/7, missing=0). Les 60 tests ciblés suivants sont
+verts :
+
+```powershell
+& .\.venv\Scripts\python.exe -m pytest `
+  tests/v19/test_e64i_shared_facts.py `
+  tests/v19/test_e64i_conversation_episode.py `
+  tests/v19/test_e64f_brain2_blocks.py `
+  tests/v19/test_e64f_wiring.py -q
+```
+
+DB shadow de preuve (temporaire, jamais à committer) :
+`%LOCALAPPDATA%\Temp\e64i-minute-shadow-2pass-20260714-163846.db`, conversation
+`conv_blbundle_deep_audio_v185_a72ef4f29870fadb`, parent
+`episode_fbb572184b0a06ed`.
+
+La prochaine exécution ne doit pas relancer Life Model ni tout CloseDay. Sur une copie
+de cette DB : exécuter identité puis interpersonnel, relire
+`night_prompt_projections_v19` et `night_llm_windows_v19`, vérifier les tables V14 et
+que chaque ref courte a retrouvé son `turn_id`. L'open-loop sans appel n'est accepté que
+si le manifeste V13 contient `outcome_tracker.open_loops=valid_empty`. Comparer les
+sorties à la baseline, notamment les dix champs interpersonnels; un JSON vert mais un
+champ absent est un échec.
+
+Après ce gate seulement : étendre le registre central à Pattern Mirror/clarification,
+V14.7, coordination, réconciliation, Life et longitudinal; établir la matrice
+champ→producteur→preuve→writer→consommateur; traiter les caps 200/120 en I3; puis
+harnais 5 min et dashboard. Ne pas annoncer le temps huit heures depuis les seules
+réductions statiques. Le test élargi `test_e64_night_orchestrator.py` possède par ailleurs
+une assertion ancienne de ratio caractères/tokens (attend 3,5 alors que la politique
+documentée est 2,5); elle est hors de ce diff et ne doit pas entraîner une modification
+opportuniste de l'estimateur pendant I2.
