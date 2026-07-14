@@ -767,3 +767,43 @@ Verdicts ouverts à ne pas masquer :
 - le dashboard et le gate 5 min complet restent ouverts. La DB `_audit` est une preuve de développement, pas une base produit à conserver.
 
 Pour poursuivre : lire `docs/PROD_BACKLOG.md` §E64-H et `tools/harness/BUGS_FOUND.md` OBS-25 à OBS-31. Aucun nouveau média avant d'avoir terminé l'audit coût/qualité et décidé quels appels sont réellement sémantiques, déterministes, redondants ou réutilisables.
+
+---
+
+## E64-H — audit terminé et passation E64-I (2026-07-14)
+
+Le rapport autoritaire est `docs/E64_H_COST_QUALITY_AUDIT.md`. Il contient le tableau
+des 169 appels du chemin final, les cardinalités, l'inspection qualitative des épisodes
+et du Life Model, les calculs huit heures local/DeepSeek, les images et les hypothèses.
+Ne pas refaire le run complet pour retrouver ces nombres : les bases scratch et essais
+abandonnés ne sont pas un benchmark propre.
+
+Trois états doivent rester distincts :
+
+1. avant E64 : 1,6 M caractères/985 pseudo-tours, troncature, puis architecture
+   intermédiaire 304 appels V13 sans finir la chaîne;
+2. actuel après E64 : chaîne finissable, 169 appels/83 min sur la fixture auditée,
+   mais EpisodeBuilder fragile, caps coordination/Life et faux verts;
+3. cible E64-I : faits typés partagés, responsabilités fusionnées sans perte, environ
+   884 appels pour une projection 8 h au lieu de 19 469, à prouver par tests.
+
+Bugs bloquants ajoutés dans `tools/harness/BUGS_FOUND.md` OBS-34 à OBS-38 : épisodes
+cross-topic, coordination coupée à 200, Life Model coupé à 120 par famille, cause exacte
+du faux vert Qwen3-VL, surpromotion de 92 objets et manifeste tolérant les abstentions.
+
+Ordre de travail :
+
+1. appliquer I0 (gates vérité) puis I1 (EpisodeBuilder), car optimiser des épisodes
+   faux amplifierait plus vite une mémoire fausse;
+2. créer le contrat de faits typés I2 et seulement ensuite fusionner les appels
+   compatibles; garder toutes les tables/writers et la provenance;
+3. remplacer les caps 200/120 par pagination/atomes/manifeste I3;
+4. corriger et rebenchmarker Qwen3-VL I4 (`think=false`, JSON strict, statut, cache);
+5. comparer 9B/4B par tâche I5/I6; aucune substitution globale;
+6. exécuter cinq minutes, 1 h puis 8 h et décider le backend I7.
+
+Le `visual_consolidation` postérieur à Deep Vision est déterministe et ne rappelle pas
+le VLM : ne pas le supprimer comme doublon. Le backend llama.cpp direct est un outil de
+mesure opt-in; ne pas modifier le défaut FIRST_TRY avant I7. DeepSeek Pro ne résout pas
+le chemin actuel (~68 EUR/jour texte seul) et reste au mieux un critique borné après
+refonte. Le plan à cocher est `docs/PROD_BACKLOG.md` §E64-I.

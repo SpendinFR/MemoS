@@ -948,3 +948,39 @@ Périmètre strict PC (`services/live-pc/change_attention.py` + câblage `live_p
 **Live-ready n'est pas une nouvelle inférence.** Une fois V15.10 disponible, les routines, lieux, besoins, expressions, trajectoires, relations, hooks et règles existent déjà avec preuves. Les renvoyer dans 303 k caractères à Qwen a créé des dizaines d'appels et une sortie moins fidèle. Décision : compiler ces lignes par code vers `LIVE_READY_SCHEMA`, conserver le raw feed complet dans l'export, et garder le LLM uniquement comme fallback pour une DB legacy sans modèle canonique. Cela ne retire aucun moteur cognitif : cela supprime une reformulation redondante après la vraie inférence. Sur le run réel, `live_ready` passe en ~2,1 s.
 
 **Gates encore ouverts.** Deep Vision ne peut pas être considéré vert quand toutes les images sélectionnées sont quarantinées; ASR à confiance nulle et réconciliation basée sur absence de preuve doivent bloquer ou réduire fortement la confiance; les bypass diagnostics V13.4/V14 ne valent pas validation produit; FIRST_TRY doit prévalider HF/proxy, Qdrant, CUDA/cuDNN, versions Python et modèles. E64-H mesure ensuite chaque moteur avant toute fusion, remplacement 4B ou décision DeepSeek.
+
+## 2026-07-14 — E64-H/I : décision de refonte de cardinalité avant choix cloud
+
+**Mesure.** Le premier chemin final traversé, après les optimisations E64 déjà livrées,
+effectue 169 appels texte, environ 1,119 M tokens d'entrée estimés, 218 k de sortie et
+83 min de calcul sur la fixture auditée. Avant E64, le bundle de 1,6 M caractères/985
+pseudo-tours ne terminait pas ; l'architecture intermédiaire demandait 304 appels V13
+seulement. E64 a donc bien supprimé une première explosion, mais pas l'amplification
+métier restante : 26 tours → 10 épisodes fragiles → ~324 lignes V13 → 92 objets Life
+Model actifs.
+
+**Décision.** Ne pas remplacer globalement Qwen9B par Qwen4B et ne pas envoyer la nuit
+actuelle entière à DeepSeek. Construire d'abord un contrat de faits typés avec preuve
+source : une inférence chère est produite une fois puis réutilisée pour matérialiser les
+tables V13/V14/coordination/Life compatibles. Les capacités et preuves restent, les
+ré-inférences disparaissent. EpisodeBuilder, causalité, interne, relations,
+réconciliation et promotion Life restent 9B. Le 4B n'est éligible qu'aux tâches
+structurelles/faible risque après test de couverture et de verdict identiques.
+
+**Vision.** VisionRT live et Qwen3-VL nocturne sont complémentaires. Le stage ultérieur
+`visual_consolidation` ne fait pas un second appel VLM : il consolide par code. On garde
+donc la passe lourde, mais on corrige `think=false`/JSON/statut, met en cache par hash
+image+modèle+prompt et sélectionne les vrais changements avec manifeste. Mesure cinq
+minutes : 11 images, 82,9 s à froid puis ~18,36 s/image à chaud; toutes les sorties du
+run actuel sont invalides, donc le benchmark qualité reste ouvert.
+
+**Économie.** La projection actuelle huit heures est ~159,4 h texte plus 5,4–23,5 h
+vision. La cible architecturale estimée est 2–3 h texte + ~3,9 h vision pour une journée
+continuellement événementielle, à prouver sur fixtures longues. DeepSeek Pro appliqué
+au chemin actuel coûterait environ 68,24 EUR/jour texte seul; après refonte environ
+1,78 EUR sans cache. Le cloud peut devenir un critique borné des cas incertains, pas un
+substitut à une cardinalité incorrecte.
+
+**Plan autoritaire.** `docs/PROD_BACKLOG.md` §E64-I. Mesures, hypothèses, tableau par
+moteur, analyse qualité et tarifs : `docs/E64_H_COST_QUALITY_AUDIT.md`. Bugs nouveaux :
+`tools/harness/BUGS_FOUND.md` OBS-34 à OBS-38.

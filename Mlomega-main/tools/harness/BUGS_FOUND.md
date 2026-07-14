@@ -483,6 +483,68 @@ quarantinés pour audit, Deep Vision est faux-vert, et certains checkpoints V13.
 avaient été fermés manuellement comme `AUDIT ONLY`. Ce run prouve la traversée du chemin
 configuré, pas encore l'équivalence de tous les moteurs ni le gate téléphone/5 min.
 
+## OBS-34 — EpisodeBuilder croise les sujets et amplifie de fausses mémoires (OUVERT — BLOQUANT QUALITÉ)
+
+Audit de la première chaîne complète : 26 tours deviennent 10 épisodes, tous avec le
+même `start_time`, sans `end_time`, et 7/10 avec confiance/importance à zéro. Un
+`self_reflection` associe « Maxime ? », « C'est toi ? » à une réponse finale sans
+rapport ; un `planning` mélange le rendez-vous Karim et Netflix. Des preuves sont
+réutilisées par des épisodes incompatibles. Les moteurs aval amplifient ensuite cette
+fragmentation : environ 324 lignes V13 et 92 objets Life Model actifs. Correction :
+frontières temporelles et thématiques, citation primaire exclusive/cohérente, merge
+uniquement sur continuité réelle, puis test contre les quatre sujets humains de la
+référence. Ne pas masquer le problème en plafonnant le nombre d'épisodes.
+
+## OBS-35 — Coordination coupe silencieusement la vision après 200 lignes (OUVERT — PERTE DE PREUVE)
+
+`collect_day_evidence(limit=200)` lit `vision_scene_observations` brutes et
+`_session_rows` applique `_compact(..., max_rows or limit)` avant le fenêtrage. La
+vidéo de cinq minutes contient déjà 698 observations : 498 disparaissent du paquet de
+coordination et aucun manifeste aval ne peut les recréer. Correction : alimenter la
+coordination par les `VisionChangeAtom` lossless + parents, fenêtrer toutes les unités,
+et prouver la couverture des observations sources. Le `LIMIT` ne peut servir qu'à une
+page/reprise explicitement parcourue, jamais à déclarer une journée complète.
+
+## OBS-36 — Life Model coupe chaque famille aux 120 premières lignes (OUVERT — PERTE DE PREUVE)
+
+CloseDay appelle `run_brain2_life_model_update(... limit=120)` ; V15.10 et l'override
+V18 multiplient `LIMIT ?`, `_compact(rows, limit)` et `rows[:limit]` sur épisodes,
+tours, observations, relations et prédictions. C'est une sélection silencieuse par
+ordre SQL, pas une réduction sémantique ni une pagination. Correction : collecteur
+lossless paginé, faits typés/atomes avec provenance et manifeste complet ; l'updater
+travaille ensuite par fenêtres/promotions. Augmenter 120 déplace seulement la panne.
+
+## Mise à jour OBS-28 — cause Deep Vision confirmée (OUVERT)
+
+Le module de base possède un meilleur gate, mais `v18_poststop_outputs.install_deep`
+remplace le runner en production. Cet override garde `terminal_status="ok"` lorsque
+toutes les erreurs VLM ordinaires sont mises en quarantaine. En parallèle, le payload
+Qwen3-VL demande `format=json` et `num_predict=900` mais pas `think=false`. Sur cinq
+minutes : 11 images sélectionnées, 0 analysée, 11 JSON vides/invalides ; le stage reste
+vert. Correction : `think=false`, schéma/JSON validé, `analyzed>0` ou statut
+`failed|retryable|degraded` explicite, puis cache par hash image+modèle+prompt.
+
+## OBS-37 — Une minute bootstrap devient 92 objets canoniques actifs (OUVERT — SURPROMOTION)
+
+Le Life Model transforme des faits ponctuels (« rendez-vous avec Karim », vigilance
+sociale) en routines et produit notamment 22 besoins et 9 trajectoires émotionnelles,
+dont une `anxiety_to_relief` insuffisamment soutenue. Ce n'est pas qu'un doublon texte :
+les sorties actives seront consommées par BrainLive. Correction : état `watch` au
+premier indice, promotion seulement sur répétition ou sources indépendantes, dédup
+sémantique transitive par provenance et plafond de confiance par qualité de preuve.
+
+## OBS-38 — Le manifeste final accepte des moteurs bypassés ou abstentionnistes (OUVERT)
+
+Le CloseDay complet contient des checkpoints V13.4/V14 clôturés `AUDIT ONLY`, Deep
+Vision faux-vert et une similarité V17 `abstained` après accès refusé au cache de
+l'embedder. Le contrat de stage prouve la traversée, pas que chaque capacité requise a
+produit une sortie produit. Correction : chaque sous-moteur déclare
+`product_validated`, `degraded`, `abstained` ou `failed`; le manifeste final agrège ces
+gates et interdit `complete=1` lorsqu'une capacité obligatoire n'est pas validée.
+
+Le détail quantitatif et le plan de refonte sont dans
+`docs/E64_H_COST_QUALITY_AUDIT.md`.
+
 ## Notes that are NOT bugs (expected, documented so future runs don't chase them)
 
 - **`ai_ready=false` / `/health` 200 with `pairing_ready=true`.** Expected on a
