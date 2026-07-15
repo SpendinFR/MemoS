@@ -495,7 +495,7 @@ frontières temporelles et thématiques, citation primaire exclusive/cohérente,
 uniquement sur continuité réelle, puis test contre les quatre sujets humains de la
 référence. Ne pas masquer le problème en plafonnant le nombre d'épisodes.
 
-## OBS-35 — Coordination coupe silencieusement la vision après 200 lignes (OUVERT — PERTE DE PREUVE)
+## OBS-35 — Coordination coupait silencieusement la vision après 200 lignes (CORRIGÉ — R4, GATE 5 MIN OUVERT)
 
 `collect_day_evidence(limit=200)` lit `vision_scene_observations` brutes et
 `_session_rows` applique `_compact(..., max_rows or limit)` avant le fenêtrage. La
@@ -505,7 +505,12 @@ coordination par les `VisionChangeAtom` lossless + parents, fenêtrer toutes les
 et prouver la couverture des observations sources. Le `LIMIT` ne peut servir qu'à une
 page/reprise explicitement parcourue, jamais à déclarer une journée complète.
 
-## OBS-36 — Life Model coupe chaque famille aux 120 premières lignes (OUVERT — PERTE DE PREUVE)
+Correction R4 : keyset+manifest complet, réduction vision par page et fusion aux
+frontières. Tests 201/201 en cinq pages et clone réel 199/199 en quatre pages, un atome
+dans les deux cas. Le paquet persiste atomes+`source_manifest_json`, pas les observations
+dupliquées. La vidéo référence doit encore prouver son total exact dans I7.
+
+## OBS-36 — Life Model coupait chaque famille aux 120 premières lignes (CORRIGÉ — R4)
 
 CloseDay appelle `run_brain2_life_model_update(... limit=120)` ; V15.10 et l'override
 V18 multiplient `LIMIT ?`, `_compact(rows, limit)` et `rows[:limit]` sur épisodes,
@@ -513,6 +518,11 @@ tours, observations, relations et prédictions. C'est une sélection silencieuse
 ordre SQL, pas une réduction sémantique ni une pagination. Correction : collecteur
 lossless paginé, faits typés/atomes avec provenance et manifeste complet ; l'updater
 travaille ensuite par fenêtres/promotions. Augmenter 120 déplace seulement la panne.
+
+Correction R4 : collecteur V18, bridge BrainLive, état courant et lifecycle utilisent le
+même lecteur paginé. `limit` ne coupe plus les résultats. Les tours non cités sont scannés
+et manifestés mais ne gonflent pas le prompt. Tests 121 signaux et 121 routines courantes
+en quatre pages; kill/restart avant et après commit couvert.
 
 ## Mise à jour OBS-28 — cause Deep Vision confirmée (OUVERT)
 
@@ -641,6 +651,20 @@ huit writers V14.6 issus d'une conversation isolée plafonnent leur confiance du
 vrai JSON shadow a été rejoué : huit familles écrites, max 0,65, couverture de preuve
 100 %, comparaison R3 verte. La matrice suit en outre 18/18 responsabilités jusque dans
 les consumers SQL réels; 87 tests élargis sont verts.
+
+## OBS-45 — Les neuf couches Life courantes étaient absentes du feed V18 (CORRIGÉ — R4)
+
+`install_canonical()` cherchait `CANONICAL_TABLES` sur
+`brain2_life_model_v15_10.py`, qui expose le schéma JSON mais pas cette table de mapping
+(elle n'existait que dans l'updater). La boucle utilisait `getattr(...,{})` et réussissait
+donc silencieusement avec zéro couche. Sur le clone, le forecast pouvait voir routines/
+besoins via un autre chemin tandis que Life recevait un dictionnaire courant vide.
+
+V18 porte maintenant le mapping explicite vers les neuf tables et les lit par pages. La
+preuve runtime est `9/4/9/22/12/9/10/9/8`. Pour éviter l'effet inverse, ces lignes sont
+chargées comme état courant puis retirées du delta de nouvelles preuves : elles ne peuvent
+pas s'auto-confirmer. Le checkpoint digère le contenu courant, pas seulement sa
+cardinalité. Suite R1–R4 : 93 tests verts.
 
 ## Notes that are NOT bugs (expected, documented so future runs don't chase them)
 

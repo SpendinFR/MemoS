@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS brainlive_day_packages(
   event_bundles_json TEXT DEFAULT '[]',
   disagreements_json TEXT DEFAULT '[]',
   source_counts_json TEXT DEFAULT '{}',
+  source_manifest_json TEXT DEFAULT '{}',
   llm_summary_json TEXT DEFAULT '{}',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -264,6 +265,8 @@ def ensure_coordination_schema() -> None:
             cols = {r[1] for r in con.execute("PRAGMA table_info(brainlive_day_packages)").fetchall()}
             if "event_bundles_json" not in cols:
                 con.execute("ALTER TABLE brainlive_day_packages ADD COLUMN event_bundles_json TEXT DEFAULT '[]'")
+            if "source_manifest_json" not in cols:
+                con.execute("ALTER TABLE brainlive_day_packages ADD COLUMN source_manifest_json TEXT DEFAULT '{}'")
         except Exception:
             pass
         # V16.2: tactical/domain columns on watch bindings so BrainLive can route
@@ -518,61 +521,216 @@ def _run_llm(
 
 
 def collect_day_evidence(person_id: str, *, package_date: str | None = None, limit: int = 200) -> dict[str, Any]:
+    """Collect the complete owner/day evidence through restartable PK pages.
+
+    ``limit`` is retained as the page size for API compatibility.  It is never
+    a semantic result cap.
+    """
     ensure_coordination_schema()
     day, start, end = _date_bounds(package_date)
     with connect() as con:
-        sessions = _query(con, """
-            SELECT * FROM brainlive_sessions
+        from .night_orchestrator.paged_evidence import read_query_pages
+        from .night_orchestrator.evidence_ref import content_digest
+
+        page_size = max(1, int(limit))
+        manifests: dict[str, dict[str, Any]] = {}
+
+        def _empty_manifest(name: str) -> dict[str, Any]:
+            return {
+                "source_family": name, "source_count": 0,
+                "included_count": 0, "page_count": 0,
+                "page_size": page_size, "first_pk": None, "last_pk": None,
+                "digest": content_digest([]), "complete": True,
+            }
+
+        def _read(name: str, sql: str, params: tuple[Any, ...], *,
+                  reverse: bool = False, sort_key: str | None = None) -> list[dict[str, Any]]:
+            result = read_query_pages(
+                con,
+                stage_name="coordination_day_package",
+                person_id=person_id,
+                source_family=name,
+                select_sql=sql,
+                params=params,
+                page_size=page_size,
+                scope_key=f"{day}:{start}:{end}",
+            )
+            manifests[name] = result.manifest
+            rows = result.rows
+            if sort_key:
+                rows.sort(key=lambda row: str(row.get(sort_key) or ""), reverse=reverse)
+            return rows
+
+        sessions = _read("live_sessions", """
+            SELECT s.*, s.live_session_id AS __page_pk FROM brainlive_sessions s
             WHERE person_id=?
               AND started_at<?
               AND (ended_at IS NULL OR ended_at>=?)
-            ORDER BY started_at
-        """, (person_id, end, start)) if _table_exists(con, "brainlive_sessions") else []
+        """, (person_id, end, start), sort_key="started_at") if _table_exists(con, "brainlive_sessions") else []
+        if not _table_exists(con, "brainlive_sessions"):
+            manifests["live_sessions"] = _empty_manifest("live_sessions")
         session_ids = [s.get("live_session_id") for s in sessions if s.get("live_session_id")]
         placeholders = ",".join("?" for _ in session_ids) or "''"
         params = tuple(session_ids)
-        by_session = f"live_session_id IN ({placeholders})" if session_ids else "1=0"
+        by_session = f"x.live_session_id IN ({placeholders})" if session_ids else "1=0"
 
-        def _session_rows(table: str, order_col: str = "created_at", max_rows: int | None = None) -> list[dict[str, Any]]:
+        def _session_rows(name: str, table: str, pk: str, *,
+                          time_candidates: tuple[str, ...], sort_key: str,
+                          reverse: bool = False) -> list[dict[str, Any]]:
             if not _table_exists(con, table):
+                manifests[name] = _empty_manifest(name)
                 return []
-            rows = _query(con, f"SELECT * FROM {table} WHERE {by_session} ORDER BY {order_col}", params)
-            rows = _filter_period(rows, start, end, "timestamp_start", "timestamp_end", "created_at", "loaded_at", "updated_at", "window_start", "state_time", "captured_at")
-            return _compact(rows, max_rows or limit)
+            columns = _columns(con, table)
+            available_times = [col for col in time_candidates if col in columns]
+            time_expr = (
+                f"COALESCE({','.join('x.' + col for col in available_times)})"
+                if len(available_times) > 1 else
+                (f"x.{available_times[0]}" if available_times else None)
+            )
+            where = by_session
+            query_params: tuple[Any, ...] = params
+            if time_expr:
+                where += f" AND {time_expr}>=? AND {time_expr}<?"
+                query_params += (start, end)
+            return _read(
+                name,
+                f"SELECT x.*, x.{pk} AS __page_pk FROM {table} x WHERE {where}",
+                query_params,
+                sort_key=sort_key,
+                reverse=reverse,
+            )
+
+        def _day_rows(name: str, table: str, pk: str, *,
+                      time_col: str = "created_at", extra_where: str = "",
+                      extra_params: tuple[Any, ...] = (), sort_key: str | None = None,
+                      reverse: bool = False) -> list[dict[str, Any]]:
+            if not _table_exists(con, table):
+                manifests[name] = _empty_manifest(name)
+                return []
+            suffix = f" AND ({extra_where})" if extra_where else ""
+            return _read(
+                name,
+                f"SELECT x.*, x.{pk} AS __page_pk FROM {table} x "
+                f"WHERE x.person_id=? AND x.{time_col}>=? AND x.{time_col}<?{suffix}",
+                (person_id, start, end, *extra_params),
+                sort_key=sort_key or time_col,
+                reverse=reverse,
+            )
+
+        def _vision_atoms() -> list[dict[str, Any]]:
+            name = "vision_observations"
+            table = "vision_scene_observations"
+            if not _table_exists(con, table):
+                manifests[name] = _empty_manifest(name)
+                return []
+            from .night_orchestrator.vision_atoms import reduce_vision_observations
+
+            columns = _columns(con, table)
+            available = [col for col in ("created_at", "captured_at") if col in columns]
+            time_expr = (
+                f"COALESCE({','.join('x.' + col for col in available)})"
+                if len(available) > 1 else f"x.{available[0]}"
+            )
+            where = by_session + f" AND {time_expr}>=? AND {time_expr}<?"
+
+            def reduce_page(rows: list[dict[str, Any]], _state: Any):
+                return [atom.to_dict() for atom in reduce_vision_observations(rows)], None
+
+            result = read_query_pages(
+                con,
+                stage_name="coordination_day_package",
+                person_id=person_id,
+                source_family=name,
+                select_sql=f"""SELECT x.*,
+                    printf('%s|%s',{time_expr},x.observation_id) AS __page_pk
+                    FROM {table} x WHERE {where}""",
+                params=(*params, start, end),
+                page_size=page_size,
+                transform=reduce_page,
+                collect_rows=False,
+                scope_key=f"{day}:{start}:{end}:vision-atoms-v1",
+            )
+            manifests[name] = result.manifest
+            page_atoms = [
+                dict(atom) for page in result.outputs for atom in (page or [])
+                if isinstance(atom, dict)
+            ]
+            merged: list[dict[str, Any]] = []
+            for atom in page_atoms:
+                if merged and merged[-1].get("state_key") == atom.get("state_key"):
+                    previous = merged[-1]
+                    refs = list(dict.fromkeys(
+                        list(previous.get("source_refs") or [])
+                        + list(atom.get("source_refs") or [])
+                    ))
+                    frames = list(dict.fromkeys(
+                        list(previous.get("frame_refs") or [])
+                        + list(atom.get("frame_refs") or [])
+                    ))
+                    previous.update({
+                        "atom_id": stable_id(
+                            "vatom", previous.get("state_key"), refs[0], refs[-1]
+                        ),
+                        "last_seen": atom.get("last_seen"),
+                        "count": int(previous.get("count") or 0) + int(atom.get("count") or 0),
+                        "digest": content_digest({
+                            "state_key": previous.get("state_key"),
+                            "source_refs": refs,
+                        }),
+                        "source_refs": refs,
+                        "frame_refs": frames,
+                    })
+                else:
+                    merged.append(dict(atom))
+            previous_objects: set[str] = set()
+            for atom in merged:
+                objects = {
+                    f"{item[0]}:{item[1]}"
+                    for item in ((atom.get("summary") or {}).get("objects") or [])
+                    if isinstance(item, list) and len(item) >= 2
+                }
+                atom["entered"] = sorted(objects - previous_objects)
+                atom["left"] = sorted(previous_objects - objects)
+                previous_objects = objects
+            if sum(int(atom.get("count") or 0) for atom in merged) != int(result.manifest["source_count"]):
+                raise RuntimeError("vision atom coverage differs from paged source manifest")
+            return merged
 
         payload: dict[str, Any] = {
             "package_date": day,
             "period_start": start,
             "period_end": end,
-            "live_sessions": _compact(sessions, limit),
-            "turns": _session_rows("brainlive_turn_buffer", "COALESCE(timestamp_start, created_at)", limit),
-            "sensor_events": _session_rows("brainlive_sensor_events", "created_at", limit),
-            "context_snapshots": _session_rows("brainlive_active_contexts", "loaded_at DESC", 50),
-            "hot_contexts": _session_rows("brainlive_hot_context_cache", "updated_at DESC", 50),
-            "hot_budget_runs": _session_rows("brainlive_hot_budget_runs", "created_at", limit),
-            "short_horizon_forecasts": _compact(_query(con, "SELECT * FROM brainlive_short_horizon_forecasts WHERE person_id=? AND created_at>=? AND created_at<? ORDER BY created_at", (person_id, start, end)), limit) if _table_exists(con, "brainlive_short_horizon_forecasts") else [],
-            "intervention_candidates": _compact(_query(con, "SELECT * FROM brainlive_intervention_candidates WHERE person_id=? AND created_at>=? AND created_at<? ORDER BY created_at", (person_id, start, end)), limit) if _table_exists(con, "brainlive_intervention_candidates") else [],
-            "hot_interventions": _session_rows("brainlive_hot_intervention_log", "created_at", limit),
-            "prediction_outcomes": _compact(_query(con, "SELECT * FROM brainlive_prediction_outcomes WHERE person_id=? AND created_at>=? AND created_at<? ORDER BY created_at", (person_id, start, end)), limit) if _table_exists(con, "brainlive_prediction_outcomes") else [],
-            "outcome_evaluations": _compact(_query(con, "SELECT * FROM brainlive_outcome_evaluations WHERE person_id=? AND created_at>=? AND created_at<? ORDER BY created_at", (person_id, start, end)), limit) if _table_exists(con, "brainlive_outcome_evaluations") else [],
-            "disagreements": _compact(_query(con, "SELECT * FROM brainlive_user_disagreement_events WHERE person_id=? AND created_at>=? AND created_at<? ORDER BY created_at", (person_id, start, end)), limit) if _table_exists(con, "brainlive_user_disagreement_events") else [],
-            "missed_opportunities": _compact(_query(con, "SELECT * FROM brainlive_missed_opportunity_cards WHERE person_id=? AND created_at>=? AND created_at<? ORDER BY created_at", (person_id, start, end)), limit) if _table_exists(con, "brainlive_missed_opportunity_cards") else [],
-            "affordance_matches": _compact(_query(con, "SELECT * FROM brainlive_affordance_matches WHERE person_id=? AND created_at>=? AND created_at<? ORDER BY created_at", (person_id, start, end)), limit) if _table_exists(con, "brainlive_affordance_matches") else [],
-            "vision_observations": _session_rows("vision_scene_observations", "created_at", limit),
+            "live_sessions": sessions,
+            "turns": _session_rows("turns", "brainlive_turn_buffer", "live_turn_id", time_candidates=("timestamp_start", "timestamp_end", "created_at"), sort_key="timestamp_start"),
+            "sensor_events": _session_rows("sensor_events", "brainlive_sensor_events", "event_id", time_candidates=("event_time", "created_at"), sort_key="event_time"),
+            "context_snapshots": _session_rows("context_snapshots", "brainlive_active_contexts", "active_context_id", time_candidates=("loaded_at", "created_at", "updated_at"), sort_key="loaded_at", reverse=True),
+            "hot_contexts": _session_rows("hot_contexts", "brainlive_hot_context_cache", "cache_id", time_candidates=("updated_at", "created_at"), sort_key="updated_at", reverse=True),
+            "hot_budget_runs": _session_rows("hot_budget_runs", "brainlive_hot_budget_runs", "budget_run_id", time_candidates=("created_at",), sort_key="created_at"),
+            "short_horizon_forecasts": _day_rows("short_horizon_forecasts", "brainlive_short_horizon_forecasts", "forecast_id"),
+            "intervention_candidates": _day_rows("intervention_candidates", "brainlive_intervention_candidates", "candidate_id"),
+            "hot_interventions": _session_rows("hot_interventions", "brainlive_hot_intervention_log", "hot_intervention_id", time_candidates=("created_at",), sort_key="created_at"),
+            "prediction_outcomes": _day_rows("prediction_outcomes", "brainlive_prediction_outcomes", "outcome_id"),
+            "outcome_evaluations": _day_rows("outcome_evaluations", "brainlive_outcome_evaluations", "evaluation_id"),
+            "disagreements": _day_rows("disagreements", "brainlive_user_disagreement_events", "disagreement_id"),
+            "missed_opportunities": _day_rows("missed_opportunities", "brainlive_missed_opportunity_cards", "missed_id"),
+            "affordance_matches": _day_rows("affordance_matches", "brainlive_affordance_matches", "match_id"),
+            "vision_change_atoms": _vision_atoms(),
             # V15.14: complete offline event bundles. These are not live summaries;
             # they preserve full multimodal evidence assembled after the day so
             # Brain2 can analyze complete scenes with its existing V13/V14 engines.
-            "event_bundles": _compact(_query(con, "SELECT * FROM brainlive_event_bundles_v1514 WHERE person_id=? AND package_date=? AND COALESCE(status,'assembled')!='superseded' ORDER BY start_time", (person_id, day)), limit) if _table_exists(con, "brainlive_event_bundles_v1514") else [],
-            "brain2_event_exports": _compact(_query(con, """
-                SELECT e.*
+            "event_bundles": _read("event_bundles", "SELECT b.*, b.bundle_id AS __page_pk FROM brainlive_event_bundles_v1514 b WHERE b.person_id=? AND b.package_date=? AND COALESCE(b.status,'assembled')!='superseded'", (person_id, day), sort_key="start_time") if _table_exists(con, "brainlive_event_bundles_v1514") else [],
+            "brain2_event_exports": _read("brain2_event_exports", """
+                SELECT e.*, e.export_id AS __page_pk
                 FROM brainlive_brain2_event_exports_v1514 e
                 JOIN brainlive_event_bundles_v1514 b ON b.bundle_id=e.bundle_id
                 WHERE e.person_id=? AND b.package_date=?
                   AND COALESCE(e.export_status,'exported')!='superseded'
                   AND COALESCE(b.status,'assembled')!='superseded'
-                ORDER BY e.created_at DESC
-            """, (person_id, day)), limit) if _table_exists(con, "brainlive_brain2_event_exports_v1514") and _table_exists(con, "brainlive_event_bundles_v1514") else [],
+            """, (person_id, day), sort_key="created_at", reverse=True) if _table_exists(con, "brainlive_brain2_event_exports_v1514") and _table_exists(con, "brainlive_event_bundles_v1514") else [],
         }
+        for optional in ("event_bundles", "brain2_event_exports"):
+            manifests.setdefault(optional, _empty_manifest(optional))
+        payload["source_manifests"] = manifests
         return payload
 
 
@@ -621,7 +779,13 @@ def create_brainlive_day_package(person_id: str = "me", *, package_date: str | N
         status = "raw_only_llm_disabled"
     now = now_iso()
     package_id = stable_id("bldaypkg", person_id, day, now)
-    counts = _count(raw)
+    counts = {
+        key: value for key, value in _count(raw).items()
+        if key not in {"source_manifests", "vision_change_atoms"}
+    }
+    for name, manifest in (raw.get("source_manifests") or {}).items():
+        if isinstance(manifest, dict):
+            counts[str(name)] = int(manifest.get("source_count") or 0)
     with connect() as con:
         upsert(con, "brainlive_day_packages", {
             "package_id": package_id, "person_id": person_id, "package_date": day, "period_start": start, "period_end": end, "status": status,
@@ -633,31 +797,170 @@ def create_brainlive_day_package(person_id: str = "me", *, package_date: str | N
             "interventions_json": json_dumps((raw.get("intervention_candidates") or []) + (raw.get("hot_interventions") or [])),
             "silences_json": json_dumps([]),
             "outcomes_json": json_dumps((raw.get("prediction_outcomes") or []) + (raw.get("outcome_evaluations") or [])),
-            "vision_json": json_dumps((raw.get("vision_observations") or []) + (raw.get("affordance_matches") or [])),
+            "vision_json": json_dumps((raw.get("vision_change_atoms") or []) + (raw.get("affordance_matches") or [])),
             "event_bundles_json": json_dumps((raw.get("event_bundles") or []) + (raw.get("brain2_event_exports") or [])),
             "disagreements_json": json_dumps((raw.get("disagreements") or []) + (raw.get("missed_opportunities") or [])),
-            "source_counts_json": json_dumps(counts), "llm_summary_json": json_dumps(llm_summary), "created_at": now, "updated_at": now,
+            "source_counts_json": json_dumps(counts),
+            "source_manifest_json": json_dumps(raw.get("source_manifests") or {}),
+            "llm_summary_json": json_dumps(llm_summary), "created_at": now, "updated_at": now,
         }, "package_id")
         con.commit()
     return {"version": VERSION, "package_id": package_id, "person_id": person_id, "package_date": day, "status": status, "source_counts": counts, "llm_summary": llm_summary}
 
 
 def collect_brain2_forecast_evidence(person_id: str, *, limit: int = 120) -> dict[str, Any]:
+    """Return every live-eligible source; ``limit`` is only the page size."""
     ensure_coordination_schema()
     with connect() as con:
-        return {
-            "predictions_short_and_next": _compact(_query(con, "SELECT * FROM predictions WHERE (person_id=? OR person_id IS NULL) AND status IN ('open','active','watch') ORDER BY CASE WHEN horizon IN ('next','H0','H1','H2','short','short_term') THEN 0 ELSE 1 END, confidence DESC, created_at DESC LIMIT ?", (person_id, limit)), limit),
-            "prediction_cases": _compact(_query(con, "SELECT * FROM prediction_cases WHERE (person_id=? OR person_id IS NULL) AND usable_for_prediction=1 ORDER BY quality_score DESC, created_at DESC LIMIT ?", (person_id, limit)), limit),
-            "future_scenarios": _compact(_query(con, "SELECT * FROM future_scenarios WHERE (person_id=? OR person_id IS NULL) AND status IN ('open','active') ORDER BY probability DESC, risk_level DESC, opportunity_level DESC LIMIT ?", (person_id, limit)), limit),
-            "trajectory_warnings": _compact(_query(con, "SELECT * FROM trajectory_warnings WHERE (person_id=? OR person_id IS NULL) AND status IN ('open','active') ORDER BY severity DESC, probability DESC LIMIT ?", (person_id, limit)), limit),
-            "v14_trajectory_forecasts": _compact(_active_v14_forecasts(con, person_id, "v14_trajectory_forecasts", limit), limit),
-            "v14_forecast_watch_queue": _compact(_active_v14_forecasts(con, person_id, "v14_forecast_watch_queue", limit), limit),
-            "brain2_live_prediction_hooks": _compact(_active_live_prediction_hooks(con, person_id, limit), limit),
-            "life_model_routines": _compact(_canonical_life_rows_for_live(con, "brain2_personal_routine_models", "routine_id", person_id, limit), limit),
-            "life_model_needs": _compact(_canonical_life_rows_for_live(con, "brain2_need_expectation_models", "need_model_id", person_id, limit), limit),
-            "life_model_trajectories": _compact(_canonical_life_rows_for_live(con, "brain2_emotional_trajectory_models", "trajectory_model_id", person_id, limit), limit),
-            "life_model_affordances": _compact(_canonical_life_rows_for_live(con, "brain2_live_affordance_preferences", "affordance_pref_id", person_id, limit), limit),
+        from .night_orchestrator.paged_evidence import read_query_pages
+        from .v18_legacy_forecasts import reconcile_legacy_forecasts
+
+        page_size = max(1, int(limit))
+        manifests: dict[str, Any] = {}
+
+        def read(name: str, sql: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
+            result = read_query_pages(
+                con,
+                stage_name="coordination_watch_bindings",
+                person_id=person_id,
+                source_family=name,
+                select_sql=sql,
+                params=params,
+                page_size=page_size,
+                scope_key="active_live_sources",
+            )
+            manifests[name] = result.manifest
+            return result.rows
+
+        def direct(name: str, table: str, pk: str, where: str) -> list[dict[str, Any]]:
+            if not _table_exists(con, table):
+                return []
+            return read(
+                name,
+                f"SELECT x.*, x.{pk} AS __page_pk FROM {table} x "
+                f"WHERE x.person_id=? AND ({where})",
+                (person_id,),
+            )
+
+        evidence: dict[str, Any] = {
+            "predictions_short_and_next": direct(
+                "predictions_short_and_next", "predictions", "prediction_id",
+                "x.status IN ('open','active','watch')",
+            ),
+            "prediction_cases": direct(
+                "prediction_cases", "prediction_cases", "case_id",
+                "x.usable_for_prediction=1",
+            ),
+            "future_scenarios": direct(
+                "future_scenarios", "future_scenarios", "scenario_id",
+                "x.status IN ('open','active')",
+            ),
+            "trajectory_warnings": direct(
+                "trajectory_warnings", "trajectory_warnings", "warning_id",
+                "x.status IN ('open','active')",
+            ),
         }
+
+        reconcile_legacy_forecasts(person_id=person_id, con=con)
+        legacy_now = now_iso()
+        for name, table, pk in (
+            ("v14_trajectory_forecasts", "v14_trajectory_forecasts", "forecast_id"),
+            ("v14_forecast_watch_queue", "v14_forecast_watch_queue", "watch_id"),
+        ):
+            if not _table_exists(con, table):
+                evidence[name] = []
+                continue
+            evidence[name] = read(name, f"""
+                SELECT s.*, l.due_at AS v18_due_at,
+                       l.expires_at AS v18_expires_at,
+                       l.lifecycle_state AS v18_lifecycle_state,
+                       l.updated_at AS v18_lifecycle_updated_at,
+                       s.{pk} AS __page_pk
+                FROM {table} s
+                JOIN v18_legacy_forecast_lifecycle l
+                  ON l.source_table=? AND l.source_id=s.{pk}
+                 AND l.person_id=s.person_id
+                WHERE s.person_id=? AND l.lifecycle_state='open'
+                  AND l.due_at IS NOT NULL AND l.due_at>?
+            """, (table, person_id, legacy_now))
+
+        if _table_exists(con, "brain2_live_prediction_hooks"):
+            if _table_exists(con, "brain2_life_model_item_lifecycle"):
+                evidence["brain2_live_prediction_hooks"] = read(
+                    "brain2_live_prediction_hooks", """
+                    SELECT h.*,
+                           lc.truth_status AS lifecycle_truth_status,
+                           lc.use_policy AS lifecycle_use_policy,
+                           lc.stratum AS lifecycle_stratum,
+                           lc.confidence AS lifecycle_confidence,
+                           h.hook_id AS __page_pk
+                    FROM brain2_live_prediction_hooks h
+                    LEFT JOIN brain2_life_model_item_lifecycle lc
+                      ON lc.lifecycle_id=(
+                        SELECT lc2.lifecycle_id
+                        FROM brain2_life_model_item_lifecycle lc2
+                        WHERE lc2.person_id=h.person_id
+                          AND lc2.source_table='brain2_live_prediction_hooks'
+                          AND lc2.source_id=h.hook_id
+                          AND lc2.truth_status NOT IN ('contradicted','obsolete','rejected')
+                          AND COALESCE(lc2.use_policy,'silent_context') NOT IN ('do_not_use','forbidden')
+                        ORDER BY lc2.updated_at DESC LIMIT 1
+                      )
+                    WHERE h.person_id=? AND h.status='active'
+                      AND COALESCE(h.use_policy,'silent_context') NOT IN ('do_not_use','forbidden')
+                      AND NOT EXISTS (
+                        SELECT 1 FROM brain2_life_model_item_lifecycle bad
+                        WHERE bad.person_id=h.person_id
+                          AND bad.source_table='brain2_live_prediction_hooks'
+                          AND bad.source_id=h.hook_id
+                          AND (bad.truth_status IN ('contradicted','obsolete','rejected')
+                               OR COALESCE(bad.use_policy,'') IN ('do_not_use','forbidden'))
+                      )
+                """, (person_id,))
+            else:
+                evidence["brain2_live_prediction_hooks"] = direct(
+                    "brain2_live_prediction_hooks", "brain2_live_prediction_hooks", "hook_id",
+                    "x.status='active' AND COALESCE(x.use_policy,'silent_context') NOT IN ('do_not_use','forbidden')",
+                )
+        else:
+            evidence["brain2_live_prediction_hooks"] = []
+
+        for name, table, pk in (
+            ("life_model_routines", "brain2_personal_routine_models", "routine_id"),
+            ("life_model_needs", "brain2_need_expectation_models", "need_model_id"),
+            ("life_model_trajectories", "brain2_emotional_trajectory_models", "trajectory_model_id"),
+            ("life_model_affordances", "brain2_live_affordance_preferences", "affordance_pref_id"),
+        ):
+            if not _table_exists(con, table):
+                evidence[name] = []
+                continue
+            cols = _columns(con, table)
+            policy = (
+                "AND COALESCE(t.use_policy,'silent_context') NOT IN ('do_not_use','forbidden','never_use')"
+                if "use_policy" in cols else ""
+            )
+            lifecycle = ""
+            params: tuple[Any, ...] = (person_id,)
+            if _table_exists(con, "brain2_life_model_item_lifecycle"):
+                lifecycle = f"""
+                  AND NOT EXISTS (
+                    SELECT 1 FROM brain2_life_model_item_lifecycle lc
+                    WHERE lc.person_id=? AND lc.source_table=? AND lc.source_id=t.{pk}
+                      AND (COALESCE(lc.truth_status,'candidate') IN
+                           ('contradicted','obsolete','rejected','false','wrong')
+                           OR COALESCE(lc.use_policy,'watch_only') IN
+                           ('do_not_use','forbidden','never_use'))
+                  )
+                """
+                params = (person_id, person_id, table)
+            evidence[name] = read(name, f"""
+                SELECT t.*, t.{pk} AS __page_pk FROM {table} t
+                WHERE t.person_id=? AND COALESCE(t.status,'active')='active'
+                  {policy} {lifecycle}
+            """, params)
+
+        evidence["_source_manifests"] = manifests
+        return evidence
 
 
 

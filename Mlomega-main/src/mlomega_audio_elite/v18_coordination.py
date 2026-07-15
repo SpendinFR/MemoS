@@ -20,8 +20,13 @@ def install(module:Any)->dict[str,Any]:
         # Legacy queries allowed person_id IS NULL.  V18 denies ownerless objects
         # to live prediction; manual migration must assign scope first.
         safe:dict[str,Any]={}
+        raw_manifests = raw.get("_source_manifests") if isinstance(raw.get("_source_manifests"),dict) else {}
+        safe_manifests:dict[str,Any]={}
+        from .night_orchestrator.evidence_ref import content_digest
         with connect() as con:
             for section,rows in raw.items():
+                if section == "_source_manifests":
+                    continue
                 source_table=module.SOURCE_SECTION_TABLE_MAP.get(section,section)
                 pk=module.SOURCE_PK_MAP.get(source_table)
                 keep=[]
@@ -33,7 +38,19 @@ def install(module:Any)->dict[str,Any]:
                     if not sid:continue
                     if not projection_is_active(con,projection_kind="life_model" if source_table.startswith("brain2_") else "watch",source_table=source_table,source_id=sid,person_id=person_id):continue
                     keep.append(r)
-                safe[section]=keep[:limit]
+                safe[section]=keep
+                source_manifest = dict(raw_manifests.get(section) or {})
+                queried_count = int(source_manifest.get("source_count") or len(rows) if isinstance(rows,list) else 0)
+                safe_manifests[section] = {
+                    **source_manifest,
+                    "raw_source_count": queried_count,
+                    "excluded_by_owner_or_projection": max(0, queried_count-len(keep)),
+                    "source_count": len(keep),
+                    "included_count": len(keep),
+                    "digest": content_digest(keep),
+                    "complete": True,
+                }
+        safe["_source_manifests"] = safe_manifests
         return safe
 
     def _valid_source_ref(con,person_id:str,source_table:str,source_id:str)->tuple[bool,str|None]:

@@ -319,21 +319,40 @@ def _compact_rows(rows: list[dict[str, Any]], limit: int = 80) -> list[dict[str,
 
 
 def load_current_life_model(person_id: str, *, limit: int = 80) -> dict[str, Any]:
-    """Load existing canonical models plus lifecycle/strata snapshots."""
+    """Load the complete current model; ``limit`` is only a page size."""
     ensure_life_model_updater_schema()
-    current: dict[str, Any] = {"person_id": person_id, "canonical_layers": {}, "strata": {}, "lifecycle": {}}
+    current: dict[str, Any] = {"person_id": person_id, "canonical_layers": {}, "strata": {}, "lifecycle": [], "source_manifests": {}}
     with connect() as con:
+        from .night_orchestrator.paged_evidence import read_query_pages
+        page_size = max(1, int(limit))
+
+        def read(family: str, sql: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
+            result = read_query_pages(
+                con, stage_name="life_model_current_state", person_id=person_id,
+                source_family=family, select_sql=sql, params=params,
+                page_size=page_size, scope_key="current",
+            )
+            current["source_manifests"][family] = result.manifest
+            return result.rows
+
         for layer, (table, id_col, _name_col) in CANONICAL_TABLES.items():
             if _table_exists(con, table):
-                current["canonical_layers"][layer] = _compact_rows(_query(con, f"SELECT * FROM {table} WHERE person_id=? ORDER BY confidence DESC, updated_at DESC LIMIT ?", (person_id, limit)), limit)
+                current["canonical_layers"][layer] = read(
+                    f"canonical_layers.{layer}",
+                    f"SELECT x.*,x.{id_col} AS __page_pk FROM {table} x WHERE x.person_id=?",
+                    (person_id,),
+                )
             else:
                 current["canonical_layers"][layer] = []
         if _table_exists(con, "brain2_life_model_strata"):
             for row in _query(con, "SELECT * FROM brain2_life_model_strata WHERE person_id=? ORDER BY updated_at DESC", (person_id,)):
                 current["strata"][row.get("stratum") or "unknown"] = _safe_json(row.get("model_json"), {})
         if _table_exists(con, "brain2_life_model_item_lifecycle"):
-            rows = _query(con, "SELECT * FROM brain2_life_model_item_lifecycle WHERE person_id=? ORDER BY updated_at DESC LIMIT ?", (person_id, limit * 2))
-            current["lifecycle"] = _compact_rows(rows, limit * 2)
+            current["lifecycle"] = read(
+                "lifecycle",
+                "SELECT x.*,x.lifecycle_id AS __page_pk FROM brain2_life_model_item_lifecycle x WHERE x.person_id=?",
+                (person_id,),
+            )
         if _table_exists(con, "brain2_life_model_exports"):
             row = con.execute("SELECT export_id,status,created_at,source_counts_json FROM brain2_life_model_exports WHERE person_id=? ORDER BY created_at DESC LIMIT 1", (person_id,)).fetchone()
             if row:
@@ -959,11 +978,30 @@ _LIFE_CHECKPOINT_SPECS: dict[tuple[str, str], tuple[str, str]] = {
     ("self_and_internal", "behavior_signals"): ("behavior_signals", "signal_id"),
     ("language", "personal_language_patterns"): ("personal_language_patterns", "language_pattern_id"),
     ("language", "phrase_templates"): ("phrase_templates", "template_id"),
+    ("language", "turns_recent"): ("turns", "turn_id"),
     ("memory_and_patterns", "memory_cards"): ("memory_cards", "card_id"),
     ("memory_and_patterns", "candidate_patterns"): ("candidate_patterns", "candidate_pattern_id"),
     ("memory_and_patterns", "confirmed_patterns"): ("confirmed_patterns", "confirmed_pattern_id"),
     ("memory_and_patterns", "global_patterns_v17"): ("brain2_global_life_patterns_v17", "pattern_id"),
     ("forecasts_future", "brainlive_short_horizon_forecasts"): ("brainlive_short_horizon_forecasts", "forecast_id"),
+    ("brain2_canonical_life_model", "personal_routine_models"): ("brain2_personal_routine_models", "routine_id"),
+    ("brain2_canonical_life_model", "place_preference_models"): ("brain2_place_preference_models", "place_model_id"),
+    ("brain2_canonical_life_model", "action_preference_models"): ("brain2_action_preference_models", "action_model_id"),
+    ("brain2_canonical_life_model", "need_expectation_models"): ("brain2_need_expectation_models", "need_model_id"),
+    ("brain2_canonical_life_model", "expression_state_models"): ("brain2_expression_state_models", "expression_model_id"),
+    ("brain2_canonical_life_model", "emotional_trajectory_models"): ("brain2_emotional_trajectory_models", "trajectory_model_id"),
+    ("brain2_canonical_life_model", "contextual_self_models"): ("brain2_contextual_self_models", "contextual_model_id"),
+    ("brain2_canonical_life_model", "live_prediction_hooks"): ("brain2_live_prediction_hooks", "hook_id"),
+    ("brain2_canonical_life_model", "live_affordance_preferences"): ("brain2_live_affordance_preferences", "affordance_pref_id"),
+    ("brain2_canonical_life_model", "routine"): ("brain2_personal_routine_models", "routine_id"),
+    ("brain2_canonical_life_model", "place"): ("brain2_place_preference_models", "place_model_id"),
+    ("brain2_canonical_life_model", "action_preference"): ("brain2_action_preference_models", "action_model_id"),
+    ("brain2_canonical_life_model", "need_expectation"): ("brain2_need_expectation_models", "need_model_id"),
+    ("brain2_canonical_life_model", "expression_state"): ("brain2_expression_state_models", "expression_model_id"),
+    ("brain2_canonical_life_model", "emotional_trajectory"): ("brain2_emotional_trajectory_models", "trajectory_model_id"),
+    ("brain2_canonical_life_model", "contextual_self"): ("brain2_contextual_self_models", "contextual_model_id"),
+    ("brain2_canonical_life_model", "live_prediction_hook"): ("brain2_live_prediction_hooks", "hook_id"),
+    ("brain2_canonical_life_model", "affordance_preference"): ("brain2_live_affordance_preferences", "affordance_pref_id"),
     ("brainlive_bridge_delta", "day_packages"): ("brainlive_day_packages", "package_id"),
     ("brainlive_bridge_delta", "brainlive_day_packages"): ("brainlive_day_packages", "package_id"),
     ("brainlive_bridge_delta", "reconciliations"): ("brainlive_brain2_reconciliations", "reconciliation_id"),
@@ -1307,7 +1345,10 @@ def run_brain2_life_model_update(person_id: str, *, period_start: str | None = N
         return {"version": VERSION, "person_id": person_id, "mode": "bootstrap_v15_10", "bootstrap": bootstrap, "strata": update_life_model_strata(person_id, patch_run_id=bootstrap.get("export_id"))}
     raw_delta = collect_life_model_delta(person_id, period_start=period_start, period_end=period_end, limit=limit)
     delta, checkpoint_input = prepare_life_checkpoint_delta(person_id, raw_delta)
-    current_digest = stable_id("digest", json_dumps(_count(current)))
+    from .night_orchestrator import content_digest
+    # The count-only digest could reuse a checkpoint after model content changed
+    # without changing cardinality.  Resume keys must cover the actual state.
+    current_digest = content_digest(current)
     patch_run_id = stable_id(
         "b2patch", person_id, checkpoint_input.get("input_digest") or "empty",
         current_digest,

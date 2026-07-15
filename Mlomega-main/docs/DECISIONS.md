@@ -1121,3 +1121,33 @@ indépendantes, pas à Qwen au premier passage.
 13/13 bindings résolus, coordination ok, Life 21→0 au replay et aucune source consommée
 manquante. 87 tests sont verts. Les flags restent OFF jusqu'à la pagination R4 et à la
 mesure globale; R3 ne transforme pas une fixture minute en certification huit heures.
+
+## 2026-07-15 — E64-I/R4 : une limite borne la page, jamais la vérité
+
+**Décision de lecture.** Les caps coordination/Life ne sont pas augmentés : leur argument
+`limit` devient `page_size`. Le lecteur commun parcourt par clé stable, digère chaque page
+et ne déclare le stage complet qu'après égalité entre compte source et compte inclus. La
+sortie transformée et l'état après page partagent le commit du marker. Après crash, une
+page est relue puis réutilisée uniquement si son contenu est identique; une ligne révisée
+invalide la page concernée. Les deux côtés du commit et une frontière d'événement sont
+injectés en test.
+
+**Décision mémoire/provenance.** La vision est triée par temps+PK et réduite en atomes à
+l'intérieur de chaque page; deux atomes de même état aux bords sont fusionnés et leurs
+transitions recalculées globalement. Les refs exactes restent attachées et la table raw
+reste l'autorité. Life scanne tous les tours owner/date-scopés, mais n'accumule que ceux
+cités par une preuve durable observed/internal/shared; les autres restent couverts par le
+manifest et requêtables en DB. On réduit donc le working set, pas la couverture.
+
+**État courant ≠ nouvelle preuve.** L'audit runtime a découvert que l'installateur V18
+lisait un `CANONICAL_TABLES` absent du module canonique V15.10 : les neuf couches étaient
+silencieusement vides. Le mapping explicite est désormais dans V18 et le clone relit
+`9/4/9/22/12/9/10/9/8` lignes. Ces lignes alimentent l'index d'état courant mais sont
+retirées du delta; elles ne peuvent pas se citer elles-mêmes pour une promotion. Le digest
+de reprise couvre leur contenu complet plutôt que les seuls compteurs.
+
+**Preuves et limite du verdict.** 201 observations passent en cinq pages et un atome,
+161 prédictions deviennent 161 bindings, 121 signaux Life et 121 routines passent en
+quatre pages. Le clone réel donne 199/199 observations, quatre pages, un atome et 26
+manifests Life complets. **93 tests** R1–R4 sont verts. Cela clôt R4/I3, pas I7 : flags OFF,
+temps 1 h/8 h non annoncé avant le harnais vidéo cinq minutes et la relecture dashboard.

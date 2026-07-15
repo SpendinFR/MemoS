@@ -194,13 +194,43 @@ def project_day_evidence(
     turns = list(raw.get("turns") or [])
     sections: dict[str, Any] = {}
     manifests: dict[str, Any] = {}
+    paged_manifests = (
+        raw.get("source_manifests")
+        if isinstance(raw.get("source_manifests"), Mapping) else {}
+    )
     for name, value in raw.items():
         if not isinstance(value, list):
             continue
         rows = [dict(item) for item in value if isinstance(item, Mapping)]
-        manifests[name] = _manifest(rows)
+        manifest_name = "vision_observations" if name == "vision_change_atoms" else name
+        paged = paged_manifests.get(manifest_name)
+        if isinstance(paged, Mapping):
+            source_count = int(paged.get("source_count") or 0)
+            included_count = int(paged.get("included_count") or 0)
+            projected_coverage = (
+                sum(int(row.get("count") or 0) for row in rows)
+                if name == "vision_change_atoms" else len(rows)
+            )
+            if (
+                not bool(paged.get("complete"))
+                or source_count != included_count
+                or included_count != projected_coverage
+            ):
+                raise ValueError(
+                    f"incomplete paged day evidence {name}: "
+                    f"source={source_count} included={included_count} "
+                    f"projected={projected_coverage}"
+                )
+            manifests[manifest_name] = dict(paged)
+            manifests[manifest_name]["projection_digest"] = _manifest(rows)["digest"]
+        else:
+            # Backward-compatible inputs remain usable, but current production
+            # collection always supplies the durable paged manifest.
+            manifests[manifest_name] = _manifest(rows)
         if name == "vision_observations":
             sections["vision_change_atoms"] = _project_vision(rows)
+        elif name == "vision_change_atoms":
+            sections["vision_change_atoms"] = rows
         elif name == "event_bundles":
             sections[name] = [
                 _project_bundle(row, turns_present=bool(turns)) for row in rows
@@ -389,10 +419,27 @@ def compile_watch_bindings(
 def project_forecast_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
     sections: dict[str, Any] = {}
     manifests: dict[str, Any] = {}
+    paged_manifests = (
+        evidence.get("_source_manifests")
+        if isinstance(evidence.get("_source_manifests"), Mapping) else {}
+    )
     for name, value in evidence.items():
+        if str(name).startswith("_"):
+            continue
         rows = [dict(item) for item in value if isinstance(item, Mapping)] if isinstance(value, list) else []
         sections[str(name)] = [semantic_row(row) for row in rows]
-        manifests[str(name)] = _manifest(rows)
+        paged = paged_manifests.get(name)
+        if isinstance(paged, Mapping):
+            if (
+                not bool(paged.get("complete"))
+                or int(paged.get("source_count") or 0) != len(rows)
+                or int(paged.get("included_count") or 0) != len(rows)
+            ):
+                raise ValueError(f"incomplete paged forecast evidence: {name}")
+            manifests[str(name)] = dict(paged)
+            manifests[str(name)]["projection_digest"] = _manifest(rows)["digest"]
+        else:
+            manifests[str(name)] = _manifest(rows)
     return {
         "projection_version": PROJECTION_VERSION,
         "sections": sections,
@@ -684,6 +731,9 @@ def _project_life_bridge(
             "period_end": package.get("period_end"),
             "status": package.get("status"),
             "source_counts": _decode_json(package.get("source_counts_json"), {}),
+            "source_manifests": _decode_json(
+                package.get("source_manifest_json"), {}
+            ),
             "raw_sections_manifest": {
                 name: len(_decode_json(package.get(f"{name}_json"), []))
                 for name in (
@@ -1032,7 +1082,7 @@ def project_life_patch_payload(
     projected_delta = {}
     if isinstance(delta, Mapping):
         for name, value in delta.items():
-            if name == "brainlive_bridge_delta":
+            if name in {"brainlive_bridge_delta", "evidence_page_manifests"}:
                 continue
             if name == "language" and isinstance(value, Mapping):
                 projected_delta[str(name)] = _project_life_language(
@@ -1125,6 +1175,21 @@ def project_life_patch_payload(
         "source_manifest": {
             "current_digest": content_digest(current),
             "delta_digest": content_digest(delta),
+            "page_coverage": {
+                str(name): {
+                    "source_count": int(manifest.get("source_count") or 0),
+                    "included_count": int(manifest.get("included_count") or 0),
+                    "page_count": int(manifest.get("page_count") or 0),
+                    "digest": manifest.get("digest"),
+                    "complete": bool(manifest.get("complete")),
+                }
+                for name, manifest in (
+                    (delta.get("evidence_page_manifests") or {}).items()
+                    if isinstance(delta, Mapping)
+                    and isinstance(delta.get("evidence_page_manifests"), Mapping)
+                    else []
+                )
+            },
         },
         "_turn_id_map": {
             short_ref: turn_id

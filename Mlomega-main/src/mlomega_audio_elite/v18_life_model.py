@@ -111,6 +111,21 @@ _EVIDENCE_PATH_TABLE_ALIASES = {
     "live_affordance_preferences": "brain2_live_affordance_preferences",
 }
 
+# The canonical V15.10 module exposes its JSON schema but not the updater's
+# ``CANONICAL_TABLES`` constant.  Depending on ``getattr(module, ...)`` therefore
+# made this whole current-model evidence section silently empty in production.
+_CANONICAL_TABLES: dict[str, tuple[str, str, str]] = {
+    "routine": ("brain2_personal_routine_models", "routine_id", "routine_name"),
+    "place": ("brain2_place_preference_models", "place_model_id", "place_key"),
+    "action_preference": ("brain2_action_preference_models", "action_model_id", "action_or_choice"),
+    "need_expectation": ("brain2_need_expectation_models", "need_model_id", "need_or_expectation"),
+    "expression_state": ("brain2_expression_state_models", "expression_model_id", "expression_or_style"),
+    "emotional_trajectory": ("brain2_emotional_trajectory_models", "trajectory_model_id", "trajectory_name"),
+    "contextual_self": ("brain2_contextual_self_models", "contextual_model_id", "context_key"),
+    "live_prediction_hook": ("brain2_live_prediction_hooks", "hook_id", "hook_name"),
+    "affordance_preference": ("brain2_live_affordance_preferences", "affordance_pref_id", "affordance_type"),
+}
+
 _CANONICAL_LIFE_LAYERS = frozenset({
     "personal_routine_models",
     "place_preference_models",
@@ -305,16 +320,9 @@ def install_canonical(module: Any) -> dict[str, Any]:
         return strict_many(con,sql,params,purpose="life model query")
 
     def _compact(rows: list[dict[str,Any]], limit:int=80,max_str:int=1200)->list[dict[str,Any]]:
-        # No silent claim of completeness: each cut is marked alongside stable
-        # id fields so downstream Context Gateway can retrieve it exactly.
-        out=[]
-        for row in rows[:limit]:
-            r=dict(row)
-            for k,v in list(r.items()):
-                if isinstance(v,str) and len(v)>max_str:
-                    r[k]=v[:max_str]; r[f"{k}__truncated"]=True
-            out.append(r)
-        return out
+        # Kept for legacy callers, but V18 no longer lets this compatibility
+        # helper turn a page size into evidence semantics.
+        return [dict(row) for row in rows]
 
     def _owner_conversation_rows(con, table: str, conv_col: str, person_id: str, *, start:str|None,end:str|None,as_of:str|None,limit:int)->list[dict[str,Any]]:
         if table == "turns":
@@ -323,8 +331,8 @@ def install_canonical(module: Any) -> dict[str, Any]:
                 JOIN conversations c ON c.conversation_id=x.conversation_id
                 JOIN v18_conversation_scopes cs ON cs.conversation_id=x.conversation_id
                 WHERE cs.person_id=? AND cs.active=1
-                ORDER BY c.started_at DESC, COALESCE(x.start_s,0) DESC LIMIT ?""",
-                (person_id,limit*4),purpose="turns owner scoped")
+                ORDER BY c.started_at DESC, COALESCE(x.start_s,0) DESC""",
+                (person_id,),purpose="turns owner scoped")
             for row in rows:
                 started = row.get("conversation_started_at")
                 if started:
@@ -334,54 +342,187 @@ def install_canonical(module: Any) -> dict[str, Any]:
         else:
             rows=strict_many(con,f"""SELECT x.* FROM {table} x
                 JOIN v18_conversation_scopes cs ON cs.conversation_id=x.{conv_col}
-                WHERE cs.person_id=? AND cs.active=1 ORDER BY COALESCE(x.created_at,'') DESC LIMIT ?""",
-                (person_id,limit*4),purpose=f"{table} owner scoped")
+                WHERE cs.person_id=? AND cs.active=1 ORDER BY COALESCE(x.created_at,'') DESC""",
+                (person_id,),purpose=f"{table} owner scoped")
         filtered=[]
         for r in rows:
             t=canonical_time(r,"occurred_at","start_time","created_at","updated_at")
             if t and _in_window(t,start,end,as_of): filtered.append(r)
             elif not start and not end and not as_of: filtered.append(r)
-        return filtered[:limit]
+        return filtered
 
     def collect_canonical_evidence(person_id: str, *, period_start: str|None=None, period_end: str|None=None,
-                                   limit:int=120, as_of:str|None=None)->dict[str,Any]:
+                                   limit:int=120, as_of:str|None=None,
+                                   include_canonical:bool=True)->dict[str,Any]:
         ensure_life_model_schema(); scope=Scope(person_id=person_id,as_of=as_of,mode="maintenance")
         with connect() as con:
-            def direct(table:str, *, time_cols:tuple[str,...]=( "created_at",), where:str="person_id=?", params:tuple[Any,...]=()) -> list[dict[str,Any]]:
+            from .night_orchestrator.paged_evidence import read_query_pages
+
+            page_size=max(1,int(limit))
+            manifests:dict[str,Any]={}
+
+            def paged(family:str,sql:str,params:tuple[Any,...])->list[dict[str,Any]]:
+                result=read_query_pages(
+                    con,stage_name="life_model_patch",person_id=person_id,
+                    source_family=family,select_sql=sql,params=params,
+                    page_size=page_size,
+                    scope_key=f"{period_start or ''}:{period_end or ''}:{scope.as_of_utc or ''}",
+                )
+                manifests[family]=result.manifest
+                return result.rows
+
+            def window(expr:str)->tuple[str,tuple[Any,...]]:
+                clauses=[]; values:list[Any]=[]
+                if period_start:
+                    clauses.append(f"julianday({expr})>=julianday(?)");values.append(period_start)
+                if period_end:
+                    clauses.append(f"julianday({expr})<julianday(?)");values.append(period_end)
+                if scope.as_of_utc:
+                    clauses.append(f"julianday({expr})<=julianday(?)");values.append(scope.as_of_utc)
+                return ((" AND "+" AND ".join(clauses)) if clauses else "",tuple(values))
+
+            def direct(family:str,table:str,pk:str, *, time_cols:tuple[str,...]=( "created_at",), where:str="person_id=?", params:tuple[Any,...]=()) -> list[dict[str,Any]]:
                 cols={str(r["name"]) for r in con.execute(f"PRAGMA table_info({table})").fetchall()}
                 if not cols: return []
                 if "person_id" not in cols and where=="person_id=?": return []
-                rows=strict_many(con,f"SELECT * FROM {table} WHERE {where} ORDER BY COALESCE(updated_at,created_at) DESC LIMIT ?",((*params,limit*4) if params else (person_id,limit*4)),purpose=f"evidence:{table}")
-                out=[]
-                for r in rows:
-                    t=canonical_time(r,*time_cols)
-                    if t is None:
-                        if period_start or period_end or scope.as_of_utc: continue
-                    elif not _in_window(t,period_start,period_end,scope.as_of_utc): continue
-                    # lifecycle suppression always wins.
-                    if str(r.get("status") or r.get("lifecycle_status") or "active").lower() in {"obsolete","invalidated","deleted","contradicted","retracted"}: continue
-                    out.append(r)
-                return _compact(out,limit)
-            episodes=_owner_conversation_rows(con,"episodes","source_conversation_id",person_id,start=period_start,end=period_end,as_of=scope.as_of_utc,limit=limit)
-            ep_ids=[str(e["episode_id"]) for e in episodes if e.get("episode_id")]
-            def episode_table(table:str)->list[dict[str,Any]]:
-                if not ep_ids: return []
-                q=','.join('?' for _ in ep_ids)
-                rows=strict_many(con,f"SELECT * FROM {table} WHERE episode_id IN ({q}) ORDER BY created_at DESC LIMIT ?",(*ep_ids,limit*4),purpose=f"evidence episode {table}")
-                return _compact(rows,limit)
-            life_events=direct("life_events",time_cols=("occurred_start","created_at"),where="subject_person_id=?",params=(person_id,))
-            observed={"episodes":_compact(episodes,limit),"life_events":life_events,"situation_episodes":episode_table("situation_episodes"),"interaction_episodes":episode_table("interaction_episodes"),"choice_episodes":episode_table("choice_episodes"),"action_intentions":episode_table("action_intentions"),"action_outcomes":episode_table("action_outcomes")}
+                available=[col for col in time_cols if col in cols]
+                if available:
+                    time_expr=(f"COALESCE({','.join('x.'+col for col in available)})" if len(available)>1 else f"x.{available[0]}")
+                    time_sql,time_params=window(time_expr)
+                elif period_start or period_end or scope.as_of_utc:
+                    time_sql,time_params=" AND 1=0",()
+                else:
+                    time_sql,time_params="",()
+                lifecycle=[]
+                if "status" in cols:lifecycle.append("COALESCE(x.status,'active') NOT IN ('obsolete','invalidated','deleted','contradicted','retracted')")
+                if "lifecycle_status" in cols:lifecycle.append("COALESCE(x.lifecycle_status,'active') NOT IN ('obsolete','invalidated','deleted','contradicted','retracted')")
+                lifecycle_sql=(" AND "+" AND ".join(lifecycle)) if lifecycle else ""
+                owner_params=params if params else (person_id,)
+                return paged(
+                    family,
+                    f"SELECT x.*,x.{pk} AS __page_pk FROM {table} x WHERE {where}{time_sql}{lifecycle_sql}",
+                    (*owner_params,*time_params),
+                )
+
+            episode_time="COALESCE(e.start_time,e.created_at)"
+            episode_window,episode_window_params=window(episode_time)
+            episodes=paged("observed_life.episodes",f"""
+                SELECT e.*,e.episode_id AS __page_pk FROM episodes e
+                JOIN v18_conversation_scopes cs
+                  ON cs.conversation_id=e.source_conversation_id
+                WHERE cs.person_id=? AND cs.active=1 {episode_window}
+            """,(person_id,*episode_window_params))
+
+            episode_specs={
+                "situation_episodes":("situation_id","observed_life.situation_episodes"),
+                "interaction_episodes":("interaction_id","observed_life.interaction_episodes"),
+                "choice_episodes":("choice_id","observed_life.choice_episodes"),
+                "action_intentions":("intention_id","observed_life.action_intentions"),
+                "action_outcomes":("outcome_id","observed_life.action_outcomes"),
+                "internal_state_snapshots":("state_id","self_and_internal.internal_state_snapshots"),
+                "emotion_evidence":("emotion_evidence_id","self_and_internal.emotion_evidence"),
+                "thought_hypotheses":("thought_id","self_and_internal.thought_hypotheses"),
+            }
+            episode_rows:dict[str,list[dict[str,Any]]]={}
+            for table,(pk,family) in episode_specs.items():
+                exists=strict_one(con,"SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name=?",(table,),purpose=f"life table {table}")
+                if not exists:
+                    episode_rows[table]=[];continue
+                episode_rows[table]=paged(family,f"""
+                    SELECT x.*,x.{pk} AS __page_pk FROM {table} x
+                    JOIN episodes e ON e.episode_id=x.episode_id
+                    JOIN v18_conversation_scopes cs
+                      ON cs.conversation_id=e.source_conversation_id
+                    WHERE cs.person_id=? AND cs.active=1 {episode_window}
+                """,(person_id,*episode_window_params))
+
+            life_events=direct("observed_life.life_events","life_events","event_id",time_cols=("occurred_start","created_at"),where="subject_person_id=?",params=(person_id,))
+            observed={"episodes":episodes,"life_events":life_events,"situation_episodes":episode_rows.get("situation_episodes",[]),"interaction_episodes":episode_rows.get("interaction_episodes",[]),"choice_episodes":episode_rows.get("choice_episodes",[]),"action_intentions":episode_rows.get("action_intentions",[]),"action_outcomes":episode_rows.get("action_outcomes",[])}
+
+            self_dimensions=direct("self_and_internal.self_model_dimensions","self_model_dimensions","dimension_id",time_cols=("updated_at","created_at"))
+            self_facts=direct("self_and_internal.self_model_facts","self_model_facts","fact_id",time_cols=("updated_at","created_at"))
+            behavior=direct("self_and_internal.behavior_signals","behavior_signals","signal_id",time_cols=("updated_at","created_at"))
+            internal={"self_model_dimensions":self_dimensions,"self_model_facts":self_facts,"internal_state_snapshots":episode_rows.get("internal_state_snapshots",[]),"emotion_evidence":episode_rows.get("emotion_evidence",[]),"thought_hypotheses":episode_rows.get("thought_hypotheses",[]),"behavior_signals":behavior}
+
+            relevant_turn_ids:set[str]=set()
+            def collect_turn_refs(value:Any)->None:
+                if isinstance(value,str) and value[:1] in {"[","{"}:
+                    try:collect_turn_refs(json_loads(value,[]))
+                    except Exception:pass
+                elif isinstance(value,Mapping):
+                    if str(value.get("source_table") or "") == "turns" and value.get("source_id"):
+                        relevant_turn_ids.add(str(value["source_id"]))
+                    for key,child in value.items():
+                        if key in {"turn_id","turn_ref"} and child:
+                            relevant_turn_ids.add(str(child))
+                        elif key in {"turn_ids","evidence_turn_ids"} and isinstance(child,list):
+                            relevant_turn_ids.update(str(item) for item in child if item)
+                        else:collect_turn_refs(child)
+                elif isinstance(value,list):
+                    for child in value:collect_turn_refs(child)
+            collect_turn_refs(observed);collect_turn_refs(internal)
+
+            # Shared V13/V14 facts are the other authoritative reason for exact
+            # speech to enter a Life prompt.  Scan only distinct cited turns;
+            # unrelated daily speech remains durable in ``turns`` and covered by
+            # the full turn-page manifest, but is not accumulated in RAM.
+            if strict_one(con,"SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='brain2_shared_fact_evidence_v19'",(),purpose="shared fact evidence table"):
+                fact_time_sql,fact_time_params=window("f.updated_at")
+                fact_refs=paged("language.shared_fact_turn_refs",f"""
+                    SELECT e.turn_id,MIN(e.evidence_link_id) AS evidence_link_id,
+                           MIN(e.evidence_link_id) AS __page_pk
+                    FROM brain2_shared_fact_evidence_v19 e
+                    JOIN brain2_shared_facts_v19 f ON f.fact_id=e.fact_id
+                    WHERE f.person_id=? {fact_time_sql}
+                    GROUP BY e.turn_id
+                """,(person_id,*fact_time_params))
+                relevant_turn_ids.update(str(row.get("turn_id")) for row in fact_refs if row.get("turn_id"))
+
+            turn_expr="datetime(julianday(c.started_at)+(COALESCE(x.start_s,0)/86400.0))"
+            turn_window,turn_window_params=window(turn_expr)
+            turn_query=f"""SELECT x.*,c.started_at AS conversation_started_at,
+                       {turn_expr} AS occurred_at,
+                       printf('%s|%s',{turn_expr},x.turn_id) AS __page_pk
+                FROM turns x JOIN conversations c ON c.conversation_id=x.conversation_id
+                JOIN v18_conversation_scopes cs ON cs.conversation_id=x.conversation_id
+                WHERE cs.person_id=? AND cs.active=1 {turn_window}"""
+            relevant_digest=stable_id("lifeturnrefs",*sorted(relevant_turn_ids))
+            def select_relevant_turns(rows:list[dict[str,Any]],_state:Any)->tuple[Any,Any]:
+                return [row for row in rows if str(row.get("turn_id") or "") in relevant_turn_ids],None
+            turn_result=read_query_pages(
+                con,stage_name="life_model_patch",person_id=person_id,
+                source_family="language.turns_recent",select_sql=turn_query,
+                params=(person_id,*turn_window_params),page_size=page_size,
+                transform=select_relevant_turns,collect_rows=False,
+                scope_key=f"{period_start or ''}:{period_end or ''}:{scope.as_of_utc or ''}:{relevant_digest}",
+            )
+            turns=[dict(row) for page in turn_result.outputs for row in (page or []) if isinstance(row,dict)]
+            manifests["language.turns_recent"]={
+                **turn_result.manifest,
+                "prompt_relevant_count":len(turns),
+                "prompt_omitted_count":int(turn_result.manifest["source_count"])-len(turns),
+                "relevant_refs_digest":relevant_digest,
+            }
+            language_patterns=direct("language.personal_language_patterns","personal_language_patterns","language_pattern_id",time_cols=("updated_at","created_at"))
+            phrase_templates=direct("language.phrase_templates","phrase_templates","template_id",time_cols=("updated_at","created_at"))
+            memory_cards=direct("memory_and_patterns.memory_cards","memory_cards","card_id",time_cols=("updated_at","created_at"))
+            candidate_patterns=direct("memory_and_patterns.candidate_patterns","candidate_patterns","candidate_pattern_id",time_cols=("updated_at","created_at"))
+            confirmed_patterns=direct("memory_and_patterns.confirmed_patterns","confirmed_patterns","confirmed_pattern_id",time_cols=("updated_at","created_at"))
+            global_patterns=direct("memory_and_patterns.global_patterns_v17","brain2_global_life_patterns_v17","pattern_id",time_cols=("updated_at","created_at"))
+            forecasts=direct("forecasts_future.brainlive_short_horizon_forecasts","brainlive_short_horizon_forecasts","forecast_id",time_cols=("occurred_at","created_at"))
             feed={"schema_version":"18.0.0","person_id":person_id,"period_start":period_start,"period_end":period_end,"as_of":scope.as_of_utc,"observed_life":observed,
-                  "self_and_internal":{"self_model_dimensions":direct("self_model_dimensions",time_cols=("updated_at","created_at")),"self_model_facts":direct("self_model_facts",time_cols=("updated_at","created_at")),"internal_state_snapshots":episode_table("internal_state_snapshots"),"emotion_evidence":episode_table("emotion_evidence"),"thought_hypotheses":episode_table("thought_hypotheses"),"behavior_signals":direct("behavior_signals",time_cols=("updated_at","created_at"))},
-                  "language":{"turns_recent":_compact(_owner_conversation_rows(con,"turns","conversation_id",person_id,start=period_start,end=period_end,as_of=scope.as_of_utc,limit=limit),limit),"personal_language_patterns":direct("personal_language_patterns",time_cols=("updated_at","created_at")),"phrase_templates":direct("phrase_templates",time_cols=("updated_at","created_at"))},
-                  "memory_and_patterns":{"memory_cards":direct("memory_cards",time_cols=("updated_at","created_at")),"candidate_patterns":direct("candidate_patterns",time_cols=("updated_at","created_at")),"confirmed_patterns":direct("confirmed_patterns",time_cols=("updated_at","created_at")),"global_patterns_v17":direct("brain2_global_life_patterns_v17",time_cols=("updated_at","created_at"))},
-                  "forecasts_future":{"brainlive_short_horizon_forecasts":direct("brainlive_short_horizon_forecasts",time_cols=("occurred_at","created_at"))},
+                  "self_and_internal":internal,
+                  "language":{"turns_recent":turns,"personal_language_patterns":language_patterns,"phrase_templates":phrase_templates},
+                  "memory_and_patterns":{"memory_cards":memory_cards,"candidate_patterns":candidate_patterns,"confirmed_patterns":confirmed_patterns,"global_patterns_v17":global_patterns},
+                  "forecasts_future":{"brainlive_short_horizon_forecasts":forecasts},
                   "brain2_canonical_life_model":{}}
             # Read only canonical objects whose own status and lifecycle are active.
-            for layer,(table,id_col,_name) in getattr(module,"CANONICAL_TABLES",{}).items():
-                rows=direct(table,time_cols=("updated_at","created_at"))
-                feed["brain2_canonical_life_model"][layer]=rows
-            feed["completeness"]={"truncated":False,"source_counts":module._count(feed),"missing_owner_proof":not bool(episodes)}
+            if include_canonical:
+                for layer,(table,id_col,_name) in _CANONICAL_TABLES.items():
+                    rows=direct(f"brain2_canonical_life_model.{layer}",table,id_col,time_cols=("updated_at","created_at"))
+                    feed["brain2_canonical_life_model"][layer]=rows
+            feed["evidence_page_manifests"]=manifests
+            feed["completeness"]={"truncated":False,"all_pages_complete":all(bool(m.get("complete")) for m in manifests.values()),"source_counts":{name:int(manifest.get("source_count") or 0) for name,manifest in manifests.items()},"missing_owner_proof":not bool(episodes)}
             return feed
 
     def _item_identity(layer:str,item:dict[str,Any])->str:
@@ -488,19 +629,59 @@ def install_updater(module: Any, canonical_module: Any) -> dict[str,Any]:
             raise ScopeError("Life Model delta period_end exceeds as_of")
         if period_start is None:
             period_start=iso_utc(parse_iso_utc(period_end)-timedelta(days=1))
-        delta=canonical_module.collect_canonical_evidence(person_id,period_start=period_start,period_end=period_end,limit=limit,as_of=as_of)
-        with connect() as con,write_transaction(con):
+        delta=canonical_module.collect_canonical_evidence(person_id,period_start=period_start,period_end=period_end,limit=limit,as_of=as_of,include_canonical=False)
+        # Canonical layers are the current model state loaded separately by the
+        # updater.  Treating them as a fresh delta lets the model cite its own
+        # previous conclusions as new independent evidence.  The canonical
+        # collector still exposes them for bootstrap/audit, but an incremental
+        # patch receives only genuinely new source families here.
+        delta.pop("brain2_canonical_life_model",None)
+        if isinstance(delta.get("evidence_page_manifests"),dict):
+            delta["evidence_page_manifests"]={
+                name:manifest for name,manifest in delta["evidence_page_manifests"].items()
+                if not str(name).startswith("brain2_canonical_life_model.")
+            }
+        if isinstance(delta.get("completeness"),dict) and isinstance(delta["completeness"].get("source_counts"),dict):
+            delta["completeness"]["source_counts"]={
+                name:count for name,count in delta["completeness"]["source_counts"].items()
+                if not str(name).startswith("brain2_canonical_life_model.")
+            }
+        with connect() as con:
+            from .night_orchestrator.paged_evidence import read_query_pages
             live={}
-            tables=[("brainlive_day_packages","COALESCE(period_end,updated_at,created_at)"),("brainlive_brain2_reconciliations","updated_at"),("brainlive_context_snapshots_v1512","created_at"),("brainlive_event_bundles_v1514","COALESCE(end_time,start_time,updated_at,created_at)"),("brainlive_silent_event_candidates_v160","COALESCE(end_time,start_time,updated_at,created_at)")]
-            for table,timeexpr in tables:
+            page_manifests=dict(delta.get("evidence_page_manifests") or {})
+            tables=[
+                ("brainlive_day_packages","package_id","COALESCE(period_end,updated_at,created_at)"),
+                ("brainlive_brain2_reconciliations","reconciliation_id","updated_at"),
+                ("brainlive_context_snapshots_v1512","snapshot_id","created_at"),
+                ("brainlive_event_bundles_v1514","bundle_id","COALESCE(end_time,start_time,updated_at,created_at)"),
+                ("brainlive_silent_event_candidates_v160","candidate_id","COALESCE(end_time,start_time,updated_at,created_at)"),
+            ]
+            for table,pk,timeexpr in tables:
                 exists=strict_one(con,"SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name=?",(table,),purpose="delta table")
                 if not exists: continue
-                rows=strict_many(con,f"SELECT * FROM {table} WHERE person_id=? AND {timeexpr}>=? AND {timeexpr}<? ORDER BY {timeexpr} DESC LIMIT ?",(person_id,period_start,period_end,limit),purpose=f"delta {table}")
-                # Block superseded/error sources at the boundary.
-                live[table]=[r for r in rows if str(r.get("status") or "active").lower() not in {"superseded","invalidated","error","failed","quarantined"}]
+                cols={str(row["name"]) for row in con.execute(f"PRAGMA table_info({table})").fetchall()}
+                status_clause=(" AND COALESCE(x.status,'active') NOT IN ('superseded','invalidated','error','failed','quarantined')" if "status" in cols else "")
+                family=f"brainlive_bridge_delta.{table}"
+                result=read_query_pages(
+                    con,stage_name="life_model_patch",person_id=person_id,
+                    source_family=family,
+                    select_sql=f"""SELECT x.*,x.{pk} AS __page_pk FROM {table} x
+                        WHERE x.person_id=?
+                          AND julianday({timeexpr})>=julianday(?)
+                          AND julianday({timeexpr})<julianday(?)
+                          {status_clause}""",
+                    params=(person_id,period_start,period_end),
+                    page_size=max(1,int(limit)),
+                    scope_key=f"{period_start}:{period_end}:{as_of or ''}",
+                )
+                live[table]=result.rows
+                page_manifests[family]=result.manifest
             delta["brainlive_bridge_delta"]=live
+            delta["evidence_page_manifests"]=page_manifests
             did=stable_id("b2delta18",person_id,period_start,period_end,as_of or "live")
-            module.upsert(con,"brain2_life_model_delta_evidence",{"delta_id":did,"person_id":person_id,"period_start":period_start,"period_end":period_end,"status":"ready","source_counts_json":json_dumps(module._count(delta)),"raw_evidence_json":json_dumps(delta),"created_at":now_iso()},"delta_id")
+            with write_transaction(con):
+                module.upsert(con,"brain2_life_model_delta_evidence",{"delta_id":did,"person_id":person_id,"period_start":period_start,"period_end":period_end,"status":"ready","source_counts_json":json_dumps(module._count(delta)),"raw_evidence_json":json_dumps(delta),"created_at":now_iso()},"delta_id")
         return delta
 
     def _validate_patch_operation(con,*,person_id:str,op:dict[str,Any],idx:int)->dict[str,Any]:

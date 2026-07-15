@@ -938,7 +938,7 @@ réduction statique de JSON comme une validation modèle.
     totalité au-delà des caps. L'activation et le nouveau chiffre global appels/tokens/
     temps attendent R4/I3 et le harnais cinq minutes.
 
-- [ ] **R4 — retirer les caps sans créer de prompts géants.** Une fois R3 verte,
+- [x] **R4 — retirer les caps sans créer de prompts géants.** Une fois R3 verte,
   remplacer les limites de coordination `200/160/120` et le `limit=120` Life par des
   pages complètes à clé stable, checkpoints atomiques et manifests
   `{source_count,included_count,digest,first_pk,last_pk}`. La page limite la RAM, jamais
@@ -948,11 +948,39 @@ réduction statique de JSON comme une validation modèle.
   cinq minutes et le dashboard : ce run donnera le premier nouveau total autoritaire
   appels/tokens/temps, puis les projections 1 h/8 h local et DeepSeek.
 
+  **R4 — preuve structurelle au 2026-07-15 (le benchmark cinq minutes reste I7) :**
+  - [x] `night_orchestrator/paged_evidence.py` lit chaque source par keyset stable,
+    journalise atomiquement digest+sortie+état de page et refuse un manifeste lorsque
+    `source_count != included_count`. Une page déjà commitée n'est réutilisée que si son
+    contenu relu a le même digest; une modification de ligne invalide seulement sa page.
+  - [x] Coordination : `limit=200/160/120` signifie désormais taille de page. Les
+    observations vision sont réduites dans chaque page, puis les atomes adjacents sont
+    refusionnés avec recalcul des transitions à la frontière. Le paquet stocke les
+    atomes+manifest, pas une deuxième copie de toutes les observations. Preuve synthétique
+    au-delà des caps : **201 observations → 5 pages → 1 atome/201 refs**, puis
+    **161 prédictions → 161 bindings**, sans LLM.
+  - [x] Life : collecteur V18 canonique, bridge BrainLive, modèle courant et lifecycle
+    parcourent toutes les pages; les couches canoniques courantes sont l'état du modèle,
+    jamais un delta autorisé à s'auto-confirmer. Les tours sont tous parcourus mais seuls
+    ceux cités par une preuve durable sont accumulés pour le prompt. Preuve : **121
+    behavior signals** et **121 routines courantes** en quatre pages chacun.
+  - [x] Reprise : tests kill après transformation/avant commit et après commit/avant page
+    suivante; le premier recalcule la page, le second reprend sa sortie+état sans double
+    traitement. Une scène identique traversant une frontière reste un seul événement.
+  - [x] Gap découvert pendant R4 : V18 cherchait `CANONICAL_TABLES` dans le module V15.10
+    qui ne l'expose pas; les neuf couches du modèle courant étaient donc vides dans ce
+    feed. Mapping V18 explicite branché et prouvé sur clone réel :
+    `9/4/9/22/12/9/10/9/8` lignes. Le digest de reprise Life couvre maintenant le contenu
+    courant, pas seulement ses compteurs.
+  - [x] Clone réel : 199 observations couvertes en quatre pages et un atome; forecast
+    multi-page complet; 26 manifests Life tous complets. Suite élargie : **93 tests
+    passés**. Les flags restent OFF jusqu'au harnais cinq minutes et aux métriques I7.
+
 #### I3 — totalité d'une journée sans caps silencieux
 
-- [ ] **I3.1 Coordination** : remplacer `collect_day_evidence(limit=200)` et `_compact(...200)` par pagination complète des `VisionChangeAtom` + parents; la vidéo 5 min doit couvrir les 698 observations, pas seulement les 200 premières (OBS-35).
-- [ ] **I3.2 Life Model** : supprimer les `LIMIT 120`/`rows[:120]` comme sémantique; collecteur paginé lossless, fenêtres de promotion et manifeste par famille. Augmenter 120 n'est pas une correction (OBS-36).
-- [ ] **I3.3 Mémoire bornée** : streaming/page/checkpoint par clé stable, pas un prompt géant ni toute la journée en RAM; reprise après kill au dernier lot atomique.
+- [x] **I3.1 Coordination** : remplacer `collect_day_evidence(limit=200)` et `_compact(...200)` par pagination complète des `VisionChangeAtom` + parents; tests 201/201 et clone 199/199. Le gate vidéo doit encore confirmer 698/698 (OBS-35 corrigé en code, I7 ouvert).
+- [x] **I3.2 Life Model** : supprimer les `LIMIT 120`/`rows[:120]` comme sémantique; collecteur, bridge, état courant et lifecycle paginés, manifests par famille et tests 121/121 (OBS-36 corrigé).
+- [x] **I3.3 Mémoire bornée** : journal page+digest+sortie+état par clé stable; vision réduite avant accumulation, tours Life non cités non accumulés; reprise exacte testée avant/après commit. Les listes sémantiques finales restent les sorties métier, jamais des copies arbitrairement tronquées du raw.
 
 #### I4 — vision lourde : analyser moins de pixels, pas moins d'événements
 

@@ -1043,3 +1043,44 @@ Preuve runtime séparée, sans nouveau CloseDay :
 R3 est clos, mais les deux flags restent désactivés. La prochaine action est R4/I3 :
 remplacer les caps 200/160/120 par pagination complète et reprise atomique, puis seulement
 mesurer le harnais cinq minutes et le gain global.
+
+### Checkpoint d'exécution R4/I3 — 2026-07-15
+
+R4 est clos côté code et tests; le harnais cinq minutes reste le gate I7 distinct. Le
+lecteur commun est `night_orchestrator/paged_evidence.py`. Chaque SELECT doit exposer une
+clé unique `__page_pk`; le lecteur fait du keyset, jamais `OFFSET`, et persiste dans
+`night_evidence_page_runs_v19` / `night_evidence_pages_v19` le digest d'entrée, la sortie
+transformée et l'état après page dans le même commit. Une reprise relit la source : elle
+ne réutilise une page que si PK, cardinalité et digest sont identiques. Un manifeste ne
+devient `complete` que pour `source_count == included_count`.
+
+Frontières réellement migrées :
+
+- `collect_day_evidence` : `limit` est la taille de page. La vision est ordonnée par
+  `(created_at, observation_id)`, réduite avant accumulation, refusionnée entre pages et
+  stockée dans le paquet sous forme de `VisionChangeAtom`. Les observations exactes
+  restent dans leur table; `source_manifest_json` donne leur couverture.
+- `collect_brain2_forecast_evidence` et le wrapper V18 : toutes les sources owner/live
+  éligibles sont parcourues; le filtre lifecycle/projection expose aussi combien de lignes
+  brutes ont été exclues. Le compilateur ne reçoit aucun manifest comme fausse source.
+- `collect_canonical_evidence`, `collect_life_model_delta` et
+  `load_current_life_model` : tous paginés. Les tours sont scannés entièrement mais seuls
+  les IDs cités par observed/internal/shared facts sont matérialisés vers Life. Les neuf
+  couches canoniques sont l'état courant chargé séparément et sont retirées du delta pour
+  interdire l'auto-confirmation.
+
+Bug de branchement découvert : l'installateur canonique V18 consultait
+`module.CANONICAL_TABLES`, absent de `brain2_life_model_v15_10.py`; le feed courant avait
+donc neuf dictionnaires vides. `v18_life_model.py` possède maintenant le mapping explicite
+vers les tables réelles. Preuve clone : `9/4/9/22/12/9/10/9/8` lignes par couche. La clé
+de reprise Life digère désormais le contenu du modèle courant; deux états de même taille
+ne partagent plus un checkpoint.
+
+Tests à conserver : `tests/v19/test_e64i_paged_evidence.py` couvre 201 observations,
+161 bindings, 121 sources Life, 121 routines courantes, kill avant commit, kill après
+commit, invalidation d'une seule page modifiée et continuité d'événement. Suite R1–R4
+élargie : **93 passed**. Clone : 199 observations, quatre pages, un atome/199 refs;
+26 manifests Life complets. Ne pas activer `MLOMEGA_E64_CONVERSATION_EPISODES` ni
+`MLOMEGA_E64_SHARED_FACTS` sur cette seule preuve. Action suivante : un run frais vidéo
+cinq minutes, vérifier 698/698 (ou le nouveau total source exact), appels/tokens/temps,
+CloseDay/recovery et dashboard; aucune projection 1 h/8 h avant ce chiffre.
