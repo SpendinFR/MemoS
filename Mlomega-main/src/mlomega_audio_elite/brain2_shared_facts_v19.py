@@ -13,6 +13,16 @@ import os
 from typing import Any, Mapping, Sequence
 
 from .db import connect, init_db, upsert
+from .evidence_quality_v19 import (
+    OWNER_ALIASES,
+    UNCITED_CEILING,
+    conversation_baseline_language,
+    evidence_ceiling,
+    evidence_ceiling_enabled,
+    language_quarantine,
+    owner_attribution_allowed,
+    turn_evidence_quality,
+)
 from .utils import json_dumps, json_loads, now_iso, sha256_bytes, stable_id
 
 
@@ -339,12 +349,23 @@ def record_engine_output(
         "evidence": canonical.get("evidence"),
         "counter_evidence": canonical.get("counter_evidence"),
     })
-    valid_turn_ids = {
-        str(row["turn_id"])
-        for row in con.execute(
-            "SELECT turn_id FROM turns WHERE conversation_id=?", (conversation_id,)
-        )
+    turn_meta_rows = list(con.execute(
+        "SELECT turn_id, person_id, metadata_json FROM turns WHERE conversation_id=?",
+        (conversation_id,),
+    ))
+    valid_turn_ids = {str(row["turn_id"]) for row in turn_meta_rows}
+    turn_person_by_id = {
+        str(row["turn_id"]): (row["person_id"] if "person_id" in row.keys() else None)
+        for row in turn_meta_rows
     }
+    turn_metadata_by_id = {
+        str(row["turn_id"]): row["metadata_json"] for row in turn_meta_rows
+    }
+    ceiling_active = evidence_ceiling_enabled()
+    baseline_language = (
+        conversation_baseline_language(list(turn_metadata_by_id.values()))
+        if ceiling_active else None
+    )
     for field_name in schema:
         if field_name in _COMMON_FIELDS:
             continue
@@ -386,13 +407,49 @@ def record_engine_output(
             refs = list(dict.fromkeys([*_candidate_refs(item), *common_refs]))
             cited = [ref for ref in refs if ref in valid_turn_ids]
             evidence_status = "cited" if cited else "uncited_model_output"
-            ceiling = confidence if cited else min(confidence, 0.49)
+            subject_ref = _subject_ref(item)
             if engine_name == "capture_engine" and field_name == "capture_quality":
                 epistemic_status = "system_observation"
             elif field_name == "missing_context":
                 epistemic_status = "known_missing"
             else:
                 epistemic_status = "inferred" if confidence > 0 else "inferred_unscored"
+
+            if ceiling_active:
+                # OBS-29 central policy: a conclusion never exceeds the quality
+                # of its real cited evidence, an unenrolled voice never becomes
+                # the owner, and an isolated off-language fragment is quarantined
+                # (kept raw, flagged) rather than promoted.
+                turn_qualities = []
+                for ref in cited:
+                    quality = turn_evidence_quality(
+                        turn_metadata_by_id.get(ref),
+                        person_id=turn_person_by_id.get(ref),
+                        baseline_language=baseline_language,
+                    )
+                    quality["turn_id"] = ref
+                    turn_qualities.append(quality)
+                ceiling_info = evidence_ceiling(confidence, turn_qualities)
+                ceiling = ceiling_info["ceiling"]
+                quarantine_cause = language_quarantine(turn_qualities)
+                owner_claimed = (
+                    subject_ref is not None
+                    and str(subject_ref).strip().lower() in OWNER_ALIASES
+                )
+                if quarantine_cause:
+                    evidence_status = "quarantined"
+                    epistemic_status = "quarantined_low_quality"
+                    ceiling = min(ceiling, UNCITED_CEILING)
+                elif owner_claimed and not owner_attribution_allowed(turn_qualities):
+                    # A model output that attributes an owner trait to a voice
+                    # that was never enrolled is demoted, not silently trusted.
+                    evidence_status = "owner_attribution_blocked"
+                    epistemic_status = "unresolved_owner"
+                    subject_ref = None
+                    ceiling = min(ceiling, UNCITED_CEILING)
+            else:
+                ceiling = confidence if cited else min(confidence, 0.49)
+
             upsert(con, "brain2_shared_facts_v19", {
                 "fact_id": fact_id,
                 "run_id": run_id,
@@ -404,7 +461,7 @@ def record_engine_output(
                 "source_engine": engine_name,
                 "source_field": field_name,
                 "fact_type": fact_type,
-                "subject_ref": _subject_ref(item),
+                "subject_ref": subject_ref,
                 "epistemic_status": epistemic_status,
                 "evidence_status": evidence_status,
                 "confidence": confidence,

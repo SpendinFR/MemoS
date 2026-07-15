@@ -1214,3 +1214,50 @@ transport de la confiance et le recensement des capacités existent, mais ni le 
 transversal par qualité source ni le veto final sur capacité dégradée ne sont encore
 généralisés. I1 n'est pas entièrement clos non plus : une conversation hors budget lève
 encore au lieu d'être fenêtrée. Ces trois incréments précèdent I4; aucun rerun R1–R4.
+
+## 2026-07-15 — Lot prérequis I0.2 / I0.4 / I1.3 (ADR — ferme la ligne de reprise avant I4)
+
+**I0.2 — plafond de confiance par qualité des preuves (OBS-29).** Nouveau module central
+`evidence_quality_v19.py` : chaque preuve citée porte confiance ASR, alignement
+(mots WhisperX), diarisation, résolution de locuteur (avec `source_id` d'indépendance)
+et langue. `brain2_shared_facts_v19.py` calcule le `confidence_ceiling` d'un fait depuis
+ses PREUVES CITÉES, plus depuis la sortie du modèle. Règles : une conclusion ne dépasse
+pas sa meilleure preuve ; seule une corroboration de sources INDÉPENDANTES (segments/
+bundles distincts, pas le même tour recopié) relève le plafond ; voix non enrôlée →
+`owner_attribution_blocked` (jamais attribuée à William) ; fragment linguistique
+incohérent → `evidence_status=quarantined` avec cause, raw durable. Statuts additifs
+(aucun consommateur ne branche sur les valeurs exactes). Tests 7 + 32 non-régression.
+
+**I0.4 — gate du manifeste de capacités (OBS-38).** `night_orchestrator/capability_manifest.py`
+(additif) + branchement chirurgical dans `v18_close_day.py` après `semantic_warnings`,
+AVANT le manifeste de sortie et `assert_cleanup_eligible`. 13 capacités obligatoires
+recensées depuis les stages réels (deep_audio, deep_vision relu dans
+`brainlive_deep_vision_runs_v161`, event_assembly, brain2_v13_v14, visual_consolidation,
+longitudinal, coordination, life_model, outcome_resolution, life_model_v19,
+prediction_emission, self_schema, live_ready). Verdicts passants
+`product_validated|valid_empty|not_applicable` (les deux derniers exigent une
+applicabilité prouvée) ; bloquants `degraded|abstained|bypassed|failed` → `StageGateError`
+non-retryable AVANT `completed`/cleanup, run `blocked` avec cause lisible. Deep Vision
+sélectionné>0 & analysé=0 → `failed` (le faux-vert type). `compiled_watch_only`/
+`compiled_no_life_delta` = succès Life. Persistance `v18_close_day_capability_manifests`
+(UNIQUE(run_id), upsert) + copie dans `result_json`. Rollback d'urgence
+`MLOMEGA_E64_CAPABILITY_GATE=0`. Tests 10 + 10 non-régression.
+
+**I1.3 — conversations longues fenêtrées.** `build_conversation_episode_v6` ne lève plus
+`input_budget_exceeded` : quand une passe dépasse le budget, elle passe par
+`run_windows`/checkpoints E64 (`night_llm_windows_v19`). Segmentation : fenêtres
+token-aware sur tours ordonnés (overlap lecture seule), chaque fenêtre n'émet des
+frontières QUE pour ses tours primaires, la dernière fin est ancrée au dernier primaire,
+puis assemblage PAR CODE en partition globale contiguë sans trou (tri par provenance des
+tours, pas par window_index — la subdivision récursive remappe les index). Détail : lots
+de segments ENTIERS (un segment n'est jamais coupé), parent unique ancré au lot d'ordinal
+minimal. Reprise : zéro nouvel appel sur relance. Aucun fallback v5 silencieux
+(`segmentation_windows_incomplete`/`detail_windows_incomplete` explicites et retryables).
+Cas court : chemin historique octet pour octet (2 appels, mêmes prompts). Garde-fou :
+fenêtrage seulement si `person_id`+`package_date` fournis (scope checkpoints) — l'appelant
+`brain2_strict_v13_2.py` les passe désormais. Tests 7 + 11 non-régression.
+
+**Hors périmètre noté.** `test_e64_night_orchestrator.py::test_estimate_tokens_rounds_up_and_honours_tokenizer`
+est stale (attend l'ancien ratio 3.5 ; `_DEFAULT_CHARS_PER_TOKEN=2.5` volontaire) —
+échec pré-existant, pas une régression du lot. Reprise produit : validation courte
+(backend persisté + readiness + tests par venv), puis I4.1.

@@ -433,7 +433,17 @@ compteur minimum d'images analysées, JSON strict du backend VLM et réutilisati
 analyse profonde existante quand image+digest+modèle sont identiques. Ne pas multiplier
 80 s par image tant que ce gate n'est pas fiable.
 
-## OBS-29 — ASR confiance nulle alimente pourtant des conclusions certaines (OUVERT)
+## OBS-29 — ASR confiance nulle alimente pourtant des conclusions certaines (CORRIGÉ — 2026-07-15, I0.2)
+
+Correction I0.2 : `evidence_quality_v19.py` centralise la qualité par preuve
+(ASR/alignement WhisperX, diarisation, résolution locuteur + `source_id`
+d'indépendance, langue). `brain2_shared_facts_v19.py` calcule le
+`confidence_ceiling` d'un fait depuis ses vraies preuves citées : une conclusion
+ne dépasse plus sa meilleure preuve sans corroboration de sources indépendantes ;
+une voix non enrôlée donne `owner_attribution_blocked` (jamais William) ; un
+fragment linguistique incohérent donne `evidence_status=quarantined` avec cause,
+le tour brut restant durable. Tests : `test_e64i_evidence_quality.py` (7 verts).
+La validation voix réelle/enrôlée sur device reste I7.
 
 La conversation raffinée contient huit tours mais la coordination résume explicitement
 une confiance ASR à `0.0` et interprète des fragments grec/russe probablement issus du
@@ -562,7 +572,18 @@ les sorties actives seront consommées par BrainLive. Correction : état `watch`
 premier indice, promotion seulement sur répétition ou sources indépendantes, dédup
 sémantique transitive par provenance et plafond de confiance par qualité de preuve.
 
-## OBS-38 — Le manifeste final accepte des moteurs bypassés ou abstentionnistes (OUVERT)
+## OBS-38 — Le manifeste final accepte des moteurs bypassés ou abstentionnistes (CORRIGÉ — 2026-07-15, I0.4)
+
+Correction I0.4 : `night_orchestrator/capability_manifest.py` +
+gate dans `v18_close_day.py` (avant manifeste de sortie et cleanup). 13 capacités
+obligatoires recensées ; verdicts `product_validated|valid_empty|not_applicable`
+passants, `degraded|abstained|bypassed|failed` bloquants (`complete=1` et cleanup
+interdits, run `blocked` avec cause). Deep Vision est relu dans
+`brainlive_deep_vision_runs_v161` : sélectionné>0 & analysé=0 → `failed` (ferme le
+volet manifeste d'OBS-28 ; le fix VLM lui-même reste I4.2). `valid_empty` exige
+une applicabilité prouvée. Persisté dans `v18_close_day_capability_manifests`.
+Rollback `MLOMEGA_E64_CAPABILITY_GATE=0`. Tests : `test_e64i_capability_manifest.py`
+(10 verts).
 
 Le CloseDay complet contient des checkpoints V13.4/V14 clôturés `AUDIT ONLY`, Deep
 Vision faux-vert et une similarité V17 `abstained` après accès refusé au cache de

@@ -1808,6 +1808,7 @@ def _ensure_episodes_strict(con, conversation_id: str, *, person_id: str) -> int
     except Exception:
         use_conversation_episode = False
     if use_conversation_episode:
+        conversation_package_date = str(bundle.get("conversation", {}).get("started_at") or now_iso())[:10]
         stats = build_conversation_episode_v6(
             con,
             conversation_id,
@@ -1815,6 +1816,8 @@ def _ensure_episodes_strict(con, conversation_id: str, *, person_id: str) -> int
             safe_prompt=_safe_prompt_payload,
             materialize=_materialize_episodes_from_qwen,
             system=_BRAIN2_STRICT_SYSTEM,
+            person_id=resolved_owner,
+            package_date=conversation_package_date,
         )
         _record_engine(
             con,

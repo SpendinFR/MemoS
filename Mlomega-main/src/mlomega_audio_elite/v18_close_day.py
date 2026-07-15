@@ -763,6 +763,32 @@ def close_brainlive_day(
         if semantic_warnings:
             result["semantic_warnings"] = semantic_warnings
 
+        # I0.4 (OBS-38): the stage contract proves traversal, not that every
+        # REQUIRED product capability produced a product output.  Build a
+        # detailed, persisted capability census and refuse ``complete=1`` when a
+        # capability is degraded/abstained/bypassed/audit-only or false-green
+        # (e.g. Deep Vision selected keyframes but analysed none).  Cleanup then
+        # stays ineligible with a readable cause instead of a silent green.
+        from .night_orchestrator.capability_manifest import (
+            build_capability_manifest,
+            capability_gate_enabled,
+            persist_capability_manifest,
+        )
+        capability_manifest = build_capability_manifest(
+            person_id=person_id, package_date=day,
+            stage_results=stage_results, semantic_warnings=semantic_warnings,
+        )
+        persist_capability_manifest(
+            run_id=run_id, person_id=person_id, package_date=day, manifest=capability_manifest,
+        )
+        result["capability_manifest"] = capability_manifest
+        if capability_gate_enabled() and not capability_manifest["complete"]:
+            names = ", ".join(sorted(c["capability"] for c in capability_manifest["blocking"]))
+            raise StageGateError(
+                f"close-day product capability manifest is incomplete: {names} -- "
+                f"{capability_manifest['reason']}"
+            )
+
         expected, observed = _verified_close_day_outputs(
             run_id=run_id,
             person_id=person_id,

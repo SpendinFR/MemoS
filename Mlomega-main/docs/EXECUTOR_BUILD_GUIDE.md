@@ -1144,3 +1144,25 @@ anciens moteurs. Avant d'ouvrir I4, trois incréments courts restent obligatoire
 exécuter seulement readiness + tests séparés par venv. La ligne de reprise détaillée et
 les fichiers/tests attendus sont dans `PROD_BACKLOG.md`, checkpoint 2026-07-15, étapes
 1–4. Une fois ces trois cases vertes, reprendre directement **I4.1**.
+
+### Lot prérequis I0.2/I0.4/I1.3 — FAIT (2026-07-15, après la passation ci-dessus)
+
+Les trois incréments sont livrés et testés (24 nouveaux tests + 53 non-régression, tout
+en fakes, aucun CloseDay) :
+
+- **I0.2** : `evidence_quality_v19.py` (qualité par preuve) + plafond réel dans
+  `brain2_shared_facts_v19.py`. Diagnostiquer un fait plafonné : lire
+  `confidence_ceiling` et `evidence_status` (`cited|uncited_model_output|quarantined|
+  owner_attribution_blocked`) dans les faits partagés.
+- **I0.4** : gate des capacités dans `v18_close_day.py` +
+  `night_orchestrator/capability_manifest.py`. Diagnostiquer un run `blocked` : lire
+  `v18_close_day_capability_manifests` (`blocking_json` nomme la capacité et la cause).
+  Rollback d'urgence : `MLOMEGA_E64_CAPABILITY_GATE=0`.
+- **I1.3** : conversations longues fenêtrées dans `brain2_conversation_episode.py` via
+  `run_windows` (checkpoints `night_llm_windows_v19`, stats `windowed_*` dans le retour).
+  Aucun `input_budget_exceeded` si `person_id`+`package_date` sont passés (fait par
+  `brain2_strict_v13_2`).
+
+Tests du lot : `.venv\Scripts\python.exe -m pytest -q tests\v19\test_e64i_evidence_quality.py
+tests\v19\test_e64i_capability_manifest.py tests\v19\test_e64i_long_conversation.py`.
+Reprise produit suivante : validation courte (backend persisté + readiness) puis **I4.1**.

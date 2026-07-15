@@ -19,7 +19,17 @@ from .brain2_episode_windowing import (
     _partition_cognitive_and_sensor_turns,
     _prompt_turn,
 )
-from .night_orchestrator import OllamaWindowLLM, estimate_tokens_for_text
+from .night_orchestrator import (
+    ModelBudget,
+    OllamaWindowLLM,
+    PlanUnit,
+    PlannedWindow,
+    StageScope,
+    estimate_tokens_for_text,
+    run_windows,
+)
+from .night_orchestrator import checkpoint_store as cp
+from .night_orchestrator.evidence_ref import content_digest
 
 
 CONVERSATION_EPISODE_BUILD_VERSION = "13.2.0-e64i-conversation-subthemes-v2"
@@ -289,6 +299,13 @@ _MISSION = (
     "sans préfixe technique ni copie du titre source. Garde l'incertitude ASR/locuteur, "
     "n'invente ni état psychologique ni issue. Réponds uniquement selon le schéma."
 )
+
+
+SEGMENTATION_STAGE_NAME = "brain2_conversation_segmentation"
+DETAIL_STAGE_NAME = "brain2_conversation_detail"
+CONVERSATION_ADAPTER_VERSION = "e64i-conversation-window-v1"
+SEGMENTATION_PROMPT_VERSION = "v6-segmentation-boundaries-unchanged-v1"
+DETAIL_PROMPT_VERSION = "v6-detail-locked-segments-unchanged-v1"
 
 
 class ConversationEpisodeContractError(RuntimeError):
@@ -570,6 +587,505 @@ def _render_lossless_prompt(
     return rendered
 
 
+def _conversation_overlap() -> int:
+    """Bounded read-only context carried at each segmentation window head."""
+    try:
+        return max(0, int(os.environ.get("MLOMEGA_E64_CONVERSATION_OVERLAP", "3")))
+    except ValueError:
+        return 3
+
+
+def _conversation_target_turns() -> int:
+    """Soft cap on primary turns per segmentation window (budget still governs)."""
+    try:
+        return max(1, int(os.environ.get("MLOMEGA_E64_CONVERSATION_TARGET_TURNS", "40")))
+    except ValueError:
+        return 40
+
+
+def _segmentation_turn_projection(turn: Mapping[str, Any]) -> dict[str, Any]:
+    """The exact fields the segmentation prompt shows for one turn."""
+    return {
+        key: turn.get(key)
+        for key in (
+            "turn_id", "idx", "speaker_label", "person_id", "start_s",
+            "end_s", "text",
+        )
+    }
+
+
+def _segmentation_units(projected_turns: Sequence[Mapping[str, Any]]) -> list[PlanUnit]:
+    """One PlanUnit per ordered cognitive turn, budgeted on its prompt slice.
+
+    ``ref_id`` is the durable ``turn_id`` and ``ts`` its ordinal, so windows carry
+    the temporal order the boundary contract depends on. ``content_digest`` covers
+    the exact fields shown to the model, so a corrected transcript keeping the same
+    id never resumes a stale boundary checkpoint.
+    """
+    units: list[PlanUnit] = []
+    for index, turn in enumerate(projected_turns):
+        slice_ = _segmentation_turn_projection(turn)
+        ref = str(turn.get("turn_id"))
+        tokens = estimate_tokens_for_text(
+            json.dumps(slice_, ensure_ascii=False, sort_keys=True, default=str)
+        ) + 24
+        units.append(
+            PlanUnit(
+                ref_id=ref,
+                tokens=tokens,
+                ts=str(turn.get("idx", index)),
+                content_digest=content_digest(slice_),
+            )
+        )
+    return units
+
+
+def normalize_window_segmentation(
+    output: Any,
+    window: PlannedWindow,
+    ordered_ids: Sequence[str],
+) -> list[dict[str, Any]] | None:
+    """Local, provenance-scoped boundary partition of ONE window's primary turns.
+
+    The model only ever sees/labels boundaries for this window's primary turns
+    (overlap turns are read-only context). We reconstruct the exact local
+    partition here: every emitted end must land on a primary turn, ends are
+    strictly ordered, and the final end is forced to the window's last primary
+    turn so windows abut with neither gap nor duplicate. Returning ``None`` marks
+    a contract failure so the executor subdivides/quarantines - never a text merge.
+    """
+    if not isinstance(output, Mapping) or not isinstance(output.get("segments"), list):
+        return None
+    position = {turn_id: index for index, turn_id in enumerate(ordered_ids)}
+    primary_ids = [unit.ref_id for unit in window.primary_units]
+    if not primary_ids or any(pid not in position for pid in primary_ids):
+        return None
+    primary_positions = [position[pid] for pid in primary_ids]
+    if primary_positions != list(range(primary_positions[0], primary_positions[-1] + 1)):
+        # plan_windows keeps primary units contiguous; a non-contiguous window is
+        # a planning invariant break, not something to repair by text.
+        return None
+    lo, hi = primary_positions[0], primary_positions[-1]
+    segments: list[dict[str, Any]] = []
+    next_start = lo
+    for expected_ordinal, raw in enumerate(output.get("segments") or []):
+        if not isinstance(raw, Mapping):
+            return None
+        end_id = str(raw.get("end_turn_id") or "")
+        if end_id not in position:
+            return None
+        end = position[end_id]
+        # A boundary can only end on one of THIS window's primary turns and must
+        # advance strictly. Anything else is the model straying into overlap
+        # context or repeating a boundary - reject rather than silently coerce.
+        if end < next_start or end > hi:
+            return None
+        title = str(raw.get("title_hint") or "").strip()
+        reason = str(raw.get("boundary_reason") or "").strip()
+        if not title or not reason:
+            return None
+        segments.append({
+            "end_turn_id": ordered_ids[end],
+            "title_hint": title,
+            "boundary_reason": reason,
+        })
+        next_start = end + 1
+    if not segments:
+        return None
+    # The window is a hard segment end: force the last local segment to close on
+    # the window's final primary turn so the next window starts exactly after it.
+    if segments[-1]["end_turn_id"] != ordered_ids[hi]:
+        segments[-1] = {**segments[-1], "end_turn_id": ordered_ids[hi]}
+    return segments
+
+
+def _run_segmentation_windows(
+    con: Any,
+    *,
+    units: Sequence[PlanUnit],
+    projected_turns: Sequence[Mapping[str, Any]],
+    ordered_ids: Sequence[str],
+    safe_prompt: Callable[[dict[str, Any]], str],
+    window_llm: Any,
+    model_budget: ModelBudget,
+    scope_person: str,
+    scope_date: str,
+    model_name: str,
+    overlap: int,
+    target_units: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Windowed pass 1: assemble a global contiguous partition BY CODE.
+
+    Each window emits boundaries only for its primary turns; the local partitions
+    are concatenated in window order (their end boundaries are strictly ordered
+    across the whole conversation because primary turns partition the order
+    exactly once). ``normalize_segmentation`` then rebuilds the exact global
+    membership from that ordered end list. Returns ``(segments, window_count)``.
+    """
+    by_id = {str(turn.get("turn_id")): turn for turn in projected_turns}
+
+    def _render(window: PlannedWindow) -> Mapping[str, Any]:
+        primary_ids = {unit.ref_id for unit in window.primary_units}
+        payload = {
+            "mission": _SEGMENTATION_MISSION,
+            "contract": {
+                "human_turn_ids": [unit.ref_id for unit in window.primary_units],
+                "context_only_turn_ids": [
+                    unit.ref_id for unit in window.units if unit.ref_id not in primary_ids
+                ],
+                "membership_rule": "exactly_once_contiguous_ordered",
+                "instruction": (
+                    "Ne place des frontières (end_turn_id) QUE pour les tours de "
+                    "human_turn_ids. Les tours context_only sont seulement du "
+                    "contexte de lecture: n'y place jamais de frontière. La "
+                    "dernière frontière est le dernier tour de human_turn_ids."
+                ),
+            },
+            "turns": [
+                {
+                    **_segmentation_turn_projection(by_id[unit.ref_id]),
+                    "window_role": (
+                        "primary_output" if unit.ref_id in primary_ids else "context_only"
+                    ),
+                }
+                for unit in window.units
+                if unit.ref_id in by_id
+            ],
+            "schema": SEGMENTATION_SCHEMA,
+        }
+        return {
+            "prompt": _render_lossless_prompt(safe_prompt, payload),
+            "schema_hint": SEGMENTATION_SCHEMA,
+            "format_schema": SEGMENTATION_FORMAT_SCHEMA,
+        }
+
+    def _normalize(output: Any, window: PlannedWindow) -> Any:
+        return normalize_window_segmentation(output, window, ordered_ids)
+
+    def _validate(output: Any) -> bool:
+        return isinstance(output, list) and bool(output)
+
+    def _decorate(output: Any, primary: Sequence[PlanUnit]) -> dict[str, Any]:
+        return {
+            "schema_version": "e64i.conversation.segmentation.window.v1",
+            "primary_refs": [unit.ref_id for unit in primary],
+            "segments": output,
+        }
+
+    scope = StageScope(
+        person_id=scope_person,
+        package_date=scope_date,
+        stage_name=SEGMENTATION_STAGE_NAME,
+        adapter_version=CONVERSATION_ADAPTER_VERSION,
+        prompt_version=SEGMENTATION_PROMPT_VERSION,
+        model=model_name,
+    )
+    stage = run_windows(
+        list(units),
+        con=con,
+        scope=scope,
+        llm=window_llm,
+        budget=model_budget,
+        render=lambda window_units: {"prompt": ""},
+        render_window=_render,
+        validate=_validate,
+        normalize_window_output=_normalize,
+        decorate_output=_decorate,
+        target_units=target_units,
+        overlap=overlap,
+        prompt_overhead_tokens=_segmentation_prompt_overhead(safe_prompt),
+        subdivide_on_length=True,
+    )
+    if not stage.all_completed:
+        raise ConversationEpisodeContractError(
+            "segmentation_windows_incomplete:"
+            f"quarantined={len(stage.quarantined)}:"
+            f"states={sorted({w.state for w in stage.windows})}"
+        )
+    window_keys = {w.window_key for w in stage.windows}
+    persisted = cp.load_outputs(
+        con,
+        person_id=scope_person,
+        package_date=scope_date,
+        stage_name=SEGMENTATION_STAGE_NAME,
+        window_keys=window_keys,
+    )
+    # Reassemble by PROVENANCE, not by window_index: recursive subdivision remaps
+    # child indices (parent*1000+i), which can collide across windows and is
+    # therefore unsafe to sort on. Every emitted end lands on a primary turn and
+    # primaries partition the order exactly once, so sorting the ends by their
+    # global turn position yields the exact, unambiguous global order.
+    position = {turn_id: index for index, turn_id in enumerate(ordered_ids)}
+    end_records: list[dict[str, Any]] = []
+    for row in persisted:
+        envelope = row.get("output") if isinstance(row, dict) else None
+        local = envelope.get("segments") if isinstance(envelope, dict) else None
+        if isinstance(local, list):
+            end_records.extend(local)
+    end_records.sort(key=lambda record: position.get(str(record.get("end_turn_id")), -1))
+    # Rebuild the exact global membership from the ordered end boundaries.
+    global_output = {
+        "segments": [
+            {
+                "ordinal": ordinal,
+                "title_hint": record["title_hint"],
+                "end_turn_id": record["end_turn_id"],
+                "boundary_reason": record["boundary_reason"],
+            }
+            for ordinal, record in enumerate(end_records)
+        ],
+        "missing_context": [],
+    }
+    cognitive_view = [{"turn_id": turn_id} for turn_id in ordered_ids]
+    segments = normalize_segmentation(global_output, cognitive_view)
+    return segments, len(stage.windows)
+
+
+def _segmentation_prompt_overhead(safe_prompt: Callable[[dict[str, Any]], str]) -> int:
+    """Fixed prompt scaffolding cost for one empty segmentation window."""
+    return estimate_tokens_for_text(
+        safe_prompt({
+            "mission": _SEGMENTATION_MISSION,
+            "contract": {
+                "human_turn_ids": [],
+                "context_only_turn_ids": [],
+                "membership_rule": "exactly_once_contiguous_ordered",
+                "instruction": "",
+            },
+            "turns": [],
+            "schema": SEGMENTATION_SCHEMA,
+        })
+    )
+
+
+def _detail_units(
+    segments: Sequence[Mapping[str, Any]],
+    by_id: Mapping[str, Mapping[str, Any]],
+) -> list[PlanUnit]:
+    """One PlanUnit per LOCKED segment - a segment is never split across a batch."""
+    units: list[PlanUnit] = []
+    for segment in segments:
+        turns = [by_id[turn_id] for turn_id in segment["turn_ids"]]
+        payload = {**dict(segment), "turns": turns}
+        tokens = estimate_tokens_for_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        ) + 32
+        units.append(
+            PlanUnit(
+                ref_id=f"seg{int(segment['ordinal'])}",
+                tokens=tokens,
+                ts=str(int(segment["ordinal"])),
+                content_digest=content_digest(payload),
+            )
+        )
+    return units
+
+
+def _run_detail_windows(
+    con: Any,
+    *,
+    detail_units: Sequence[PlanUnit],
+    segments: Sequence[Mapping[str, Any]],
+    by_id: Mapping[str, Mapping[str, Any]],
+    conversation: Mapping[str, Any],
+    sensor_context: Sequence[Mapping[str, Any]],
+    safe_prompt: Callable[[dict[str, Any]], str],
+    window_llm: Any,
+    model_budget: ModelBudget,
+    scope_person: str,
+    scope_date: str,
+    model_name: str,
+    output_budget: int,
+) -> dict[str, Any]:
+    """Windowed pass 2: detail LOCKED segments in bounded batches of whole segments.
+
+    A batch = N entire segments whose combined tokens fit the budget; a segment is
+    never cut in two. Each batch reuses the unchanged v6 detail prompt/schema over
+    its own segments. Per-batch outputs are combined into the single parent by
+    ordinal via ``combine_segment_details`` (no text merge).
+    """
+    seg_by_ref = {f"seg{int(seg['ordinal'])}": seg for seg in segments}
+
+    def _batch_segments(window: PlannedWindow) -> list[Mapping[str, Any]]:
+        return [seg_by_ref[unit.ref_id] for unit in window.primary_units if unit.ref_id in seg_by_ref]
+
+    def _render(window: PlannedWindow) -> Mapping[str, Any]:
+        batch = _batch_segments(window)
+        payload = {
+            "mission": _DETAIL_MISSION,
+            "conversation": dict(conversation or {}),
+            "segments": [
+                {
+                    **dict(segment),
+                    "turns": [by_id[turn_id] for turn_id in segment["turn_ids"]],
+                }
+                for segment in batch
+            ],
+            "sensor_context": list(sensor_context),
+            "schema": SUBTHEME_DETAIL_SCHEMA,
+        }
+        return {
+            "prompt": _render_lossless_prompt(safe_prompt, payload),
+            "schema_hint": SUBTHEME_DETAIL_SCHEMA,
+            "format_schema": SUBTHEME_DETAIL_FORMAT_SCHEMA,
+        }
+
+    def _normalize(output: Any, window: PlannedWindow) -> Any:
+        # Validate cardinality/ordinals against ONLY this batch's segments, but
+        # keep each detail's ordinal so batches reassemble by provenance. The
+        # authoritative membership attachment stays in the final
+        # ``combine_segment_details`` over ALL locked segments. The per-batch
+        # parent fields are carried through so the conversation-opening batch can
+        # anchor the single parent (never a text merge across batches).
+        if not isinstance(output, Mapping) or not isinstance(
+            output.get("conversation_episode"), Mapping
+        ):
+            return None
+        batch = _batch_segments(window)
+        parent = output["conversation_episode"]
+        details = parent.get("subthemes")
+        if not isinstance(details, list) or len(details) != len(batch):
+            return None
+        expected_ordinals = {int(seg["ordinal"]) for seg in batch}
+        seen: set[int] = set()
+        kept: list[dict[str, Any]] = []
+        for detail in details:
+            if not isinstance(detail, Mapping):
+                return None
+            try:
+                ordinal = int(detail.get("ordinal"))
+            except (TypeError, ValueError):
+                return None
+            if ordinal not in expected_ordinals or ordinal in seen:
+                return None
+            seen.add(ordinal)
+            kept.append(dict(detail))
+        return {
+            "min_ordinal": min(expected_ordinals),
+            "parent": {
+                key: parent.get(key)
+                for key in ("title", "situation_summary", "participants", "location", "channel", "confidence")
+            },
+            "subthemes": kept,
+            "missing_context": list(output.get("missing_context") or []),
+        }
+
+    def _validate(output: Any) -> bool:
+        return (
+            isinstance(output, Mapping)
+            and isinstance(output.get("subthemes"), list)
+            and bool(output["subthemes"])
+        )
+
+    def _decorate(output: Any, primary: Sequence[PlanUnit]) -> dict[str, Any]:
+        return {
+            "schema_version": "e64i.conversation.detail.window.v1",
+            "primary_refs": [unit.ref_id for unit in primary],
+            **output,
+        }
+
+    scope = StageScope(
+        person_id=scope_person,
+        package_date=scope_date,
+        stage_name=DETAIL_STAGE_NAME,
+        adapter_version=CONVERSATION_ADAPTER_VERSION,
+        prompt_version=DETAIL_PROMPT_VERSION,
+        model=model_name,
+    )
+    stage = run_windows(
+        list(detail_units),
+        con=con,
+        scope=scope,
+        llm=window_llm,
+        budget=model_budget,
+        render=lambda window_units: {"prompt": ""},
+        render_window=_render,
+        validate=_validate,
+        normalize_window_output=_normalize,
+        decorate_output=_decorate,
+        # One segment per unit; batches close on the token budget, never a fixed
+        # count, and a single oversized segment gets its own (possibly quarantined)
+        # window rather than being split.
+        target_units=max(1, len(detail_units)),
+        overlap=0,
+        prompt_overhead_tokens=_detail_prompt_overhead(safe_prompt, conversation),
+        subdivide_on_length=True,
+    )
+    if not stage.all_completed:
+        raise ConversationEpisodeContractError(
+            "detail_windows_incomplete:"
+            f"quarantined={len(stage.quarantined)}:"
+            f"states={sorted({w.state for w in stage.windows})}"
+        )
+    window_keys = {w.window_key for w in stage.windows}
+    persisted = cp.load_outputs(
+        con,
+        person_id=scope_person,
+        package_date=scope_date,
+        stage_name=DETAIL_STAGE_NAME,
+        window_keys=window_keys,
+    )
+    subthemes_by_ordinal: dict[int, Mapping[str, Any]] = {}
+    anchor_parent: dict[str, Any] | None = None
+    anchor_min = None
+    participants_union: list[str] = []
+    missing_union: list[Any] = []
+    for row in persisted:
+        envelope = row.get("output") if isinstance(row, dict) else None
+        if not isinstance(envelope, dict):
+            continue
+        batch_subthemes = envelope.get("subthemes")
+        if isinstance(batch_subthemes, list):
+            for detail in batch_subthemes:
+                if isinstance(detail, Mapping) and "ordinal" in detail:
+                    subthemes_by_ordinal[int(detail["ordinal"])] = detail
+        parent = envelope.get("parent")
+        if isinstance(parent, Mapping):
+            participants_union.extend(_unique_strings(parent.get("participants")))
+            # Anchor the single parent on the batch that opens the conversation
+            # (lowest ordinal, i.e. contains segment 0), by provenance not text.
+            batch_min = envelope.get("min_ordinal")
+            if isinstance(batch_min, int) and (anchor_min is None or batch_min < anchor_min):
+                anchor_min = batch_min
+                anchor_parent = dict(parent)
+        missing_union.extend(list(envelope.get("missing_context") or []))
+    ordered_details = [
+        subthemes_by_ordinal[int(segment["ordinal"])]
+        for segment in segments
+        if int(segment["ordinal"]) in subthemes_by_ordinal
+    ]
+    parent_fields = anchor_parent or {}
+    detail_output = {
+        "conversation_episode": {
+            "title": parent_fields.get("title") or "",
+            "situation_summary": parent_fields.get("situation_summary") or "",
+            "participants": list(dict.fromkeys(participants_union)),
+            "location": parent_fields.get("location"),
+            "channel": parent_fields.get("channel"),
+            "confidence": parent_fields.get("confidence", 0.0),
+            "subthemes": ordered_details,
+        },
+        "missing_context": list(dict.fromkeys([str(m) for m in missing_union if m is not None])),
+    }
+    return combine_segment_details(detail_output, segments)
+
+
+def _detail_prompt_overhead(
+    safe_prompt: Callable[[dict[str, Any]], str],
+    conversation: Mapping[str, Any],
+) -> int:
+    """Fixed prompt scaffolding cost for one empty detail batch."""
+    return estimate_tokens_for_text(
+        safe_prompt({
+            "mission": _DETAIL_MISSION,
+            "conversation": dict(conversation or {}),
+            "segments": [],
+            "sensor_context": [],
+            "schema": SUBTHEME_DETAIL_SCHEMA,
+        })
+    )
+
+
 def build_conversation_episode_v6(
     con: Any,
     conversation_id: str,
@@ -581,12 +1097,19 @@ def build_conversation_episode_v6(
     window_llm: Any | None = None,
     input_budget: int | None = None,
     output_budget: int | None = None,
+    person_id: str | None = None,
+    package_date: str | None = None,
 ) -> dict[str, Any]:
-    """Execute boundary detection then semantic detail as two bounded calls.
+    """Execute boundary detection then semantic detail as bounded calls.
 
-    Oversized conversations fail before inference.  Windowed subtheme fragments
-    are the next I1.3 increment; silently falling back to lossy prompt compaction
-    would make the timing prototype meaningless.
+    When the complete compacted projection fits the input budget the historic
+    two-call path is used UNCHANGED (identical prompts and schemas). When either
+    pass would exceed the model context, the E64 orchestrator windows that pass
+    over token-aware windows of the ORDERED turns/segments: boundaries are emitted
+    per primary window and reassembled into one gap-free partition BY CODE, and
+    locked segments are detailed in bounded batches of whole segments. Every
+    window is checkpointed via ``run_windows`` so a resume repays none of them.
+    There is no silent v5 fallback: any failure is an explicit, retryable error.
     """
     turns = list(bundle.get("turns") or [])
     cognitive_turns, sensor_turns = _partition_cognitive_and_sensor_turns(turns)
@@ -630,43 +1153,91 @@ def build_conversation_episode_v6(
             context = 16384
         input_budget = max(1000, context - int(output_budget) - 768)
     segmentation_tokens = estimate_tokens_for_text(segmentation_prompt)
-    if segmentation_tokens > int(input_budget):
-        raise ConversationEpisodeContractError(
-            f"input_budget_exceeded:{segmentation_tokens}>{int(input_budget)}"
-        )
 
     injected_llm = window_llm
+    timeout = None
     if injected_llm is None:
         try:
             timeout = float(os.environ.get("MLOMEGA_V13_ENGINE_TIMEOUT", "180"))
         except ValueError:
             timeout = 180.0
-        segmentation_llm = OllamaWindowLLM(
+    # Owner/day scope the durable checkpoint rows. Windows never repay on resume.
+    # Windowing is only attempted when the production caller supplies an owner and
+    # a package date: those are the checkpoint scope the durable resume needs. A
+    # caller that omits them keeps the historic fail-closed contract (an oversized
+    # conversation raises ``input_budget_exceeded`` before any inference) instead
+    # of silently degrading to an un-resumable run.
+    can_window = person_id is not None and package_date is not None
+    scope_person = str(person_id or "unknown_owner")
+    scope_date = str(package_date or conversation_id)
+    model_name = str(getattr(injected_llm, "model", None) or "ollama-json")
+    model_budget = ModelBudget(
+        context_window=int(input_budget) + int(output_budget) + 768,
+        output_reserve=int(output_budget),
+        safety_margin=768,
+    )
+    by_id = {str(turn.get("turn_id")): turn for turn in projected_turns}
+    ordered_ids = [str(turn.get("turn_id")) for turn in projected_turns]
+
+    started = time.perf_counter()
+    windowed_segmentation = 0
+    windowed_detail = 0
+
+    # ---- Pass 1: segmentation (single call if it fits, else windowed) ----
+    if segmentation_tokens <= int(input_budget):
+        if injected_llm is None:
+            segmentation_llm = OllamaWindowLLM(
+                system=system,
+                schema_hint=SEGMENTATION_SCHEMA,
+                format_schema=SEGMENTATION_FORMAT_SCHEMA,
+                timeout=timeout,
+            )
+        else:
+            segmentation_llm = injected_llm
+        segmentation_result = segmentation_llm.generate(
+            {
+                "prompt": segmentation_prompt,
+                "schema_hint": SEGMENTATION_SCHEMA,
+                "format_schema": SEGMENTATION_FORMAT_SCHEMA,
+            },
+            output_budget=min(1536, int(output_budget)),
+        )
+        if not getattr(segmentation_result, "ok", False):
+            raise ConversationEpisodeContractError(
+                "segmentation_llm_failed:"
+                f"{getattr(segmentation_result, 'error_kind', None)}:"
+                f"{getattr(segmentation_result, 'finish_reason', None)}"
+            )
+        segments = normalize_segmentation(segmentation_result.data, cognitive_turns)
+        segmentation_calls = 1
+    elif not can_window:
+        raise ConversationEpisodeContractError(
+            f"input_budget_exceeded:{segmentation_tokens}>{int(input_budget)}"
+        )
+    else:
+        seg_llm = injected_llm or OllamaWindowLLM(
             system=system,
             schema_hint=SEGMENTATION_SCHEMA,
             format_schema=SEGMENTATION_FORMAT_SCHEMA,
             timeout=timeout,
         )
-    else:
-        segmentation_llm = injected_llm
-    started = time.perf_counter()
-    segmentation_result = segmentation_llm.generate(
-        {
-            "prompt": segmentation_prompt,
-            "schema_hint": SEGMENTATION_SCHEMA,
-            "format_schema": SEGMENTATION_FORMAT_SCHEMA,
-        },
-        output_budget=min(1536, int(output_budget)),
-    )
-    if not getattr(segmentation_result, "ok", False):
-        raise ConversationEpisodeContractError(
-            "segmentation_llm_failed:"
-            f"{getattr(segmentation_result, 'error_kind', None)}:"
-            f"{getattr(segmentation_result, 'finish_reason', None)}"
+        segments, windowed_segmentation = _run_segmentation_windows(
+            con,
+            units=_segmentation_units(projected_turns),
+            projected_turns=projected_turns,
+            ordered_ids=ordered_ids,
+            safe_prompt=safe_prompt,
+            window_llm=seg_llm,
+            model_budget=model_budget,
+            scope_person=scope_person,
+            scope_date=scope_date,
+            model_name=model_name,
+            overlap=_conversation_overlap(),
+            target_units=_conversation_target_turns(),
         )
-    segments = normalize_segmentation(segmentation_result.data, cognitive_turns)
+        segmentation_calls = windowed_segmentation
 
-    by_id = {str(turn.get("turn_id")): turn for turn in projected_turns}
+    # ---- Pass 2: detail (single call if it fits, else batched) ----
     detail_payload = {
         "mission": _DETAIL_MISSION,
         "conversation": dict(bundle.get("conversation") or {}),
@@ -682,35 +1253,64 @@ def build_conversation_episode_v6(
     }
     detail_prompt = _render_lossless_prompt(safe_prompt, detail_payload)
     detail_tokens = estimate_tokens_for_text(detail_prompt)
-    if detail_tokens > int(input_budget):
+    if detail_tokens <= int(input_budget):
+        if injected_llm is None:
+            detail_llm = OllamaWindowLLM(
+                system=system,
+                schema_hint=SUBTHEME_DETAIL_SCHEMA,
+                format_schema=SUBTHEME_DETAIL_FORMAT_SCHEMA,
+                timeout=timeout,
+            )
+        else:
+            detail_llm = injected_llm
+        detail_result = detail_llm.generate(
+            {
+                "prompt": detail_prompt,
+                "schema_hint": SUBTHEME_DETAIL_SCHEMA,
+                "format_schema": SUBTHEME_DETAIL_FORMAT_SCHEMA,
+            },
+            output_budget=int(output_budget),
+        )
+        if not getattr(detail_result, "ok", False):
+            raise ConversationEpisodeContractError(
+                "detail_llm_failed:"
+                f"{getattr(detail_result, 'error_kind', None)}:"
+                f"{getattr(detail_result, 'finish_reason', None)}"
+            )
+        combined = combine_segment_details(detail_result.data, segments)
+        detail_calls = 1
+    elif not can_window:
         raise ConversationEpisodeContractError(
             f"input_budget_exceeded:{detail_tokens}>{int(input_budget)}"
         )
-    if injected_llm is None:
-        detail_llm = OllamaWindowLLM(
+    else:
+        detail_llm = injected_llm or OllamaWindowLLM(
             system=system,
             schema_hint=SUBTHEME_DETAIL_SCHEMA,
             format_schema=SUBTHEME_DETAIL_FORMAT_SCHEMA,
             timeout=timeout,
         )
-    else:
-        detail_llm = injected_llm
-    detail_result = detail_llm.generate(
-        {
-            "prompt": detail_prompt,
-            "schema_hint": SUBTHEME_DETAIL_SCHEMA,
-            "format_schema": SUBTHEME_DETAIL_FORMAT_SCHEMA,
-        },
-        output_budget=int(output_budget),
-    )
-    elapsed = time.perf_counter() - started
-    if not getattr(detail_result, "ok", False):
-        raise ConversationEpisodeContractError(
-            "detail_llm_failed:"
-            f"{getattr(detail_result, 'error_kind', None)}:"
-            f"{getattr(detail_result, 'finish_reason', None)}"
+        combined = _run_detail_windows(
+            con,
+            detail_units=_detail_units(segments, by_id),
+            segments=segments,
+            by_id=by_id,
+            conversation=dict(bundle.get("conversation") or {}),
+            sensor_context=sensor_context,
+            safe_prompt=safe_prompt,
+            window_llm=detail_llm,
+            model_budget=model_budget,
+            scope_person=scope_person,
+            scope_date=scope_date,
+            model_name=model_name,
+            output_budget=int(output_budget),
         )
-    combined = combine_segment_details(detail_result.data, segments)
+        # Batch count is not re-derivable without the planner; report the number
+        # of durable detail windows for the current run's checkpoint scope.
+        windowed_detail = len(_detail_units(segments, by_id))
+        detail_calls = windowed_detail
+
+    elapsed = time.perf_counter() - started
     normalized = normalize_conversation_episode(combined, cognitive_turns)
     normalized["missing_context"] = list(dict.fromkeys([
         *normalized.get("missing_context", []),
@@ -720,7 +1320,11 @@ def build_conversation_episode_v6(
     return {
         "episodes": count,
         "subthemes": len(normalized["episodes"][0]["subthemes"]),
-        "calls": 2,
+        "calls": segmentation_calls + detail_calls,
+        "segmentation_calls": segmentation_calls,
+        "detail_calls": detail_calls,
+        "windowed_segmentation": windowed_segmentation,
+        "windowed_detail": windowed_detail,
         "input_tokens": segmentation_tokens + detail_tokens,
         "segmentation_input_tokens": segmentation_tokens,
         "detail_input_tokens": detail_tokens,
