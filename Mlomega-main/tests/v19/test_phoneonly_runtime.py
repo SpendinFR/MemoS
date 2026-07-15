@@ -111,12 +111,36 @@ def test_runtime_starts_pipeline_audio_and_explicit_close_day_once():
         )
         await rt.start()
         assert rt.pipeline.init_kwargs["enable_help_mode"] is True
+        assert rt.pipeline.init_kwargs["enable_live_discourse"] is False
+        assert rt.pipeline.init_kwargs["defer_fine_intel"] is True
         rt.ingress.on_audio_chunk(np.zeros(480, dtype=np.int16), 48000)
         first = await rt.end_and_close_day()
         second = await rt.end_and_close_day()
         assert rt.pipeline.end_calls == 1
         assert first["end_session"] == second["end_session"] == "completed"
         assert close_calls == [{"person_id": "owner", "live_session_id": "brainlive-real-1"}]
+
+    asyncio.run(scenario())
+
+
+def test_deferred_semantics_runs_after_end_before_close_day():
+    order = []
+
+    class DeferredPipeline(FakePipeline):
+        def drain_deferred_semantics(self):
+            order.append("deferred_semantics")
+            return {"status": "completed", "remaining": 0, "model_calls": 1}
+
+    async def scenario():
+        rt = runtime_mod.PhoneOnlyRuntime(
+            "transport-deferred",
+            ingress_factory=FakeIngress,
+            pipeline_factory=DeferredPipeline,
+            close_day=lambda **_: order.append("close_day") or {"status": "completed"},
+        )
+        await rt.end_and_close_day()
+        assert order == ["deferred_semantics", "close_day"]
+        assert rt.status()["deferred_semantics"] == "completed"
 
     asyncio.run(scenario())
 

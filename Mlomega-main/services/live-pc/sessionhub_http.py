@@ -57,8 +57,20 @@ from typing import Any, Callable
 # Resolve the monorepo root so ``packages`` / sibling live-pc modules import
 # whether launched as a script or loaded via importlib in tests.
 _ROOT = Path(__file__).resolve().parents[2]
-if str(_ROOT) not in sys.path:
-    sys.path.insert(0, str(_ROOT))
+_SRC = _ROOT / "src"
+for _path in (_ROOT, _SRC):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+
+from mlomega_audio_elite.runtime_environment_v19 import (
+    configure_windows_cuda_dlls,
+    sanitize_blackhole_proxy_env,
+)
+
+_REMOVED_BLACKHOLE_PROXIES = sanitize_blackhole_proxy_env()
+_CUDA_ENV_OK, _CUDA_ENV_DETAIL = configure_windows_cuda_dlls(_ROOT)
+if not _CUDA_ENV_OK:
+    raise RuntimeError(f"SessionHub CUDA/cuDNN environment invalid: {_CUDA_ENV_DETAIL}")
 
 # ``sessionhub`` and ``gateway`` are sibling files in this non-package directory;
 # load them by path so this module works under both plain execution and the
@@ -196,16 +208,17 @@ def _url_ready(url: str, *, timeout: float = 0.5) -> tuple[bool, str]:
 
 
 def _ollama_models_ready(*, timeout: float = 0.8) -> tuple[bool, Any]:
-    required: list[str] = []
-    try:
-        import yaml
-
-        manifest = yaml.safe_load((_ROOT / "configs" / "MODEL_MANIFEST.yaml").read_text(encoding="utf-8")) or {}
-        for spec in (manifest.get("models") or {}).values():
-            if isinstance(spec, dict) and spec.get("provider") == "ollama" and spec.get("default"):
-                required.append(str(spec["default"]))
-    except Exception:
-        required = []
+    backend = os.environ.get("MLOMEGA_LLM_BACKEND", "ollama").strip().lower()
+    required = [
+        os.environ.get("MLOMEGA_OLLAMA_LIVE_MODEL", "qwen3.5:4b"),
+        os.environ.get("MLOMEGA_VLM_MODEL", "moondream"),
+        os.environ.get("MLOMEGA_OFFLINE_VLM_MODEL")
+        or os.environ.get("MLOMEGA_VLM_HEAVY_MODEL")
+        or "qwen3-vl:8b",
+    ]
+    if backend == "ollama":
+        required.append(os.environ.get("MLOMEGA_OLLAMA_MODEL", "qwen3.5:9b"))
+    required = list(dict.fromkeys(str(value).strip() for value in required if str(value).strip()))
     try:
         with urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=timeout) as response:  # noqa: S310
             payload = json.loads(response.read().decode("utf-8"))
@@ -213,10 +226,19 @@ def _ollama_models_ready(*, timeout: float = 0.8) -> tuple[bool, Any]:
             str(item.get("name") or item.get("model"))
             for item in (payload.get("models") or []) if isinstance(item, dict)
         }
-        missing = [name for name in required if name not in installed]
-        return not missing, {"required": required, "installed": sorted(installed), "missing": missing}
+        def present(name: str) -> bool:
+            return name in installed or (":" not in name and f"{name}:latest" in installed)
+
+        missing = [name for name in required if not present(name)]
+        return not missing, {
+            "backend": backend, "required": required, "installed": sorted(installed), "missing": missing,
+            "fix": ("ollama pull " + " ; ollama pull ".join(missing)) if missing else None,
+        }
     except Exception as exc:
-        return False, {"required": required, "error": type(exc).__name__}
+        return False, {
+            "backend": backend, "required": required, "error": type(exc).__name__,
+            "fix": "Demarre Ollama avant FirstTry (meme avec llama.cpp: le live et les VLM utilisent Ollama).",
+        }
 
 
 def _probe_ai_chain(*, person_id: str = "me", deep: bool = False) -> dict[str, Any]:
@@ -251,7 +273,7 @@ def _probe_ai_chain(*, person_id: str = "me", deep: bool = False) -> dict[str, A
                 env=os.environ.copy(),
                 capture_output=True,
                 text=True,
-                timeout=45,
+                timeout=float(os.environ.get("MLOMEGA_PREFLIGHT_TIMEOUT_S", "600")),
                 check=False,
             )
             raw = (proc.stdout or "").strip().splitlines()

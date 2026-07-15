@@ -287,12 +287,34 @@ class HypothesisEngine:
         or None when no present person is named. Updates the rolling speaker memory
         used by the heuristic.
         """
-        self.metrics["turns_seen"] += 1
         text = (text or "").strip()
-        # Update rolling speaker memory BEFORE resolving the addressee: the current
-        # turn's speaker becomes "previous" for the NEXT turn.
-        prev_speaker = self._last_speaker_entity
         signal = self._extract_addressed_name(text) if text else None
+        return self.apply_addressed_name_signal(
+            signal,
+            session=session,
+            speaker_entity=speaker_entity,
+            present_person_entities=present_person_entities,
+        )
+
+    def apply_addressed_name_signal(
+        self,
+        signal: Mapping[str, Any] | None,
+        *,
+        session: str,
+        speaker_entity: str | None = None,
+        present_person_entities: Sequence[str] | None = None,
+        evidence_ref: str | None = None,
+    ) -> Hypothesis | None:
+        """Apply an already-extracted signal without paying another LLM call.
+
+        The live semantic batcher uses this boundary to extract several turns in
+        one bounded request.  ``note_turn`` remains the backwards-compatible
+        one-turn API used by isolated callers/tests.
+        """
+        self.metrics["turns_seen"] += 1
+        # Resolve against the speaker state that preceded this turn, then advance
+        # the rolling state below for the next ordered signal in the batch.
+        prev_speaker = self._last_speaker_entity
         result: Hypothesis | None = None
         if signal and signal.get("addressed") and _norm_value(signal.get("name")):
             self.metrics["signals_extracted"] += 1
@@ -308,7 +330,7 @@ class HypothesisEngine:
                     entity_id=entity, attr_type="name",
                     value=_norm_value(signal.get("name")), source="heard",
                     session=session, confidence=conf,
-                    evidence_ref=f"turn:{session}",
+                    evidence_ref=evidence_ref or f"turn:{session}",
                 )
         # advance speaker memory
         if speaker_entity is not None:
@@ -405,6 +427,14 @@ class HypothesisEngine:
             )
             self.hypotheses[key] = h
         if h.status == "broken":
+            return h
+        if evidence_ref and str(evidence_ref).startswith("brainlive_turn:") and any(
+            o.session == session and o.source == source and o.evidence_ref == evidence_ref
+            for o in h.occurrences
+        ):
+            # A durable semantic job may be replayed after a crash between the
+            # historical writer and its queue checkpoint.  The source-addressed
+            # observation is one logical fact, never another occurrence.
             return h
         h.occurrences.append(Observation(
             session=session, source=source, confidence=float(confidence),

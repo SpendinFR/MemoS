@@ -171,6 +171,18 @@ def _run_close_day_subprocess(
     package_date: str | None = None,
     db_path: Any = None,
 ) -> dict[str, Any]:
+    src = ROOT / "src"
+    if str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+    from mlomega_audio_elite.runtime_environment_v19 import (
+        configure_windows_cuda_dlls,
+        sanitize_blackhole_proxy_env,
+    )
+
+    sanitize_blackhole_proxy_env()
+    cuda_ok, cuda_detail = configure_windows_cuda_dlls(ROOT)
+    if not cuda_ok:
+        raise RuntimeError(f"CloseDay CUDA/cuDNN environment invalid: {cuda_detail}")
     python = ROOT / ".venv" / "Scripts" / "python.exe"
     if not python.exists():
         raise RuntimeError(f"core Python environment missing: {python}")
@@ -355,7 +367,12 @@ class PhoneOnlyRuntime:
         keyframe_sink = None
         live_session_id: str | None = None
         if product_pipeline:
-            conversation = live_pipeline.conversation_bridge.ConversationBridge(person_id=person_id)
+            conversation = live_pipeline.conversation_bridge.ConversationBridge(
+                person_id=person_id,
+                # Durable ingestion must never execute the LLM hot loop inline.
+                # The runtime schedules one bounded background cycle instead.
+                run_hot_cycle=False,
+            )
             live_session_id = conversation.ensure_session()
             keyframe_sink = live_pipeline.visionrt.default_keyframe_sink(
                 person_id=person_id, live_session_id=live_session_id, db_path=db_path
@@ -421,10 +438,18 @@ class PhoneOnlyRuntime:
             "enable_identity": True,
             "enable_intents": True,
             "enable_proactivity": True,
+            # The core microscope/global discourse pass already belongs to the
+            # nightly import. Running it live monopolised the single local-LLM
+            # slot and starved durable BrainLive turn ingestion.
+            "enable_live_discourse": False,
             "enable_replay": True,
             "enable_tts": True,
             "enable_stranger_profiles": True,
             "enable_fine_intel": True,
+            # E38 name/fact extraction is persisted per turn then paid once per
+            # bounded batch by the asynchronous CloseDay job, never in the audio
+            # drain barrier.
+            "defer_fine_intel": True,
             "enable_help_mode": True,
         }
         if product_pipeline:
@@ -447,11 +472,14 @@ class PhoneOnlyRuntime:
             self.ingress.on_datachannel_open = self._on_datachannel_open
         self.video_task: asyncio.Task[Any] | None = None
         self.delivery_task: asyncio.Task[Any] | None = None
+        self.hot_cycle_task: asyncio.Task[Any] | None = None
         self.ended = False
         self.close_day_started = False
         self.close_day_status = "not_started"
         self.close_day_result: dict[str, Any] = {}
         self.close_day_maintenance_status = "not_started"
+        self.deferred_semantic_status = "not_started"
+        self.deferred_semantic_result: dict[str, Any] = {}
         self.end_status = "active"
         self._end_lock = asyncio.Lock()
         self._delivery_lock = asyncio.Lock()
@@ -477,6 +505,7 @@ class PhoneOnlyRuntime:
         while not self.ended:
             try:
                 self._update_degraded_health()
+                self._schedule_hot_cycle()
                 await self._dispatch_deliveries()
             except ConnectionError:
                 pass
@@ -485,6 +514,27 @@ class PhoneOnlyRuntime:
             except Exception as exc:
                 self.recent_errors.append(str(exc)[:500])
             await asyncio.sleep(0.5)
+
+    def _schedule_hot_cycle(self) -> None:
+        if self.end_status != "active":
+            return
+        conversation = getattr(self.pipeline, "conversation", None)
+        if conversation is None or not hasattr(conversation, "tick_pending"):
+            return
+        task = self.hot_cycle_task
+        if task is not None:
+            if not task.done():
+                return
+            try:
+                task.result()
+            except Exception as exc:
+                self.recent_errors.append(("hot_cycle: " + str(exc))[:500])
+            self.hot_cycle_task = None
+        if hasattr(conversation, "pending_hot_turns") and conversation.pending_hot_turns() <= 0:
+            return
+        self.hot_cycle_task = asyncio.create_task(
+            asyncio.to_thread(conversation.tick_pending)
+        )
 
     def _update_degraded_health(self) -> None:
         if not hasattr(self.pipeline, "update_degraded"):
@@ -686,10 +736,32 @@ class PhoneOnlyRuntime:
         self.close_day_started = True
         self.close_day_status = "running"
         try:
+            # A cycle already started during capture may still own the single
+            # local-LLM slot.  Wait in the asynchronous CloseDay job, never in the
+            # `/session/end` raw-turn barrier, before starting another model call.
+            if self.hot_cycle_task is not None:
+                try:
+                    await self.hot_cycle_task
+                except Exception as exc:
+                    self.recent_errors.append(("hot_cycle: " + str(exc))[:500])
+                finally:
+                    self.hot_cycle_task = None
+            if hasattr(self.pipeline, "drain_deferred_semantics"):
+                self.deferred_semantic_status = "running"
+                semantic = await asyncio.to_thread(self.pipeline.drain_deferred_semantics)
+                self.deferred_semantic_result = dict(semantic or {})
+                self.deferred_semantic_status = str(
+                    (semantic or {}).get("status") or "completed"
+                )
+                if self.deferred_semantic_status not in {"completed", "not_applicable"}:
+                    raise RuntimeError(
+                        f"deferred semantics incomplete: {self.deferred_semantic_result}"
+                    )
             result = await asyncio.to_thread(
                 self._run_close_day, person_id=self.person_id, live_session_id=self.live_session_id,
             )
             self.close_day_result = dict(result or {})
+            self.close_day_result["deferred_semantics"] = dict(self.deferred_semantic_result)
             self.close_day_status = str((result or {}).get("status") or "completed")
             if self._product_pipeline and self.live_session_id:
                 await asyncio.to_thread(
@@ -712,6 +784,8 @@ class PhoneOnlyRuntime:
             self.recent_errors.append(str(exc)[:500])
             self.close_day_status = "error"
             self.close_day_maintenance_status = "not_run"
+            if self.deferred_semantic_status == "running":
+                self.deferred_semantic_status = "error"
             if self._product_pipeline and self.live_session_id:
                 try:
                     await asyncio.to_thread(
@@ -783,6 +857,7 @@ class PhoneOnlyRuntime:
                 "end_session": self.end_status,
                 "close_day": self.close_day_status,
                 "close_day_maintenance": self.close_day_maintenance_status,
+                "deferred_semantics": self.deferred_semantic_status,
                 "recent_errors": list(self.recent_errors),
                 "ui_intents_delivered": len(self.delivery_adapter.renderer.sent),
                 "clip_recording": dict(self.clip_metrics) if self.clip_metrics else (

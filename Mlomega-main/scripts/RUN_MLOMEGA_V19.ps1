@@ -51,18 +51,70 @@ function Import-DotEnv {
   }
 }
 
+function Remove-KnownBlackholeProxy {
+  foreach ($name in @("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")) {
+    $value = [Environment]::GetEnvironmentVariable($name, "Process")
+    if ([string]::IsNullOrWhiteSpace($value)) { continue }
+    $candidate = $value
+    if (-not $candidate.Contains("://")) { $candidate = "http://$candidate" }
+    try {
+      $uri = [Uri]$candidate
+      if (($uri.Host -in @("127.0.0.1", "localhost", "::1")) -and $uri.Port -eq 9) {
+        [Environment]::SetEnvironmentVariable($name, $null, "Process")
+        Write-Host "[WARN] Proxy black-hole $name retire avant FirstTry." -ForegroundColor Yellow
+      }
+    }
+    catch {
+      # Le preflight Python donnera le diagnostic guide et bloquera proprement.
+    }
+  }
+}
+
+function Initialize-CoreCudaPath {
+  $directories = New-Object System.Collections.Generic.List[string]
+  foreach ($venv in @(".venv", ".venv-live")) {
+    foreach ($relative in @(
+      "Lib\site-packages\nvidia\cudnn\bin",
+      "Lib\site-packages\nvidia\cublas\bin",
+      "Lib\site-packages\nvidia\cuda_runtime\bin",
+      "Lib\site-packages\nvidia\cuda_nvrtc\bin",
+      "Lib\site-packages\torch\lib"
+    )) {
+      $path = Join-Path (Join-Path $ProjectRoot $venv) $relative
+      if ((Test-Path $path) -and -not $directories.Contains($path)) { $directories.Add($path) }
+    }
+  }
+  if ($directories.Count -gt 0) {
+    $prefix = [string]::Join([IO.Path]::PathSeparator, $directories)
+    [Environment]::SetEnvironmentVariable("PATH", $prefix + [IO.Path]::PathSeparator + $env:PATH, "Process")
+  }
+}
+
 if ($LivePhone) {
   Import-DotEnv
+  Remove-KnownBlackholeProxy
+  Initialize-CoreCudaPath
   $Python = Resolve-Python
   if (-not $Python) { Write-Host "[FAIL] Aucun interpreteur Python." -ForegroundColor Red; exit 1 }
   & $Python -c "import aiortc, aiohttp, av, fastapi, uvicorn, numpy, python_multipart, dotenv, faster_whisper, webrtcvad, onnxruntime, rapidocr_onnxruntime"
   if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] Dependances live manquantes dans $Python" -ForegroundColor Red; exit 2 }
+  $startQdrant = Join-Path $ScriptDir "START_QDRANT.ps1"
+  if (-not (Test-Path $startQdrant)) {
+    Write-Host "[FAIL] START_QDRANT.ps1 introuvable." -ForegroundColor Red
+    exit 4
+  }
+  Write-Host "[..] Demarrage/verif Qdrant local..." -ForegroundColor Cyan
+  & $startQdrant -TimeoutSec 30
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "[FAIL] Qdrant local n'est pas pret; voir qdrant.log/qdrant.err.log." -ForegroundColor Red
+    exit 4
+  }
   Write-Host "[..] Preflight strict PhoneOnly (DB, modeles, CUDA, ASR, TTS, Ollama, Qdrant, disque, CloseDay)..." -ForegroundColor Cyan
   & $Python (Join-Path $ProjectRoot "scripts\check_phoneonly_readiness.py") --person-id $PersonId --deep
   if ($LASTEXITCODE -ne 0) {
     Write-Host "[FAIL] FirstTry refuse de demarrer avec une chaine IA incomplete." -ForegroundColor Red
-    Write-Host "       Demarre Ollama (ollama serve) et Qdrant (docker compose up -d qdrant)," -ForegroundColor Yellow
-    Write-Host "       puis relance DOCTOR_MLOMEGA_V19.ps1 -Vision et cette commande." -ForegroundColor Yellow
+    Write-Host "       Lis les lignes [FIX] ci-dessus : proxy/HF gated+cache, backend JSON," -ForegroundColor Yellow
+    Write-Host "       VLM, CUDA/cuDNN, disque, Qdrant et venv sont verifies avant capture." -ForegroundColor Yellow
     exit 4
   }
   $addresses = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |

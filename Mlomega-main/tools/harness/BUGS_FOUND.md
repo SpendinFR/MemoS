@@ -464,7 +464,7 @@ causant des dizaines d'appels et fusions. Correction : compilateur déterministe
 Stage réel final ~2,1 s; aucune fonctionnalité cognitive n'est retirée puisque l'inférence
 a déjà eu lieu dans V15.10.
 
-## OBS-32 — Environnement FirstTry encore non hermétique (OUVERT / PARTIEL)
+## OBS-32 — Environnement FirstTry non hermétique (CORRIGÉ EN CODE — ÉTAT SERVICES BLOQUÉ ET GUIDÉ, 2026-07-15)
 
 Le run a nécessité HF gated accessible, Qdrant, chemins CUDA/cuDNN et une version
 `transformers` plus récente pour l'embedder Qwen3. Le venv local est passé à 4.57.6,
@@ -473,6 +473,20 @@ précédemment et les subprocess manuels ne partagent pas toujours le bootstrap 
 runner. FIRST_TRY/RUN/Doctor doivent échouer avant capture avec diagnostic précis si
 HF, modèle gated, Qdrant, DLL CUDA/cuDNN, espace disque, version Python ou backend
 LLM/VLM ne sont pas prêts.
+
+Correction : bootstrap parent+enfants commun, proxy mort détecté avant HF, preuve compte
+et fichiers gated, cache contrôlé fichier par fichier, `.venv`/Transformers/ASR, vrai
+calcul torch CUDA et chargement `cudnn_ops_infer64_8.dll`, Qdrant/disque, modèle+alias+
+contexte et appels JSON réels LLM/VLM. Le gate n'effectue aucun téléchargement; le script
+`PREFETCH_FIRSTTRY_MODELS.py` est explicite. Cette vérification a trouvé un vrai faux
+positif : les snapshots diarization/segmentation existaient mais ne contenaient que
+README. Après préchargement, HF gated 3/3 et ASR large-v3 sont verts.
+
+État externe honnête au checkpoint : `.env` sélectionne Ollama, Ollama est arrêté et un
+llama-server P1/24k non sélectionné tourne sur 8080. Le préflight bloque donc avant
+SessionHub avec trois corrections guidées (conflit backend, JSON LLM, VLM indisponible).
+Ce n'est plus une panne tardive; l'opérateur doit choisir/configurer le backend puis
+obtenir `ready=true`.
 
 ## OBS-33 — Premier CloseDay complet obtenu, mais gates diagnostics encore ouverts (PARTIEL)
 
@@ -665,6 +679,30 @@ preuve runtime est `9/4/9/22/12/9/10/9/8`. Pour éviter l'effet inverse, ces lig
 chargées comme état courant puis retirées du delta de nouvelles preuves : elles ne peuvent
 pas s'auto-confirmer. Le checkpoint digère le contenu courant, pas seulement sa
 cardinalité. Suite R1–R4 : 93 tests verts.
+
+## OBS-46 — Sémantique fine exécutée dans le worker audio (CORRIGÉ — 2026-07-15)
+
+Le chemin PhoneOnly pouvait payer hypothèses/attributs/discours dans la finalisation de
+chaque segment, rallonger le drain et faire perdre de nouveaux chunks. La correction
+garde l'écriture immédiate du tour mais place les analyses fines dans
+`live_fine_intel_queue_v19`, par lots, avec tentatives et cardinalité/IDs validés. La
+fermeture draine cette file avant CloseDay et recovery la reprend. Tests ciblés dans
+`test_e64i_live_semantic_boundary.py`; le gate téléphone réel reste I7.
+
+## OBS-47 — Un nouveau moteur pouvait contourner la projection centrale (CORRIGÉ — 2026-07-15)
+
+Les moteurs déjà migrés étaient bornés, mais un nouveau nom V13/V14/V18/Life/Brain2
+pouvait appeler le runner générique sans politique et recevoir le payload brut. Le
+registre est maintenant fail-closed sur tous les préfixes produit; chaque stage est
+conversationnel, journalier ou spécialisé. Pattern Mirror local est 0-call et reste
+longitudinal; Proactive V14 ne peut plus binder un dict brut dans SQLite TEXT.
+
+## OBS-48 — Présence d'un dossier cache HF prise pour des poids utilisables (CORRIGÉ — 2026-07-15)
+
+`snapshot_download(local_files_only=True)` pouvait retourner un snapshot ne contenant
+que README. Le préflight exige désormais `config.yaml` et poids exacts pour diarization,
+segmentation et wespeaker, plus `config.json/model.bin/tokenizer.json` pour ASR. Le cas
+réel a été détecté, préchargé et revérifié sans téléchargement dans le RUN.
 
 ## Notes that are NOT bugs (expected, documented so future runs don't chase them)
 

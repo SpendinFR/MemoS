@@ -51,6 +51,22 @@ close_day_script = _load("run_phoneonly_close_day", SCRIPTS / "run_phoneonly_clo
 runtime_mod = _load("ms_runtime", LIVE / "phoneonly_runtime.py")
 
 
+def test_close_day_removes_only_known_blackhole_proxy(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    monkeypatch.setenv("http_proxy", "localhost:9")
+    monkeypatch.setenv("ALL_PROXY", "http://proxy.example.test:8080")
+
+    removed = close_day_script._sanitize_blackhole_proxy_env()
+
+    assert removed
+    assert not any(
+        value in {"http://127.0.0.1:9", "localhost:9"}
+        for name, value in close_day_script.os.environ.items()
+        if name.lower() in {"http_proxy", "https_proxy", "all_proxy"}
+    )
+    assert close_day_script.os.environ["ALL_PROXY"] == "http://proxy.example.test:8080"
+
+
 def _seed_completed_close_day(person_id: str, day: str, *, close_day_id: str = "cd-1"):
     """Insert a completed v18_close_day_runs row (as a first session would leave)."""
     from mlomega_audio_elite.v18_close_day import ensure_close_day_schema

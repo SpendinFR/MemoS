@@ -118,6 +118,28 @@ def _safe_json(value: Any, default: Any = None) -> Any:
     return json_loads(str(value), default if default is not None else {})
 
 
+def _text_field(value: Any, *, preferred_keys: tuple[str, ...] = ()) -> str | None:
+    """Normalize a model value before binding it to a SQLite TEXT column.
+
+    JSON-schema examples are not strong enough to stop a small model from
+    returning a richer object for a textual hint.  Writers are the final type
+    boundary: preserve the useful text (or the complete JSON as a last resort)
+    instead of passing a dict/list to sqlite3 and blocking CloseDay.
+    """
+
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        for key in preferred_keys:
+            candidate = value.get(key)
+            if candidate not in (None, ""):
+                return str(candidate)
+        return json_dumps(value)
+    if isinstance(value, list):
+        return json_dumps(value)
+    return str(value)
+
+
 def _many(con, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
     try:
         return [dict(r) for r in con.execute(sql, params)]
@@ -489,18 +511,21 @@ def run_proactive_interventions(conversation_id: str | None = None, *, person_id
                 "timing": timing,
                 "should_notify": should_notify,
                 "intervention_message": str(item.get("intervention_message") or title),
-                "recommended_action": item.get("recommended_action"),
-                "why_now": item.get("why_now"),
-                "risk_if_ignored": item.get("risk_if_ignored"),
-                "possible_harm_if_overused": item.get("possible_harm_if_overused"),
+                "recommended_action": _text_field(item.get("recommended_action")),
+                "why_now": _text_field(item.get("why_now")),
+                "risk_if_ignored": _text_field(item.get("risk_if_ignored")),
+                "possible_harm_if_overused": _text_field(item.get("possible_harm_if_overused")),
                 "evidence_json": json_dumps(item.get("evidence") if isinstance(item.get("evidence"), list) else []),
                 "counter_evidence_json": json_dumps(item.get("counter_evidence") if isinstance(item.get("counter_evidence"), list) else []),
                 "source_tables_json": json_dumps(item.get("source_tables") if isinstance(item.get("source_tables"), list) else []),
                 "source_ids_json": json_dumps(item.get("source_ids") if isinstance(item.get("source_ids"), list) else []),
-                "linked_person_hint": item.get("linked_person_hint"),
-                "linked_domain": item.get("linked_domain") or "unknown",
+                "linked_person_hint": _text_field(
+                    item.get("linked_person_hint"),
+                    preferred_keys=("person_hint", "name", "person_id"),
+                ),
+                "linked_domain": _text_field(item.get("linked_domain")) or "unknown",
                 "cooldown_key": cooldown_key,
-                "expiry_horizon": item.get("expiry_horizon") or "unknown",
+                "expiry_horizon": _text_field(item.get("expiry_horizon")) or "unknown",
                 "confidence": confidence,
                 "status": opp_status,
                 "created_at": now,
@@ -518,8 +543,8 @@ def run_proactive_interventions(conversation_id: str | None = None, *, person_id
                 "timing": timing,
                 "channel": str(policy.get("default_channel") or "inbox_file"),
                 "message": str(item.get("intervention_message") or title),
-                "recommended_action": item.get("recommended_action"),
-                "why_now": item.get("why_now"),
+                "recommended_action": _text_field(item.get("recommended_action")),
+                "why_now": _text_field(item.get("why_now")),
                 "cooldown_key": cooldown_key,
                 "status": q_status,
                 "due_at": None,

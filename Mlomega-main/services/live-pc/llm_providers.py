@@ -158,7 +158,15 @@ class LLMProvider:
         self.base_url = str(self.config.get("base_url") or "").rstrip("/")
         self.timeout_s = float(self.config.get("timeout_s") or 30)
 
-    def complete_json(self, system: str, user: str, *, schema_hint: dict[str, Any] | None = None, timeout: float | None = None) -> dict[str, Any]:
+    def complete_json(
+        self,
+        system: str,
+        user: str,
+        *,
+        schema_hint: dict[str, Any] | None = None,
+        timeout: float | None = None,
+        max_output_tokens: int | None = None,
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
     def complete_text(self, prompt: str, *, timeout: float | None = None) -> str:
@@ -199,12 +207,26 @@ class OllamaProvider(LLMProvider):
         except Exception:
             return None
 
-    def complete_json(self, system: str, user: str, *, schema_hint: dict[str, Any] | None = None, timeout: float | None = None) -> dict[str, Any]:
+    def complete_json(
+        self,
+        system: str,
+        user: str,
+        *,
+        schema_hint: dict[str, Any] | None = None,
+        timeout: float | None = None,
+        max_output_tokens: int | None = None,
+    ) -> dict[str, Any]:
         t = float(timeout or self.timeout_s)
         client = self._core_client()
         if client is not None:
             try:
-                data = client.require_json(system, user, schema_hint=schema_hint, timeout=t)
+                data = client.require_json(
+                    system,
+                    user,
+                    schema_hint=schema_hint,
+                    timeout=t,
+                    max_output_tokens=max_output_tokens,
+                )
                 if isinstance(data, dict):
                     return data
             except Exception as exc:
@@ -212,6 +234,8 @@ class OllamaProvider(LLMProvider):
         # Fallback: raw /api/generate call.
         prompt = f"{system}\n\n{user}\n\nRéponds uniquement en JSON valide."
         payload = {"model": self.model or "qwen2.5", "prompt": prompt, "stream": False, "format": "json"}
+        if max_output_tokens is not None:
+            payload["options"] = {"num_predict": max(1, int(max_output_tokens))}
         data = _http_post_json(self.base_url + "/api/generate", payload, {}, t)
         return _extract_json(str(data.get("response") or ""))
 
@@ -238,7 +262,15 @@ class OpenAIProvider(LLMProvider):
     def available(self) -> bool:
         return bool(self.api_key)
 
-    def complete_json(self, system: str, user: str, *, schema_hint: dict[str, Any] | None = None, timeout: float | None = None) -> dict[str, Any]:
+    def complete_json(
+        self,
+        system: str,
+        user: str,
+        *,
+        schema_hint: dict[str, Any] | None = None,
+        timeout: float | None = None,
+        max_output_tokens: int | None = None,
+    ) -> dict[str, Any]:
         if not self.api_key:
             raise LLMUnavailable("no OPENAI_API_KEY")
         sys_msg = system
@@ -252,6 +284,8 @@ class OpenAIProvider(LLMProvider):
             ],
             "response_format": {"type": "json_object"},
         }
+        if max_output_tokens is not None:
+            payload["max_completion_tokens"] = max(1, int(max_output_tokens))
         data = _http_post_json(
             self.base_url + "/chat/completions",
             payload,
@@ -279,7 +313,15 @@ class GeminiProvider(LLMProvider):
     def available(self) -> bool:
         return bool(self.api_key)
 
-    def complete_json(self, system: str, user: str, *, schema_hint: dict[str, Any] | None = None, timeout: float | None = None) -> dict[str, Any]:
+    def complete_json(
+        self,
+        system: str,
+        user: str,
+        *,
+        schema_hint: dict[str, Any] | None = None,
+        timeout: float | None = None,
+        max_output_tokens: int | None = None,
+    ) -> dict[str, Any]:
         if not self.api_key:
             raise LLMUnavailable("no GEMINI_API_KEY")
         prompt = system
@@ -290,6 +332,8 @@ class GeminiProvider(LLMProvider):
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"responseMimeType": "application/json"},
         }
+        if max_output_tokens is not None:
+            payload["generationConfig"]["maxOutputTokens"] = max(1, int(max_output_tokens))
         url = f"{self.base_url}/models/{self.model}:generateContent?key={self.api_key}"
         data = _http_post_json(url, payload, {}, float(timeout or self.timeout_s))
         try:
@@ -398,8 +442,22 @@ class LLMRouter:
         return {"ok": True, "cloud_active": False, "provider": "ollama", "text": "Mode local activé (gratuit)."}
 
     # convenience delegation -------------------------------------------------
-    def complete_json(self, system: str, user: str, *, schema_hint: dict[str, Any] | None = None, timeout: float | None = None) -> dict[str, Any]:
-        return self.active.complete_json(system, user, schema_hint=schema_hint, timeout=timeout)
+    def complete_json(
+        self,
+        system: str,
+        user: str,
+        *,
+        schema_hint: dict[str, Any] | None = None,
+        timeout: float | None = None,
+        max_output_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        return self.active.complete_json(
+            system,
+            user,
+            schema_hint=schema_hint,
+            timeout=timeout,
+            max_output_tokens=max_output_tokens,
+        )
 
     def available(self) -> bool:
         return self.active.available()

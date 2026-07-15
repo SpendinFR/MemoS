@@ -855,6 +855,70 @@ def run_pattern_mirror(conversation_id: str | None = None, *, person_id: str | N
     with connect() as con:
         person_id = person_id or _default_user(con)
         run_id = stable_id("v14run", V14_VERSION, person_id, conversation_id or "all", trigger_type, now)
+        # Conversation-local V13 already records observations and hypotheses.
+        # Pattern Mirror is longitudinal by definition and is executed once by
+        # the periodic day/week/month consolidation.  Running its eleven-field
+        # contract after every conversation reread the same history once per
+        # output responsibility and encouraged premature psychology.  Preserve
+        # an explicit, durable no-call verdict here; the periodic stage receives
+        # both the current shared facts and all prior mirror state.
+        if conversation_id:
+            from .v18_brain2_context import active_brain2_conversation_ids
+
+            prior_conversations = [
+                item for item in active_brain2_conversation_ids(
+                    con, person_id=person_id, limit=100000
+                )
+                if str(item) != str(conversation_id)
+            ]
+            gate = (
+                "deferred_to_periodic_long_horizon"
+                if prior_conversations
+                else "insufficient_independent_conversations_for_long_horizon"
+            )
+            out = {
+                key: ([] if isinstance(template, list) else (
+                    {
+                        "headline": "",
+                        "what_you_may_not_see": [],
+                        "likely_next_loops": [],
+                        "what_to_watch_now": [],
+                        "recommended_actions": [],
+                    }
+                    if key == "user_facing_report" else 0.0
+                ))
+                for key, template in MIRROR_SCHEMA.items()
+            }
+            out["missing_context"] = [gate]
+            status = "ok"
+            err = None
+            upsert(con, "v14_mirror_runs", {
+                "run_id": run_id,
+                "person_id": person_id,
+                "conversation_id": conversation_id,
+                "trigger_type": trigger_type,
+                "scope": scope,
+                "status": status,
+                "qwen_output_json": json_dumps(out),
+                "error_text": err,
+                "created_at": now,
+                "updated_at": now_iso(),
+            }, "run_id")
+            con.commit()
+            return {
+                "version": V14_VERSION,
+                "run_id": run_id,
+                "status": status,
+                "person_id": person_id,
+                "conversation_id": conversation_id,
+                "created": {key: [] for key in [
+                    "cards", "blindspots", "threads", "forecasts", "readings",
+                    "interventions", "lessons", "questions", "reports",
+                ]},
+                "raw": out,
+                "llm_calls": 0,
+                "gate": gate,
+            }
         payload = {
             "mission": (
                 "Tu es Pattern Mirror / Long Horizon Self Model. Ton but est de montrer à l'humain ce qu'il ne voit pas lui-même: "

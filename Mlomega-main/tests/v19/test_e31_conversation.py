@@ -95,6 +95,7 @@ def test_wiring_final_segment_reaches_core_turn_buffer(tmp_path, monkeypatch):
     assert datetime.fromisoformat(turn["timestamp_start"]) == datetime.fromisoformat("2026-07-04T10:00:00+00:00")
     assert turn["speaker_label"] == "speaker"  # generic; identity is E32
     assert bridge.metrics["conversation_turns"] == 1
+    assert bridge.pending_hot_turns() == 1
 
     # A partial (non-final) segment stays on the reflex subtitle path — never
     # enters the buffer.
@@ -104,6 +105,28 @@ def test_wiring_final_segment_reaches_core_turn_buffer(tmp_path, monkeypatch):
             "SELECT COUNT(*) AS n FROM brainlive_turn_buffer WHERE live_session_id=?", (session_id,)
         ).fetchone()["n"]
     assert n == 1
+
+
+def test_deferred_hot_cycle_never_runs_inside_turn_ingestion(tmp_path, monkeypatch):
+    _env(tmp_path, monkeypatch)
+    bridge = bridge_mod.ConversationBridge(person_id="me", run_hot_cycle=False)
+    calls = []
+
+    def fake_tick(**_kwargs):
+        calls.append("tick")
+        return {
+            "dispatch": {"should_dispatch_llm": True},
+            "hot": {"status": "ok"},
+        }
+
+    monkeypatch.setattr(bridge, "tick", fake_tick)
+    result = bridge.ingest_segment("un tour durable", event_id="deferred-hot-1")
+    assert result and calls == []
+    assert bridge.pending_hot_turns() == 1
+
+    bridge.tick_pending()
+    assert calls == ["tick"]
+    assert bridge.pending_hot_turns() == 0
 
 
 # --------------------------------------------------------------------------- helpers for 2/3

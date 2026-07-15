@@ -1151,3 +1151,58 @@ de reprise couvre leur contenu complet plutôt que les seuls compteurs.
 quatre pages. Le clone réel donne 199/199 observations, quatre pages, un atome et 26
 manifests Life complets. **93 tests** R1–R4 sont verts. Cela clôt R4/I3, pas I7 : flags OFF,
 temps 1 h/8 h non annoncé avant le harnais vidéo cinq minutes et la relecture dashboard.
+
+## 2026-07-15 — E64-I : activation contrôlée, frontière live différée et politiques d'entrée fermées
+
+**Activation.** Les flags `MLOMEGA_E64_CONVERSATION_EPISODES` et
+`MLOMEGA_E64_SHARED_FACTS` passent ON par défaut après traversée d'un vrai CloseDay
+(`run_v18_3e3194ad94f044afa2443ba11ff81520`, dix stages et manifeste complet). La valeur
+explicite `0` reste le rollback. Cette décision remplace les mentions historiques « flags
+OFF » ci-dessus; elle ne transforme pas la preuve en validation Deep Vision, owner voice
+ou téléphone réel.
+
+**Une politique avant toute fenêtre.** Le registre `prompt_projection` est désormais
+fail-closed pour les stages produit V13/V14/V18/Life/Brain2/coordination/silent. Chaque
+stage déclare `conversation`, `daily` ou `specialized`; un nouveau nom produit sans
+politique lève avant le LLM. Le but est d'empêcher définitivement le retour d'un moteur
+isolé qui repasse tours et sorties brutes puis laisse le fenêtrage multiplier l'erreur.
+La donnée source reste en DB/manifeste; seule sa projection de travail est centralisée.
+
+**Frontière live.** Le hot path persiste immédiatement le tour et les artefacts nécessaires
+à BrainLive, mais ne lance plus plusieurs analyses sémantiques lourdes séquentielles par
+segment. Ces travaux entrent dans `live_fine_intel_queue_v19`, avec batch borné, statut,
+tentatives et validation exacte des `turn_id`. La fermeture suit : drain audio/finals →
+flush live → traitement/reprise du backlog sémantique → CloseDay. Une erreur n'est ni
+avalée ni changée en succès; recovery repart de la file durable.
+
+**Correctifs issus du run.** Pattern Mirror conversation-local est une projection
+déterministe/0 appel; le raisonnement de pattern reste au cycle longitudinal. Le writer
+proactif normalise les objets JSON avant SQLite TEXT. `compiled_watch_only` et
+`compiled_no_life_delta` sont des fins Life valides et observables.
+
+## 2026-07-15 — I0.5 : FirstTry hermétique, preuve d'usage et zéro téléchargement tardif
+
+**Décision de frontière processus.** Un contrôle exécuté dans un enfant ne modifie pas
+le PATH de son parent. `RUN_MLOMEGA_V19.ps1` prépare donc proxy et répertoires DLL avant
+tout spawn; `runtime_environment_v19.py` refait la même opération dans SessionHub,
+recovery et le worker manuel. Les handles `add_dll_directory` restent vivants et
+`cudnn_ops_infer64_8.dll` est chargée par `WinDLL`. L'existence du fichier seule n'est
+plus une preuve.
+
+**Gate bloquant avant capture.** La readiness prouve le compte HF via `whoami`, l'accès
+aux fichiers gated de diarization/segmentation, la présence locale des configs ET poids,
+le cache ASR nocturne complet, Python 3.11/.venv, Transformers 4.52–4.x, torch CUDA par
+un vrai calcul, Qdrant, espace disque, DB/media, backend+alias+contexte, et exécute une
+requête JSON stricte sur le LLM sélectionné ainsi qu'une image+JSON sur chaque VLM
+configuré. Un proxy explicite non joignable bloque; seul le black-hole loopback:9 connu
+est supprimé. Un llama-server actif alors qu'Ollama est sélectionné bloque pour éviter
+le conflit VRAM. Le préflight ne télécharge jamais.
+
+**Provisionnement séparé.** `PREFETCH_FIRSTTRY_MODELS.py` est l'unique action explicite
+guidée pour les téléchargements gated/cache. Sur la machine, l'ancien cache Pyannote
+semblait présent mais les snapshots diarization/segmentation ne contenaient que README.
+Le nouveau contrôle l'a refusé; après préchargement, compte `BALLSoHigh712`, accès 3/3,
+Pyannote 3/3 et `faster-whisper-large-v3` sont prouvés. Le dernier rapport échoue encore
+volontairement sur l'état externe : Ollama arrêté, serveur P1:24k orphelin sur 8080 et
+VLM donc indisponibles. On corrige/configure ces services puis on relance; on ne baisse
+pas le gate pour obtenir un faux vert.

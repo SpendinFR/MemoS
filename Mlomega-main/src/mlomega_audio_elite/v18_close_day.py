@@ -99,7 +99,14 @@ def _status_ok(result: Any, *, stage_name: str) -> bool:
         "coordination": {"ok", "completed"},
         # V15.13 returns ``llm_patch_ready`` for a patch and bootstrap embeds
         # the V15.10 status in ``bootstrap``.
-        "life_model": {"llm_patch_ready", "ok", "completed", "active"},
+        # These are successful epistemic outcomes, not processing failures:
+        # ``compiled_watch_only`` persists a first observation without promoting
+        # it, while ``compiled_no_life_delta`` is the idempotent resume verdict
+        # after every durable source revision has already been consumed.
+        "life_model": {
+            "llm_patch_ready", "compiled_watch_only",
+            "compiled_no_life_delta", "ok", "completed", "active",
+        },
         "live_ready": {"active", "ok", "completed", "llm_ready"},
         "visual_consolidation": {"completed", "ok"},
         "outcome_resolution": {"completed", "ok"},

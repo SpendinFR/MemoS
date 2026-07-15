@@ -176,7 +176,10 @@ _SCHEMA_READY: set[str] = set()
 
 
 def shared_facts_enabled() -> bool:
-    return os.environ.get(SHARED_FACT_ENV, "0").strip() == "1"
+    # E64-I completed a real PhoneOnly minute through the complete CloseDay
+    # manifest.  The canonical path is now the product default; operators retain
+    # an explicit emergency rollback with MLOMEGA_E64_SHARED_FACTS=0.
+    return os.environ.get(SHARED_FACT_ENV, "1").strip() != "0"
 
 
 def ensure_shared_fact_schema(con: Any | None = None) -> None:
@@ -889,6 +892,45 @@ def compact_stage_input(
             ),
         }
         history = {**current_identity_history, **interpersonal_history}
+    elif purpose in {"autonomous_candidates", "pattern_mirror"}:
+        current_episode_ids = {
+            str(fact.get("episode_id")) for fact in fact_bundle.get("facts", [])
+            if fact.get("episode_id")
+        }
+
+        def without_current_episode(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return [
+                row for row in rows
+                if not row.get("episode_id")
+                or str(row.get("episode_id")) not in current_episode_ids
+            ]
+
+        history = {
+            "prior_candidate_patterns": without_current_episode(
+                _table_rows(con, "candidate_patterns", where="person_id=?", params=(person_id,), limit=40)
+            ),
+            "confirmed_patterns": without_current_episode(
+                _table_rows(con, "confirmed_patterns", where="person_id=?", params=(person_id,), limit=40)
+            ),
+            "known_loops": without_current_episode(
+                _table_rows(con, "loop_patterns", where="person_id=?", params=(person_id,), limit=40)
+            ),
+            "prior_predictions": without_current_episode(
+                _table_rows(con, "predictions", where="person_id=?", params=(person_id,), limit=40)
+            ),
+        }
+        if purpose == "pattern_mirror":
+            history.update({
+                "prior_mirror_cards": _table_rows(
+                    con, "v14_pattern_mirror_cards",
+                    where="person_id=? AND (conversation_id IS NULL OR conversation_id<>?)",
+                    params=(person_id, conversation_id), limit=30,
+                ),
+                "prior_long_horizon_threads": _table_rows(
+                    con, "v14_long_horizon_threads", where="person_id=?",
+                    params=(person_id,), limit=30,
+                ),
+            })
     from .v18_brain2_context import conversation_context_addenda
     current_stage_evidence: dict[str, Any] = {
         "speaker_matches": _table_rows(

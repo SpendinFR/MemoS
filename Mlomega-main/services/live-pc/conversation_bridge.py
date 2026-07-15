@@ -89,11 +89,14 @@ class ConversationBridge:
         self.on_dispatch = on_dispatch
         self.live_session_id: str | None = None
         self._lock = threading.Lock()
+        self._pending_lock = threading.Lock()
+        self._pending_hot_turns = 0
         self.metrics: dict[str, Any] = {
             "conversation_turns": 0,
             "h1_candidates": 0,
             "hot_cycles": 0,
             "dispatch_skipped": 0,
+            "hot_turns_pending": 0,
             "errors": 0,
         }
 
@@ -193,6 +196,9 @@ class ConversationBridge:
             self.metrics["errors"] += 1
             raise
         self.metrics["conversation_turns"] += 1
+        with self._pending_lock:
+            self._pending_hot_turns += 1
+            self.metrics["hot_turns_pending"] = self._pending_hot_turns
 
         result: dict[str, Any] = {
             "live_turn_id": turn.get("live_turn_id"),
@@ -203,8 +209,36 @@ class ConversationBridge:
 
         do_cycle = self.run_hot_cycle if run_hot_cycle is None else bool(run_hot_cycle)
         if do_cycle:
-            result.update(self.tick(audio_content=True))
+            cycle = self.tick(audio_content=True)
+            result.update(cycle)
+            self._complete_pending_after_cycle(cycle)
         return result
+
+    def pending_hot_turns(self) -> int:
+        with self._pending_lock:
+            return int(self._pending_hot_turns)
+
+    def tick_pending(self, *, force_context: bool = False) -> dict[str, Any]:
+        """Run at most one due hot cycle outside the durable ingestion worker."""
+        if self.pending_hot_turns() <= 0:
+            return {"status": "idle", "dispatch": None, "hot": None}
+        out = self.tick(audio_content=True, force_context=force_context)
+        self._complete_pending_after_cycle(out)
+        return out
+
+    def _complete_pending_after_cycle(self, out: dict[str, Any]) -> None:
+        plan = out.get("dispatch") if isinstance(out, dict) else None
+        if not isinstance(plan, dict) or not plan.get("should_dispatch_llm"):
+            return
+        hot = out.get("hot") if isinstance(out, dict) else None
+        failed = isinstance(hot, dict) and str(hot.get("status") or "") in {
+            "error", "failed", "llm_error"
+        }
+        if failed:
+            return
+        with self._pending_lock:
+            self._pending_hot_turns = 0
+            self.metrics["hot_turns_pending"] = 0
 
     # ------------------------------------------------------------ tick
     def tick(self, *, audio_content: bool = True, force_context: bool = False) -> dict[str, Any]:

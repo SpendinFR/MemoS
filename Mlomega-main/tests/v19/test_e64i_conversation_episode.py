@@ -9,6 +9,7 @@ from mlomega_audio_elite.brain2_conversation_episode import (
     ConversationEpisodeContractError,
     build_conversation_episode_v6,
     normalize_conversation_episode,
+    normalize_segmentation,
 )
 from mlomega_audio_elite.night_orchestrator.executor import LLMCallResult
 
@@ -165,6 +166,35 @@ def test_normalize_rejects_loss_or_cross_topic_reuse(mutation, match):
     mutation(output)
     with pytest.raises(ConversationEpisodeContractError, match=match):
         normalize_conversation_episode(output, _turns())
+
+
+def test_segmentation_canonicalizes_only_inclusive_boundary_overlap():
+    turns = _turns()
+    output = _segmentation_output()
+    # A..B then B..C is a common inclusive-boundary convention.  End
+    # boundaries remain strictly ordered, so exact membership is recoverable.
+    output["segments"][1]["start_turn_id"] = output["segments"][0]["end_turn_id"]
+
+    segments = normalize_segmentation(output, turns)
+
+    assert segments[0]["turn_ids"] == ["t0", "t1", "t2"]
+    assert segments[1]["turn_ids"] == ["t3"]
+    assert [turn_id for segment in segments for turn_id in segment["turn_ids"]] == [
+        f"t{i}" for i in range(8)
+    ]
+
+
+def test_segmentation_end_boundaries_make_partition_lossless_by_construction():
+    output = _segmentation_output()
+    for segment in output["segments"]:
+        segment.pop("start_turn_id", None)
+
+    segments = normalize_segmentation(output, _turns())
+
+    assert [segment["start_turn_id"] for segment in segments] == ["t0", "t3", "t4", "t6"]
+    assert [turn_id for segment in segments for turn_id in segment["turn_ids"]] == [
+        f"t{i}" for i in range(8)
+    ]
 
 
 def test_shadow_builder_uses_one_call_and_never_assigns_sensor_turn():

@@ -68,6 +68,7 @@ intent_router = _load_sibling("v19_intent_router", "intent_router.py")
 proactive_context = _load_sibling("v19_proactive_context", "proactive_context.py")
 predictive_retrieval_live = _load_sibling("v19_predictive_retrieval_live", "predictive_retrieval_live.py")
 live_discourse = _load_sibling("v19_live_discourse", "live_discourse.py")
+deferred_fine_intel = _load_sibling("v19_deferred_fine_intel", "deferred_fine_intel.py")
 morning_briefing = _load_sibling("v19_morning_briefing", "morning_briefing.py")
 tts_local = _load_sibling("v19_tts_local", "tts_local.py")
 replay_service_mod = _load_sibling("v19_replay_service", "replay_service.py")
@@ -179,6 +180,7 @@ class LivePipeline:
         enable_intents: bool = False,
         vision_focus_handler: Callable[[dict[str, Any]], Any] | None = None,
         enable_proactivity: bool = False,
+        enable_live_discourse: bool = True,
         predictive_backend: Any = None,
         enable_tts: bool = False,
         enable_replay: bool = False,
@@ -186,6 +188,8 @@ class LivePipeline:
         enable_audio_archive: bool = False,
         enable_fine_intel: bool = False,
         fine_intel_llm: Any = None,
+        defer_fine_intel: bool = False,
+        fine_intel_batch_size: int = 8,
         enable_help_mode: bool = False,
         active_link: str = "lan",
         defer_final_processing: bool = False,
@@ -377,7 +381,7 @@ class LivePipeline:
         # the hot path — final turns are batched and analysed by the core
         # microscope/discourse pipeline in a background worker (never blocks).
         self.live_discourse: Any = None
-        if enable_proactivity and enable_conversation:
+        if enable_live_discourse and enable_proactivity and enable_conversation:
             self.live_discourse = live_discourse.LiveDiscourse(person_id=self.person_id)
 
         # ---- Identity (E32): face + voice + fusion + enrollment ---------------
@@ -441,6 +445,7 @@ class LivePipeline:
         self.hypothesis_engine: Any = None
         self.attribute_memory: Any = None
         self.routine_associations: Any = None
+        self.deferred_fine_intel: Any = None
         # A generic text-LLM surface for the hypothesis/attribute extractions. The
         # caller may inject a mock/provider; otherwise the local LLM router is used.
         self.llm_router: Any = None
@@ -455,6 +460,7 @@ class LivePipeline:
             self.hypothesis_engine = hypothesis_engine.HypothesisEngine(
                 person_id=self.person_id, llm=fine_intel_llm,
                 worldbrain=self.worldbrain, db_path=db_path,
+                service_db_path=db_path,
                 config=hypothesis_engine.HypothesisConfig(
                     min_occurrences=int(hcfg.get("min_occurrences", 3)),
                     min_cumulative_confidence=float(hcfg.get("min_cumulative_confidence", 1.2)),
@@ -463,6 +469,7 @@ class LivePipeline:
             )
             self.attribute_memory = attribute_memory.AttributeMemory(
                 person_id=self.person_id, worldbrain=self.worldbrain, llm=fine_intel_llm,
+                service_db_path=db_path,
             )
             self.routine_associations = routine_associations.RoutineAssociations(
                 person_id=self.person_id, db_path=db_path,
@@ -472,6 +479,17 @@ class LivePipeline:
                 self.routine_associations.learn()
             except Exception:
                 pass
+            if defer_fine_intel:
+                self.deferred_fine_intel = deferred_fine_intel.DeferredFineIntel(
+                    person_id=self.person_id,
+                    live_session_id=self.live_session_id,
+                    db_path=db_path,
+                    llm=fine_intel_llm,
+                    hypothesis_engine=self.hypothesis_engine,
+                    attribute_memory=self.attribute_memory,
+                    subject_resolver=self._resolve_attribute_subject,
+                    batch_size=fine_intel_batch_size,
+                )
 
         # ---- IntentRouter (E33): voice + menu → one execution path -----------
         # The general router ABSORBS the enrollment_watcher as one of its handlers
@@ -1345,7 +1363,6 @@ class LivePipeline:
                     self._report_error("scene_adapter.note_transcript", exc)
             # E38 §1/§2: feed the final turn to the fine-intelligence engines — the
             # addressed-name hypothesis signal and the heard attribute-fact signal.
-            self._note_fine_intel_turn(text, content)
             # E34 §4: fine discourse analysis off the hot path (background worker).
             if self.live_discourse is not None:
                 try:
@@ -1407,11 +1424,12 @@ class LivePipeline:
             # E38 §1: a voice identity correction ("non, ce n'est pas X") breaks the
             # active entity's identity hypotheses (the deduction was wrong).
             self._maybe_break_hypotheses(text)
+            conversation_result: dict[str, Any] | None = None
             if self.conversation is not None:
                 last_exc: Exception | None = None
                 for attempt in range(3):
                     try:
-                        self.conversation.ingest_segment(
+                        conversation_result = self.conversation.ingest_segment(
                             text,
                             language=content.get("language"),
                             is_final=True,
@@ -1430,6 +1448,26 @@ class LivePipeline:
                             time.sleep(0.05 * (attempt + 1))
                 if last_exc is not None:
                     self._report_error("conversation.ingest_segment", last_exc)
+            # The raw BrainLive turn is now durable.  Product PhoneOnly queues the
+            # two generic E38 extractions for one bounded batch; legacy/custom
+            # pipelines keep the historical synchronous one-turn behaviour.
+            if self.enable_fine_intel:
+                if self.deferred_fine_intel is not None and conversation_result:
+                    turn_id = str(conversation_result.get("live_turn_id") or "")
+                    if turn_id:
+                        try:
+                            self.deferred_fine_intel.enqueue_turn(
+                                turn_id=turn_id,
+                                text=text,
+                                speaker_entity=self._speaker_entity_for(content),
+                                present_person_entities=self._present_person_entities(),
+                                default_subject=self._current_place_subject(),
+                                evidence_ref=f"brainlive_turn:{turn_id}",
+                            )
+                        except Exception as exc:
+                            self._report_error("deferred_fine_intel.enqueue", exc)
+                else:
+                    self._note_fine_intel_turn(text, content)
             if owned_temp_wav and wav_path:
                 if self.enrollment is not None:
                     try:
@@ -1450,6 +1488,17 @@ class LivePipeline:
                     setattr(detector, attr, None)
                 except Exception:
                     pass
+
+    def drain_deferred_semantics(self) -> dict[str, Any]:
+        """Process persisted E38 batches before the asynchronous nightly read.
+
+        This is deliberately outside ``drain_final_processing``: `/session/end`
+        waits for raw turns and archives, not for model synthesis.  The CloseDay
+        task invokes this boundary before launching the core pipeline.
+        """
+        if self.deferred_fine_intel is None:
+            return {"status": "not_applicable", "remaining": 0}
+        return dict(self.deferred_fine_intel.process_pending())
 
     def end_session(self, *, place_hint: str | None = None, strict: bool = False) -> str | None:
         """Flush the WorldBrain end-of-session summary (E28) + discourse (E34)."""
@@ -1605,6 +1654,9 @@ class LivePipeline:
             m["clarifications_resolved"] = hm.get("clarifications_resolved", 0)
         if self.attribute_memory is not None:
             m["attribute_changes"] = self.attribute_memory.metrics.get("attribute_changes", 0)
+        if self.deferred_fine_intel is not None:
+            m["fine_intel_pending"] = self.deferred_fine_intel.pending_count()
+            m["fine_intel_model_calls"] = self.deferred_fine_intel.metrics.get("model_calls", 0)
         if self.routine_associations is not None:
             m["routine_pushes"] = self.routine_associations.metrics.get("routine_pushes", 0)
         if self.change_attention is not None:

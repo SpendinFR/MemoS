@@ -185,6 +185,16 @@ class AttributeMemory:
         value = _norm_value(value)
         if not (subject and attribute and value):
             return None
+        if evidence_ref:
+            with self._db_lock:
+                existing = self._svc_db.execute(
+                    """SELECT 1 FROM attribute_memory_observations
+                       WHERE person_id=? AND source=? AND session=? AND evidence_ref=?
+                       LIMIT 1""",
+                    (self.person_id, source, session, evidence_ref),
+                ).fetchone()
+            if existing:
+                return None
         prior = self._latest_prior(subject, attribute, session)
         obs = AttributeObservation(
             subject=subject, attribute=attribute, value=value, source=source,
@@ -304,6 +314,24 @@ class AttributeMemory:
         except Exception:
             self.metrics["llm_unavailable"] += 1
             return None
+        return self.apply_heard_fact(
+            data,
+            session=session,
+            subject_resolver=subject_resolver,
+            default_subject=default_subject,
+            evidence_ref=evidence_ref,
+        )
+
+    def apply_heard_fact(
+        self,
+        data: Mapping[str, Any] | None,
+        *,
+        session: str,
+        subject_resolver: Callable[[str | None], str | None] | None = None,
+        default_subject: str | None = None,
+        evidence_ref: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Apply a pre-extracted heard fact without a second model request."""
         if not isinstance(data, Mapping) or not data.get("states_fact"):
             return None
         attribute = _norm(data.get("attribute"))

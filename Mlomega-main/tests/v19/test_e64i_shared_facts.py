@@ -257,3 +257,226 @@ def test_orchestrator_projects_identity_and_restores_turn_ids(tmp_path, monkeypa
         projection,
     )
     assert restored["speaker_identity_hypotheses"][0]["evidence_turn_ids"] == ["t1"]
+
+
+def test_orchestrator_replaces_legacy_autonomy_and_mirror_bundles(tmp_path, monkeypatch):
+    db_path = _fixture_db(Path(tmp_path), monkeypatch)
+    from mlomega_audio_elite.db import connect
+    from mlomega_audio_elite.night_orchestrator.prompt_projection import (
+        project_stage_payload,
+    )
+
+    with connect(db_path) as con:
+        for stage_name, purpose in (
+            ("v18_autonomous_candidates", "autonomous_candidates"),
+            ("v14_pattern_mirror", "pattern_mirror"),
+        ):
+            projection = project_stage_payload(
+                stage_name=stage_name,
+                person_id="me",
+                source_ref="conv-i2",
+                payload={"mission": stage_name, "bundle": {"legacy_raw": True}},
+                connection=con,
+            )
+            assert projection.applied is True
+            assert projection.purpose == purpose
+            assert projection.payload["bundle"]["lossless_turn_manifest"] == {
+                "source_count": 1, "included_count": 1, "omitted_turn_ids": [],
+            }
+            assert projection.payload["bundle"]["turns"][0]["turn_id"] == "t0"
+            assert projection.payload["canonical_projection"]["raw_bundle_replaced"] is True
+
+
+def test_pattern_mirror_first_conversation_is_an_honest_zero_call_gate(tmp_path, monkeypatch):
+    _fixture_db(Path(tmp_path), monkeypatch)
+    from mlomega_audio_elite import pattern_mirror_v14 as mirror
+
+    monkeypatch.setattr(
+        mirror, "_llm_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("one conversation cannot prove a long-horizon pattern")
+        ),
+    )
+    result = mirror.run_pattern_mirror(
+        "conv-i2", person_id="me", trigger_type="test",
+        scope="post_conversation_long_horizon",
+    )
+
+    assert result["status"] == "ok"
+    assert result["llm_calls"] == 0
+    assert result["gate"] == "insufficient_independent_conversations_for_long_horizon"
+    assert result["raw"]["missing_context"] == [
+        "insufficient_independent_conversations_for_long_horizon"
+    ]
+
+
+def test_all_generic_product_stages_declare_their_input_policy():
+    from mlomega_audio_elite.night_orchestrator.prompt_projection import (
+        stage_input_policy,
+    )
+
+    expected = {
+        "v13_subtopics": "canonical_projection",
+        "v13_latent_outcomes": "canonical_projection",
+        "v13_autonomous_insights": "canonical_projection",
+        "v18_latent_outcomes": "canonical_projection",
+        "v18_autonomous_candidates": "canonical_projection",
+        "v14_people_identity": "canonical_projection",
+        "v14_people_open_loops": "canonical_projection",
+        "v14_interpersonal_state": "canonical_projection",
+        "v14_pattern_mirror": "canonical_projection",
+        "v14_proactive_interventions": "canonical_projection",
+        "v14_clarification_inbox": "bounded_candidate_input",
+        "v14_periodic_mirror_day": "canonical_daily_projection",
+        "life_model_bootstrap": "canonical_projection",
+        "life_model_patch": "canonical_projection",
+        "coordination_day_package": "canonical_projection",
+        "coordination_watch_bindings": "canonical_projection",
+        "coordination_reconciliation": "canonical_projection",
+        "silent_life_bundle": "bounded_sensor_bundle",
+        "brainlive_live_ready": "deterministic_primary_with_bounded_fallback",
+        "brain2_engine_fields:engine:episode": "specialized_window_executor",
+        "brain2_engine_batch:conversation:engine:g0": "specialized_window_executor",
+        "brain2_global_pack:conversation:root:digest": "specialized_window_executor",
+        "brain2_episode_pack:conversation:episode:pack": "specialized_window_executor",
+        "brain2_episodes:conversation": "specialized_window_executor",
+        "brain2_sensor_routing": "specialized_window_executor",
+    }
+    assert {name: stage_input_policy(name) for name in expected} == expected
+
+
+def test_orchestrator_projects_outcome_and_intervention_without_raw_reanalysis(
+    tmp_path, monkeypatch,
+):
+    db_path = _fixture_db(Path(tmp_path), monkeypatch)
+    from mlomega_audio_elite.db import connect
+    from mlomega_audio_elite.night_orchestrator.prompt_projection import (
+        project_stage_payload,
+    )
+
+    with connect(db_path) as con:
+        outcome = project_stage_payload(
+            stage_name="v13_latent_outcomes", person_id="me",
+            source_ref="conv-i2",
+            payload={
+                "new_conversation": {"legacy": True},
+                "new_turns": [{"turn_id": "duplicated"}],
+                "pending_items": [{"source_table": "predictions", "source_id": "p1"}],
+            }, connection=con,
+        )
+        proactive = project_stage_payload(
+            stage_name="v14_proactive_interventions", person_id="me",
+            source_ref="conv-i2",
+            payload={
+                "context": {
+                    "recent_turns": [{"text": "must not be re-analysed"}],
+                    "recent_episodes": [{"summary": "duplicate"}],
+                    "context_addenda": {"raw": "duplicate"},
+                    "interpersonal_suggestions": [{"suggestion_id": "s1"}],
+                    "existing_open_queue": [],
+                },
+                "policy": {"min_queue_confidence": 0.42},
+            }, connection=con,
+        )
+
+    assert outcome.payload["pending_items"][0]["source_id"] == "p1"
+    assert outcome.payload["new_turns"][0]["turn_id"] == "t0"
+    assert outcome.payload["canonical_projection"]["all_turns_present_once"] is True
+    context = proactive.payload["context"]
+    assert "recent_turns" not in context
+    assert "recent_episodes" not in context
+    assert "context_addenda" not in context
+    assert context["interpersonal_suggestions"] == [{"suggestion_id": "s1"}]
+    assert context["current_conversation"]["candidate_facts"] is not None
+
+
+def test_intervention_writer_normalizes_richer_model_text_values():
+    from mlomega_audio_elite.proactive_interventions_v14_7 import _text_field
+
+    assert _text_field(
+        {"person_hint": "Maxime", "person_id": "person-1"},
+        preferred_keys=("person_hint", "name", "person_id"),
+    ) == "Maxime"
+    assert json.loads(_text_field(["one", "two"])) == ["one", "two"]
+
+
+def test_close_day_accepts_honest_life_watch_and_idempotent_empty_delta():
+    from mlomega_audio_elite.v18_close_day import _status_ok
+
+    assert _status_ok({"status": "compiled_watch_only"}, stage_name="life_model")
+    assert _status_ok({"status": "compiled_no_life_delta"}, stage_name="life_model")
+    assert not _status_ok({"status": "error"}, stage_name="life_model")
+
+
+def test_e64_canonical_paths_are_product_default_with_explicit_rollback(monkeypatch):
+    from mlomega_audio_elite.brain2_conversation_episode import (
+        conversation_episode_enabled,
+    )
+    from mlomega_audio_elite.brain2_shared_facts_v19 import shared_facts_enabled
+
+    monkeypatch.delenv("MLOMEGA_E64_CONVERSATION_EPISODES", raising=False)
+    monkeypatch.delenv("MLOMEGA_E64_SHARED_FACTS", raising=False)
+    assert conversation_episode_enabled() is True
+    assert shared_facts_enabled() is True
+    monkeypatch.setenv("MLOMEGA_E64_CONVERSATION_EPISODES", "0")
+    monkeypatch.setenv("MLOMEGA_E64_SHARED_FACTS", "0")
+    assert conversation_episode_enabled() is False
+    assert shared_facts_enabled() is False
+
+
+def test_daily_longitudinal_projections_keep_raw_only_as_durable_manifest(
+    tmp_path, monkeypatch,
+):
+    db_path = _fixture_db(Path(tmp_path), monkeypatch)
+    from mlomega_audio_elite.db import connect
+    from mlomega_audio_elite.night_orchestrator.prompt_projection import (
+        project_stage_payload,
+    )
+
+    raw = {
+        "person_id": "me", "period_start": "2026-01-01T00:00:00Z",
+        "period_end": "2026-01-01T23:59:59Z",
+        "language": {"turns_recent": [{"text": "opaque raw duplicate"}]},
+        "observed_life": {"episodes": [{"summary": "opaque raw duplicate"}]},
+    }
+    with connect(db_path) as con:
+        life = project_stage_payload(
+            stage_name="life_model_bootstrap", person_id="me",
+            source_ref="me:2026-01-01:bootstrap",
+            payload={"raw_evidence": raw}, connection=con,
+        )
+        periodic = project_stage_payload(
+            stage_name="v14_periodic_mirror_day", person_id="me",
+            source_ref="me:day:2026-01-01",
+            payload={"bundle": {**raw, "period": "day"}, "v14_digest": {}},
+            connection=con,
+        )
+
+    life_prompt = life.payload["raw_evidence"]
+    mirror_prompt = periodic.payload["bundle"]
+    assert "language" not in life_prompt
+    assert "observed_life" not in life_prompt
+    assert life_prompt["raw_source_manifest"]["digest"]
+    assert mirror_prompt["raw_source_manifest"]["digest"]
+    assert life_prompt["shared_registry"]["source_manifest"]["digest"]
+    assert periodic.payload["v14_digest"] == {}
+
+
+def test_unregistered_product_stage_fails_before_replaying_raw_bundle(
+    tmp_path, monkeypatch,
+):
+    db_path = _fixture_db(Path(tmp_path), monkeypatch)
+    import pytest
+    from mlomega_audio_elite.db import connect
+    from mlomega_audio_elite.night_orchestrator.prompt_projection import (
+        project_stage_payload,
+    )
+
+    with connect(db_path) as con, pytest.raises(
+        RuntimeError, match="unregistered product stage input policy"
+    ):
+        project_stage_payload(
+            stage_name="v14_future_accidental_raw_bundle", person_id="me",
+            source_ref="conv-i2", payload={"bundle": {"raw": [1, 2, 3]}},
+            connection=con,
+        )

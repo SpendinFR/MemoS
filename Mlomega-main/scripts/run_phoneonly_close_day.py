@@ -26,6 +26,7 @@ See docs/DECISIONS.md §E47C for the ADR (why reopen-by-status, not delete/force
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import sys
@@ -36,37 +37,20 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-_CUDA_DLL_HANDLES: list = []
+from mlomega_audio_elite.runtime_environment_v19 import (
+    configure_windows_cuda_dlls as _configure_shared_windows_cuda_dlls,
+    sanitize_blackhole_proxy_env as _sanitize_blackhole_proxy_env,
+)
 
 
-def _configure_windows_cuda_dlls() -> None:
-    """Expose the cuDNN 8/cuBLAS DLLs installed by NVIDIA's Python wheels.
+def _configure_windows_cuda_dlls() -> tuple[bool, dict]:
+    """Compatibility wrapper around the one shared live/night bootstrap."""
 
-    Same pattern as services/live-pc/audiort.py: the core venv's CTranslate2
-    (< 4.5, pinned by whisperx) needs the FULL cuDNN 8 set
-    (``cudnn_ops_infer64_8.dll`` etc., from the ``nvidia-cudnn-cu12==8.9.*``
-    wheel) but Windows does not search sibling Python packages for dependent
-    DLLs. Without this, the close-day subprocess aborts with
-    "Could not locate cudnn_ops_infer64_8.dll" (0xC0000409) as soon as the
-    WhisperX/faster-whisper model initialises on CUDA. Keep the directory
-    handles alive for the process lifetime."""
-    if sys.platform != "win32" or not hasattr(os, "add_dll_directory"):
-        return
-    site_packages = Path(sys.prefix) / "Lib" / "site-packages" / "nvidia"
-    discovered: list[str] = []
-    for component in ("cublas", "cudnn", "cuda_nvrtc"):
-        dll_dir = site_packages / component / "bin"
-        if dll_dir.is_dir():
-            _CUDA_DLL_HANDLES.append(os.add_dll_directory(str(dll_dir)))
-            discovered.append(str(dll_dir))
-    if discovered:
-        # CTranslate2 loads some libraries by name rather than as ordinary
-        # extension dependencies, so add_dll_directory alone is insufficient.
-        current = os.environ.get("PATH", "")
-        os.environ["PATH"] = os.pathsep.join(discovered + ([current] if current else []))
+    return _configure_shared_windows_cuda_dlls(ROOT)
 
 
-_configure_windows_cuda_dlls()
+_REMOVED_BLACKHOLE_PROXIES = _sanitize_blackhole_proxy_env()
+_CUDA_ENV_OK, _CUDA_ENV_DETAIL = _configure_windows_cuda_dlls()
 
 
 def _reopen_completed_close_day(*, person_id: str, package_date: str | None) -> dict:
@@ -109,6 +93,28 @@ def _reopen_completed_close_day(*, person_id: str, package_date: str | None) -> 
     return {"reopened": True, "prior_status": "completed", "package_date": day}
 
 
+def _run_deferred_semantics(*, person_id: str, live_session_id: str) -> dict:
+    """Drain durable live semantic jobs before any nightly stage reads them.
+
+    This also covers process-crash recovery: the normal runtime usually drained
+    the queue already, while a restarted CloseDay worker reconstructs the same
+    source-addressed writers from SQLite without replaying audio/video.
+    """
+    module_path = ROOT / "services" / "live-pc" / "deferred_fine_intel.py"
+    spec = importlib.util.spec_from_file_location("phoneonly_deferred_fine_intel", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load deferred fine-intel processor")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return dict(
+        module.process_deferred_fine_intel_backlog(
+            person_id=person_id,
+            live_session_id=live_session_id,
+        )
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Resume-safe PhoneOnly CloseDay worker")
     parser.add_argument("--person-id", required=True)
@@ -121,6 +127,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if not _CUDA_ENV_OK:
+        raise RuntimeError(f"CloseDay CUDA/cuDNN environment invalid: {_CUDA_ENV_DETAIL}")
+
     from mlomega_audio_elite.v18_close_day import close_brainlive_day
 
     reopen_report = None
@@ -128,6 +137,13 @@ def main() -> int:
         reopen_report = _reopen_completed_close_day(
             person_id=args.person_id, package_date=args.package_date
         )
+
+    deferred_semantics = _run_deferred_semantics(
+        person_id=args.person_id,
+        live_session_id=args.live_session_id,
+    )
+    if deferred_semantics.get("status") not in {"completed", "not_applicable"}:
+        raise RuntimeError(f"deferred semantics incomplete: {deferred_semantics}")
 
     result = close_brainlive_day(
         person_id=args.person_id,
@@ -139,6 +155,7 @@ def main() -> int:
     )
     if reopen_report is not None:
         result = {**result, "reopen": reopen_report}
+    result = {**result, "deferred_semantics": deferred_semantics}
 
     # E54: media retention runs ONLY after the close-day has authorised cleanup
     # (cleanup.eligible == True — the gate the pipeline sets once every stage,

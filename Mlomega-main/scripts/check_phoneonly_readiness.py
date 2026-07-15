@@ -20,6 +20,15 @@ for path in (ROOT, ROOT / "src"):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
+from mlomega_audio_elite.runtime_environment_v19 import (
+    probe_proxy_environment,
+    sanitize_blackhole_proxy_env,
+)
+
+# The exact environment used by RUN must be checked.  Correct only the known
+# isolated-runner black hole before any Hugging Face/Whisper imports occur.
+REMOVED_BLACKHOLE_PROXIES = sanitize_blackhole_proxy_env()
+
 
 def _load(name: str, path: Path) -> Any:
     spec = importlib.util.spec_from_file_location(name, path)
@@ -34,6 +43,16 @@ def run(*, person_id: str, deep: bool) -> dict[str, Any]:
     http = _load("phoneonly_readiness_http", LIVE / "sessionhub_http.py")
     report = dict(http._probe_ai_chain(person_id=person_id))
     checks = dict(report.get("checks") or {})
+    night_report = (checks.get("close_day_env") or {}).get("detail")
+    if isinstance(night_report, dict) and isinstance(night_report.get("checks"), dict):
+        for name, check in night_report["checks"].items():
+            checks[f"night::{name}"] = check
+    proxy_ok, proxy_detail = probe_proxy_environment()
+    proxy_detail["removed_at_import"] = REMOVED_BLACKHOLE_PROXIES
+    checks["proxy_environment"] = {
+        "ok": proxy_ok,
+        "detail": proxy_detail,
+    }
 
     detector_path = ROOT / "models" / "yolox_nano.onnx"
     if detector_path.exists():
@@ -107,6 +126,11 @@ def main(argv: list[str] | None = None) -> int:
         "[FAIL] PhoneOnly not production-ready: " + ", ".join(report.get("failed") or []),
         file=sys.stderr,
     )
+    for name in report.get("failed") or []:
+        detail = (report.get("checks") or {}).get(name, {}).get("detail")
+        fix = detail.get("fix") if isinstance(detail, dict) else None
+        if fix:
+            print(f"[FIX] {name}: {fix}", file=sys.stderr)
     return 2
 
 

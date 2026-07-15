@@ -1084,3 +1084,52 @@ commit, invalidation d'une seule page modifiée et continuité d'événement. Su
 `MLOMEGA_E64_SHARED_FACTS` sur cette seule preuve. Action suivante : un run frais vidéo
 cinq minutes, vérifier 698/698 (ou le nouveau total source exact), appels/tokens/temps,
 CloseDay/recovery et dashboard; aucune projection 1 h/8 h avant ce chiffre.
+
+## E64-I / I0.5 — passation finale du 2026-07-15
+
+Le nouveau chemin conversation/faits partagés est ON par défaut; rollback uniquement par
+`MLOMEGA_E64_CONVERSATION_EPISODES=0` et/ou `MLOMEGA_E64_SHARED_FACTS=0`. Le registre
+central `night_orchestrator/prompt_projection.py` interdit désormais tout stage produit
+non classé. Ne corriger aucun futur dépassement dans un prompt métier isolé : ajouter sa
+politique et sa projection au registre, puis tester couverture/manifeste.
+
+Le live PhoneOnly n'effectue plus la sémantique fine lourde dans le worker audio. La file
+durable est `live_fine_intel_queue_v19` (`services/live-pc/deferred_fine_intel.py`). Le
+CloseDay attend son drain; la recovery la reprend. Pour diagnostiquer une fermeture :
+relire `fine_intel_pending`, `fine_intel_model_calls`, `deferred_semantics` et les lignes
+de cette table avant de toucher au timeout.
+
+### Commandes de reprise environnement
+
+Depuis la racine `Mlomega-main` :
+
+```powershell
+# Téléchargement explicite seulement si le gate indique un cache HF incomplet
+.\.venv\Scripts\python.exe scripts\PREFETCH_FIRSTTRY_MODELS.py
+
+# Gate cœur seul (aucun téléchargement)
+.\.venv\Scripts\python.exe scripts\check_close_day_preflight.py --json
+
+# Gate FirstTry complet; RUN appelle exactement celui-ci avant SessionHub
+.\.venv-live\Scripts\python.exe scripts\check_phoneonly_readiness.py --person-id me --deep
+```
+
+État machine au checkpoint : HF gated/cache, ASR, Transformers, `.venv`, DB/media,
+Qdrant, torch CUDA et chargement réel cuDNN 8 sont verts. Trois échecs sont attendus et
+guidés tant que l'opérateur n'a pas choisi : `.env` sélectionne Ollama mais Ollama est
+arrêté; un llama-server alias `qwen9b-p1-24k-mlomega`, contexte 24576, tourne encore sur
+8080; les VLM Ollama ne peuvent donc pas être sondés. Soit arrêter ce serveur et lancer
+Ollama, soit déclarer explicitement backend/alias/contexte llama.cpp; dans les deux cas
+Ollama reste nécessaire à `moondream` et `qwen3-vl:8b`. Ne démarrer aucune capture tant
+que le rapport n'est pas `ready=true`.
+
+Tests : 23 ciblés hermétique/installation/multi-session verts. La suite cœur a donné
+92 verts/1 skip; huit tests PhoneOnly ont échoué uniquement parce qu'ils ont été lancés
+dans `.venv` sans aiortc/webrtcvad. Les relancer dans `.venv-live`; la relance longue a
+été interrompue à la demande utilisateur. Ne pas attribuer ces huit erreurs au code et
+ne pas annoncer pour autant le gate live vert.
+
+Suite produit autoritaire : fermer I0.1–I0.4, puis I0.6, I4 et I7 Gate B selon le détail
+dans `PROD_BACKLOG.md`. Le dernier vrai CloseDay est complet mais Deep Vision est encore
+1 sélection/0 analyse/1 quarantaine et aucune voix owner n'était enrôlée; aucune promesse
+1 h/8 h n'est acquise.

@@ -123,7 +123,6 @@ SEGMENTATION_SCHEMA: dict[str, Any] = {
         {
             "ordinal": 0,
             "title_hint": "",
-            "start_turn_id": "",
             "end_turn_id": "",
             "boundary_reason": "conversation_start|new_goal|new_person|new_domain|explicit_transition",
         }
@@ -141,7 +140,6 @@ SEGMENTATION_FORMAT_SCHEMA: dict[str, Any] = {
                 "properties": {
                     "ordinal": {"type": "integer", "minimum": 0},
                     "title_hint": {"type": "string", "maxLength": 100},
-                    "start_turn_id": {"type": "string"},
                     "end_turn_id": {"type": "string"},
                     "boundary_reason": {
                         "type": "string",
@@ -152,7 +150,7 @@ SEGMENTATION_FORMAT_SCHEMA: dict[str, Any] = {
                     },
                 },
                 "required": [
-                    "ordinal", "title_hint", "start_turn_id", "end_turn_id",
+                    "ordinal", "title_hint", "end_turn_id",
                     "boundary_reason",
                 ],
                 "additionalProperties": False,
@@ -250,14 +248,16 @@ SUBTHEME_DETAIL_FORMAT_SCHEMA: dict[str, Any] = {
 
 _SEGMENTATION_MISSION = (
     "Découpe uniquement les frontières thématiques de cette conversation continue. "
-    "Chaque segment est un intervalle contigu; les intervalles couvrent tous les tours "
-    "exactement une fois et restent dans l'ordre. Une question qui précise la personne, "
+    "Retourne seulement la FIN de chaque segment. Le premier commence au premier tour, "
+    "chaque suivant commence automatiquement après la fin précédente, et la dernière "
+    "fin est le dernier tour. Tous les tours sont ainsi couverts exactement une fois. "
+    "Une question qui précise la personne, "
     "la cause ou l'action du sujet courant reste dans le même segment. Commence un "
     "nouveau segment seulement lorsque le but change réellement: vérification d'identité "
     "ou d'interlocuteur, nouvelle personne sans lien avec l'échange, nouveau domaine, "
     "nouvelle activité, ou transition explicite. Un acquiescement/filler appartient au "
     "segment voisin qu'il clôt ou ouvre; il ne crée pas un segment. Ne résume et "
-    "n'analyse aucune psychologie: retourne seulement les bornes et un titre indicatif."
+    "n'analyse aucune psychologie: retourne seulement les fins et un titre indicatif."
 )
 
 _DETAIL_MISSION = (
@@ -296,8 +296,8 @@ class ConversationEpisodeContractError(RuntimeError):
 
 
 def conversation_episode_enabled() -> bool:
-    """Opt-in gate; v5 remains the rollback until the real shadow gate passes."""
-    return os.environ.get("MLOMEGA_E64_CONVERSATION_EPISODES", "0") == "1"
+    """Use the lossless conversation parent by default; ``=0`` is rollback."""
+    return os.environ.get("MLOMEGA_E64_CONVERSATION_EPISODES", "1") != "0"
 
 
 def _unique_strings(value: Any) -> list[str]:
@@ -337,10 +337,21 @@ def normalize_segmentation(
             raise ConversationEpisodeContractError("segmentation_ordinal_invalid")
         start_id = str(raw.get("start_turn_id") or "")
         end_id = str(raw.get("end_turn_id") or "")
-        if ordinal != expected_ordinal or start_id not in position or end_id not in position:
+        if ordinal != expected_ordinal or end_id not in position:
             raise ConversationEpisodeContractError("segmentation_boundary_invalid")
-        start = position[start_id]
+        # The production contract emits end boundaries only.  Exact starts are
+        # deterministic: first turn, then the item after the previous end.
+        # Legacy outputs carrying a start remain accepted for replay/rollback.
+        start = position[start_id] if start_id in position else next_start
         end = position[end_id]
+        # Small models often repeat the previous segment's inclusive end as
+        # the next inclusive start (A..B, B..C).  The ordered end boundaries
+        # still define the exact same semantic partition; canonicalising that
+        # overlap to B+1 loses no turn and invents no boundary.  A real gap or
+        # a non-increasing end remains a hard failure because repairing either
+        # would assign speech to a topic the model did not choose.
+        if start < next_start and end >= next_start:
+            start = next_start
         if start != next_start or end < start:
             raise ConversationEpisodeContractError("segmentation_gap_overlap_or_order")
         title = str(raw.get("title_hint") or "").strip()
