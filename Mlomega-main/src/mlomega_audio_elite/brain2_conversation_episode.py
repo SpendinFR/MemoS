@@ -653,6 +653,18 @@ def normalize_window_segmentation(
     strictly ordered, and the final end is forced to the window's last primary
     turn so windows abut with neither gap nor duplicate. Returning ``None`` marks
     a contract failure so the executor subdivides/quarantines - never a text merge.
+
+    Each local segment carries provenance the global reassembly needs to avoid an
+    artificial thematic cut at a window edge: ``window_first`` on the segment that
+    opens the window, ``window_last`` on the one that closes it, and
+    ``window_boundary_forced`` on that last segment when the window edge did NOT
+    coincide with a real semantic boundary emitted by the model. A window edge is
+    "forced" when the code had to override the model's last end to reach the
+    window's final primary turn (the model's last real boundary was earlier), OR
+    when the model itself closed the window on that turn but marked it a
+    continuation (``conversation_start`` boundary_reason) rather than a fresh
+    theme. Either way the theme spills into the next window and the reassembly may
+    fuse the two fragments BY PROVENANCE (never by text).
     """
     if not isinstance(output, Mapping) or not isinstance(output.get("segments"), list):
         return None
@@ -666,6 +678,10 @@ def normalize_window_segmentation(
         # a planning invariant break, not something to repair by text.
         return None
     lo, hi = primary_positions[0], primary_positions[-1]
+    # A window that opens strictly after the whole conversation's first turn opens
+    # in the middle of the ordered turns; its first segment may continue a theme
+    # carried in the overlap context (provenance the reassembly checks per edge).
+    window_opens_mid = lo > 0
     segments: list[dict[str, Any]] = []
     next_start = lo
     for expected_ordinal, raw in enumerate(output.get("segments") or []):
@@ -694,9 +710,67 @@ def normalize_window_segmentation(
         return None
     # The window is a hard segment end: force the last local segment to close on
     # the window's final primary turn so the next window starts exactly after it.
-    if segments[-1]["end_turn_id"] != ordered_ids[hi]:
+    model_closed_on_edge = segments[-1]["end_turn_id"] == ordered_ids[hi]
+    if not model_closed_on_edge:
         segments[-1] = {**segments[-1], "end_turn_id": ordered_ids[hi]}
+    # Provenance: the edge is a forced (non-semantic) cut when either the code had
+    # to override the model's last end, or the model closed the window itself but
+    # tagged it a continuation rather than a genuinely new theme.
+    boundary_forced = (not model_closed_on_edge) or (
+        segments[-1].get("boundary_reason") == "conversation_start"
+    )
+    # The first local segment continues from the overlap when the model opened it
+    # with a continuation marker instead of a new-theme reason (only meaningful
+    # when the window itself opens mid-conversation).
+    first_is_continuation = window_opens_mid and (
+        segments[0].get("boundary_reason") == "conversation_start"
+    )
+    segments[0] = {**segments[0], "window_first": True, "window_first_continuation": first_is_continuation}
+    segments[-1] = {
+        **segments[-1],
+        "window_last": True,
+        "window_boundary_forced": boundary_forced,
+    }
     return segments
+
+
+def _fuse_forced_window_edges(
+    end_records: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Drop forced window-edge ends that split ONE theme across two windows.
+
+    ``end_records`` are the per-window local segments already ordered globally by
+    their end position. Adjacent records straddle a window edge exactly when the
+    left one carries ``window_last`` and the right one ``window_first``. That edge
+    is an ARTIFICIAL cut of a single theme when the left end is
+    ``window_boundary_forced`` (the window closed it only because the window ended,
+    not because the model saw a new theme) AND the right segment opened as a
+    continuation (``window_first_continuation``). Removing the left record fuses
+    the two fragments: the right segment now inherits the earlier start, so
+    ``normalize_segmentation`` rebuilds one contiguous segment covering both.
+
+    The decision is pure provenance (window role + the model's own boundary_reason
+    markers) and the union of turns: no text similarity, no dedup, and a genuine
+    semantic boundary at a window edge (not forced, or the next head is a new
+    theme) is left exactly where the model put it.
+    """
+    kept: list[dict[str, Any]] = []
+    records = list(end_records)
+    for index, record in enumerate(records):
+        nxt = records[index + 1] if index + 1 < len(records) else None
+        is_forced_edge = bool(record.get("window_last")) and bool(
+            record.get("window_boundary_forced")
+        )
+        next_continues = (
+            nxt is not None
+            and bool(nxt.get("window_first"))
+            and bool(nxt.get("window_first_continuation"))
+        )
+        if is_forced_edge and next_continues:
+            # Fuse: skip this forced end so the next segment spans both fragments.
+            continue
+        kept.append(dict(record))
+    return kept
 
 
 def _run_segmentation_windows(
@@ -823,6 +897,16 @@ def _run_segmentation_windows(
         if isinstance(local, list):
             end_records.extend(local)
     end_records.sort(key=lambda record: position.get(str(record.get("end_turn_id")), -1))
+    # Heal artificial thematic cuts at window edges BY PROVENANCE (never by text).
+    # A single theme that spans two windows is closed twice: the window it started
+    # in emits a forced edge (``window_boundary_forced``) at its last primary turn,
+    # and the next window opens a continuation-marked first segment
+    # (``window_first_continuation``). Dropping the forced edge record fuses the
+    # two fragments into one contiguous segment for the next window's continuation;
+    # ``normalize_segmentation`` then extends that segment back over both fragments.
+    # A real semantic boundary at a window edge is NOT forced (or the next window's
+    # head opens an explicitly new theme), so it is preserved untouched.
+    healed_records = _fuse_forced_window_edges(end_records)
     # Rebuild the exact global membership from the ordered end boundaries.
     global_output = {
         "segments": [
@@ -832,7 +916,7 @@ def _run_segmentation_windows(
                 "end_turn_id": record["end_turn_id"],
                 "boundary_reason": record["boundary_reason"],
             }
-            for ordinal, record in enumerate(end_records)
+            for ordinal, record in enumerate(healed_records)
         ],
         "missing_context": [],
     }

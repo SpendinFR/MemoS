@@ -298,3 +298,156 @@ def test_short_conversation_keeps_two_call_path_unchanged():
     assert len(llm.segmentation_calls) == 1 and len(llm.detail_calls) == 1
     # The single segmentation prompt saw every human turn id (no windowing).
     assert llm.segmentation_calls[0]["contract"]["human_turn_ids"] == [f"t{i}" for i in range(6)]
+
+
+class ThemeLayoutFakeLLM:
+    """A fake that segments by a GLOBAL, window-independent theme layout.
+
+    ``theme_ends`` are the global inclusive last turn indices of each real
+    semantic theme. Whatever the windowing plan does, each window only emits the
+    theme boundaries that FALL on its own primary turns (``human_turn_ids``). A
+    window that ends in the MIDDLE of a theme therefore emits NO boundary for that
+    theme (the segmentation code alone forces the window edge). The window that
+    resumes that theme opens its first segment with ``conversation_start`` -- the
+    model's provenance signal that this head is a continuation of the theme
+    carried in the overlap context, not an explicitly new theme. A real new theme
+    that happens to start exactly at a window head instead uses ``new_domain``.
+
+    This is the only realistic way a single theme crosses a window: the model of
+    window N does not close it (its last real boundary is earlier), and the model
+    of window N+1 marks its first segment as a continuation.
+    """
+
+    model = "theme-layout-fake"
+
+    def __init__(self, theme_ends: list[int]) -> None:
+        self.theme_ends = list(theme_ends)
+        self.segmentation_calls: list[dict] = []
+        self.detail_calls: list[dict] = []
+
+    def _theme_index_of(self, turn_index: int) -> int:
+        for theme_index, end in enumerate(self.theme_ends):
+            if turn_index <= end:
+                return theme_index
+        raise AssertionError("turn beyond last theme end")
+
+    def generate(self, payload, *, output_budget):
+        prompt = json.loads(payload["prompt"]) if isinstance(payload.get("prompt"), str) else payload
+        mission = prompt.get("mission")
+        if mission == _SEGMENTATION_MISSION:
+            self.segmentation_calls.append(prompt)
+            primary = [str(tid) for tid in prompt["contract"]["human_turn_ids"]]
+            primary_idx = [int(pid[1:]) for pid in primary]
+            first_idx, last_idx = primary_idx[0], primary_idx[-1]
+            # Real theme ends that land ON this window's primary turns.
+            emitted = [e for e in self.theme_ends if first_idx <= e <= last_idx]
+            # The v6 contract instructs the model to always close the window on its
+            # last primary turn. When the window ends in the MIDDLE of a theme
+            # (last primary is not itself a theme end), the model still emits that
+            # forced closing boundary but marks it as a continuation
+            # (``conversation_start``): its provenance says "I did not open a new
+            # theme here, the theme spills into the next window".
+            forced_continuation = bool(emitted) and emitted[-1] != last_idx or not emitted
+            if not emitted or emitted[-1] != last_idx:
+                emitted = [*emitted, last_idx]
+            # Does this window OPEN in the middle of a theme? If so, its first
+            # segment continues the theme carried in the overlap context.
+            opens_mid_theme = first_idx > 0 and (first_idx - 1) not in self.theme_ends
+            segments = []
+            for ordinal, end in enumerate(emitted):
+                is_last = ordinal == len(emitted) - 1
+                if ordinal == 0 and (first_idx == 0 or opens_mid_theme):
+                    reason = "conversation_start"  # continuation at window head
+                elif is_last and forced_continuation and end == last_idx:
+                    reason = "conversation_start"  # forced window edge, theme spills over
+                else:
+                    reason = "new_domain"  # explicit new theme
+                segments.append({
+                    "ordinal": ordinal,
+                    "title_hint": f"Theme {self._theme_index_of(end)}",
+                    "end_turn_id": f"t{end}",
+                    "boundary_reason": reason,
+                })
+            return LLMCallResult(ok=True, data={"segments": segments, "missing_context": []})
+        if mission == _DETAIL_MISSION:
+            self.detail_calls.append(prompt)
+            segments = prompt["segments"]
+            subthemes = []
+            for segment in segments:
+                turn_ids = [str(turn["turn_id"]) for turn in segment["turns"]]
+                subthemes.append({
+                    "ordinal": int(segment["ordinal"]),
+                    "subtheme_type": "other",
+                    "title": f"Detail {segment['ordinal']}",
+                    "summary": f"Resume ({turn_ids[0]}..{turn_ids[-1]}).",
+                    "participants": ["UNKNOWN_VOICE_001"],
+                    "evidence_turn_ids": turn_ids,
+                    "outcome": None,
+                    "unresolved_tension": None,
+                    "confidence": 0.7,
+                })
+            return LLMCallResult(ok=True, data={
+                "conversation_episode": {
+                    "title": "Longue conversation",
+                    "situation_summary": "Une longue conversation multi-sujets.",
+                    "participants": ["UNKNOWN_VOICE_001", "UNKNOWN_VOICE_002"],
+                    "location": None,
+                    "channel": "phoneonly",
+                    "confidence": 0.75,
+                    "subthemes": subthemes,
+                },
+                "missing_context": [],
+            })
+        raise AssertionError(f"unexpected mission: {mission}")
+
+
+def test_theme_crossing_window_boundary_is_not_artificially_cut():
+    # 30 turns with budget 2500 => three segmentation windows: t0..t8, t9..t17,
+    # t18..t29 (the window edges are t8/t9, t17/t18, t22/t23 after subdivision).
+    # The real theme layout places a theme t7..t10 that STRADDLES the t8/t9 window
+    # edge: the window ending on t8 never closes the theme (it emits a forced,
+    # continuation-marked window edge), and the window resuming on t9 continues it
+    # to its real end t10. Without reconciliation this theme is cut in two at t8.
+    theme_ends = [2, 4, 6, 10, 13, 16, 19, 22, 25, 29]  # 10 real themes
+    turns = _long_turns(30)
+    llm = ThemeLayoutFakeLLM(theme_ends)
+    with connect(":memory:") as con:
+        stats, written = _run(con, llm, turns)
+    # It really did window (>= 2 segmentation windows over the boundaries).
+    assert len(llm.segmentation_calls) >= 2
+    assert stats["windowed_segmentation"] >= 2
+    parent = written["output"]["episodes"][0]
+    subthemes = parent["subthemes"]
+    # Full contiguous coverage, no gap/duplicate, order preserved.
+    flat = [tid for sub in subthemes for tid in sub["turn_ids"]]
+    assert flat == [f"t{i}" for i in range(30)]
+    assert len(flat) == len(set(flat)) == 30
+    # The exact REAL theme partition is recovered: one subtheme per real theme,
+    # ending on each real theme end -- NO extra fragment cut at a window edge.
+    ends = [sub["end_turn_id"] for sub in subthemes]
+    assert ends == [f"t{e}" for e in theme_ends]
+    # No subtheme ends on a window edge that is not itself a real theme end.
+    for edge in ("t8", "t17", "t23"):
+        assert all(sub["end_turn_id"] != edge for sub in subthemes)
+    # The straddling theme is ONE subtheme spanning t7..t10 (both fragments fused).
+    memberships = [sub["turn_ids"] for sub in subthemes]
+    assert [f"t{i}" for i in range(7, 11)] in memberships
+
+
+def test_real_boundary_at_window_edge_is_not_fused():
+    # Control: a real theme boundary falls EXACTLY on a window edge. t8 is a true
+    # theme end here, so the window closing on t8 opens no continuation and the
+    # window resuming on t9 opens an explicitly new theme (new_domain at its head).
+    # The two sides must NOT be fused -- the genuine frontier survives.
+    theme_ends = [2, 5, 8, 11, 14, 17, 20, 23, 26, 29]  # t8 and t17 are real ends
+    turns = _long_turns(30)
+    llm = ThemeLayoutFakeLLM(theme_ends)
+    with connect(":memory:") as con:
+        _stats, written = _run(con, llm, turns)
+    parent = written["output"]["episodes"][0]
+    subthemes = parent["subthemes"]
+    flat = [tid for sub in subthemes for tid in sub["turn_ids"]]
+    assert flat == [f"t{i}" for i in range(30)]
+    # Every real theme boundary stays a boundary, including those on window edges.
+    ends = [sub["end_turn_id"] for sub in subthemes]
+    assert ends == [f"t{e}" for e in theme_ends]

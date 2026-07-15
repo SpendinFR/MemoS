@@ -1166,3 +1166,31 @@ en fakes, aucun CloseDay) :
 Tests du lot : `.venv\Scripts\python.exe -m pytest -q tests\v19\test_e64i_evidence_quality.py
 tests\v19\test_e64i_capability_manifest.py tests\v19\test_e64i_long_conversation.py`.
 Reprise produit suivante : validation courte (backend persisté + readiness) puis **I4.1**.
+
+### I1.5/I1.6 — FAIT (2026-07-16) + commande llama-server P1 canonique
+
+**I1.5** : fusion par provenance aux bords de fenêtre forcés (`_fuse_forced_window_edges`
+dans `brain2_conversation_episode.py`) — un thème traversant deux fenêtres n'est plus
+coupé artificiellement ; une vraie frontière au bord reste une frontière. 20 tests verts.
+
+**I1.6** : gate réel de la minute en conditions produit (voir suivi PROD_BACKLOG) :
+2 appels, 15 772 tokens, 32,6 s, 1 parent + 4 sous-thèmes, Karim/Netflix séparés,
+26/26, zéro FK inventée.
+
+**PIÈGE OPÉRATEUR (coûte une troncature systématique si oublié)** : lancer le
+llama-server P1 avec `--reasoning-budget 0` seul NE désactive PAS le thinking de
+Qwen3.5 — le modèle brûle ses 4096 tokens de sortie en raisonnement caché et chaque
+appel JSON finit `length`. La commande canonique complète :
+
+```powershell
+& "C:\Users\wabad\llama-test\bin\llama-server.exe" `
+  -m "C:\Users\wabad\llama-test\models\Qwen3.5-9B-Q4_K_M.gguf" `
+  --alias qwen9b-p1-24k-mlomega -c 24576 --parallel 1 --cont-batching `
+  -ngl 99 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 `
+  --jinja --chat-template-kwargs '{\"enable_thinking\":false}' `
+  --reasoning-budget 0 -n 4096 --host 127.0.0.1 --port 8080
+```
+
+Vérification rapide avant tout run : `Invoke-RestMethod http://127.0.0.1:8080/props`
+doit donner l'alias exact et `n_ctx=24576`, et une requête JSON triviale doit finir
+`stop` avec `reasoning_content` vide.
