@@ -443,7 +443,7 @@ interdire une confiance dérivée supérieure à la qualité de preuve sans corr
 et mettre en quarantaine les changements de langue incohérents au lieu de les traiter
 comme faits. La validation voix réelle/enrôlée reste nécessaire.
 
-## OBS-30 — Réconciliation par absence de preuve et surproduction cognitive (OUVERT)
+## OBS-30 — Réconciliation par absence de preuve et surproduction cognitive (ÉPISTÉMOLOGIE CORRIGÉE; QUALITÉ I0.2 RESTE OUVERTE)
 
 La réconciliation a marqué des hypothèses `contradicted` parce que la vision ne les
 confirmait pas, alors que « non observé » n'est pas « faux ». Elle produit aussi des
@@ -453,6 +453,11 @@ sur-interprétation possible. À corriger avant base utilisateur : verdict `unkn
 absence, exigence de contre-preuve positive pour `contradicted`, plafond de confiance
 épistémique, dédup sémantique contrôlée et revue qualité contre la transcription/vidéo.
 Ne pas réduire arbitrairement les objets : mesurer d'abord recouvrement et provenance.
+
+Correction acquise : un forecast sans outcome explicite est ignoré, un statut inconnu
+reste ambigu/unknown, et `contradicted` exige un résultat positif `failed|false|wrong`.
+Life commence `watching` et attend deux groupes indépendants avant `promotion_ready`.
+Restent OBS-29/I0.2 (plafond par qualité source) et la revue Deep Vision/I4.
 
 ## OBS-31 — `live_ready` repayaient le LLM pour reformuler le modèle canonique (CORRIGÉ — 2026-07-14)
 

@@ -1206,3 +1206,11 @@ Pyannote 3/3 et `faster-whisper-large-v3` sont prouvés. Le dernier rapport éch
 volontairement sur l'état externe : Ollama arrêté, serveur P1:24k orphelin sur 8080 et
 VLM donc indisponibles. On corrige/configure ces services puis on relance; on ne baisse
 pas le gate pour obtenir un faux vert.
+
+**Rectification de statut.** I0.3 est clos : absence sans outcome ignorée, contradiction
+sur outcome négatif explicite seulement, Life watch puis deux groupes indépendants. I2
+est clos avec R2/R3/R4 et le registre fail-closed. I0.2 et I0.4 ne sont pas clos : le
+transport de la confiance et le recensement des capacités existent, mais ni le plafond
+transversal par qualité source ni le veto final sur capacité dégradée ne sont encore
+généralisés. I1 n'est pas entièrement clos non plus : une conversation hors budget lève
+encore au lieu d'être fenêtrée. Ces trois incréments précèdent I4; aucun rerun R1–R4.

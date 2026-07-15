@@ -1133,3 +1133,14 @@ Suite produit autoritaire : fermer I0.1–I0.4, puis I0.6, I4 et I7 Gate B selon
 dans `PROD_BACKLOG.md`. Le dernier vrai CloseDay est complet mais Deep Vision est encore
 1 sélection/0 analyse/1 quarantaine et aucune voix owner n'était enrôlée; aucune promesse
 1 h/8 h n'est acquise.
+
+### Rectification de reprise immédiate
+
+I2 et I0.3 sont clos; I1.1/I1.2/I1.4/I1.7 sont clos. Ne refaire ni R1–R4 ni l'audit des
+anciens moteurs. Avant d'ouvrir I4, trois incréments courts restent obligatoires : I0.2
+(qualité ASR/diarisation/langue/alignement → plafond des faits), I0.4 (capacité obligatoire
+→ gate du manifeste final), et I1.3 (conversation longue fenêtrée/reprise, sans
+`input_budget_exceeded`). Puis persister le profil llama.cpp P1/24576 + Ollama VLM et
+exécuter seulement readiness + tests séparés par venv. La ligne de reprise détaillée et
+les fichiers/tests attendus sont dans `PROD_BACKLOG.md`, checkpoint 2026-07-15, étapes
+1–4. Une fois ces trois cases vertes, reprendre directement **I4.1**.
