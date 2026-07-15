@@ -235,27 +235,146 @@ def _keyframe_candidates(bundle: dict[str, Any]) -> list[dict[str, Any]]:
         })
     return out
 
-def select_keyframes_for_bundle(bundle: dict[str, Any], *, max_keyframes: int = 12, silent_bias: bool = True) -> list[dict[str, Any]]:
-    """Select representative keyframes across the event.
+def _collect_requested_frame_ids(bundle: dict[str, Any]) -> set[str]:
+    """Frame ids named by a real live vision focus request (what_is/ocr/zoom/find).
 
-    Default: up to 12 frames per bundle.  We sample first/middle/last by evenly
-    spaced index so long silent events do not send thousands of near-duplicates
-    to the offline VLM.  Missing image files are excluded because Qwen-VL needs
-    raw pixels, not only text.
+    We only read structures that already exist. A focus request that names a
+    ``frame_id`` shows up in ``brainlive_sensor_events`` (modality vision) or in
+    the assembled ``brainlive_raw_timeline_v1514`` with a vision-request evidence
+    role.  When neither table nor row exists (the common case) we return an empty
+    set - no table is invented and no request is fabricated.
     """
-    candidates = [c for c in _keyframe_candidates(bundle) if c.get("exists")]
-    if not candidates:
+    live_session_id = str(bundle.get("live_session_id") or "").strip()
+    package_date = str(bundle.get("package_date") or "").strip()
+    ids: set[str] = set()
+    try:
+        with connect() as con:
+            if _table_exists(con, "brainlive_sensor_events"):
+                params: list[Any] = []
+                where = ["modality='vision'", "frame_id IS NOT NULL", "frame_id<>''"]
+                # sensor events may not carry frame_id in every schema; guard it.
+                cols = {r[1] for r in con.execute("PRAGMA table_info(brainlive_sensor_events)").fetchall()}
+                if "frame_id" in cols:
+                    if live_session_id and "live_session_id" in cols:
+                        where.append("live_session_id=?")
+                        params.append(live_session_id)
+                    ids.update(
+                        str(r["frame_id"])
+                        for r in _rows(con, "SELECT frame_id FROM brainlive_sensor_events WHERE " + " AND ".join(where), tuple(params))
+                        if r.get("frame_id")
+                    )
+            if _table_exists(con, "brainlive_raw_timeline_v1514"):
+                where = ["frame_id IS NOT NULL", "frame_id<>''", "evidence_role LIKE '%request%'"]
+                params = []
+                if package_date:
+                    where.append("package_date=?")
+                    params.append(package_date)
+                if live_session_id:
+                    where.append("live_session_id=?")
+                    params.append(live_session_id)
+                ids.update(
+                    str(r["frame_id"])
+                    for r in _rows(con, "SELECT frame_id FROM brainlive_raw_timeline_v1514 WHERE " + " AND ".join(where), tuple(params))
+                    if r.get("frame_id")
+                )
+    except Exception:
+        return ids
+    return ids
+
+
+def _apply_optional_ceiling(result: Any) -> Any:
+    """Apply MLOMEGA_DEEP_VISION_MAX_KEYFRAMES if set (OFF by default).
+
+    The change policy, not a quota, decides the keyframe count.  This ceiling is
+    only for a genuine change storm; when it fires it demotes overflow keyframes
+    to represented-by (coverage stays 100%), never a silent drop.
+    """
+    raw = os.environ.get("MLOMEGA_DEEP_VISION_MAX_KEYFRAMES")
+    if raw is None or not str(raw).strip():
+        return result
+    try:
+        cap = int(raw)
+    except (TypeError, ValueError):
+        return result
+    if cap <= 0:
+        return result
+    from .night_orchestrator.deep_vision_selection import apply_max_keyframes_ceiling
+    return apply_max_keyframes_ceiling(result, cap)
+
+
+def select_keyframes_for_bundle(bundle: dict[str, Any], *, max_keyframes: int = 12, silent_bias: bool = True) -> list[dict[str, Any]]:
+    """Select coverage-complete representative keyframes across the event.
+
+    A frame becomes a keyframe when it carries genuinely new information: a real
+    scene/object/person change (a new ``VisionChangeAtom``), OCR (visible text),
+    an explicit live user request, or a configurable safety interval.  This is a
+    policy, not a quota: a change-rich event yields more keyframes than a static
+    one, and no frame is dropped silently.  Every non-selected frame is mapped to
+    the keyframe/atom that represents it and persisted in
+    ``deep_vision_frame_coverage_v19`` so 100% of the session's frames are proven
+    accounted for.  Missing image files are still excluded from the *analysable*
+    keyframe list because the offline VLM needs raw pixels, but they remain
+    covered by their representative.
+
+    ``max_keyframes`` is retained only for backward-compatible call signatures;
+    it is NOT used as a quota.  The change policy alone decides how many
+    keyframes are warranted, so a change-rich 5-minute event keeps all its
+    distinct keyframes instead of being silently truncated to 12.  A pathological
+    hard ceiling can be re-enabled with ``MLOMEGA_DEEP_VISION_MAX_KEYFRAMES`` for
+    a genuine change storm; when it fires, overflow keyframes are demoted to
+    represented-by their previous kept keyframe (still covered), never dropped by
+    a silent ``rows[:N]``.
+    """
+    from .night_orchestrator.deep_vision_selection import (
+        persist_frame_coverage,
+        select_keyframes_with_coverage,
+    )
+
+    all_candidates = _keyframe_candidates(bundle)
+    if not all_candidates:
         return []
-    max_keyframes = max(1, int(max_keyframes or 12))
-    if len(candidates) <= max_keyframes:
-        selected = candidates
-    else:
-        last = len(candidates) - 1
-        indices = sorted({round(i * last / (max_keyframes - 1)) for i in range(max_keyframes)}) if max_keyframes > 1 else [0]
-        selected = [candidates[i] for i in indices]
+
+    requested = _collect_requested_frame_ids(bundle)
+    result = select_keyframes_with_coverage(bundle, all_candidates, requested_frame_ids=requested)
+
+    # Optional pathological ceiling (OFF by default). When set, demote overflow
+    # keyframes to represented-by so coverage stays complete; never a silent drop.
+    result = _apply_optional_ceiling(result)
+
+    # Durably persist the coverage of EVERY frame (selected | represented). This
+    # is additive provenance; raw frames/observations are never touched.
+    person_id = str(bundle.get("person_id") or "me")
+    package_date = str(bundle.get("package_date") or "")
+    try:
+        with connect() as con:
+            persist_frame_coverage(con, person_id=person_id, package_date=package_date, result=result)
+            con.commit()
+    except Exception:
+        # Coverage persistence must never break the analysis path; the in-memory
+        # result still guarantees the mapping used below.
+        pass
+
+    by_frame_id = {}
+    for c in all_candidates:
+        fid = str(c.get("frame_id") or c.get("image_path") or "").strip()
+        if fid and fid not in by_frame_id:
+            by_frame_id[fid] = c
+
+    selected: list[dict[str, Any]] = []
+    for fid in result.selected_frame_ids:
+        cand = by_frame_id.get(fid)
+        # The VLM can only analyse a keyframe that has a readable image file.
+        # A selected-but-imageless keyframe stays covered in the manifest but is
+        # not sent to the VLM (unchanged downstream contract).
+        if not cand or not cand.get("exists"):
+            continue
+        selected.append(cand)
+
     for i, item in enumerate(selected):
         item["sample_index"] = i
-        item["sample_reason"] = "evenly_spaced_keyframe_for_offline_deep_vlm"
+        fid = str(item.get("frame_id") or item.get("image_path") or "").strip()
+        reasons = result.reasons_by_frame.get(fid) or ()
+        item["sample_reason"] = "+".join(reasons) if reasons else "coverage_keyframe"
     return selected
 
 

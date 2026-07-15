@@ -1296,3 +1296,32 @@ requête triviale : `reasoning_content` rempli, `content` vide). Il faut AUSSI
 vérification dans EXECUTOR_BUILD_GUIDE. Conséquence pour I4/I7 : tout benchmark fait
 avec un serveur mal lancé est invalide par construction — vérifier le probe avant de
 mesurer.
+
+## 2026-07-16 — I4.1 : sélection Deep Vision avec couverture (ADR)
+
+**Cause racine du faux « 1 sélectionnée / 0 analysée ».** La sélection réelle vivait dans
+`brainlive_offline_deep_vision_v16_1.select_keyframes_for_bundle` (appelée par l'override
+`v18_poststop_outputs.install_deep`) : un QUOTA d'échantillonnage régulier
+(`max_keyframes=12`, indices espacés) qui droppait silencieusement les autres frames sans
+aucune couverture — sur la session 5 min réelle, 472 frames sur 473 disparaissaient avant
+même le VLM.
+
+**Politique centrale.** `night_orchestrator/deep_vision_selection.py` : keyframe sur
+changement réel d'état (nouvel `VisionChangeAtom` du réducteur testé — jamais le jitter
+de confiance), OCR (`visible_text`), demande utilisateur réelle (marqueur per-frame ou
+focus lu dans `brainlive_sensor_events`/`brainlive_raw_timeline_v1514`), et intervalle
+de sécurité `MLOMEGA_DEEP_VISION_SAFETY_INTERVAL_S` (défaut 60 s). Le cap historique
+n'existe plus comme troncature ; un plafond pathologique optionnel (OFF par défaut)
+rétrograde l'excédent en frames représentées, sans perte.
+
+**Couverture prouvée.** Table additive `deep_vision_frame_coverage_v19`
+(`person/date/bundle/frame` PK, idempotente au rerun) : chaque frame non sélectionnée
+pointe sa keyframe/atome représentatif ; `coverage_manifest()` exige 100 %
+(sélectionnée | représentée), zéro orpheline. Mesure sur clones scratch : 5 min =
+473→121 keyframes + 352 représentées (473/473) ; minute statique = 1 keyframe (200/200).
+Writers `brainlive_deep_vision_runs_v161` et gate de capacités I0.4 inchangés.
+
+**Décision reportée à I4.2 (pas une réduction arbitraire).** Les 120 atomes incluent le
+churn de track-ids ; en label-set track-agnostique la session vaut ~78 changements.
+Le choix (politique label-set ou regroupement de micro-transitions) sera tranché avec la
+vraie passe VLM et ses mesures, jamais pour « faire baisser le compteur » sans preuve.

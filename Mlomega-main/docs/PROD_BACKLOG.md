@@ -989,7 +989,15 @@ réduction statique de JSON comme une validation modèle.
 
 #### I4 — vision lourde : analyser moins de pixels, pas moins d'événements
 
-- [ ] **I4.1 Sélection avec couverture** : keyframe sur changement de scène/objet/action/personne, OCR, demande utilisateur et intervalle de sécurité; chaque frame écartée pointe vers la keyframe/atome représentatif. Les 11 images de la vidéo référence servent de baseline, pas de quota arbitraire.
+- [x] **I4.1 Sélection avec couverture** : keyframe sur changement de scène/objet/action/personne, OCR, demande utilisateur et intervalle de sécurité; chaque frame écartée pointe vers la keyframe/atome représentatif. Les 11 images de la vidéo référence servent de baseline, pas de quota arbitraire.
+
+> **Suivi I4.1 — FAIT 2026-07-16 (notes, texte intouché) :**
+> - **Cause racine trouvée** du « 1 sélectionnée/0 analysée » : `select_keyframes_for_bundle` (module de base, appelé par l'override `install_deep`) était un QUOTA d'échantillonnage régulier (`max_keyframes=12`, `candidates[i]`) qui droppait silencieusement toute autre frame sans couverture — sur les DB réelles, 472 frames sur 473 perdues.
+> - Nouvelle politique centrale `night_orchestrator/deep_vision_selection.py` : keyframe sur (a) nouvel `VisionChangeAtom` (changement réel, jitter de confiance jamais), (b) OCR (`visible_text`), (c) demande utilisateur réelle (marqueur ou focus dans `brainlive_sensor_events`/`raw_timeline`), (d) intervalle de sécurité `MLOMEGA_DEEP_VISION_SAFETY_INTERVAL_S` (60 s). Plus de `rows[:N]` ; plafond pathologique optionnel (OFF) qui RÉTROGRADE en représentées, ne jette jamais.
+> - Couverture : table additive `deep_vision_frame_coverage_v19` (PK person/date/bundle/frame, idempotente) — chaque frame écartée pointe sa keyframe/atome ; manifeste 100 %.
+> - Mesure (clones scratch, DBs sources intactes) : **5 min réel = 473 frames → 121 keyframes (120 changement + 1 sécurité) + 352 représentées = 473/473, 0 orpheline** (ancienne politique : 1 keyframe, 472 perdues) ; **minute statique = 1 keyframe, 200/200** — le contraste attendu. Writers (`brainlive_deep_vision_runs_v161`) et gate I0.4 inchangés.
+> - Tests : 11 nouveaux (`test_e64i_deep_vision_selection.py`) + 46 non-rég verts (1 échec pré-existant tokenizer confirmé via stash).
+> - **Point ouvert pour I4.2** : 120 atomes reflètent le churn de track-ids ; 121 keyframes × ~80 s/image serait cher. Option à trancher avec la vraie passe VLM : politique « label-set » track-agnostique (78 changements) ou regroupement des micro-transitions — décision I4.2, pas une réduction arbitraire.
 - [ ] **I4.2 Backend et cache** : Qwen3-VL 8B local, `think=false`, format strict, budget sortie mesuré; cache seulement par `sha(image)+modèle+version prompt`. Un retry ne repaye pas une image déjà validée.
 - [ ] **I4.3 Réemploi** : VisionRT live fournit détection/tracking; Deep Vision ajoute la sémantique aux keyframes; `visual_consolidation` réutilise ces sorties par code et n'est pas supprimé comme faux doublon.
 - [ ] **I4.4 Gate** : 11/11 images référence valides ou dégradation explicite; comparer événements humains/OCR/objets à la vérité de la vidéo. Mesurer froid, chaud, images/heure et temps GPU avant projection.
