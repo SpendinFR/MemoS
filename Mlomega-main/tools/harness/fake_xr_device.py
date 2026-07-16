@@ -132,6 +132,7 @@ class FakeXrDevice:
         duration: float | None = None,
         end_session: bool = True,
         frame_hz: float = 10.0,
+        end_timeout: float = 900.0,
     ) -> None:
         self.base_url = f"http://{host}:{port}"
         self.media = media
@@ -140,6 +141,10 @@ class FakeXrDevice:
         self.duration = duration
         self.end_session = end_session
         self.frame_hz = frame_hz
+        # E64-i chantier 4: /session/end used the aiohttp default (~300 s) which
+        # timed out the phone even though the server keeps a durable recovery job.
+        # An explicit, generous, configurable timeout is applied to THIS call only.
+        self.end_timeout = max(1.0, float(end_timeout))
 
         self.session_id: str | None = None
         self.token: str | None = None
@@ -152,6 +157,11 @@ class FakeXrDevice:
             "downlink_messages": 0,
             "downlink_type_counts": {},
             "command_execution_traces": [],
+            # E64-i chantier 3: accepted traces are pre-execution and additive.
+            # They are tracked separately so a blocked command is provably not
+            # invisible, while command_execution_traces keeps counting exactly one
+            # terminal (completed|failed) trace per command as before.
+            "command_accepted_traces": [],
             "meaningful_downlinks": [],
             "end_session_status": None,
             "errors": [],
@@ -238,7 +248,12 @@ class FakeXrDevice:
         counts = self.report["downlink_type_counts"]
         counts[kind] = int(counts.get(kind, 0)) + 1
         if payload.get("type") == "command_execution_trace":
-            self.report["command_execution_traces"].append(payload)
+            # A pre-execution ``accepted`` trace is observability only; the count of
+            # executed commands is still exactly one terminal trace per command.
+            if str(payload.get("phase") or "") == "accepted":
+                self.report["command_accepted_traces"].append(payload)
+            else:
+                self.report["command_execution_traces"].append(payload)
         elif payload.get("type") != "scene_delta" and len(self.report["meaningful_downlinks"]) < 200:
             self.report["meaningful_downlinks"].append(payload)
         # A device_command arrives from the PC IntentRouter / wake-word push.
@@ -417,6 +432,7 @@ class FakeXrDevice:
                     async with http.post(
                         f"{self.base_url}/session/end",
                         json={"session_id": self.session_id, "token": self.token},
+                        timeout=aiohttp.ClientTimeout(total=self.end_timeout),
                     ) as resp:
                         status = await resp.json()
                     self.report["end_session_status"] = (
@@ -465,6 +481,7 @@ async def _amain(args: argparse.Namespace) -> int:
         device_id=args.session_id,
         duration=args.duration,
         end_session=args.end_session,
+        end_timeout=args.end_timeout,
     )
     report = await device.run()
     text = json.dumps(report, indent=2)
@@ -484,6 +501,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--session-id", dest="session_id", default="e63-harness")
     parser.add_argument("--end-session", dest="end_session", action="store_true", default=True)
     parser.add_argument("--no-end-session", dest="end_session", action="store_false")
+    parser.add_argument(
+        "--end-timeout", type=float, default=900.0,
+        help="explicit timeout (s) for the POST /session/end call (default generous 900)",
+    )
     parser.add_argument("--synth-seconds", type=int, default=60)
     parser.add_argument("--synth-dir", default=None)
     parser.add_argument("--out", default=None)

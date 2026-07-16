@@ -503,6 +503,15 @@ class PhoneOnlyRuntime:
         self.close_day_maintenance_status = "not_started"
         self.deferred_semantic_status = "not_started"
         self.deferred_semantic_result: dict[str, Any] = {}
+        # E64-i chantier 1: the remaining fine-intel backlog is drained by a
+        # background task launched at end_session_only. /session/end returns as soon
+        # as media is stopped, raw turns/audio are drained and the durable recovery
+        # job exists; the heavy CloseDay is gated on this background drain. A crash
+        # during the drain stays recoverable: the fine-intel queue is durable and
+        # startup recovery reprocesses it.
+        self.fine_intel_drain_task: asyncio.Task[Any] | None = None
+        self.fine_intel_drain_status = "not_started"
+        self.fine_intel_drain_result: dict[str, Any] = {}
         self.end_status = "active"
         self._end_lock = asyncio.Lock()
         self._delivery_lock = asyncio.Lock()
@@ -748,6 +757,11 @@ class PhoneOnlyRuntime:
                 if self.delivery_task is not None:
                     self.delivery_task.cancel()
                     await asyncio.gather(self.delivery_task, return_exceptions=True)
+                # Media is stopped, raw turns/audio drained and the recovery job is
+                # durable: the phone can now be released. Drain any remaining
+                # fine-intel backlog in the BACKGROUND so /session/end never blocks
+                # on the model queue. run_close_day() gates on this task.
+                self._start_background_fine_intel_drain()
             except Exception as exc:
                 self.recent_errors.append(str(exc)[:500])
                 self.end_status = "error"
@@ -760,6 +774,38 @@ class PhoneOnlyRuntime:
                     self.recent_errors.append(("transport close: " + str(close_exc))[:500])
                 await asyncio.to_thread(self._stop_clip_recorder)
             return self.status()
+
+    def _drain_deferred_semantics_blocking(self) -> dict[str, Any]:
+        """Synchronous fine-intel backlog drain (runs in a worker thread)."""
+        if not hasattr(self.pipeline, "drain_deferred_semantics"):
+            return {"status": "not_applicable"}
+        return dict(self.pipeline.drain_deferred_semantics() or {})
+
+    def _start_background_fine_intel_drain(self) -> asyncio.Task[Any] | None:
+        """Launch (once) the post-stop fine-intel drain without blocking /session/end."""
+        if self.fine_intel_drain_task is not None:
+            return self.fine_intel_drain_task
+        if not hasattr(self.pipeline, "drain_deferred_semantics"):
+            # Injected/legacy pipelines with no deferred queue: nothing to drain.
+            self.fine_intel_drain_status = "not_applicable"
+            return None
+        self.fine_intel_drain_status = "running"
+
+        async def _drain() -> dict[str, Any]:
+            try:
+                semantic = await asyncio.to_thread(self._drain_deferred_semantics_blocking)
+                self.fine_intel_drain_result = dict(semantic or {})
+                self.fine_intel_drain_status = str(
+                    (semantic or {}).get("status") or "completed"
+                )
+                return self.fine_intel_drain_result
+            except Exception as exc:
+                self.fine_intel_drain_status = "error"
+                self.recent_errors.append(("fine_intel_drain: " + str(exc))[:500])
+                raise
+
+        self.fine_intel_drain_task = asyncio.create_task(_drain())
+        return self.fine_intel_drain_task
 
     async def run_close_day(self) -> dict[str, Any]:
         if not self.ended:
@@ -777,9 +823,13 @@ class PhoneOnlyRuntime:
                     self.recent_errors.append(("hot_cycle: " + str(exc))[:500])
                 finally:
                     self.hot_cycle_task = None
-            if hasattr(self.pipeline, "drain_deferred_semantics"):
+            # Gate CloseDay on the BACKGROUND fine-intel drain (chantier 1): it was
+            # launched at end_session_only so /session/end could return fast, but no
+            # heavy text/vision stage may read the queue until it is fully drained.
+            drain_task = self.fine_intel_drain_task or self._start_background_fine_intel_drain()
+            if drain_task is not None:
                 self.deferred_semantic_status = "running"
-                semantic = await asyncio.to_thread(self.pipeline.drain_deferred_semantics)
+                semantic = await drain_task
                 self.deferred_semantic_result = dict(semantic or {})
                 self.deferred_semantic_status = str(
                     (semantic or {}).get("status") or "completed"
@@ -889,6 +939,7 @@ class PhoneOnlyRuntime:
                 "close_day": self.close_day_status,
                 "close_day_maintenance": self.close_day_maintenance_status,
                 "deferred_semantics": self.deferred_semantic_status,
+                "fine_intel_drain": self.fine_intel_drain_status,
                 "recent_errors": list(self.recent_errors),
                 "ui_intents_delivered": len(self.delivery_adapter.renderer.sent),
                 "clip_recording": dict(self.clip_metrics) if self.clip_metrics else (

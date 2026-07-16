@@ -8,6 +8,7 @@ barrier: every materialisation stage has a durable run/stage record and no
 later stage can consume a failed, incomplete or cross-session input.
 """
 
+import os
 from typing import Any, Callable
 
 from .db import connect, init_db, insert_only, write_transaction
@@ -227,6 +228,19 @@ def _stage_failure_from_result(name: str, result: Any) -> RuntimePolicyError:
     )
 
 
+def _gpu_phase_orchestration_enabled() -> bool:
+    return os.environ.get("MLOMEGA_GPU_PHASE_ORCHESTRATION", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _build_gpu_phase_orchestrator() -> Any:
+    """Return a phase orchestrator when opt-in, else None (no behaviour change)."""
+    if not _gpu_phase_orchestration_enabled():
+        return None
+    from .gpu_phase_orchestrator import GpuPhaseOrchestrator
+
+    return GpuPhaseOrchestrator()
+
+
 def run_brainlive_post_stop_deep_flow(
     *,
     person_id: str | None = None,
@@ -259,6 +273,10 @@ def run_brainlive_post_stop_deep_flow(
     if not person_id:
         raise StageGateError("V18.7 post-stop requires explicit person_id")
     cfg = get_settings()
+    # E64-i chantier 2: opt-in per-phase GPU arbitration. When enabled, the 9B P1
+    # text model is loaded only around the text stages and is torn down before the
+    # Deep Vision (Qwen3-VL/Ollama) phase, so the two large models never coexist.
+    gpu_orch = _build_gpu_phase_orchestrator()
     ensure_post_stop_deep_flow_schema()
     day = _package_day(package_date)
     deep_audio_max_bundle_seconds = float(deep_audio_max_bundle_seconds or cfg.deep_audio_bundle_max_seconds)
@@ -426,6 +444,12 @@ def run_brainlive_post_stop_deep_flow(
             if required_audio:
                 raise RuntimePolicyError("deep audio disabled while raw audio exists", code="blocked_deep_audio_disabled", retryable=False)
 
+        # Boundary: text/deep-audio -> Deep Vision. Tear P1 down so Qwen3-VL owns
+        # the GPU (chantier 2). No-op unless GPU phase orchestration is enabled.
+        if gpu_orch is not None:
+            vision_transition = gpu_orch.enter_vision()
+            record_phase_event("gpu_phase_transition", to="vision", detail=vision_transition)
+
         if run_deep_vision:
             from .brainlive_offline_deep_vision_v16_1 import run_offline_deep_vision_for_bundles
             # The vision worker itself checkpoints each image. It returns a
@@ -442,6 +466,12 @@ def run_brainlive_post_stop_deep_flow(
             with connect() as con, write_transaction(con):
                 start_stage(con, run_id=run_id, stage_name="deep_vision", required=False)
                 finish_stage(con, run_id=run_id, stage_name="deep_vision", result=deep, status="skipped")
+
+        # Boundary: Deep Vision -> nightly text stages. Release the live Ollama
+        # models and (re)start P1 so the text stack has the GPU (chantier 2).
+        if gpu_orch is not None:
+            text_transition = gpu_orch.enter_text()
+            record_phase_event("gpu_phase_transition", to="text", detail=text_transition)
 
         if run_silent_life:
             from .brainlive_silent_life_v16_0 import mine_silent_nonverbal_life_events
@@ -600,6 +630,12 @@ def run_brainlive_post_stop_deep_flow(
             assembly=assembly, exported=exported, processed=processed, v15=life, deep_audio=deep_audio, deep=deep,
             silent=silent, longitudinal=longitudinal, status=status, error=error, created_at=created_at,
         )
+        # Never leak the P1 subprocess across the post-stop boundary (chantier 2).
+        if gpu_orch is not None:
+            try:
+                gpu_orch.stop_p1()
+            except Exception:
+                pass
         execution_lease.release()
 
     return {

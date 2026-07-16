@@ -146,6 +146,110 @@ def test_deferred_semantics_runs_after_end_before_close_day():
     asyncio.run(scenario())
 
 
+def test_session_end_returns_fast_with_fine_intel_still_pending_and_close_day_gated():
+    """E64-i chantier 1: /session/end must not block on the fine-intel queue.
+
+    The remaining backlog is drained in the BACKGROUND; CloseDay only starts once
+    that drain completes. The phone therefore never waits minutes on the queue.
+    """
+    order = []
+    drain_release = asyncio.Event()
+
+    class SlowDrainPipeline(FakePipeline):
+        async def _wait(self):
+            await drain_release.wait()
+
+        def drain_deferred_semantics(self):
+            # Runs in a worker thread (asyncio.to_thread). Block until released.
+            fut = asyncio.run_coroutine_threadsafe(self._wait(), self._loop)
+            fut.result()
+            order.append("fine_intel_drained")
+            return {"status": "completed", "remaining": 0}
+
+    async def scenario():
+        rt = runtime_mod.PhoneOnlyRuntime(
+            "transport-fast-end",
+            ingress_factory=FakeIngress,
+            pipeline_factory=SlowDrainPipeline,
+            close_day=lambda **_: order.append("close_day") or {"status": "completed"},
+        )
+        rt.pipeline._loop = asyncio.get_running_loop()
+        await rt.start()
+
+        # /session/end returns while the fine-intel drain is still running.
+        ended = await rt.end_session_only()
+        assert ended["end_session"] == "completed"
+        assert rt.fine_intel_drain_status == "running"
+        assert "fine_intel_drained" not in order
+
+        # CloseDay is gated: it must not start before the background drain ends.
+        close_task = asyncio.create_task(rt.run_close_day())
+        await asyncio.sleep(0.05)
+        assert "close_day" not in order, "close-day overtook the pending fine-intel drain"
+
+        # Release the drain -> it finishes -> close-day is allowed to run.
+        drain_release.set()
+        await close_task
+        assert order == ["fine_intel_drained", "close_day"]
+        assert rt.status()["fine_intel_drain"] == "completed"
+
+    asyncio.run(scenario())
+
+
+def test_recovery_job_durable_before_fast_end_returns(tmp_path, monkeypatch):
+    """The durable recovery boundary exists the moment /session/end returns.
+
+    A kill during the background fine-intel drain therefore stays recoverable: the
+    pending recovery row is already committed and startup recovery reprocesses it.
+    """
+    db_path = tmp_path / "fast-end-recovery.db"
+    monkeypatch.setenv("MLOMEGA_DB", str(db_path))
+    from mlomega_audio_elite.brainlive_v15 import ensure_brainlive_schema, start_live_session
+    from mlomega_audio_elite.db import connect
+
+    ensure_brainlive_schema()
+
+    class RealSessionConversation(FakeConversation):
+        def __init__(self, live_id):
+            self.live_session_id = live_id
+
+    class ProductLikePipeline(FakePipeline):
+        def __init__(self, *, ingress, **kwargs):
+            super().__init__(ingress=ingress, **kwargs)
+            live = start_live_session(person_id="owner", mode="live_xr", title="fast-end")
+            self.conversation = RealSessionConversation(live["live_session_id"])
+
+        def drain_deferred_semantics(self):
+            return {"status": "completed", "remaining": 0}
+
+    async def scenario():
+        rt = runtime_mod.PhoneOnlyRuntime(
+            "transport-durable-end",
+            person_id="owner",
+            db_path=db_path,
+            ingress_factory=FakeIngress,
+            pipeline_factory=ProductLikePipeline,
+            close_day=lambda **_: {"status": "completed"},
+        )
+        # Force the product recovery-job path even with an injected pipeline.
+        rt._product_pipeline = True
+        await rt.start()
+        ended = await rt.end_session_only()
+        assert ended["end_session"] == "completed"
+        live_id = rt.live_session_id
+        with connect(db_path) as con:
+            row = con.execute(
+                "SELECT state FROM phoneonly_session_recovery_v19 WHERE live_session_id=?",
+                (live_id,),
+            ).fetchone()
+        assert row is not None and row["state"] == "pending"
+        # Await the background drain so no task leaks past the test.
+        if rt.fine_intel_drain_task is not None:
+            await rt.fine_intel_drain_task
+
+    asyncio.run(scenario())
+
+
 class DrainTimeoutPipeline(FakePipeline):
     """Pipeline whose final worker is still busy when shutdown is requested."""
 
@@ -600,6 +704,67 @@ def test_explicit_end_waits_inflight_audio_before_flush_and_pipeline_end(monkeyp
         assert order == ["audio_done", "flush", "pipeline_end"]
 
     asyncio.run(scenario())
+
+
+def _command_pipeline_with_intents(intents, ingress):
+    pipe = runtime_mod.live_pipeline.LivePipeline(
+        ingress=ingress, enable_detector=False, enable_worldbrain=False,
+        enable_conversation=False, enable_intents=False, enable_live_discourse=False,
+        enable_audio_archive=False,
+    )
+    pipe.intents = intents
+    pipe.set_wake_word_policy("gated")
+    return pipe
+
+
+def test_command_trace_emits_accepted_then_completed():
+    """E64-i chantier 3: a normal command yields accepted then completed."""
+    ingress = FakeIngress()
+    ingress.open_channels = 1
+
+    class OkIntents:
+        def on_transcript(self, _text):
+            return {"intent": "find", "handled": True,
+                    "result": {"status": "ok", "component": "worldbrain"}}
+
+    pipe = _command_pipeline_with_intents(OkIntents(), ingress)
+    routed = pipe.on_device_transcript({
+        "type": "device_transcript", "segment_id": "cmd-1",
+        "text": "où sont mes clés ?", "is_final": True, "is_command": True,
+    })
+    assert routed is not None
+
+    traces = [json.loads(raw) for raw in ingress.sent
+              if json.loads(raw).get("type") == "command_execution_trace"]
+    phases = [t["phase"] for t in traces]
+    assert phases == ["accepted", "completed"]
+    assert traces[0]["status"] == "accepted" and traces[0]["handled"] is False
+    assert traces[1]["status"] == "completed" and traces[1]["handled"] is True
+
+
+def test_command_trace_emits_accepted_then_failed_when_handler_raises():
+    """A blocking/raising command still leaves accepted + a terminal failed trace."""
+    ingress = FakeIngress()
+    ingress.open_channels = 1
+
+    class RaisingIntents:
+        def on_transcript(self, _text):
+            raise RuntimeError("ask_memory blocked")
+
+    pipe = _command_pipeline_with_intents(RaisingIntents(), ingress)
+    routed = pipe.on_device_transcript({
+        "type": "device_transcript", "segment_id": "cmd-2",
+        "text": "interroge ma memoire qui est Karim", "is_final": True, "is_command": True,
+    })
+    assert routed is None
+
+    traces = [json.loads(raw) for raw in ingress.sent
+              if json.loads(raw).get("type") == "command_execution_trace"]
+    phases = [t["phase"] for t in traces]
+    assert phases == ["accepted", "failed"], phases
+    # Never zero traces: the command is provably not invisible.
+    assert traces[0]["status"] == "accepted"
+    assert traces[-1]["status"] == "failed"
 
 
 def test_device_privacy_and_structured_intent_reach_runtime_controls():

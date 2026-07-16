@@ -1175,6 +1175,11 @@ réduction statique de JSON comme une validation modèle.
   Ne jamais lancer cinq minutes « pour voir » avec un préflight rouge. Ne pas changer de
   backend ou de modèle entre le preflight et le run.
 
+> **Suivi Étape finale 1 — tentative one-shot du 2026-07-16 22:04 : ÉCHEC, preuve conservée, corrigé (notes, texte intouché) :**
+> - Preuve : `tools/harness/_run/gateb-clean-20260716-220422.db/.json` + `device_report.json`. Préflight `ready=true` complet ; 13/13 commandes envoyées, 61 segments audio, 3 clips E55 — mais `/session/end` a TIMEOUT côté client (~300 s aiohttp par défaut) pendant que le drain `live_fine_intel_queue_v19` restait à 35/36 `pending` : **le llama-server P1 (~7 Go) occupait la VRAM pendant le live, le modèle live Ollama 4B ne pouvait pas tourner → drain bloqué**. Et la 13e trace (« interroge ma mémoire qui est Karim ») manquait — ask_memory bloqué avant émission.
+> - **Décision Codex appliquée (commit ci-dessous), 4 chantiers** : (1) `/session/end` répond VITE (médias + drain brut + job recovery durable) puis draine le fine-intel EN ARRIÈRE-PLAN, `run_close_day` gate sur cette tâche (`phoneonly_runtime.py`) ; (2) `gpu_phase_orchestrator.py` — P1 jamais chargé pendant le live : préflight teste P1 puis L'ARRÊTE (`check_phoneonly_readiness.py` check `p1_sequential`), texte nocturne = décharge Ollama→P1, Deep Vision = stop P1→Qwen3-VL, câblé dans `brainlive_poststop_deep_flow_v15_15.py`, **gated par `MLOMEGA_GPU_PHASE_ORCHESTRATION=1`** (défaut inchangé) ; (3) traces doubles `accepted` (au routage) puis `completed|failed` (après effet) dans `live_pipeline.py` — une commande bloquée n'est plus invisible ; (4) `--end-timeout` configurable (900 s) sur le POST /session/end du harnais.
+> - Tests : 41 verts `.venv-live` (dont 6 nouveaux) + orchestrateur GPU 7 + manifest 12 + close-day/multi-session/gpu_arbiter/backend verts `.venv`. **Le prochain one-shot doit poser `MLOMEGA_GPU_PHASE_ORCHESTRATION=1`** et le préflight finit avec P1 arrêté.
+
 - [ ] **1.2 Run neuf.** Retrouver le MP4 de référence réel; ne pas substituer une vidéo
   synthétique ni modifier `real_video_session.json`. Le timestamp rend DB/rapport uniques,
   donc aucune suppression de l'ancienne preuve :

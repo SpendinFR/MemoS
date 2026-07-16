@@ -862,6 +862,11 @@ class LivePipeline:
         if len(self._routed_device_segment_order) > 64:
             old = self._routed_device_segment_order.pop(0)
             self._routed_device_segments.discard(old)
+        # E64-i chantier 3: emit an ``accepted`` trace the moment routing is armed,
+        # BEFORE the handler runs. A command that blocks/hangs (e.g. ask_memory)
+        # therefore always leaves at least its accepted trace plus a terminal
+        # failed trace instead of disappearing entirely from the device report.
+        self._push_command_accepted_trace(segment_id, text)
         try:
             routed = self.intents.on_transcript(text)
             self.wake_word_metrics["turns_routed"] += 1
@@ -871,10 +876,20 @@ class LivePipeline:
         except Exception as exc:
             self._push_intent({
                 "type": "command_execution_trace", "segment_id": segment_id,
+                "phase": "failed", "status": "failed",
                 "text": text, "intent": None, "handled": False,
                 "effect": {"status": "error", "error": type(exc).__name__},
             })
             return None
+
+    def _push_command_accepted_trace(self, segment_id: str, text: str) -> None:
+        """Immediate pre-execution trace so a blocked command is never invisible."""
+        self._push_intent({
+            "type": "command_execution_trace", "segment_id": segment_id,
+            "phase": "accepted", "status": "accepted",
+            "text": text, "intent": None, "handled": False,
+            "effect": {},
+        })
 
     def _push_command_execution_trace(self, segment_id: str, text: str, routed: Any) -> None:
         data = dict(routed) if isinstance(routed, dict) else {}
@@ -891,10 +906,13 @@ class LivePipeline:
                 compact["current_index"] = effect.get("current_index")
         elif effect is not None:
             compact = {"value": str(effect)[:300]}
+        handled = bool(data.get("handled", effect is not None))
         self._push_intent({
             "type": "command_execution_trace", "segment_id": segment_id,
+            "phase": "completed" if handled else "failed",
+            "status": "completed" if handled else "failed",
             "text": text, "intent": data.get("intent"),
-            "handled": bool(data.get("handled", effect is not None)),
+            "handled": handled,
             "request": data.get("request"),
             "device_command": data.get("device_command"),
             "effect": compact,

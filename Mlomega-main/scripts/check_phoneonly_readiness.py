@@ -10,6 +10,7 @@ CUDA session and loads the configured Whisper model when --deep is requested.
 import argparse
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -53,6 +54,30 @@ def run(*, person_id: str, deep: bool) -> dict[str, Any]:
         "ok": proxy_ok,
         "detail": proxy_detail,
     }
+
+    # E64-i chantier 2: when GPU phase orchestration is enabled, the preflight
+    # proves the P1 text model is available SEQUENTIALLY (start -> /props ->
+    # anti-thinking probe -> stop) instead of demanding it coexist with the live
+    # Ollama/vision stack. It must finish with P1 STOPPED.
+    if os.environ.get("MLOMEGA_GPU_PHASE_ORCHESTRATION", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        try:
+            from mlomega_audio_elite.gpu_phase_orchestrator import GpuPhaseOrchestrator
+
+            orchestrator = GpuPhaseOrchestrator()
+            preflight = orchestrator.enter_preflight()
+            checks["p1_sequential"] = {
+                "ok": not orchestrator.p1_running and orchestrator.probe_calls >= 1,
+                "detail": {
+                    "alias": (preflight.get("p1") or {}).get("props", {}).get("alias"),
+                    "stopped_after_preflight": not orchestrator.p1_running,
+                    "anti_thinking_probed": orchestrator.probe_calls,
+                },
+            }
+        except Exception as exc:
+            checks["p1_sequential"] = {
+                "ok": False,
+                "detail": f"{type(exc).__name__}: {str(exc)[:300]}",
+            }
 
     detector_path = ROOT / "models" / "yolox_nano.onnx"
     if detector_path.exists():
