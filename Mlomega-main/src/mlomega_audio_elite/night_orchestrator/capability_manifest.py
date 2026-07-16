@@ -169,8 +169,14 @@ def _deep_vision_capability(con: Any, *, person_id: str, package_date: str, post
         if status in {"ok", "completed"}:
             return _capability(name, verdict="valid_empty", reason="deep vision reported ok, no durable run row (no bundles)", evidence={"status": status})
         return _verdict_from_status(name, deep)
+    run_columns = {
+        str(row[1])
+        for row in con.execute("PRAGMA table_info(brainlive_deep_vision_runs_v161)").fetchall()
+    }
+    readable_proof_present = "readable_keyframes" in run_columns
+    readable_sql = "readable_keyframes" if readable_proof_present else "NULL AS readable_keyframes"
     rows = con.execute(
-        "SELECT scanned_bundles,selected_keyframes,analyzed_keyframes,status "
+        "SELECT scanned_bundles,selected_keyframes," + readable_sql + ",analyzed_keyframes,status "
         "FROM brainlive_deep_vision_runs_v161 WHERE person_id=? AND package_date=?",
         (person_id, package_date),
     ).fetchall()
@@ -181,25 +187,56 @@ def _deep_vision_capability(con: Any, *, person_id: str, package_date: str, post
             return _capability(name, verdict="valid_empty", reason="no deep-vision run row (no active bundles)", evidence={"status": status})
         return _capability(name, verdict="bypassed", reason=f"deep vision has no durable run row and stage is {status}", evidence={"status": status})
     selected = sum(int(r["selected_keyframes"] or 0) for r in rows)
+    readable = sum(int(r["readable_keyframes"] or 0) for r in rows)
     analyzed = sum(int(r["analyzed_keyframes"] or 0) for r in rows)
     scanned = sum(int(r["scanned_bundles"] or 0) for r in rows)
     row_statuses = {str(r["status"] or "").strip().lower() for r in rows}
-    evidence = {"scanned_bundles": scanned, "selected_keyframes": selected, "analyzed_keyframes": analyzed, "run_statuses": sorted(row_statuses)}
+    evidence = {
+        "scanned_bundles": scanned,
+        "selected_keyframes": selected,
+        "readable_keyframes": readable,
+        "analyzed_keyframes": analyzed,
+        "readable_proof_present": readable_proof_present,
+        "run_statuses": sorted(row_statuses),
+    }
     if any(rs in {"error", "blocked"} for rs in row_statuses):
         return _capability(name, verdict="failed", reason="deep vision run is error/blocked", evidence=evidence)
     if selected > 0 and analyzed == 0:
         # The OBS-38 false-green: keyframes were chosen but none were analysed,
         # yet the run says ``ok``.
         return _capability(name, verdict="failed", reason="deep vision selected keyframes but analysed none (false-green)", evidence=evidence)
+    if selected > 0 and not readable_proof_present:
+        return _capability(
+            name,
+            verdict="failed",
+            reason="deep vision has no durable readable-keyframe proof",
+            evidence=evidence,
+        )
     if selected == 0:
         # Nothing to analyse: valid empty only when the stage itself is ok.
         if status in {"ok", "completed"} and not (row_statuses - {"ok", "completed"}):
             return _capability(name, verdict="valid_empty", reason="no keyframes selected for analysis", evidence=evidence)
         return _capability(name, verdict="degraded", reason=f"deep vision selected nothing and run status is {sorted(row_statuses)}", evidence=evidence)
-    if analyzed < selected:
-        # Some frames analysed, some not: partial, and the run masked it as ok.
-        return _capability(name, verdict="degraded", reason="deep vision analysed only part of the selected keyframes", evidence=evidence)
-    return _capability(name, verdict="product_validated", reason="deep vision analysed every selected keyframe", evidence=evidence)
+    if selected != readable or readable != analyzed:
+        # Product validity requires the three independently durable counts to be
+        # equal. In particular, a sparse live keyframe set can no longer shrink
+        # twenty semantic selections into a false-green one-readable/one-analysed
+        # run while the coverage table still names all twenty.
+        return _capability(
+            name,
+            verdict="degraded",
+            reason=(
+                "deep vision count mismatch: "
+                f"selected={selected}, readable={readable}, analyzed={analyzed}"
+            ),
+            evidence=evidence,
+        )
+    return _capability(
+        name,
+        verdict="product_validated",
+        reason="deep vision selected/readable/analyzed counts are equal",
+        evidence=evidence,
+    )
 
 
 def _deep_audio_capability(post_stop: dict[str, Any]) -> dict[str, Any]:

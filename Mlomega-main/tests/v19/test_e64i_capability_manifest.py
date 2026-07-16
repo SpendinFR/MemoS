@@ -20,7 +20,7 @@ from mlomega_audio_elite.utils import now_iso
 
 def _seed_deep_vision_run(
     db_path, *, person_id="me", package_date="2026-07-10",
-    scanned=1, selected=0, analyzed=0, status="ok",
+    scanned=1, selected=0, readable=None, analyzed=0, status="ok",
 ):
     from mlomega_audio_elite.brainlive_offline_deep_vision_v16_1 import (  # noqa: F401
         VERSION,  # ensures the module (and its SCHEMA install) is importable
@@ -33,16 +33,18 @@ def _seed_deep_vision_run(
             """CREATE TABLE IF NOT EXISTS brainlive_deep_vision_runs_v161(
                  run_id TEXT PRIMARY KEY, person_id TEXT NOT NULL, package_date TEXT NOT NULL,
                  model TEXT, max_keyframes_per_bundle INTEGER DEFAULT 12, scanned_bundles INTEGER DEFAULT 0,
-                 selected_keyframes INTEGER DEFAULT 0, analyzed_keyframes INTEGER DEFAULT 0,
+                 selected_keyframes INTEGER DEFAULT 0, readable_keyframes INTEGER DEFAULT 0,
+                 analyzed_keyframes INTEGER DEFAULT 0,
                  appended_brain2_turns INTEGER DEFAULT 0, status TEXT NOT NULL, error_text TEXT,
                  created_at TEXT NOT NULL, updated_at TEXT NOT NULL);"""
         )
         con.execute(
             """INSERT INTO brainlive_deep_vision_runs_v161(
                  run_id,person_id,package_date,model,scanned_bundles,selected_keyframes,
-                 analyzed_keyframes,status,created_at,updated_at
-               ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
-            ("dvrun-1", person_id, package_date, "moondream", scanned, selected, analyzed, status, now_iso(), now_iso()),
+                 readable_keyframes,analyzed_keyframes,status,created_at,updated_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            ("dvrun-1", person_id, package_date, "moondream", scanned, selected,
+             selected if readable is None else readable, analyzed, status, now_iso(), now_iso()),
         )
 
 
@@ -128,6 +130,22 @@ def test_deep_vision_all_analyzed_passes(tmp_path, monkeypatch):
     manifest = _build(db, monkeypatch, _all_validated_results())
     assert _verdict(manifest, "deep_vision") == "product_validated"
     assert manifest["complete"] is True
+
+
+def test_deep_vision_selected_readable_analyzed_mismatch_blocks(tmp_path, monkeypatch):
+    db = tmp_path / "memory.db"
+    monkeypatch.setenv("MLOMEGA_DB", str(db))
+    monkeypatch.setenv("MLOMEGA_HOME", str(tmp_path))
+    # The historical false-green: coverage selected three semantic frames, but
+    # only one sparse live JPEG existed and that one was analysed successfully.
+    _seed_deep_vision_run(db, selected=3, readable=1, analyzed=1, status="ok")
+    manifest = _build(db, monkeypatch, _all_validated_results())
+    assert _verdict(manifest, "deep_vision") == "degraded"
+    assert manifest["complete"] is False
+    deep = next(c for c in manifest["capabilities"] if c["capability"] == "deep_vision")
+    assert deep["evidence"]["selected_keyframes"] == 3
+    assert deep["evidence"]["readable_keyframes"] == 1
+    assert deep["evidence"]["analyzed_keyframes"] == 1
 
 
 def test_audit_only_brain2_conversation_blocks(tmp_path, monkeypatch):

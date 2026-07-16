@@ -24,7 +24,10 @@ import base64
 import hashlib
 import json
 import os
+import shutil
+import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -52,6 +55,29 @@ class DeepVisionCoveragePersistError(RuntimeError):
     the I0.4 capability manifest (``_deep_vision_capability``) marks Deep Vision
     ``failed`` — which forbids ``complete=1``.
     """
+
+
+class DeepVisionEvidenceMaterializationError(RuntimeError):
+    """Selected semantic keyframes could not all be backed by readable pixels.
+
+    ``selected_count`` is the coverage selector's durable truth. ``readable_count``
+    is the number of those selected frames that already had pixels or were
+    deterministically materialized from an E55 clip.  Runners persist both counts
+    and block the capability instead of silently shrinking the selected set.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        selected_count: int,
+        readable_count: int,
+        missing_frame_ids: list[str],
+    ) -> None:
+        super().__init__(message)
+        self.selected_count = int(selected_count)
+        self.readable_count = int(readable_count)
+        self.missing_frame_ids = tuple(missing_frame_ids)
 
 # E64-I4.2: the offline heavy pass is a VISION-language model. When no explicit
 # override is set, fall back to a real VLM, NOT ``settings.ollama_model`` (which
@@ -192,6 +218,7 @@ CREATE TABLE IF NOT EXISTS brainlive_deep_vision_runs_v161(
   max_keyframes_per_bundle INTEGER DEFAULT 12,
   scanned_bundles INTEGER DEFAULT 0,
   selected_keyframes INTEGER DEFAULT 0,
+  readable_keyframes INTEGER DEFAULT 0,
   analyzed_keyframes INTEGER DEFAULT 0,
   appended_brain2_turns INTEGER DEFAULT 0,
   status TEXT NOT NULL,
@@ -248,9 +275,37 @@ CREATE TABLE IF NOT EXISTS brainlive_deep_vision_brain2_exports_v161(
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS deep_vision_keyframe_materializations_v19(
+  materialization_id TEXT PRIMARY KEY,
+  person_id TEXT NOT NULL,
+  package_date TEXT NOT NULL,
+  bundle_id TEXT,
+  frame_id TEXT NOT NULL,
+  live_session_id TEXT,
+  frame_time TEXT NOT NULL,
+  source_clip_id TEXT NOT NULL,
+  source_clip_uri TEXT NOT NULL,
+  source_clip_sha256 TEXT,
+  clip_window_start TEXT NOT NULL,
+  clip_window_end TEXT NOT NULL,
+  requested_offset_s REAL NOT NULL,
+  offset_s REAL NOT NULL,
+  time_clamped INTEGER NOT NULL DEFAULT 0,
+  image_asset_id TEXT NOT NULL,
+  image_path TEXT NOT NULL,
+  image_sha256 TEXT NOT NULL,
+  width INTEGER,
+  height INTEGER,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(person_id, frame_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_bldeep161_person_date ON brainlive_deep_vision_observations_v161(person_id, package_date, bundle_id, frame_time);
 CREATE INDEX IF NOT EXISTS idx_bldeep161_bundle ON brainlive_deep_vision_observations_v161(bundle_id, status);
 CREATE INDEX IF NOT EXISTS idx_bldeep161_conv ON brainlive_deep_vision_brain2_exports_v161(conversation_id, status);
+CREATE INDEX IF NOT EXISTS idx_deepmat19_scope ON deep_vision_keyframe_materializations_v19(person_id,package_date,live_session_id,frame_id);
 """
 
 DEEP_VISION_SCHEMA_HINT: dict[str, Any] = {
@@ -279,7 +334,22 @@ def ensure_deep_vision_schema() -> None:
     init_db()
     with connect() as con:
         con.executescript(SCHEMA)
+        _ensure_deep_vision_run_schema(con)
         con.commit()
+
+
+def _ensure_deep_vision_run_schema(con: Any) -> None:
+    """Migrate the run proof to the selected/readable/analyzed triple."""
+
+    columns = {
+        str(row[1])
+        for row in con.execute("PRAGMA table_info(brainlive_deep_vision_runs_v161)").fetchall()
+    }
+    if "readable_keyframes" not in columns:
+        con.execute(
+            "ALTER TABLE brainlive_deep_vision_runs_v161 "
+            "ADD COLUMN readable_keyframes INTEGER DEFAULT 0"
+        )
 
 
 def _table_exists(con, name: str) -> bool:
@@ -343,7 +413,28 @@ def _rehydrate_frame_paths(timeline: list[dict[str, Any]]) -> dict[str, dict[str
     placeholders = ",".join("?" for _ in ids)
     with connect() as con:
         rows = _rows(con, f"SELECT frame_id,image_path,image_sha256,metadata_json,captured_at FROM vision_frames WHERE frame_id IN ({placeholders})", tuple(ids))
-    return {str(row["frame_id"]): row for row in rows}
+        # I4.4 materializations are derived evidence and MUST NOT rewrite the
+        # immutable raw ``vision_frames`` occurrence. Rehydrate their managed
+        # pixels through the additive mapping table on every resume instead.
+        materialized = (
+            _rows(
+                con,
+                f"""SELECT frame_id,image_path,image_sha256,frame_time AS captured_at,
+                           source_clip_id,offset_s
+                    FROM deep_vision_keyframe_materializations_v19
+                    WHERE frame_id IN ({placeholders}) AND status='readable'""",
+                tuple(ids),
+            )
+            if _table_exists(con, "deep_vision_keyframe_materializations_v19")
+            else []
+        )
+    hydrated = {str(row["frame_id"]): row for row in rows}
+    for row in materialized:
+        # A readable derived keyframe overrides only the missing file projection;
+        # the immutable raw row remains untouched in the database.
+        if _image_exists(str(row.get("image_path") or "")):
+            hydrated[str(row["frame_id"])] = row
+    return hydrated
 
 
 def _keyframe_candidates(bundle: dict[str, Any]) -> list[dict[str, Any]]:
@@ -381,6 +472,361 @@ def _keyframe_candidates(bundle: dict[str, Any]) -> list[dict[str, Any]]:
             "exists": _image_exists(image_path),
         })
     return out
+
+
+def _parse_utc(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _clip_window(row: dict[str, Any]) -> tuple[datetime, datetime, dict[str, Any]] | None:
+    meta = json_loads(row.get("metadata_json"), {}) or {}
+    if not isinstance(meta, dict):
+        meta = {}
+    start = _parse_utc(meta.get("window_start") or row.get("captured_at"))
+    end = _parse_utc(meta.get("window_end"))
+    if start is None:
+        return None
+    if end is None:
+        try:
+            duration = max(0.0, float(meta.get("duration_s") or 0.0))
+        except (TypeError, ValueError):
+            duration = 0.0
+        end = datetime.fromtimestamp(start.timestamp() + duration, tz=timezone.utc)
+    if end < start:
+        return None
+    return start, end, meta
+
+
+def _find_e55_clip_for_frame(
+    *, person_id: str, live_session_id: str | None, frame_time: Any
+) -> dict[str, Any] | None:
+    """Find the indexed E55 clip that durably covers ``frame_time``.
+
+    A small tolerance absorbs recorder queue/wall-clock skew, but extraction is
+    always clamped to the clip's proven window and the clamp is preserved in the
+    materialization provenance.
+    """
+
+    target = _parse_utc(frame_time)
+    if target is None:
+        return None
+    try:
+        tolerance = max(
+            0.0,
+            float(os.environ.get("MLOMEGA_DEEP_VISION_CLIP_TIME_TOLERANCE_S", "3.0")),
+        )
+    except (TypeError, ValueError):
+        tolerance = 3.0
+    try:
+        with connect() as con:
+            if not _table_exists(con, "visual_evidence_assets_v19"):
+                return None
+            sql = (
+                "SELECT visual_asset_id,live_session_id,uri,sha256,captured_at,metadata_json "
+                "FROM visual_evidence_assets_v19 WHERE person_id=? "
+                "AND asset_kind IN ('clip','video')"
+            )
+            params: list[Any] = [person_id]
+            if live_session_id:
+                sql += " AND live_session_id=?"
+                params.append(str(live_session_id))
+            rows = [dict(row) for row in con.execute(sql, tuple(params)).fetchall()]
+    except Exception:
+        return None
+    matches: list[tuple[float, float, dict[str, Any]]] = []
+    for row in rows:
+        path = Path(str(row.get("uri") or "")).expanduser()
+        if not _image_exists(str(path)):
+            continue
+        window = _clip_window(row)
+        if window is None:
+            continue
+        start, end, meta = window
+        before = max(0.0, (start - target).total_seconds())
+        after = max(0.0, (target - end).total_seconds())
+        distance = before + after
+        if distance > tolerance:
+            continue
+        raw_offset = (target - start).total_seconds()
+        duration = max(0.0, (end - start).total_seconds())
+        try:
+            fps = max(1.0, float(meta.get("fps") or 30.0))
+        except (TypeError, ValueError):
+            fps = 30.0
+        max_offset = max(0.0, duration - (1.0 / fps))
+        offset = min(max(raw_offset, 0.0), max_offset)
+        enriched = {
+            **row,
+            "window_start": start.isoformat(),
+            "window_end": end.isoformat(),
+            "offset_s": offset,
+            "requested_offset_s": raw_offset,
+            "time_clamped": abs(offset - raw_offset) > 1e-6,
+            "metadata": meta,
+        }
+        # Exact containment wins; then choose the closest window and earliest
+        # offset so overlapping segment boundaries are deterministic.
+        matches.append((distance, offset, enriched))
+    if not matches:
+        return None
+    matches.sort(key=lambda item: (item[0], item[1], str(item[2].get("visual_asset_id"))))
+    return matches[0][2]
+
+
+def _materialized_keyframe_path(
+    *, person_id: str, live_session_id: str | None, frame_id: str, frame_time: Any, clip_id: str
+) -> Path:
+    root = Path(
+        os.environ.get("MLOMEGA_MEDIA")
+        or (Path(__file__).resolve().parents[2] / "storage" / "media")
+    ).expanduser()
+    captured = _parse_utc(frame_time)
+    day = (captured or datetime.now(timezone.utc)).strftime("%Y-%m-%d")
+    digest = hashlib.sha256(
+        "|".join((person_id, str(live_session_id or ""), frame_id, str(frame_time or ""), clip_id)).encode("utf-8")
+    ).hexdigest()[:20]
+    return root / "keyframes" / day / "deep_materialized" / f"deep_{digest}.jpg"
+
+
+def _persist_materialized_keyframe(
+    *,
+    candidate: dict[str, Any],
+    person_id: str,
+    package_date: str,
+    live_session_id: str | None,
+    output_path: Path,
+    clip: dict[str, Any],
+) -> None:
+    frame_id = str(candidate.get("frame_id") or "").strip()
+    if not frame_id:
+        raise RuntimeError("selected frame has no durable frame_id")
+    data = output_path.read_bytes()
+    if not data:
+        raise RuntimeError("materialized keyframe is empty")
+    image_sha = hashlib.sha256(data).hexdigest()
+    asset_id = stable_id("rawasset", str(output_path.resolve()), image_sha)
+    materialization = {
+        "producer": "E64.I4.4.e55_keyframe_materializer",
+        "source_clip_id": clip.get("visual_asset_id"),
+        "source_clip_uri": str(clip.get("uri") or ""),
+        "source_clip_sha256": clip.get("sha256"),
+        "clip_window_start": clip.get("window_start"),
+        "clip_window_end": clip.get("window_end"),
+        "requested_frame_time": candidate.get("frame_time"),
+        "offset_s": round(float(clip.get("offset_s") or 0.0), 6),
+        "requested_offset_s": round(float(clip.get("requested_offset_s") or 0.0), 6),
+        "time_clamped": bool(clip.get("time_clamped")),
+    }
+    from .night_orchestrator.deep_vision_selection import _image_dimensions
+
+    dims = _image_dimensions(str(output_path))
+    now = now_iso()
+    with connect() as con:
+        upsert(
+            con,
+            "raw_assets",
+            {
+                "asset_id": asset_id,
+                "type": "image",
+                "path": str(output_path.resolve()),
+                "sha256": image_sha,
+                "captured_at": candidate.get("frame_time"),
+                "source": "deep_vision_e55_materialization",
+                "metadata_json": json_dumps(materialization),
+                "created_at": now,
+            },
+            "asset_id",
+        )
+        # ``vision_frames`` is an immutable capture occurrence. The E55-derived
+        # JPEG is not byte-identical to that vanished raw frame, so keep it in an
+        # additive mapping rather than rewriting the historical row.
+        upsert(
+            con,
+            "deep_vision_keyframe_materializations_v19",
+            {
+                "materialization_id": stable_id("deepmat19", person_id, frame_id),
+                "person_id": person_id,
+                "package_date": package_date,
+                "bundle_id": candidate.get("bundle_id"),
+                "frame_id": frame_id,
+                "live_session_id": live_session_id,
+                "frame_time": candidate.get("frame_time"),
+                "source_clip_id": str(clip.get("visual_asset_id") or ""),
+                "source_clip_uri": str(clip.get("uri") or ""),
+                "source_clip_sha256": clip.get("sha256"),
+                "clip_window_start": clip.get("window_start"),
+                "clip_window_end": clip.get("window_end"),
+                "requested_offset_s": float(clip.get("requested_offset_s") or 0.0),
+                "offset_s": float(clip.get("offset_s") or 0.0),
+                "time_clamped": 1 if clip.get("time_clamped") else 0,
+                "image_asset_id": asset_id,
+                "image_path": str(output_path.resolve()),
+                "image_sha256": image_sha,
+                "width": dims[0] if dims else None,
+                "height": dims[1] if dims else None,
+                "status": "readable",
+                "created_at": now,
+                "updated_at": now,
+            },
+            "materialization_id",
+        )
+        con.commit()
+    candidate.update(
+        {
+            "image_path": str(output_path.resolve()),
+            "exists": True,
+            "materialized_from_clip_id": clip.get("visual_asset_id"),
+            "materialization_offset_s": clip.get("offset_s"),
+        }
+    )
+
+
+def _materialize_selected_from_e55(
+    *, bundle: dict[str, Any], result: Any, all_candidates: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Return every selected keyframe with readable pixels, or fail closed.
+
+    The night selector operates on the full semantic timeline, while the live
+    VisionRT keyframe sink stores only its own sparse subset. Missing selected
+    pixels are reconstructed from the E55 clip covering the frame timestamp and
+    registered as normal ``vision_frames`` evidence. No selected id is silently
+    removed from the run count.
+    """
+
+    selected_ids = list(result.selected_frame_ids)
+    by_frame_id = {
+        str(candidate.get("frame_id") or candidate.get("image_path") or "").strip(): candidate
+        for candidate in all_candidates
+        if str(candidate.get("frame_id") or candidate.get("image_path") or "").strip()
+    }
+    person_id = str(bundle.get("person_id") or "me")
+    package_date = str(bundle.get("package_date") or "")
+    live_session_id = str(bundle.get("live_session_id") or "").strip() or None
+    ffmpeg = shutil.which("ffmpeg")
+    readable: list[dict[str, Any]] = []
+    failures: list[str] = []
+    for frame_id in selected_ids:
+        candidate = by_frame_id.get(frame_id)
+        if candidate is None:
+            failures.append(frame_id)
+            continue
+        path = str(candidate.get("image_path") or "")
+        if _image_exists(path):
+            candidate["exists"] = True
+            readable.append(candidate)
+            continue
+        clip = _find_e55_clip_for_frame(
+            person_id=person_id,
+            live_session_id=live_session_id,
+            frame_time=candidate.get("frame_time"),
+        )
+        if clip is None or ffmpeg is None:
+            failures.append(frame_id)
+            continue
+        output_path = _materialized_keyframe_path(
+            person_id=person_id,
+            live_session_id=live_session_id,
+            frame_id=frame_id,
+            frame_time=candidate.get("frame_time"),
+            clip_id=str(clip.get("visual_asset_id") or "clip"),
+        )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if not _image_exists(str(output_path)):
+            tmp_path = output_path.with_name(output_path.stem + ".tmp.jpg")
+            try:
+                timeout_s = max(
+                    1.0,
+                    float(os.environ.get("MLOMEGA_DEEP_VISION_FFMPEG_TIMEOUT_S", "60")),
+                )
+            except (TypeError, ValueError):
+                timeout_s = 60.0
+            command = [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(clip.get("uri")),
+                "-ss",
+                f"{float(clip.get('offset_s') or 0.0):.6f}",
+                "-frames:v",
+                "1",
+                "-q:v",
+                "2",
+                str(tmp_path),
+            ]
+            try:
+                proc = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_s,
+                    check=False,
+                )
+                if proc.returncode != 0 or not _image_exists(str(tmp_path)):
+                    raise RuntimeError((proc.stderr or "ffmpeg produced no image")[-1000:])
+                tmp_path.replace(output_path)
+            except Exception as exc:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                record_phase_event(
+                    "deep_vision_keyframe_materialization_failed",
+                    bundle_id=bundle.get("bundle_id"),
+                    frame_id=frame_id,
+                    source_clip_id=clip.get("visual_asset_id"),
+                    error=str(exc)[:400],
+                )
+                failures.append(frame_id)
+                continue
+        try:
+            _persist_materialized_keyframe(
+                candidate=candidate,
+                person_id=person_id,
+                package_date=package_date,
+                live_session_id=live_session_id,
+                output_path=output_path,
+                clip=clip,
+            )
+        except Exception as exc:
+            record_phase_event(
+                "deep_vision_keyframe_registration_failed",
+                bundle_id=bundle.get("bundle_id"),
+                frame_id=frame_id,
+                source_clip_id=clip.get("visual_asset_id"),
+                error=str(exc)[:400],
+            )
+            failures.append(frame_id)
+            continue
+        readable.append(candidate)
+        record_phase_event(
+            "deep_vision_keyframe_materialized",
+            bundle_id=bundle.get("bundle_id"),
+            frame_id=frame_id,
+            source_clip_id=clip.get("visual_asset_id"),
+            offset_s=clip.get("offset_s"),
+        )
+    if failures or len(readable) != len(selected_ids):
+        missing = list(dict.fromkeys([*failures, *[fid for fid in selected_ids if fid not in {str(r.get('frame_id') or r.get('image_path') or '') for r in readable}]]))
+        raise DeepVisionEvidenceMaterializationError(
+            "deep vision selected keyframes lack readable pixels after E55 materialization: "
+            + ",".join(missing[:20]),
+            selected_count=len(selected_ids),
+            readable_count=len(readable),
+            missing_frame_ids=missing,
+        )
+    return readable
 
 def _collect_requested_frame_ids(bundle: dict[str, Any]) -> set[str]:
     """Frame ids named by a real live vision focus request (what_is/ocr/zoom/find).
@@ -459,9 +905,10 @@ def select_keyframes_for_bundle(bundle: dict[str, Any], *, max_keyframes: int = 
     one, and no frame is dropped silently.  Every non-selected frame is mapped to
     the keyframe/atom that represents it and persisted in
     ``deep_vision_frame_coverage_v19`` so 100% of the session's frames are proven
-    accounted for.  Missing image files are still excluded from the *analysable*
-    keyframe list because the offline VLM needs raw pixels, but they remain
-    covered by their representative.
+    accounted for. A selected frame whose sparse live keyframe file is absent is
+    materialized from its indexed E55 clip at the captured timestamp. If that
+    cannot be done, selection fails closed; it is never silently removed from the
+    run count.
 
     ``max_keyframes`` is retained only for backward-compatible call signatures;
     it is NOT used as a quota.  The change policy alone decides how many
@@ -555,21 +1002,11 @@ def select_keyframes_for_bundle(bundle: dict[str, Any], *, max_keyframes: int = 
             f"deep vision frame coverage not persisted for {person_id}/{package_date}: {exc}"
         ) from exc
 
-    by_frame_id = {}
-    for c in all_candidates:
-        fid = str(c.get("frame_id") or c.get("image_path") or "").strip()
-        if fid and fid not in by_frame_id:
-            by_frame_id[fid] = c
-
-    selected: list[dict[str, Any]] = []
-    for fid in result.selected_frame_ids:
-        cand = by_frame_id.get(fid)
-        # The VLM can only analyse a keyframe that has a readable image file.
-        # A selected-but-imageless keyframe stays covered in the manifest but is
-        # not sent to the VLM (unchanged downstream contract).
-        if not cand or not cand.get("exists"):
-            continue
-        selected.append(cand)
+    selected = _materialize_selected_from_e55(
+        bundle=bundle,
+        result=result,
+        all_candidates=all_candidates,
+    )
 
     for i, item in enumerate(selected):
         item["sample_index"] = i
@@ -770,7 +1207,7 @@ def run_offline_deep_vision_for_bundles(
     day = _package_day(package_date)
     run_id = stable_id("bldeep161run", person_id, day, now_iso(), uuid4().hex)
     now = now_iso()
-    scanned = selected = analyzed = appended = 0
+    scanned = selected = readable = analyzed = appended = 0
     status = "ok"
     error_text = None
     frame_failures: list[dict[str, Any]] = []
@@ -812,6 +1249,27 @@ def run_offline_deep_vision_for_bundles(
                             "error": str(exc)[:1500],
                         })
                         continue
+                    except DeepVisionEvidenceMaterializationError as exc:
+                        selected += exc.selected_count
+                        readable += exc.readable_count
+                        frame_failures.append({
+                            "bundle_id": b.get("bundle_id"),
+                            "frame_id": exc.missing_frame_ids[0] if exc.missing_frame_ids else None,
+                            "error_code": "blocked_selected_pixels_unavailable",
+                            "retryable": False,
+                            "selected_keyframes": exc.selected_count,
+                            "readable_keyframes": exc.readable_count,
+                            "missing_frame_ids": list(exc.missing_frame_ids),
+                            "error": str(exc)[:1500],
+                        })
+                        record_phase_event(
+                            "deep_vision_selected_pixels_unavailable",
+                            bundle_id=b.get("bundle_id"),
+                            selected_keyframes=exc.selected_count,
+                            readable_keyframes=exc.readable_count,
+                            missing_frame_ids=list(exc.missing_frame_ids)[:20],
+                        )
+                        continue
                     # A bundle with captured visual evidence must not silently
                     # report a successful deep-vision stage with zero usable
                     # pixels. This blocks cleanup and leaves the source files for
@@ -828,10 +1286,12 @@ def run_offline_deep_vision_for_bundles(
                         record_phase_event("deep_vision_visual_evidence_unavailable", bundle_id=b.get("bundle_id"), frame_id=all_candidates[0].get("frame_id"))
                         continue
                     selected += len(frames)
+                    readable += len(frames)
                     for f in frames:
                         obs_id = stable_id("bldeep161", person_id, b.get("bundle_id"), f.get("frame_id") or f.get("image_path"), f.get("sample_index"), chosen_model)
                         existing = con.execute("SELECT status FROM brainlive_deep_vision_observations_v161 WHERE deep_observation_id=?", (obs_id,)).fetchone()
                         if existing and existing["status"] == "ok":
+                            analyzed += 1
                             continue
                         started = time.time()
                         status_row = "ok"
@@ -895,6 +1355,18 @@ def run_offline_deep_vision_for_bundles(
                         if status_row == "ok":
                             analyzed += 1
             con.commit()
+        if selected != readable or readable != analyzed:
+            frame_failures.append({
+                "error_code": "blocked_deep_vision_count_mismatch",
+                "retryable": False,
+                "selected_keyframes": selected,
+                "readable_keyframes": readable,
+                "analyzed_keyframes": analyzed,
+                "error": (
+                    "deep vision proof mismatch: "
+                    f"selected={selected}, readable={readable}, analyzed={analyzed}"
+                ),
+            })
         if frame_failures:
             status = "retryable_error" if all(bool(item.get("retryable")) for item in frame_failures) else "blocked"
             error_text = f"{len(frame_failures)} deep VLM keyframe(s) unresolved"
@@ -917,6 +1389,7 @@ def run_offline_deep_vision_for_bundles(
                 "max_keyframes_per_bundle": int(max_keyframes_per_bundle or 12),
                 "scanned_bundles": scanned,
                 "selected_keyframes": selected,
+                "readable_keyframes": readable,
                 "analyzed_keyframes": analyzed,
                 "appended_brain2_turns": appended,
                 "status": status,
@@ -930,7 +1403,7 @@ def run_offline_deep_vision_for_bundles(
         if use_vlm:
             ollama_unload(model=chosen_model)
             record_phase_event("deep_vision_model_unloaded", model=chosen_model)
-    return {"version": VERSION, "run_id": run_id, "person_id": person_id, "package_date": day, "live_session_id": live_session_id, "model": chosen_model, "max_keyframes_per_bundle": int(max_keyframes_per_bundle or 12), "scanned_bundles": scanned, "selected_keyframes": selected, "analyzed_keyframes": analyzed, "appended_brain2_turns": appended, "status": status, "failures": frame_failures, "error": error_text}
+    return {"version": VERSION, "run_id": run_id, "person_id": person_id, "package_date": day, "live_session_id": live_session_id, "model": chosen_model, "max_keyframes_per_bundle": int(max_keyframes_per_bundle or 12), "scanned_bundles": scanned, "selected_keyframes": selected, "readable_keyframes": readable, "analyzed_keyframes": analyzed, "appended_brain2_turns": appended, "status": status, "failures": frame_failures, "error": error_text}
 
 
 def _deep_turn_text(row: dict[str, Any]) -> str:

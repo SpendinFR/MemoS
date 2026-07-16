@@ -1194,3 +1194,37 @@ appel JSON finit `length`. La commande canonique complète :
 Vérification rapide avant tout run : `Invoke-RestMethod http://127.0.0.1:8080/props`
 doit donner l'alias exact et `n_ctx=24576`, et une requête JSON triviale doit finir
 `stop` avec `reasoning_content` vide.
+
+### I4 Deep Vision — gate produit final (2026-07-16)
+
+Le gate n'est vert que sur la triple preuve durable :
+`selected_keyframes == readable_keyframes == analyzed_keyframes`. Lire ces colonnes dans
+`brainlive_deep_vision_runs_v161`; le manifeste final les recopie dans la capacité
+`deep_vision`. Toute différence bloque `complete=1`.
+
+La sélection nocturne peut choisir une frame que le sélecteur live n'avait pas écrite en
+JPEG. Ce n'est plus une perte : le runtime cherche le clip E55 de la même session couvrant
+`frame_time`, extrait automatiquement la frame par ffmpeg, écrit sous
+`$MLOMEGA_MEDIA\keyframes\AAAA-MM-JJ\deep_materialized\`, puis met à jour
+`raw_assets` et `deep_vision_keyframe_materializations_v19` sans modifier le
+`vision_frames` brut. La provenance se lit directement dans cette table additive
+(clip, SHA, fenêtre, offsets, clamp). MediaRetention l'inventorie comme une keyframe.
+Événements utiles : `deep_vision_keyframe_materialized`,
+`deep_vision_keyframe_materialization_failed`,
+`deep_vision_keyframe_registration_failed`. Une absence de clip ou de ffmpeg devient
+`blocked_selected_pixels_unavailable`; ne jamais contourner en diminuant le compteur.
+
+Tests ciblés sans réseau VLM :
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q `
+  tests\v19\test_e64i_deep_vision_selection.py `
+  tests\v19\test_e64i_deep_vision_backend.py `
+  tests\v19\test_e64i_visual_reuse.py `
+  tests\v19\test_e64i_capability_manifest.py `
+  tests\v19\test_close_day_output_proof.py `
+  tests\v19\test_media_retention.py
+```
+
+Résultat de clôture : **52 passed**. Le test matérialisation utilise un vrai MP4/ffmpeg
+mais un transport VLM fake; la qualité réelle Qwen3-VL reste la mesure antérieure 20/20.

@@ -1325,3 +1325,31 @@ Writers `brainlive_deep_vision_runs_v161` et gate de capacités I0.4 inchangés.
 churn de track-ids ; en label-set track-agnostique la session vaut ~78 changements.
 Le choix (politique label-set ou regroupement de micro-transitions) sera tranché avec la
 vraie passe VLM et ses mesures, jamais pour « faire baisser le compteur » sans preuve.
+
+## 2026-07-16 — I4.4 final : sélection sémantique = pixels lisibles = analyses (ADR)
+
+**Faux GO découvert après le gate réel.** Les 20 images du gate avaient été préparées
+manuellement depuis la vidéo. En produit, la sélection nocturne parcourt toute la timeline,
+alors que le writer live VisionRT ne conserve que ses propres keyframes clairsemées.
+L'ancien raccord persistait bien toutes les sélections dans
+`deep_vision_frame_coverage_v19`, puis supprimait silencieusement celles dont le JPEG
+n'existait pas. Une journée pouvait ainsi déclarer `1 sélectionnée/1 analysée` alors que
+la couverture en demandait 20.
+
+**Décision de preuve.** Une keyframe sémantique sélectionnée doit avoir des pixels. Si le
+JPEG live manque, le post-stop retrouve le clip E55 indexé de la même session dont la
+fenêtre couvre `frame_time`, extrait cette image par ffmpeg dans le media root géré, puis
+l'enregistre dans `raw_assets` et `deep_vision_keyframe_materializations_v19`. Le fait
+brut `vision_frames` reste immuable; la reprise réhydrate le chemin dérivé par cette table.
+La provenance conserve clip id/URI/SHA,
+fenêtre, offset demandé/effectif et éventuel clamp temporel. Nom stable, extraction et
+upserts idempotents. L'absence de clip/ffmpeg ou toute extraction/écriture défectueuse
+bloque le bundle avant VLM; aucune réduction implicite du nombre sélectionné.
+
+**Triple gate durable.** `brainlive_deep_vision_runs_v161` porte désormais
+`selected_keyframes`, `readable_keyframes`, `analyzed_keyframes`. I0.4 n'accorde
+`product_validated` que si les trois sont égaux. Une ancienne table/run sans preuve
+`readable` ne peut pas être considérée produit. Validation ciblée avec un vrai MP4 E55 :
+deux sélections, un JPEG live et un manquant → extraction automatique et `2=2=2`; sans
+clip → `blocked`, `2/1/0`. La preuve VLM réelle 20/20 d'I4.4 reste valable pour la qualité;
+ce lot ferme son dernier raccord produit sans repayer le réseau VLM.

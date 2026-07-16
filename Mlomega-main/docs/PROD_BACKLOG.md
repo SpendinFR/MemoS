@@ -1033,6 +1033,31 @@ réduction statique de JSON comme une validation modèle.
 > - **Mesures** : froid moyenne 17,3 s, **p50 16,7 s, p95 27,1 s**, cache 2-8 ms, **~208 images/heure**, VRAM pic **7891/8192 MiB**. Projection à densité observée (walkthrough dense, pire cas) : 1 h ≈ 238 keyframes ≈ 1,1 h VLM série ; 8 h ≈ 1907 ≈ 9,2 h série — une journée réelle est bien plus statique ; sélection NON réduite pour verdir.
 > - **Réserve opérationnelle** : 8 Go ne tiennent PAS P1 9B + qwen3-vl:8b simultanément (un llama-server s'est même relancé seul pendant le gate) → le pass VLM doit être séquentiel avec P1 ARRÊTÉ (`Get-Process llama-server | Stop-Process -Force`), relance ensuite via la commande canonique du BUILD_GUIDE.
 > - 40/40 tests verts. Stage ciblé seulement, CloseDay complet non lancé. I0.1 fermé par I4.2+I4.4 comme prévu au plan.
+>
+> **Contre-audit final I4.4 — chemin produit brut fermé (2026-07-16)** : le gate
+> précédent avait rematérialisé manuellement 19 JPEG par ffmpeg. Le code produit
+> persistait bien 20 sélections dans `deep_vision_frame_coverage_v19`, mais
+> `select_keyframes_for_bundle` supprimait ensuite silencieusement les chemins
+> absents : un run brut pouvait donc annoncer `1 sélectionnée / 1 analysée` et
+> redevenir vert. Correction : chaque sélection sans JPEG live est maintenant
+> extraite automatiquement du clip E55 indexé qui couvre son `frame_time`, vers
+> `MLOMEGA_MEDIA/keyframes/<jour>/deep_materialized/`, puis enregistrée dans
+> `raw_assets` + la table additive `deep_vision_keyframe_materializations_v19`
+> (le fait brut immuable `vision_frames` n'est jamais réécrit), avec SHA,
+> dimensions, clip/source/offset/fenêtre
+> et clamp temporel dans la provenance. Sortie stable et rejeu idempotent.
+> Absence de clip/ffmpeg, extraction vide ou enregistrement DB impossible produit
+> `blocked_selected_pixels_unavailable` : aucun VLM partiel n'est lancé pour le
+> bundle. `brainlive_deep_vision_runs_v161` persiste désormais la triple preuve
+> `selected_keyframes/readable_keyframes/analyzed_keyframes`; le manifeste I0.4
+> exige leur égalité exacte et refuse aussi tout ancien run dépourvu de preuve
+> `readable`. Test produit : 2 sélections, 1 JPEG live, 1 JPEG absent disponible
+> uniquement dans un vrai MP4 E55 généré par ffmpeg → extraction automatique,
+> provenance durable et `2=2=2`; sans clip → run `blocked`, `2/1/0`. Validation
+> ciblée complète : **52 verts** (dont MediaRetention), aucun appel VLM réseau ajouté (transport fake ;
+> la preuve qualité réelle 20/20 du gate précédent reste inchangée). **I4.4 est
+> maintenant fermé sur le vrai chemin produit, pas seulement sur des pixels
+> préparés manuellement.**
 
 #### I5 — modèle et backend choisis par tâche, après preuve
 

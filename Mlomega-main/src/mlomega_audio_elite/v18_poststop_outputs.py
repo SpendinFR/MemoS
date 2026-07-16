@@ -88,6 +88,7 @@ def install_deep(module: Any) -> dict[str, Any]:
         module.init_db()
         with connect() as con, write_transaction(con):
             con.executescript(module.SCHEMA)
+            module._ensure_deep_vision_run_schema(con)
             _ensure(con)
 
     def _active_bundles(con: Any, person_id: str, day: str, live_session_id: str | None, limit: int) -> list[dict[str, Any]]:
@@ -134,7 +135,7 @@ def install_deep(module: Any) -> dict[str, Any]:
         # model. ``module`` is the base deep-vision module that owns the resolver.
         chosen = module._resolve_offline_vlm_model(model)
         run_id = stable_id("v18deepvisionrun", person_id, day, live_session_id or "all", chosen, now_iso(), uuid4().hex)
-        scanned = selected = analyzed = quarantined = 0
+        scanned = selected = readable = analyzed = quarantined = 0
         # These are evidence-integrity failures, not ordinary VLM failures.  A
         # bundle that says it has images but has no readable raw pixels must
         # block the post-stop run: Brain2 cannot honestly treat that as “no
@@ -167,6 +168,22 @@ def install_deep(module: Any) -> dict[str, Any]:
                         "frame_id": (all_candidates[0].get("frame_id") if all_candidates else None),
                         "image_path": (str(all_candidates[0].get("image_path") or "") if all_candidates else ""),
                         "error_code": "blocked_coverage_persist_failed",
+                        "error": str(exc)[:1500],
+                    }
+                    visual_evidence_failures.append(failure)
+                    terminal_status = "blocked"
+                    run_error = failure["error"]
+                    continue
+                except module.DeepVisionEvidenceMaterializationError as exc:
+                    selected += exc.selected_count
+                    readable += exc.readable_count
+                    failure = {
+                        "bundle_id": bundle.get("bundle_id"),
+                        "frame_id": exc.missing_frame_ids[0] if exc.missing_frame_ids else None,
+                        "error_code": "blocked_selected_pixels_unavailable",
+                        "selected_keyframes": exc.selected_count,
+                        "readable_keyframes": exc.readable_count,
+                        "missing_frame_ids": list(exc.missing_frame_ids),
                         "error": str(exc)[:1500],
                     }
                     visual_evidence_failures.append(failure)
@@ -213,8 +230,9 @@ def install_deep(module: Any) -> dict[str, Any]:
                         person_id=person_id, active=False, reason="blocked_visual_evidence_unavailable",
                     )
                     continue
+                selected += len(frames)
+                readable += len(frames)
                 for frame in frames:
-                    selected += 1
                     image_path = str(frame.get("image_path") or "")
                     obs_id = stable_id("bldeep161", person_id, bundle.get("bundle_id"), frame.get("frame_id") or image_path, frame.get("sample_index"), chosen)
                     started = time.time()
@@ -295,7 +313,20 @@ def install_deep(module: Any) -> dict[str, Any]:
             # leaving the false-green for the gate alone to catch. A partial
             # analysis (some quarantined) is degraded; a full quarantine is
             # retryable when every failure is a transient VLM error, else failed.
-            if terminal_status == "ok" and selected > 0 and analyzed == 0:
+            if selected != readable:
+                terminal_status = "blocked"
+                run_error = (
+                    "deep vision proof mismatch: "
+                    f"selected={selected}, readable={readable}, analyzed={analyzed}"
+                )
+                visual_evidence_failures.append({
+                    "error_code": "blocked_selected_readable_mismatch",
+                    "selected_keyframes": selected,
+                    "readable_keyframes": readable,
+                    "analyzed_keyframes": analyzed,
+                    "error": run_error,
+                })
+            elif terminal_status == "ok" and selected > 0 and analyzed == 0:
                 terminal_status = "retryable_error" if quarantined == selected else "failed"
             elif terminal_status == "ok" and analyzed < selected:
                 terminal_status = "degraded"
@@ -312,13 +343,15 @@ def install_deep(module: Any) -> dict[str, Any]:
                 upsert(con, "brainlive_deep_vision_runs_v161", {
                     "run_id": run_id, "person_id": person_id, "package_date": day, "model": chosen,
                     "max_keyframes_per_bundle": int(max_keyframes_per_bundle), "scanned_bundles": scanned,
-                    "selected_keyframes": selected, "analyzed_keyframes": analyzed, "appended_brain2_turns": appended if 'appended' in locals() else 0,
+                    "selected_keyframes": selected, "readable_keyframes": readable,
+                    "analyzed_keyframes": analyzed, "appended_brain2_turns": appended if 'appended' in locals() else 0,
                     "status": terminal_status, "error_text": run_error, "created_at": now_iso(), "updated_at": now_iso(),
                 }, "run_id")
         return {
             "version": "18.8.1-deep-vision-evidence-connected", "run_id": run_id, "person_id": person_id,
             "package_date": day, "live_session_id": live_session_id, "model": chosen,
-            "scanned_bundles": scanned, "selected_keyframes": selected, "analyzed_keyframes": analyzed,
+            "scanned_bundles": scanned, "selected_keyframes": selected,
+            "readable_keyframes": readable, "analyzed_keyframes": analyzed,
             "quarantined_observations": quarantined, "context_addenda_created": appended if 'appended' in locals() else 0,
             "visual_evidence_failures": visual_evidence_failures,
             "status": terminal_status,

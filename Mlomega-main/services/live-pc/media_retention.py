@@ -266,6 +266,55 @@ class MediaRetention:
             ))
         return items
 
+    def _materialized_keyframes(self, con) -> list[MediaItem]:
+        """E55-derived Deep Vision JPEGs without mutating raw vision_frames."""
+
+        items: list[MediaItem] = []
+        table = "deep_vision_keyframe_materializations_v19"
+        if not self._table_exists(con, table):
+            return items
+        rows = con.execute(
+            f"""SELECT materialization_id,frame_id,image_asset_id,image_path,
+                       image_sha256,frame_time,source_clip_id
+                FROM {table}
+                WHERE person_id=? AND status='readable' AND image_path IS NOT NULL""",
+            (self.person_id,),
+        ).fetchall()
+        for row in rows:
+            path = row["image_path"]
+            if not path:
+                continue
+            tokens = tuple(
+                token
+                for token in (
+                    row["materialization_id"],
+                    f"frame:{row['frame_id']}",
+                    row["frame_id"],
+                    row["image_asset_id"],
+                    row["image_sha256"],
+                    row["source_clip_id"],
+                    path,
+                    Path(str(path)).name,
+                )
+                if token
+            )
+            delete_rows: list[tuple[str, str, str]] = [
+                (table, "materialization_id", str(row["materialization_id"]))
+            ]
+            if row["image_asset_id"] and self._table_exists(con, "raw_assets"):
+                delete_rows.append(("raw_assets", "asset_id", str(row["image_asset_id"])))
+            items.append(
+                MediaItem(
+                    media_kind="keyframe",
+                    path=str(path),
+                    captured_at=row["frame_time"],
+                    size_bytes=_size(path),
+                    tokens=tokens,
+                    rows=tuple(delete_rows),
+                )
+            )
+        return items
+
     def _clips(self, con) -> list[MediaItem]:
         items: list[MediaItem] = []
         if not self._table_exists(con, "visual_evidence_assets_v19"):
@@ -366,7 +415,12 @@ class MediaRetention:
             blob = self._referenced_blob(con)
             clip_fk = self._clip_fk_referenced(con)
             audio_refs = self._audio_referenced_paths(con)
-            items = self._keyframes(con) + self._clips(con) + self._audio(con)
+            items = (
+                self._keyframes(con)
+                + self._materialized_keyframes(con)
+                + self._clips(con)
+                + self._audio(con)
+            )
         for it in items:
             if it.media_kind == "clip":
                 # FK from a visual_event, or cited in an evidence blob.

@@ -769,3 +769,14 @@ réel a été détecté, préchargé et revérifié sans téléchargement dans l
   `configs/user_profile.yaml`. With no profile wake word it is a no-op, so the
   fake device never gets a command to ack. Not a bug; configure a wake word to
   exercise that path.
+
+## Mise à jour OBS-28 (4) — dernier faux-vert pixels E55 CLOS (2026-07-16)
+
+Le gate I4.4 précédent avait manuellement extrait 19 JPEG de la vidéo : il prouvait le
+VLM, pas le chemin produit brut. Le sélecteur persistait 20 keyframes de couverture puis
+ne retournait que les fichiers déjà lisibles; `1/1` pouvait donc masquer 19 pixels
+manquants. Correction produit : matérialisation automatique depuis le clip E55 couvrant
+le timestamp, enregistrement géré avec provenance, ou blocage avant VLM. Le run persiste
+maintenant `selected/readable/analyzed` et I0.4 exige l'égalité exacte. Preuves ciblées :
+vrai MP4 E55, un JPEG manquant → `2/2/2`; clip absent → `blocked 2/1/0`; suite touchée
+**52 verts** (MediaRetention inclus). OBS-28/I0.1 sont désormais clos sans préparation manuelle des pixels.

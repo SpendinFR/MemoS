@@ -18,6 +18,9 @@ Proven here:
 """
 
 import json
+import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -288,3 +291,221 @@ def test_coverage_persist_failure_blocks_run_and_gate(monkeypatch, tmp_path):
     assert deep["verdict"] == "failed"
     assert manifest["complete"] is False
     assert "deep_vision" in (manifest["reason"] or "")
+
+
+def _seed_e55_materialization_case(monkeypatch, tmp_path, *, with_clip: bool):
+    """Two semantic selections, but only the first sparse live JPEG exists."""
+
+    _install_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MLOMEGA_MEDIA", str(tmp_path / "media"))
+    from mlomega_audio_elite.db import connect, init_db, upsert, write_transaction
+    from mlomega_audio_elite.brainlive_v15 import ensure_brainlive_schema
+    from mlomega_audio_elite.utils import json_dumps, now_iso
+    from mlomega_audio_elite.v19_visual_store import ensure_v19_visual_schema
+
+    init_db()
+    ensure_brainlive_schema()
+    ensure_v19_visual_schema()
+    existing = tmp_path / "live_f0.jpg"
+    existing.write_bytes(b"\xff\xd8\xfflive-frame")
+    missing = tmp_path / "missing_f1.jpg"
+    timeline = [
+        {
+            "source_table": "vision_scene_observations",
+            "source_id": "o0",
+            "frame_id": "f0",
+            "image_path": str(existing),
+            "time": "2026-07-16T10:00:00+00:00",
+            "objects": [{"label": "person", "track_id": "t1"}],
+            "people_count": 1,
+            "visible_text": [],
+            "summary": "person in room",
+        },
+        {
+            "source_table": "vision_scene_observations",
+            "source_id": "o1",
+            "frame_id": "f1",
+            "image_path": str(missing),
+            "time": "2026-07-16T10:00:01+00:00",
+            "objects": [{"label": "person", "track_id": "t1"}],
+            "people_count": 1,
+            "visible_text": ["Midea"],  # forces this semantic keyframe
+            "summary": "person in room",
+        },
+    ]
+    bundle = {
+        "bundle_id": "b-e55",
+        "person_id": "me",
+        "package_date": "2026-07-16",
+        "live_session_id": "s-e55",
+        "brain2_conversation_id": None,
+        "title": "E55 materialization",
+        "place_json": "{}",
+        "status": "assembled",
+        "vision_timeline_json": json.dumps(timeline),
+    }
+    now = now_iso()
+    with connect() as con, write_transaction(con):
+        for frame_id, captured_at, image_path in (
+            ("f0", "2026-07-16T10:00:00+00:00", str(existing)),
+            ("f1", "2026-07-16T10:00:01+00:00", str(missing)),
+        ):
+            upsert(
+                con,
+                "vision_frames",
+                {
+                    "frame_id": frame_id,
+                    "person_id": "me",
+                    "source_asset_id": None,
+                    "conversation_id": None,
+                    "live_session_id": "s-e55",
+                    "captured_at": captured_at,
+                    "image_path": image_path,
+                    "image_sha256": None,
+                    "width": None,
+                    "height": None,
+                    "device_source": "phoneonly",
+                    "capture_mode": "timeline",
+                    "metadata_json": "{}",
+                    "created_at": now,
+                },
+                "frame_id",
+            )
+    clip = tmp_path / "e55.mp4"
+    if with_clip:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg is None:
+            pytest.skip("ffmpeg required for E55 materialization integration")
+        proc = subprocess.run(
+            [
+                ffmpeg,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=160x120:d=2:r=10",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(clip),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert proc.returncode == 0 and clip.exists(), proc.stderr
+        with connect() as con, write_transaction(con):
+            upsert(
+                con,
+                "visual_evidence_assets_v19",
+                {
+                    "visual_asset_id": "clip-e55",
+                    "person_id": "me",
+                    "live_session_id": "s-e55",
+                    "asset_kind": "clip",
+                    "uri": str(clip),
+                    "sha256": "clip-sha",
+                    "frame_id": None,
+                    "clip_id": "clip-e55",
+                    "captured_at": "2026-07-16T10:00:00+00:00",
+                    "metadata_json": json_dumps(
+                        {
+                            "window_start": "2026-07-16T10:00:00+00:00",
+                            "window_end": "2026-07-16T10:00:02+00:00",
+                            "duration_s": 2.0,
+                            "fps": 10,
+                            "producer": "E55.clip_recorder",
+                        }
+                    ),
+                    "created_at": now,
+                },
+                "visual_asset_id",
+            )
+    return bundle
+
+
+def _run_e55_case(monkeypatch, tmp_path, *, with_clip: bool):
+    from mlomega_audio_elite import v18_poststop_outputs as ov
+
+    bundle = _seed_e55_materialization_case(monkeypatch, tmp_path, with_clip=with_clip)
+    monkeypatch.setattr(
+        ov,
+        "strict_many",
+        lambda con, sql, params=(), purpose=None: [bundle]
+        if "brainlive_event_bundles_v1514" in sql
+        else [],
+    )
+    monkeypatch.setattr(base, "_deep_vlm_json", lambda *a, **k: _valid_vlm_response())
+    funcs = ov.install_deep(base)
+    return funcs["run_offline_deep_vision_for_bundles"](
+        person_id="me",
+        package_date="2026-07-16",
+        live_session_id="s-e55",
+        append_to_brain2=False,
+        use_vlm=True,
+    )
+
+
+def test_selected_missing_pixels_are_materialized_from_e55_and_triple_matches(monkeypatch, tmp_path):
+    """The real product path, not a manually prepared JPEG directory."""
+
+    out = _run_e55_case(monkeypatch, tmp_path, with_clip=True)
+    assert out["status"] == "ok"
+    assert out["selected_keyframes"] == out["readable_keyframes"] == out["analyzed_keyframes"] == 2
+
+    from mlomega_audio_elite.db import connect
+
+    with connect() as con:
+        raw_frame = con.execute(
+            "SELECT image_path,capture_mode,metadata_json FROM vision_frames WHERE frame_id='f1'"
+        ).fetchone()
+        materialized = con.execute(
+            """SELECT image_path,source_clip_id,offset_s,status
+               FROM deep_vision_keyframe_materializations_v19 WHERE frame_id='f1'"""
+        ).fetchone()
+        run = con.execute(
+            "SELECT selected_keyframes,readable_keyframes,analyzed_keyframes,status "
+            "FROM brainlive_deep_vision_runs_v161 WHERE run_id=?",
+            (out["run_id"],),
+        ).fetchone()
+        coverage_selected = con.execute(
+            "SELECT COUNT(*) FROM deep_vision_frame_coverage_v19 WHERE is_keyframe=1"
+        ).fetchone()[0]
+    # Raw occurrence stays immutable; the derived MP4 frame lives in its additive
+    # materialization mapping and is rehydrated from there on resume.
+    assert raw_frame["image_path"].endswith("missing_f1.jpg")
+    assert raw_frame["capture_mode"] == "timeline"
+    assert Path(materialized["image_path"]).is_file()
+    assert materialized["source_clip_id"] == "clip-e55"
+    assert materialized["status"] == "readable"
+    assert coverage_selected == 2
+    assert tuple(run[k] for k in ("selected_keyframes", "readable_keyframes", "analyzed_keyframes")) == (2, 2, 2)
+    assert run["status"] == "ok"
+
+
+def test_missing_selected_pixels_without_e55_blocks_and_persists_mismatch(monkeypatch, tmp_path):
+    out = _run_e55_case(monkeypatch, tmp_path, with_clip=False)
+    assert out["status"] == "blocked"
+    assert out["selected_keyframes"] == 2
+    assert out["readable_keyframes"] == 1
+    assert out["analyzed_keyframes"] == 0
+    assert any(
+        failure.get("error_code") == "blocked_selected_pixels_unavailable"
+        for failure in out["visual_evidence_failures"]
+    )
+
+    from mlomega_audio_elite.db import connect
+
+    with connect() as con:
+        row = con.execute(
+            "SELECT selected_keyframes,readable_keyframes,analyzed_keyframes,status "
+            "FROM brainlive_deep_vision_runs_v161 WHERE run_id=?",
+            (out["run_id"],),
+        ).fetchone()
+    assert tuple(row[k] for k in ("selected_keyframes", "readable_keyframes", "analyzed_keyframes")) == (2, 1, 0)
+    assert row["status"] == "blocked"
