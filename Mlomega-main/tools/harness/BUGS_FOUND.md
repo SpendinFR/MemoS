@@ -780,3 +780,27 @@ le timestamp, enregistrement géré avec provenance, ou blocage avant VLM. Le ru
 maintenant `selected/readable/analyzed` et I0.4 exige l'égalité exacte. Preuves ciblées :
 vrai MP4 E55, un JPEG manquant → `2/2/2`; clip absent → `blocked 2/1/0`; suite touchée
 **52 verts** (MediaRetention inclus). OBS-28/I0.1 sont désormais clos sans préparation manuelle des pixels.
+
+## OBS-49 — Recherche spatiale et proactivité existaient mais leurs consommateurs étaient dormants (CORRIGÉ — 2026-07-16)
+
+VisionRT et WorldBrain enregistraient des observations, mais la commande explicite
+PhoneOnly ne relisait pas la dernière position durable et le `BrainLiveSceneAdapter`
+était construit sans jamais recevoir d'appel d'évaluation produit. Une entité pouvait
+donc être connue en base sans répondre correctement à « où sont mes lunettes ? », tandis
+que found-object, personne connue, changement spatial et suggestion proactive restaient
+des composants testés isolément.
+
+Correction : lookup owner-scopé inter-session dans le registre WorldBrain, priorité à la
+session courante, réponse visible/remembered avec âge/confiance/provenance et inconnu
+honnête; routage réel PC et fallback Reflex hors connexion. `_on_scene_delta` déclenche
+maintenant l'adapter à cadence mémoire 2 s. La cadence UI immédiate n'a pas été réduite.
+La dernière observation est actualisée, l'historique `visual_events_v19` reste intact.
+
+## OBS-50 — Une crop d'apparence ne persistait que son premier attribut (CORRIGÉ — 2026-07-16)
+
+Le dédoublonnage `AttributeMemory` utilisait seulement personne/source/session/référence.
+Cheveux, vêtements et chaussures extraits de la même crop partageaient cette clé : le
+premier attribut survivait, les suivants étaient silencieusement perdus. La clé inclut
+désormais sujet + nom d'attribut, tout en restant idempotente au rejeu d'un même fait.
+Le VLM d'apparence est branché sur les personnes déjà nommées une fois par track/session;
+seul un changement durable réel ouvre une suggestion H1 avec provenance.

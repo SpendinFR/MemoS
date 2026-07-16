@@ -366,6 +366,31 @@ def test_named_track_never_profiled(tmp_path):
     assert vlm.calls == 0
 
 
+def test_named_track_appearance_is_described_once_without_guessing_identity(tmp_path):
+    import numpy as np
+
+    wb, eid = _person_worldbrain(tmp_path)
+    clock = {"t": 0.0}
+    vlm = _FakeVlm(text=json.dumps({
+        "appearance": "homme adulte", "clothing": "chaussures rouges",
+        "role_hint": "", "age_apparent": "adulte",
+    }))
+    prof = stranger_profile.StrangerProfiler(
+        vlm=vlm, worldbrain=wb,
+        config=stranger_profile.StrangerConfig(stable_seconds=1.0),
+        now_fn=lambda: clock["t"],
+    )
+    crop = np.zeros((100, 50, 3), dtype=np.uint8)
+    assert prof.observe_named_appearance("t1", entity_id=eid, crop_bgr=crop) is None
+    clock["t"] = 2.0
+    attrs = prof.observe_named_appearance("t1", entity_id=eid, crop_bgr=crop)
+    assert attrs and attrs["clothing"] == "chaussures rouges"
+    assert "name" not in attrs
+    assert prof.observe_named_appearance("t1", entity_id=eid, crop_bgr=crop) is None
+    assert vlm.calls == 1
+    assert prof.metrics["appearance_profiles"] == 1
+
+
 def test_fusion_into_named_keeps_description(tmp_path):
     import numpy as np
 

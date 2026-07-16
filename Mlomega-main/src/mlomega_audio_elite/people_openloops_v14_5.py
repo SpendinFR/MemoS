@@ -448,6 +448,35 @@ def _conversation_payload(con, conversation_id: str, *, limit_turns: int = 160) 
     }
 
 
+def identity_ambiguity_reasons(conversation_data: dict[str, Any]) -> list[str]:
+    """Return structured reasons that justify paying the identity LLM.
+
+    Relationship analysis lives in the interpersonal stage.  This stage is only
+    useful when a cognitive speaker is unresolved or contradictory; when every
+    turn already has one durable ``person_id``, another 9B pass can only restate
+    known identity data.
+    """
+    turns = [row for row in (conversation_data.get("turns") or []) if isinstance(row, dict)]
+    reasons: list[str] = []
+    by_label: dict[str, set[str]] = {}
+    for turn in turns:
+        label = str(turn.get("speaker_label") or "").strip()
+        person_id = str(turn.get("person_id") or "").strip()
+        unresolved = not person_id or person_id.lower().startswith((
+            "unknown", "unresolved", "speaker_", "context_",
+        ))
+        if label:
+            by_label.setdefault(label, set())
+            if person_id and not unresolved:
+                by_label[label].add(person_id)
+        if unresolved:
+            reasons.append(f"unresolved_speaker:{label or 'missing_label'}")
+    for label, people in by_label.items():
+        if len(people) > 1:
+            reasons.append(f"contradictory_mapping:{label}")
+    return sorted(set(reasons))
+
+
 def _background_for_person(con, person_id: str, *, limit: int = 60) -> dict[str, Any]:
     return {
         "speaker_profiles": _compact(_many(con, "SELECT * FROM speaker_profiles ORDER BY is_user DESC, created_at DESC LIMIT ?", (limit,)), limit),
@@ -499,6 +528,24 @@ def analyze_people_identity_hypotheses(conversation_id: str, *, person_id: str |
                     "raw": cached,
                     "resumed": True,
                 }
+        conversation_data = _conversation_payload(con, conversation_id)
+        ambiguity_reasons = identity_ambiguity_reasons(conversation_data)
+        if not ambiguity_reasons:
+            run_id = stable_id("v145people", conversation_id, person_id, now)
+            out = normalize_contract_output({}, IDENTITY_SCHEMA)
+            out["reason"] = "all_cognitive_speakers_already_resolved"
+            upsert(con, "v14_5_people_identity_runs", {
+                "run_id": run_id, "conversation_id": conversation_id,
+                "person_id": person_id, "status": "ok", "error_text": None,
+                "qwen_output_json": json_dumps(out), "created_at": now,
+            }, "run_id")
+            con.commit()
+            return {
+                "version": V14_5_VERSION, "run_id": run_id,
+                "conversation_id": conversation_id, "status": "ok",
+                "error": None, "raw": out, "llm_calls": 0,
+                "reason": out["reason"],
+            }
         payload = {
             "mission": (
                 "Analyse l'identité relationnelle possible des personnes dans cette conversation. "
@@ -507,7 +554,8 @@ def analyze_people_identity_hypotheses(conversation_id: str, *, person_id: str |
                 "Ne propose une identité que si des preuves conversationnelles existent, et donne aussi les contre-preuves."
             ),
             "user_person_id": person_id,
-            "conversation_data": _conversation_payload(con, conversation_id),
+            "conversation_data": conversation_data,
+            "identity_ambiguity_reasons": ambiguity_reasons,
             "background": _background_for_person(con, person_id, limit=60),
             "required_behavior": [
                 "If the user talks ABOUT Max to another speaker, do not treat that alone as speaking TO Max.",

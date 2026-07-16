@@ -31,6 +31,7 @@ without changing the queue contract.
 
 import importlib.util
 import sys
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -219,6 +220,7 @@ class BrainLiveSceneAdapter:
             "spatial_hot_updates": 0,
             "object_hot_updates": 0,
             "task_hot_updates": 0,
+            "attribute_change_cues": 0,
         }
         self._last_build_ts = 0.0
 
@@ -232,6 +234,19 @@ class BrainLiveSceneAdapter:
     def note_transcript(self, text: str) -> None:
         """AudioRT transcript → conversation context for situation detection."""
         self._transcript_hint = (text or "").strip() or None
+
+    def evaluate_periodic(self, *, now: float | None = None) -> list[dict[str, Any]]:
+        """Run the live situation loop at its configured scene cadence.
+
+        ``evaluate_situations`` remains directly callable for event-driven
+        changes. Production video deltas use this gate so a 30-FPS stream does
+        not rebuild and publish hot context on every frame.
+        """
+        tick = time.monotonic() if now is None else float(now)
+        if self._last_build_ts and (tick - self._last_build_ts) < self.config.min_build_interval_s:
+            return []
+        self._last_build_ts = tick
+        return self.evaluate_situations()
 
     # ----------------------------------------------------------------- build
     def build_context(
@@ -596,6 +611,27 @@ class BrainLiveSceneAdapter:
                 msg = f"{c.get('label')} de nouveau visible"
                 ev = list(c.get("evidence") or evidence)
                 results.append(self._enqueue(source_key=key, message=msg, evidence_refs=ev, priority=0.5))
+            elif c.get("type") == "attribute_changed":
+                after = c.get("after") if isinstance(c.get("after"), Mapping) else {}
+                attribute = str(after.get("attribute") or "apparence")
+                entity_id = str(c.get("entity_id") or "")
+                known = self.known_people.get(entity_id) or {}
+                subject = str(known.get("name") or c.get("label") or "cette personne")
+                key = (
+                    f"scene:{self.live_session_id}:attribute_changed:"
+                    f"{entity_id}:{attribute}:{after.get('value')}"
+                )
+                ev = list(c.get("evidence") or evidence)
+                res = self._enqueue(
+                    source_key=key,
+                    message=f"Changement possible observé pour {subject} : {attribute}.",
+                    evidence_refs=ev,
+                    priority=0.45,
+                    kind="attribute_change",
+                )
+                results.append(res)
+                if res.get("status") == "queued":
+                    self.metrics["attribute_change_cues"] += 1
 
         # (3) Active task → TaskCard (one action).
         if self._active_task:

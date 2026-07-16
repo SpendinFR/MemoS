@@ -37,6 +37,9 @@ import sqlite3
 import sys
 import threading
 import time
+import json
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -787,15 +790,162 @@ class WorldBrain:
         return self.entities.get(entity_id)
 
     def find_entity(self, query: str) -> WorldEntity | None:
-        """Best last-seen entity whose label matches the query (for FocusSearch)."""
-        q = (query or "").lower().strip()
-        best: WorldEntity | None = None
-        for e in self.entities.values():
-            if q and q not in e.label.lower():
+        """Best current or durable last-seen entity matching ``query``.
+
+        The old implementation only searched ``self.entities`` and therefore lost
+        every object as soon as the PhoneOnly process/session restarted.  The
+        owner-scoped registry is the durable source of truth for FocusSearch; a
+        registry hit is rehydrated as ``last_seen`` and never presented as visible.
+        """
+        record = self.find_entity_record(query)
+        if not record:
+            return None
+        bbox = record.get("last_bbox")
+        return WorldEntity(
+            entity_id=str(record["entity_id"]),
+            kind=str(record.get("kind") or "object"),
+            label=str(record.get("label") or query or "object"),
+            confidence=float(record.get("confidence") or 0.0),
+            lifecycle="confirmed" if record.get("visible") else "last_seen",
+            track_id=record.get("track_id"),
+            first_seen=str(record.get("first_seen") or ""),
+            last_seen=str(record.get("last_seen") or ""),
+            last_bbox=tuple(float(v) for v in bbox) if isinstance(bbox, (list, tuple)) and len(bbox) == 4 else None,
+            observation_count=int(record.get("observation_count") or 0),
+            evidence_refs=list(record.get("evidence") or []),
+        )
+
+    @staticmethod
+    def _search_terms(value: str | None) -> tuple[str, set[str]]:
+        """Language-tolerant label matching without an object-name dictionary."""
+        raw = unicodedata.normalize("NFKD", str(value or "").lower())
+        folded = "".join(ch for ch in raw if not unicodedata.combining(ch))
+        normalized = " ".join(re.findall(r"[a-z0-9]+", folded))
+        # Function words do not identify an object.  This is grammar cleanup, not
+        # an object lexicon: every noun remains data-driven from VisionRT.
+        stop = {
+            "le", "la", "les", "un", "une", "des", "du", "de", "mon", "ma",
+            "mes", "notre", "nos", "the", "a", "an", "my", "our", "please",
+            "stp", "svp", "objet", "object",
+        }
+        terms = {part for part in normalized.split() if part not in stop}
+        return normalized, terms
+
+    @classmethod
+    def _label_match_score(cls, query: str, label: str) -> float:
+        q_norm, q_terms = cls._search_terms(query)
+        l_norm, l_terms = cls._search_terms(label)
+        if not q_norm or not l_norm:
+            return 0.0
+        if q_norm == l_norm:
+            return 4.0
+        if l_norm in q_norm or q_norm in l_norm:
+            return 3.0
+        if not q_terms or not l_terms:
+            return 0.0
+        overlap = len(q_terms & l_terms)
+        if overlap == 0:
+            return 0.0
+        return 1.0 + overlap / max(len(q_terms), len(l_terms))
+
+    def _last_place_for_session(self, session_id: str | None) -> str | None:
+        if not session_id:
+            return None
+        from mlomega_audio_elite.db import connect  # type: ignore
+
+        try:
+            with connect(self.db_path) as con:
+                row = con.execute(
+                    """SELECT place_hint FROM scene_session_summaries_v19
+                       WHERE person_id=? AND live_session_id=?
+                       ORDER BY summary_end DESC,created_at DESC LIMIT 1""",
+                    (self.person_id, session_id),
+                ).fetchone()
+            return str(row["place_hint"]) if row and row["place_hint"] else None
+        except sqlite3.Error:
+            return None
+
+    def find_entity_record(self, query: str) -> dict[str, Any] | None:
+        """Return the freshest owner-scoped sighting with explicit epistemic state.
+
+        ``visible`` is true only for an entity confirmed in this live session.
+        Cross-session registry rows remain remembered facts with their timestamp,
+        confidence, place (when a session summary exists) and durable evidence id.
+        """
+        candidates: list[tuple[float, str, dict[str, Any]]] = []
+        now = _utc_now()
+        for entity in self.entities.values():
+            if self.is_label_suspended(entity.label):
                 continue
-            if best is None or e.last_seen > best.last_seen:
-                best = e
-        return best
+            score = self._label_match_score(query, entity.label)
+            if score <= 0:
+                continue
+            item = entity.to_dict(now)
+            item.update({
+                "visible": entity.lifecycle == "confirmed",
+                "place_hint": self.session.place_hint,
+                "last_session_id": self.live_session_id,
+                "source": "live_worldbrain",
+            })
+            candidates.append((score + 1.0, entity.last_seen, item))
+
+        from mlomega_audio_elite.db import connect  # type: ignore
+
+        try:
+            with connect(self.db_path) as con:
+                rows = [dict(row) for row in con.execute(
+                    """SELECT * FROM worldbrain_entity_registry_v19
+                       WHERE person_id=? ORDER BY last_seen DESC""",
+                    (self.person_id,),
+                ).fetchall()]
+        except sqlite3.Error:
+            rows = []
+        for row in rows:
+            label = str(row.get("display_label") or row.get("normalized_label") or "")
+            if self.is_label_suspended(label):
+                continue
+            score = self._label_match_score(query, label)
+            if score <= 0:
+                continue
+            entity_id = str(row.get("entity_id") or "")
+            # The live representation is more precise and already present above.
+            if entity_id in self.entities:
+                continue
+            last_seen = str(row.get("last_seen") or "")
+            try:
+                observed = datetime.fromisoformat(last_seen)
+                if observed.tzinfo is None:
+                    observed = observed.replace(tzinfo=timezone.utc)
+                age_seconds = max(0.0, (now - observed).total_seconds())
+            except (TypeError, ValueError):
+                age_seconds = None
+            try:
+                last_bbox = json.loads(row.get("last_bbox_json") or "null")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                last_bbox = None
+            session_id = str(row.get("last_session_id") or "")
+            candidates.append((score, last_seen, {
+                "entity_id": entity_id,
+                "kind": row.get("kind"),
+                "label": label,
+                "confidence": float(row.get("confidence") or 0.0),
+                "visible": False,
+                "lifecycle": "last_seen",
+                "track_id": row.get("last_track_id"),
+                "first_seen": row.get("first_seen"),
+                "last_seen": last_seen,
+                "last_bbox": last_bbox,
+                "observation_count": int(row.get("observation_count") or 0),
+                "age_seconds": round(age_seconds, 1) if age_seconds is not None else None,
+                "place_hint": self._last_place_for_session(session_id),
+                "last_session_id": session_id,
+                "evidence": [f"worldbrain_entity_registry_v19:{entity_id}"],
+                "source": "durable_registry",
+            }))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        return candidates[0][2]
 
     # ---------------------------------------------------------------- persistence
     def _persist_events(

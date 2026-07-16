@@ -41,6 +41,8 @@ class LLMResult:
     error: str | None = None
     error_kind: str | None = None
     finish_reason: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
 
 
 def _is_post_stop_phase() -> bool:
@@ -408,6 +410,13 @@ class OllamaJsonClient:
                 response_text = str(outer.get("response", ""))
                 finish_reason = str(outer.get("done_reason") or outer.get("finish_reason") or "") or None
             raw_outer = json.dumps(outer, ensure_ascii=False)
+            if self.backend == "llamacpp":
+                usage = outer.get("usage") if isinstance(outer, dict) else None
+                prompt_tokens = int((usage or {}).get("prompt_tokens") or 0) or None
+                completion_tokens = int((usage or {}).get("completion_tokens") or 0) or None
+            else:
+                prompt_tokens = int(outer.get("prompt_eval_count") or 0) or None
+                completion_tokens = int(outer.get("eval_count") or 0) or None
             if (self.backend == "ollama" and outer.get("done") is False) or (finish_reason and finish_reason.lower() in {"length", "max_tokens", "token_limit", "limit"}):
                 return LLMResult(
                     ok=False,
@@ -416,6 +425,8 @@ class OllamaJsonClient:
                     error=f"LLM output truncated (finish_reason={finish_reason or 'not_done'})",
                     error_kind="truncated_output",
                     finish_reason=finish_reason,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
                 )
             try:
                 data = json.loads(response_text)
@@ -429,10 +440,20 @@ class OllamaJsonClient:
                     error=f"invalid/truncated JSON: {exc}",
                     error_kind="truncated_output" if response_text.strip() else "invalid_json",
                     finish_reason=finish_reason,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
                 )
             if not isinstance(data, dict):
-                return LLMResult(ok=False, data={}, raw=response_text, error="Réponse LLM JSON non-objet.", error_kind="invalid_json", finish_reason=finish_reason)
-            return LLMResult(ok=True, data=data, raw=response_text, finish_reason=finish_reason)
+                return LLMResult(
+                    ok=False, data={}, raw=response_text,
+                    error="Réponse LLM JSON non-objet.", error_kind="invalid_json",
+                    finish_reason=finish_reason, prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                )
+            return LLMResult(
+                ok=True, data=data, raw=response_text, finish_reason=finish_reason,
+                prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+            )
         except Exception as exc:
             failure = classify_failure(exc)
             return LLMResult(

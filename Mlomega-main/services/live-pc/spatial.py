@@ -223,6 +223,7 @@ def answer_find(
     spatial: SpatialMapProvider,
     session_id: str,
     visible: bool,
+    query: str | None = None,
     now_iso: str | None = None,
 ) -> dict[str, Any]:
     """Build the UIIntent reply for a FocusSearch ``find`` (E27 handoff §9.3).
@@ -238,8 +239,13 @@ def answer_find(
     if visible:
         return {
             "component": "object_outline",
-            "content": {"kind": "find", "state": "visible", "entity_id": entity_id},
+            "content": {
+                "kind": "find", "state": "visible", "entity_id": entity_id,
+                "query": query, "label": (entity or {}).get("label"),
+                "last_seen": (entity or {}).get("last_seen"),
+            },
             "truth_level": "observed",
+            "confidence": float((entity or {}).get("confidence") or 0.0),
             "bearing": None,
         }
 
@@ -250,13 +256,16 @@ def answer_find(
         "content": {
             "kind": "find",
             "state": "last_seen",
+            "query": query,
             "entity_id": entity_id,
             "label": ent.get("label"),
             "age_seconds": ent.get("age_seconds"),
             "last_seen": ent.get("last_seen"),
             "place_hint": ent.get("place_hint"),
+            "source": ent.get("source"),
         },
         "truth_level": "remembered",
+        "confidence": float(ent.get("confidence") or 0.0),
         "bearing": bearing,  # None unless the map qualifies — never a false arrow
     }
     if bearing is not None:

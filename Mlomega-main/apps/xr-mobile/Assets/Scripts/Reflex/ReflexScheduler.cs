@@ -15,6 +15,7 @@
 using System;
 using System.Collections.Generic;
 using MLOmega.XR.Reflex.Skills;
+using MLOmega.XR.Transport;
 using MLOmega.XR.UI;
 using UnityEngine;
 
@@ -25,6 +26,7 @@ namespace MLOmega.XR.Reflex
         [SerializeField] private ReflexConfig _config;
         [SerializeField] private GestureBridge _gestureBridge;
         [SerializeField] private AsrBridge _asrBridge;
+        [SerializeField] private LiveTransportBridge _transport;
         [SerializeField] private DeviceCommandHandler _commands;
 
         // E59: when the PanelManipulator claims a pinch (grab/resize/button-tap on a
@@ -82,6 +84,8 @@ namespace MLOmega.XR.Reflex
         private void Awake()
         {
             if (_config == null) _config = ReflexConfig.CreateDefault();
+            if (_asrBridge == null) _asrBridge = FindAnyObjectByType<AsrBridge>();
+            if (_transport == null) _transport = FindAnyObjectByType<LiveTransportBridge>();
             Register(_stableTrack);
             Register(_lensWindow);
             Register(_motionProximity);
@@ -95,6 +99,9 @@ namespace MLOmega.XR.Reflex
             // but was never subscribed to the bridge). Palm/swipe/pinch-commit are
             // wired separately by MenuGestureController.
             if (_gestureBridge != null) _gestureBridge.GestureRecognized += OnGestureForLens;
+            if (_asrBridge == null) _asrBridge = FindAnyObjectByType<AsrBridge>();
+            if (_transport == null) _transport = FindAnyObjectByType<LiveTransportBridge>();
+            if (_asrBridge != null) _asrBridge.Transcript += OnOfflineFocusTranscript;
             if (_commands == null) _commands = FindAnyObjectByType<DeviceCommandHandler>();
             if (_commands != null) _commands.PrivacyPauseChanged += SetPrivacyPaused;
         }
@@ -102,6 +109,7 @@ namespace MLOmega.XR.Reflex
         private void OnDisable()
         {
             if (_gestureBridge != null) _gestureBridge.GestureRecognized -= OnGestureForLens;
+            if (_asrBridge != null) _asrBridge.Transcript -= OnOfflineFocusTranscript;
             if (_commands != null) _commands.PrivacyPauseChanged -= SetPrivacyPaused;
         }
 
@@ -116,6 +124,54 @@ namespace MLOmega.XR.Reflex
                 if (_panelManipulator.HasClaim) return;
             }
             if (_lensWindow != null) _lensWindow.OnGesture(ev);
+        }
+
+        private void OnOfflineFocusTranscript(TranscriptEvent ev)
+        {
+            // Connected commands already traverse device_transcript -> PC
+            // IntentRouter -> WorldBrain/VisionRT. Local SceneCache is the honest
+            // fallback only, otherwise one utterance would create two searches.
+            if (_privacyPaused || !ev.IsFinal || !ev.IsCommand || _focusSearch == null) return;
+            if (_transport != null && (_transport.State == LiveTransportState.Connected ||
+                                       _transport.State == LiveTransportState.Degraded)) return;
+            if (!TryExtractWhereTarget(ev.Text, out string target)) return;
+
+            RaiseSignal(ReflexSignal.WhereIsCommand);
+            Tick((long)(Time.unscaledTimeAsDouble * 1000.0));
+            // An explicit command must not disappear if other detector signals
+            // consume the regular skill budget for this exact frame.
+            if (!_focusSearch.IsActive) _focusSearch.Activate();
+            _focusSearch.Locate(target);
+        }
+
+        public static bool TryExtractWhereTarget(string text, out string target)
+        {
+            target = null;
+            if (string.IsNullOrWhiteSpace(text)) return false;
+            string value = text.Trim().TrimEnd('?', '!', '.', ',', ';', ':').ToLowerInvariant();
+            string[] prefixes =
+            {
+                "where is ", "where are ",
+                "où est ", "ou est ", "où sont ", "ou sont ",
+                "où se trouve ", "ou se trouve ",
+                "où se trouvent ", "ou se trouvent "
+            };
+            foreach (string prefix in prefixes)
+            {
+                if (!value.StartsWith(prefix, StringComparison.Ordinal)) continue;
+                value = value.Substring(prefix.Length).Trim();
+                string[] articles = { "my ", "the ", "mes ", "mon ", "ma ", "le ", "la ", "les ", "des " };
+                foreach (string article in articles)
+                {
+                    if (!value.StartsWith(article, StringComparison.Ordinal)) continue;
+                    value = value.Substring(article.Length).Trim();
+                    break;
+                }
+                if (value.Length == 0) return false;
+                target = value;
+                return true;
+            }
+            return false;
         }
 
         private void Register(ReflexSkillBase skill)

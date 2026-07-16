@@ -310,6 +310,43 @@ def test_pattern_mirror_first_conversation_is_an_honest_zero_call_gate(tmp_path,
     ]
 
 
+def test_people_identity_skips_llm_when_every_speaker_is_durably_resolved(tmp_path, monkeypatch):
+    db_path = _fixture_db(Path(tmp_path), monkeypatch)
+    from mlomega_audio_elite import people_openloops_v14_5 as people
+    from mlomega_audio_elite.db import connect
+
+    with connect(db_path) as con:
+        con.execute("UPDATE turns SET person_id='me' WHERE conversation_id='conv-i2'")
+        con.commit()
+    monkeypatch.setattr(
+        people, "_llm_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("resolved identity must not pay the 9B model")
+        ),
+    )
+    result = people.analyze_people_identity_hypotheses("conv-i2", person_id="me")
+    assert result["status"] == "ok"
+    assert result["llm_calls"] == 0
+    assert result["reason"] == "all_cognitive_speakers_already_resolved"
+
+
+def test_people_identity_keeps_llm_for_unresolved_voice(tmp_path, monkeypatch):
+    _fixture_db(Path(tmp_path), monkeypatch)
+    from mlomega_audio_elite import people_openloops_v14_5 as people
+
+    calls = []
+    monkeypatch.setattr(
+        people, "_llm_json",
+        lambda *_args, **_kwargs: calls.append(True) or {
+            "speaker_identity_hypotheses": [], "relationship_inferences": [],
+            "people_context_profiles": [], "missing_context": [], "confidence": 0.0,
+        },
+    )
+    result = people.analyze_people_identity_hypotheses("conv-i2", person_id="me")
+    assert result["status"] == "ok"
+    assert calls == [True]
+
+
 def test_all_generic_product_stages_declare_their_input_policy():
     from mlomega_audio_elite.night_orchestrator.prompt_projection import (
         stage_input_policy,

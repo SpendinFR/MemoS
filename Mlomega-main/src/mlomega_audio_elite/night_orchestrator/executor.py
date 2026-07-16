@@ -53,6 +53,9 @@ class LLMCallResult:
     finish_reason: str | None = None
     # one of: None (ok) | "length" | "timeout" | "unavailable" | "invalid_json" | "contract"
     error_kind: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    latency_ms: int | None = None
 
 
 class WindowLLM(Protocol):
@@ -97,6 +100,51 @@ class StageScope:
     adapter_version: str
     prompt_version: str
     model: str
+
+
+def _stage_call_reason(stage_name: str) -> dict[str, Any]:
+    try:
+        from .prompt_projection import stage_input_policy
+        input_policy = stage_input_policy(stage_name)
+    except Exception:
+        input_policy = None
+    return {
+        "stage_name": stage_name,
+        "why_called": "validated_semantic_contract_required",
+        "input_policy": input_policy or "stage_specific_projected_evidence",
+    }
+
+
+def _produced_fact_summary(value: Any) -> dict[str, Any]:
+    """Compact telemetry only; the complete validated output stays in its table."""
+    identifiers: list[str] = []
+    sections: dict[str, int] = {}
+
+    def visit(node: Any, path: str = "", depth: int = 0) -> None:
+        if depth > 8 or len(identifiers) >= 256:
+            return
+        if isinstance(node, Mapping):
+            for key, item in node.items():
+                child = f"{path}.{key}" if path else str(key)
+                lowered = str(key).lower()
+                if lowered.endswith(("_id", "_ref")) and item not in (None, ""):
+                    identifiers.append(f"{child}={item}")
+                elif lowered.endswith(("_ids", "_refs")) and isinstance(item, (list, tuple)):
+                    for value_ in item[:64]:
+                        identifiers.append(f"{child}={value_}")
+                visit(item, child, depth + 1)
+        elif isinstance(node, list):
+            if path and depth <= 2:
+                sections[path] = len(node)
+            for item in node:
+                visit(item, path, depth + 1)
+
+    visit(value)
+    return {
+        "output_digest": content_digest(value),
+        "section_counts": sections,
+        "identifiers": identifiers,
+    }
 
 
 def _sleep_backoff(attempt: int, sleeper: Callable[[float], None]) -> None:
@@ -212,9 +260,28 @@ def run_windows(
         )
         existing = cp.get_window(con, key)
         state = existing["state"] if existing else None
+        facts_read = {
+            "primary_refs": list(window.spec.primary_refs),
+            "overlap_refs": list(window.spec.overlap_refs),
+        }
+        why_called = _stage_call_reason(scope.stage_name)
 
         # Resume: a leaf that already reached a durable end state is not redone.
         if state in (cp.STATE_COMPLETED, cp.STATE_QUARANTINED):
+            if state == cp.STATE_COMPLETED:
+                cp.record_call_telemetry(
+                    con, window_key=key, attempt=0,
+                    person_id=scope.person_id, package_date=scope.package_date,
+                    stage_name=scope.stage_name, model=scope.model,
+                    why_called=why_called, facts_read=facts_read,
+                    facts_produced={"output_digest": existing.get("output_digest")},
+                    cache_hit=True,
+                    estimated_input_tokens=existing.get("input_tokens"),
+                    provider_input_tokens=None, provider_output_tokens=None,
+                    output_budget=existing.get("output_budget"), latency_ms=0,
+                    outcome="checkpoint_reuse",
+                )
+                con.commit()
             result.windows.append(
                 WindowResult(
                     key, window.spec.window_index, state, int(existing["attempts"]),
@@ -277,6 +344,18 @@ def run_windows(
             if call.ok and validate(candidate):
                 durable_output = decorate_output(candidate, window.primary_units)
                 digest = cp.record_output(con, key, durable_output)
+                cp.record_call_telemetry(
+                    con, window_key=key, attempt=attempt,
+                    person_id=scope.person_id, package_date=scope.package_date,
+                    stage_name=scope.stage_name, model=scope.model,
+                    why_called=why_called, facts_read=facts_read,
+                    facts_produced=_produced_fact_summary(durable_output),
+                    cache_hit=False, estimated_input_tokens=input_tokens,
+                    provider_input_tokens=call.prompt_tokens,
+                    provider_output_tokens=call.completion_tokens,
+                    output_budget=budget.output_reserve, latency_ms=call.latency_ms,
+                    outcome="validated", finish_reason=call.finish_reason,
+                )
                 cp.mark_state(con, key, cp.STATE_COMPLETED, output_digest=digest)
                 con.commit()
                 result.windows.append(
@@ -291,6 +370,20 @@ def run_windows(
             if call.ok and not validate(candidate):
                 # Bounded repair: one more try, then quarantine. Never apply it.
                 last_error = "invalid output (contract)"
+                cp.record_call_telemetry(
+                    con, window_key=key, attempt=attempt,
+                    person_id=scope.person_id, package_date=scope.package_date,
+                    stage_name=scope.stage_name, model=scope.model,
+                    why_called=why_called, facts_read=facts_read,
+                    facts_produced={}, cache_hit=False,
+                    estimated_input_tokens=input_tokens,
+                    provider_input_tokens=call.prompt_tokens,
+                    provider_output_tokens=call.completion_tokens,
+                    output_budget=budget.output_reserve, latency_ms=call.latency_ms,
+                    outcome="contract_rejected", finish_reason=call.finish_reason,
+                    error_kind="contract",
+                )
+                con.commit()
                 if attempt >= 2:
                     _quarantine(window, key, attempt, last_error)
                     return
@@ -298,6 +391,20 @@ def run_windows(
 
             kind = call.error_kind or "unknown"
             last_error = f"llm_error:{kind} finish={call.finish_reason}"
+            cp.record_call_telemetry(
+                con, window_key=key, attempt=attempt,
+                person_id=scope.person_id, package_date=scope.package_date,
+                stage_name=scope.stage_name, model=scope.model,
+                why_called=why_called, facts_read=facts_read,
+                facts_produced={}, cache_hit=False,
+                estimated_input_tokens=input_tokens,
+                provider_input_tokens=call.prompt_tokens,
+                provider_output_tokens=call.completion_tokens,
+                output_budget=budget.output_reserve, latency_ms=call.latency_ms,
+                outcome="provider_error", finish_reason=call.finish_reason,
+                error_kind=kind,
+            )
+            con.commit()
             if kind in ("length", "invalid_json", "contract"):
                 # Output too big / malformed -> subdivide the INPUT and retry.
                 if kind == "length" and not subdivide_on_length:

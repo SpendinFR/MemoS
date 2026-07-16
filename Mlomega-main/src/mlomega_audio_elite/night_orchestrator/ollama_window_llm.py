@@ -18,6 +18,7 @@ is already disabled inside ``OllamaJsonClient`` for JSON contracts.
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Mapping
 
 from .executor import LLMCallResult
@@ -82,6 +83,7 @@ class OllamaWindowLLM:
         return json.dumps(prompt, ensure_ascii=False, sort_keys=True, default=str)
 
     def generate(self, prompt: Mapping[str, Any] | str, *, output_budget: int) -> LLMCallResult:
+        started = time.perf_counter()
         user = self._prompt_text(prompt)
         schema_hint = self._schema_hint
         format_schema = self._format_schema
@@ -102,16 +104,26 @@ class OllamaWindowLLM:
                 format_schema=format_schema,
             )
         except Exception as exc:  # network / provider fault -> transient, retryable
-            return LLMCallResult(ok=False, error_kind="unavailable", finish_reason=f"exception:{type(exc).__name__}")
+            return LLMCallResult(
+                ok=False, error_kind="unavailable",
+                finish_reason=f"exception:{type(exc).__name__}",
+                latency_ms=int((time.perf_counter() - started) * 1000),
+            )
 
         if getattr(result, "ok", False):
             return LLMCallResult(
                 ok=True,
                 data=getattr(result, "data", None),
                 finish_reason=getattr(result, "finish_reason", None),
+                prompt_tokens=getattr(result, "prompt_tokens", None),
+                completion_tokens=getattr(result, "completion_tokens", None),
+                latency_ms=int((time.perf_counter() - started) * 1000),
             )
         return LLMCallResult(
             ok=False,
             error_kind=_classify(result),
             finish_reason=getattr(result, "finish_reason", None),
+            prompt_tokens=getattr(result, "prompt_tokens", None),
+            completion_tokens=getattr(result, "completion_tokens", None),
+            latency_ms=int((time.perf_counter() - started) * 1000),
         )

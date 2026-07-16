@@ -22,6 +22,7 @@ from ..utils import now_iso, sha256_bytes
 
 WINDOWS_TABLE = "night_llm_windows_v19"
 OUTPUTS_TABLE = "night_llm_window_outputs_v19"
+CALLS_TABLE = "night_llm_call_telemetry_v19"
 
 # Terminal-ish states. Only "completed" and "quarantined" are durable end states
 # the executor skips on resume; "planned"/"running"/"error" are re-attempted.
@@ -65,6 +66,30 @@ CREATE TABLE IF NOT EXISTS {OUTPUTS_TABLE}(
   created_at TEXT NOT NULL,
   PRIMARY KEY(window_key, output_digest)
 );
+CREATE TABLE IF NOT EXISTS {CALLS_TABLE}(
+  call_id TEXT PRIMARY KEY,
+  window_key TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  person_id TEXT NOT NULL,
+  package_date TEXT NOT NULL,
+  stage_name TEXT NOT NULL,
+  model TEXT NOT NULL,
+  why_called_json TEXT NOT NULL,
+  facts_read_json TEXT NOT NULL,
+  facts_produced_json TEXT NOT NULL,
+  cache_hit INTEGER NOT NULL DEFAULT 0,
+  estimated_input_tokens INTEGER,
+  provider_input_tokens INTEGER,
+  provider_output_tokens INTEGER,
+  output_budget INTEGER,
+  latency_ms INTEGER,
+  outcome TEXT NOT NULL,
+  finish_reason TEXT,
+  error_kind TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_{CALLS_TABLE}_scope
+  ON {CALLS_TABLE}(person_id, package_date, stage_name, created_at);
 """
 
 
@@ -198,6 +223,58 @@ def record_output(con: Any, key: str, output: Any) -> str:
         (key, digest, json.dumps(output, ensure_ascii=False, sort_keys=True, default=str), now_iso()),
     )
     return digest
+
+
+def record_call_telemetry(
+    con: Any,
+    *,
+    window_key: str,
+    attempt: int,
+    person_id: str,
+    package_date: str,
+    stage_name: str,
+    model: str,
+    why_called: Any,
+    facts_read: Any,
+    facts_produced: Any,
+    cache_hit: bool,
+    estimated_input_tokens: int | None,
+    provider_input_tokens: int | None,
+    provider_output_tokens: int | None,
+    output_budget: int | None,
+    latency_ms: int | None,
+    outcome: str,
+    finish_reason: str | None = None,
+    error_kind: str | None = None,
+) -> str:
+    """Persist one auditable model attempt (or one checkpoint reuse)."""
+    from .evidence_ref import content_digest
+
+    call_id = "nlcall_" + content_digest({
+        "window_key": window_key,
+        "attempt": int(attempt),
+        "outcome": outcome,
+        "cache_hit": bool(cache_hit),
+    })[:24]
+    con.execute(
+        f"""INSERT OR IGNORE INTO {CALLS_TABLE}(
+              call_id,window_key,attempt,person_id,package_date,stage_name,model,
+              why_called_json,facts_read_json,facts_produced_json,cache_hit,
+              estimated_input_tokens,provider_input_tokens,provider_output_tokens,
+              output_budget,latency_ms,outcome,finish_reason,error_kind,created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            call_id, window_key, int(attempt), person_id, package_date,
+            stage_name, model,
+            json.dumps(why_called, ensure_ascii=False, sort_keys=True, default=str),
+            json.dumps(facts_read, ensure_ascii=False, sort_keys=True, default=str),
+            json.dumps(facts_produced, ensure_ascii=False, sort_keys=True, default=str),
+            1 if cache_hit else 0,
+            estimated_input_tokens, provider_input_tokens, provider_output_tokens,
+            output_budget, latency_ms, outcome, finish_reason, error_kind, now_iso(),
+        ),
+    )
+    return call_id
 
 
 def load_outputs(

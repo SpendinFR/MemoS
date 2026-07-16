@@ -745,7 +745,29 @@ Le problème est transversal : tout stage nocturne qui concatène un jour, une c
 - [x] **I0.3 Épistémologie** : `non_observed` reste `unknown`; seul un fait positif incompatible peut donner `contradicted`; toute promotion Life Model commence `watch` et exige répétition ou sources indépendantes (OBS-30/37). Preuves : `build_reconciliation_candidates` ignore l'absence/non-outcome, compile seulement les statuts positifs explicites; Life écrit `watching` puis `promotion_ready` après deux groupes indépendants; tests `test_e64i_daily_projection.py`.
 - [x] **I0.4 Manifeste de capacité** : agréger les verdicts des sous-moteurs et interdire `complete=1` si une capacité obligatoire est bypassée, abstentionniste ou faux-verte (OBS-38).
 - [x] **I0.5 Préflight FirstTry** : avant capture, vérifier HF gated/proxy, Qdrant, Ollama/llama.cpp, modèle/format JSON, version `transformers`, CUDA/cuDNN, VLM, disque et venv nocturne; aucun téléchargement ou diagnostic tardif après `end_session` (OBS-32). Clos en code le 2026-07-15; l'état opérateur courant reste volontairement bloqué tant qu'Ollama n'est pas démarré et que le llama-server P1 orphelin n'est pas arrêté ou déclaré comme backend.
-- [ ] **I0.6 Recherche spatiale produit** : distinguer ingestion et consommation. VisionRT/WorldBrain stockent bien des positions, mais `FocusSearchSkill.Locate`, `spatial.answer_find` et `VisionRtRequestSender` ne sont pas appelés/assignés en production; brancher « où est X ? » sur la dernière observation durable, avec fraîcheur/confiance et fallback honnête. Le focus de frame courante ne vaut pas dernière position connue.
+- [x] **I0.6 Recherche spatiale produit** : distinguer ingestion et consommation. VisionRT/WorldBrain stockent bien des positions, mais `FocusSearchSkill.Locate`, `spatial.answer_find` et `VisionRtRequestSender` ne sont pas appelés/assignés en production; brancher « où est X ? » sur la dernière observation durable, avec fraîcheur/confiance et fallback honnête. Le focus de frame courante ne vaut pas dernière position connue.
+
+> **Suivi I0.6 — FAIT 2026-07-16.** Le flux connecté réel est maintenant
+> `device_transcript → IntentRouter → LivePipeline._route_vision_focus →
+> WorldBrain.find_entity_record → spatial.answer_find → UI intent`. Le registre durable
+> `worldbrain_entity_registry_v19` est owner-scopé et relu à travers les sessions : la
+> dernière observation actualise l'état courant, tandis que l'historique immuable reste
+> dans `visual_events_v19`. La réponse distingue `visible` et `remembered`, porte
+> fraîcheur/confiance/source et retourne un inconnu honnête sans inventer de direction.
+> Hors connexion, le transcript ASR final déclenche réellement `FocusSearchSkill` via
+> `ReflexScheduler`; lorsqu'une session PC est active, le PC reste autoritaire et Unity
+> ne double pas la commande.
+>
+> Le pont proactif qui était dormant est fermé : `_on_scene_delta` appelle désormais
+> `BrainLiveSceneAdapter.evaluate_periodic` (cadence mémoire configurable, 2 s par
+> défaut), sans modifier le rendu UI événementiel par frame. Les personnes déjà connues
+> passent aussi dans le VLM d'apparence une fois par track/session; cheveux, vêtements,
+> chaussures et autres attributs alimentent `AttributeMemory`, puis un changement durable
+> ouvre le H1 avec provenance. Le dédoublonnage d'attributs inclut maintenant
+> `(subject, attribute)` : plusieurs attributs issus de la même crop ne s'écrasent plus.
+> Validation : 128 tests live/vision/proactivité verts dans `.venv-live`, 13/13 tests
+> Unity EditMode Reflex verts, dont le vrai pont ASR hors-ligne. Le S25 reste le gate
+> matériel I7, pas une condition pour considérer le raccord code terminé.
 
 #### I1 — mini-plan 1 : un épisode conversationnel, des sous-thèmes ordonnés
 
@@ -1068,9 +1090,27 @@ réduction statique de JSON comme une validation modèle.
 
 #### I6 — déclenchement conditionnel et calculs déterministes
 
-- [ ] Embeddings/reranker sans LLM; `similar-case` seulement avec candidats; calibration seulement après issue; identity 9B seulement si cluster/noms ambigus; clarification seulement sur champ réellement manquant.
-- [ ] Assemblage, couverture, statistiques prosodiques/langue, n-grams, projections et `live_ready` restent déterministes. Un LLM ne reformule pas une table canonique qu'un writer peut mapper exactement.
-- [ ] Enregistrer la raison de chaque appel (`why_called`, facts lus/produits, cache hit, tokens, latence) pour prouver qu'un jour calme coûte moins sans rater un événement.
+- [x] Embeddings/reranker sans LLM; `similar-case` seulement avec candidats; calibration seulement après issue; identity 9B seulement si cluster/noms ambigus; clarification seulement sur champ réellement manquant.
+- [x] Assemblage, couverture, statistiques prosodiques/langue, n-grams, projections et `live_ready` restent déterministes. Un LLM ne reformule pas une table canonique qu'un writer peut mapper exactement.
+- [x] Enregistrer la raison de chaque appel (`why_called`, facts lus/produits, cache hit, tokens, latence) pour prouver qu'un jour calme coûte moins sans rater un événement.
+
+> **Suivi I6 — FAIT EN CODE 2026-07-16, mesure globale réservée à I7.** L'audit du
+> chemin produit confirme retrieval embeddings + cross-encoder sans générateur,
+> similar-case seulement après hits, calibration après issue et clarification seulement
+> sur manque actionnable. `people_openloops_v14_5` possède désormais un garde explicite
+> `identity_ambiguity_reasons` : un locuteur durablement résolu produit le contrat vide
+> valide à zéro appel; voix inconnue, contradiction ou cluster non résolu conserve le 9B.
+> Assemblage, coverage, prosodie/langue, n-grams, projection et compilation `live_ready`
+> restent des writers/calculs déterministes.
+>
+> Chaque tentative réellement orchestrée et chaque reprise de checkpoint écrit maintenant
+> `night_llm_call_telemetry_v19` : stage/fenêtre/attempt, modèle, `why_called`, refs et
+> digest des faits lus, résumé structuré des faits produits, cache hit, budgets, tokens
+> fournisseur entrée/sortie, latence, finish reason, outcome et erreur. Les réponses
+> llama.cpp/Ollama propagent les compteurs réels au lieu d'une estimation seule. Tests
+> I6/E64 ciblés : 75 verts au lot complet, puis 38/38 après le dernier patch fournisseur.
+> I7 doit encore prouver sur cinq minutes qu'aucun appel nocturne produit ne contourne
+> cette table; ce contrôle de mesure ne rouvre pas les règles I6 déjà codées.
 
 #### I7 — validation progressive et décision de production
 

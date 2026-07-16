@@ -645,11 +645,21 @@ class VisionRT:
             hits = [d for d in dets if target in d.label.lower()] if target else dets
             hits.sort(key=lambda d: d.score, reverse=True)
             if hits:
-                content = {"kind": "find", "label": hits[0].label, "matches": len(hits)}
+                content = {
+                    "kind": "find", "state": "visible", "query": request.get("query"),
+                    "label": hits[0].label, "matches": len(hits),
+                    "text": f"{hits[0].label} est visible maintenant.",
+                }
                 truth_level = "observed"
                 confidence = float(hits[0].score)
             else:
-                content = {"kind": "find", "label": None, "matches": 0}
+                content = {
+                    "kind": "find", "state": "unknown", "query": request.get("query"),
+                    "label": None, "matches": 0,
+                    "text": "Je ne le vois pas maintenant et je n'ai pas de position durable fiable.",
+                }
+                truth_level = "unknown"
+                confidence = 0.0
         else:  # what_is → detector label first, VLM fallback
             label = None
             conf = 0.0

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import sys
 import time
 import threading
@@ -383,6 +384,121 @@ def test_all_durable_pipeline_writers_share_brainlive_id(tmp_path, monkeypatch):
     assert pipe.replay.live_session_id == "brainlive-real-1"
 
 
+def test_scene_delta_drives_real_scene_adapter_delivery_queue(tmp_path, monkeypatch):
+    """PhoneOnly scene cadence, not an isolated adapter call, must fire H1 cues."""
+    db_path = tmp_path / "service.db"
+    monkeypatch.setenv("MLOMEGA_DB", str(db_path))
+    monkeypatch.setenv("MLOMEGA_HOME", str(tmp_path))
+    pipe = runtime_mod.live_pipeline.LivePipeline(
+        session_id="transport-scene",
+        live_session_id="brainlive-scene",
+        person_id="owner",
+        db_path=db_path,
+        enable_detector=False,
+        enable_worldbrain=True,
+        enable_conversation=False,
+        user_profile={"display": "phone_only"},
+    )
+    pipe.worldbrain.config.promote_min_observations = 1
+    pipe.worldbrain.config.promote_min_confidence = 0.3
+    delta = {
+        "session_id": "brainlive-scene", "source_frame_id": "person-1",
+        "entities": [{
+            "track_id": "track-alice", "kind": "person", "label": "person",
+            "bbox": [0, 0, 100, 300], "confidence": 0.9, "visibility": 1.0,
+        }],
+        "relations": [], "changes": [], "map_quality": 0.0,
+        "evidence_refs": ["frame:person-1"],
+    }
+    pipe._on_scene_delta(delta)
+    entity_id = pipe.worldbrain._track_to_entity["track-alice"]
+    pipe.scene_adapter.known_people[entity_id] = {"name": "Alice", "relation": "amie"}
+    pipe.scene_adapter._last_build_ts = 0.0
+    pipe._on_scene_delta({**delta, "source_frame_id": "person-2",
+                          "evidence_refs": ["frame:person-2"]})
+
+    from mlomega_audio_elite.db import connect
+    with connect(db_path) as con:
+        rows = con.execute(
+            "SELECT message FROM brainlive_intervention_delivery_queue "
+            "WHERE live_session_id='brainlive-scene'"
+        ).fetchall()
+        dedupes = con.execute(
+            "SELECT candidate_fingerprint FROM brainlive_intervention_delivery_dedupes"
+        ).fetchall()
+    assert any("Alice" in str(r["message"]) for r in rows), rows
+    assert dedupes
+    assert pipe.scene_adapter.metrics["deliveries_enqueued"] >= 1
+
+
+def test_named_person_appearance_change_reaches_proactive_queue_across_sessions(tmp_path, monkeypatch):
+    """Named crop -> VLM attributes -> durable diff -> scene adapter -> H1 queue."""
+    db_path = tmp_path / "appearance.db"
+    monkeypatch.setenv("MLOMEGA_DB", str(db_path))
+    monkeypatch.setenv("MLOMEGA_HOME", str(tmp_path))
+
+    class AppearanceVlm:
+        def __init__(self, clothing): self.clothing = clothing
+        def describe(self, _crop, prompt=""):
+            return {"status": "ok", "text": json.dumps({
+                "appearance": "adulte", "clothing": self.clothing,
+                "age_apparent": "adulte", "role_hint": "",
+            })}
+
+    def make_pipe(session_id, track_id, clothing):
+        pipe = runtime_mod.live_pipeline.LivePipeline(
+            session_id=f"transport-{session_id}", live_session_id=session_id,
+            person_id="owner", db_path=db_path, enable_detector=False,
+            enable_worldbrain=True, enable_conversation=False,
+            user_profile={"display": "phone_only"},
+        )
+        pipe.enable_fine_intel = True
+        pipe.attribute_memory = runtime_mod.live_pipeline.attribute_memory.AttributeMemory(
+            person_id="owner", worldbrain=pipe.worldbrain,
+            service_db_path=db_path,
+        )
+        pipe.fusion = SimpleNamespace(_track_identity={track_id: "alice"})
+        pipe.stranger_profiler = runtime_mod.live_pipeline.stranger_profile.StrangerProfiler(
+            vlm=AppearanceVlm(clothing), worldbrain=pipe.worldbrain,
+            config=runtime_mod.live_pipeline.stranger_profile.StrangerConfig(stable_seconds=0.0),
+        )
+        return pipe
+
+    first = make_pipe("appearance-one", "person-a", "chaussures noires")
+    first.worldbrain.config.promote_min_observations = 1
+    promoted = first.worldbrain.ingest_scene_delta({
+        "session_id": "appearance-one", "source_frame_id": "a",
+        "entities": [{"track_id": "person-a", "kind": "person", "label": "person",
+                      "bbox": [0, 0, 40, 80], "confidence": 0.9}],
+        "relations": [], "changes": [], "evidence_refs": ["frame:a"],
+    })["promoted"][0]
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    person_a = {"track_id": "person-a", "label": "person", "bbox": [0, 0, 40, 80]}
+    first._run_stranger_profiles(frame, {"entities": [person_a]})
+    first._run_stranger_profiles(frame, {"entities": [person_a]})
+
+    second = make_pipe("appearance-two", "person-b", "chaussures rouges")
+    second.worldbrain._track_to_entity["person-b"] = promoted
+    second.scene_adapter.known_people[promoted] = {"name": "Alice", "relation": "amie"}
+    person_b = {"track_id": "person-b", "label": "person", "bbox": [0, 0, 40, 80]}
+    second._run_stranger_profiles(frame, {"entities": [person_b]})
+    second._run_stranger_profiles(frame, {"entities": [person_b]})
+
+    from mlomega_audio_elite.db import connect
+    with connect(db_path) as con:
+        changes = con.execute(
+            "SELECT event_type,observation_json FROM visual_events_v19 "
+            "WHERE person_id='owner' AND event_type='change_attribute_changed'"
+        ).fetchall()
+        cues = con.execute(
+            "SELECT message FROM brainlive_intervention_delivery_queue "
+            "WHERE live_session_id='appearance-two'"
+        ).fetchall()
+    assert any("chaussures rouges" in str(r["observation_json"]) for r in changes), changes
+    assert any("Alice" in str(r["message"]) for r in cues), cues
+    assert second.scene_adapter.metrics["attribute_change_cues"] >= 1
+
+
 def test_explicit_end_waits_inflight_audio_before_flush_and_pipeline_end(monkeypatch):
     order = []
 
@@ -739,3 +855,51 @@ def test_voice_focus_uses_exactly_one_latest_video_frame():
     assert result == {"ok": True}
     assert seen[0][2] == "f2"
     assert np.array_equal(seen[0][1], second)
+
+
+def test_phone_command_where_are_glasses_reaches_durable_spatial_answer(tmp_path, monkeypatch):
+    """DataChannel transcript -> IntentRouter -> durable WorldBrain -> downlink."""
+    db = tmp_path / "spatial-product.db"
+    monkeypatch.setenv("MLOMEGA_DB", str(db))
+    monkeypatch.setenv("MLOMEGA_HOME", str(tmp_path))
+    first = runtime_mod.live_pipeline.LivePipeline(
+        session_id="transport-old", live_session_id="brain-old", person_id="me",
+        db_path=db, enable_detector=False, enable_worldbrain=True,
+        enable_conversation=False, enable_intents=False, enable_live_discourse=False,
+    )
+    first.worldbrain.config.promote_min_observations = 1
+    first.worldbrain.ingest_scene_delta({
+        "session_id": "brain-old", "source_frame_id": "frame-glasses",
+        "entities": [{
+            "track_id": "track-glasses", "kind": "object", "label": "lunettes",
+            "bbox": [20, 30, 90, 60], "confidence": 0.88,
+            "visibility": 1.0, "age": 1,
+        }],
+        "relations": [], "changes": [], "map_quality": 0.0,
+        "evidence_refs": ["frame:frame-glasses"],
+    })
+    first.worldbrain.end_session(place_hint="salon")
+
+    ingress = FakeIngress()
+    ingress.open_channels = 1
+    current = runtime_mod.live_pipeline.LivePipeline(
+        session_id="transport-new", live_session_id="brain-new", person_id="me",
+        db_path=db, ingress=ingress, enable_detector=False, enable_worldbrain=True,
+        enable_conversation=False, enable_intents=True, enable_live_discourse=False,
+        user_profile={"display": "phone_only", "llm": "ollama_local"},
+    )
+    current.set_wake_word_policy("gated")
+    routed = current.on_device_transcript({
+        "type": "device_transcript", "segment_id": "cmd-spatial-1",
+        "text": "où sont mes lunettes ?", "is_final": True, "is_command": True,
+    })
+
+    assert routed is not None and routed["intent"] == "find"
+    pushed = [json.loads(raw) for raw in ingress.sent]
+    answer = next(item for item in pushed if item.get("producer") == "worldbrain")
+    assert answer["content"]["state"] == "last_seen"
+    assert answer["content"]["place_hint"] == "salon"
+    assert answer["content"]["source"] == "durable_registry"
+    assert answer["truth_level"] == "remembered"
+    assert answer.get("bearing") is None  # a new session cannot invent an arrow
+    assert current.metrics()["spatial_find_durable_hits"] == 1

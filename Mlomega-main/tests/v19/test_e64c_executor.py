@@ -10,6 +10,7 @@ and never applying a partial. No business prompt and no close-day code involved.
 from __future__ import annotations
 
 import sqlite3
+import json
 
 import pytest
 
@@ -193,6 +194,46 @@ def test_resume_skips_completed_windows_no_double_output():
     # outputs table did not double
     n = con.execute(f"SELECT COUNT(*) FROM {cp.OUTPUTS_TABLE}").fetchone()[0]
     assert n == 3
+
+
+def test_each_model_call_and_checkpoint_reuse_has_auditable_telemetry():
+    con = _con()
+
+    class MeasuredLLM:
+        def generate(self, prompt, *, output_budget):
+            return LLMCallResult(
+                ok=True, data={"fact_id": "fact-1", "items": [{"item_id": "i1"}]},
+                finish_reason="stop", prompt_tokens=17, completion_tokens=9,
+                latency_ms=123,
+            )
+
+    kwargs = dict(
+        con=con, scope=_scope("brain2_engine_fields:test"),
+        budget=ModelBudget(context_window=1000, output_reserve=200),
+        render=_render, validate=lambda d: True, target_units=10, overlap=0,
+        prompt_overhead_tokens=0,
+    )
+    first = run_windows(_units(2), llm=MeasuredLLM(), **kwargs)
+    assert first.all_completed
+    call = con.execute(
+        f"SELECT * FROM {cp.CALLS_TABLE} WHERE cache_hit=0"
+    ).fetchone()
+    cols = [d[0] for d in con.execute(f"SELECT * FROM {cp.CALLS_TABLE} LIMIT 0").description]
+    call = dict(zip(cols, call))
+    assert call["provider_input_tokens"] == 17
+    assert call["provider_output_tokens"] == 9
+    assert call["latency_ms"] == 123
+    assert call["outcome"] == "validated"
+    assert json.loads(call["why_called_json"])["why_called"] == "validated_semantic_contract_required"
+    assert json.loads(call["facts_read_json"])["primary_refs"] == ["u0", "u1"]
+    assert "fact_id=fact-1" in json.loads(call["facts_produced_json"])["identifiers"]
+
+    resumed = run_windows(_units(2), llm=OkLLM(), **kwargs)
+    assert resumed.all_completed
+    cache = con.execute(
+        f"SELECT outcome,latency_ms FROM {cp.CALLS_TABLE} WHERE cache_hit=1"
+    ).fetchone()
+    assert cache == ("checkpoint_reuse", 0)
 
 
 def test_shared_prompt_change_invalidates_completed_checkpoint():

@@ -154,9 +154,11 @@ class StrangerProfiler:
         self._now = now_fn or _time.monotonic
         # track_id -> monotonic first-seen-anonymous timestamp
         self._first_anon: dict[str, float] = {}
+        self._first_named: dict[str, float] = {}
         # profiles keyed by track_id (dedup: one VLM profile per track per session)
         self.profiles: dict[str, StrangerProfile] = {}
         self._profiled_tracks: set[str] = set()
+        self._appearance_profiled_tracks: set[str] = set()
         self.metrics = {
             "tracks_watched": 0,
             "profiles_created": 0,
@@ -164,6 +166,8 @@ class StrangerProfiler:
             "vlm_unavailable": 0,
             "fused": 0,
             "hot_updates": 0,
+            "appearance_vlm_calls": 0,
+            "appearance_profiles": 0,
         }
 
     # ----------------------------------------------------------------- observe
@@ -203,6 +207,47 @@ class StrangerProfiler:
         if crop_bgr is None:
             return None
         return self._profile(track_id, entity_id, crop_bgr)
+
+    def observe_named_appearance(
+        self,
+        track_id: str,
+        *,
+        entity_id: str | None,
+        crop_bgr: Any = None,
+        now: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Describe one stable known-person encounter for AttributeMemory.
+
+        This is intentionally separate from anonymous profiling: it never emits a
+        provisional identity or guesses a name.  It runs at most once per track
+        per live session, after the same stability delay as stranger profiling.
+        """
+        if not track_id or not entity_id or track_id in self._appearance_profiled_tracks:
+            return None
+        now = self._now() if now is None else now
+        first = self._first_named.get(track_id)
+        if first is None:
+            self._first_named[track_id] = now
+            return None
+        if (now - first) < self.config.stable_seconds or crop_bgr is None:
+            return None
+        self._appearance_profiled_tracks.add(track_id)
+        self.metrics["appearance_vlm_calls"] += 1
+        result: dict[str, Any] = {"status": "vlm_unavailable", "text": None}
+        if self.vlm is not None:
+            try:
+                result = self.vlm.describe(crop_bgr, prompt=_VLM_PROMPT)
+            except Exception:
+                result = {"status": "vlm_error", "text": None}
+        if str(result.get("status") or "") != "ok" or not result.get("text"):
+            self.metrics["vlm_unavailable"] += 1
+            return None
+        attrs = parse_vlm_description(result.get("text"))
+        if not any(attrs.values()):
+            self.metrics["vlm_unavailable"] += 1
+            return None
+        self.metrics["appearance_profiles"] += 1
+        return attrs
 
     # ----------------------------------------------------------------- profile
     def _profile(self, track_id: str, entity_id: str | None, crop_bgr: Any) -> StrangerProfile | None:

@@ -242,6 +242,29 @@ namespace MLOmega.XR.Tests
         }
 
         [Test]
+        public void OfflineWhereCommand_TraversesAsrSchedulerAndFocusSearch()
+        {
+            var reflex = new CapturingReflex();
+            var cap = new CapturingIntents();
+            LocalIntentSource src = NewSource(cap);
+            ReflexScheduler sched = BuildScheduler(src, reflex, budget: 5);
+            var asr = Make<AsrBridge>("offline_focus_asr");
+            SetField(asr, "_editorMicrophoneEnabled", false);
+            SetField(sched, "_asrBridge", asr);
+            typeof(ReflexScheduler).GetMethod("OnEnable",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                .Invoke(sched, null);
+
+            asr.InjectTranscript(new TranscriptEvent(
+                "Où sont mes lunettes ?", true, "fr", 0, 1000, true));
+
+            Assert.IsTrue(cap.Any("context_card"),
+                "offline command must reach FocusSearch and emit an honest local result");
+            Assert.AreEqual("lunettes", ReflexScheduler.TryExtractWhereTarget(
+                "Où sont mes lunettes ?", out string target) ? target : null);
+        }
+
+        [Test]
         public void Scheduler_RespectsBudget()
         {
             var reflex = new CapturingReflex();

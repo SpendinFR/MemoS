@@ -89,7 +89,7 @@ def _build_rules() -> list[tuple[re.Pattern[str], str, dict[str, Any]]]:
     # --- vision handlers ---
     add(r"\b(?:c'?est\s+quoi|qu'?est-?ce\s+que\s+c'?est|what\s+is\s+(?:this|that))\b", "what_is")
     add(r"\b(?:lis|lire|ocr|read|d[ée]chiffre)\b(?:\s+(?:le\s+)?texte)?", "ocr")
-    add(r"\b(?:trouve|cherche|find|where\s+is|o[ùu]\s+est)\b\s+" + _TARGET, "find")
+    add(r"\b(?:trouve|cherche|find|where\s+(?:is|are)|o[ùu]\s+(?:est|sont)|o[ùu]\s+se\s+trouv(?:e|ent))\b\s+" + _TARGET, "find")
     add(r"\b(?:zoom|agrandis|agrandir)\b", "zoom")
 
     # --- live translation toggle (E48-A) — BEFORE translate: the generic
@@ -150,6 +150,10 @@ _HIGH_CONFIDENCE: list[tuple[re.Pattern[str], str]] = [
         (r"mode\s+normal\b", "set_ui_mode"),
         (r"zoom\b", "zoom"),
         (r"agrandis?\b", "zoom"),
+        (r"(?:trouve|cherche)\b", "find"),
+        (r"where\s+(?:is|are)\b", "find"),
+        (r"o[ùu]\s+(?:est|sont)\b", "find"),
+        (r"o[ùu]\s+se\s+trouv(?:e|ent)\b", "find"),
         (r"pause\s+priv[ée]e?\b", "privacy_pause"),
         (r"privacy\s+pause\b", "privacy_pause"),
         (r"private\s+mode\b", "privacy_pause"),

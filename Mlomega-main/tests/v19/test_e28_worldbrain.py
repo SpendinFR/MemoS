@@ -257,6 +257,57 @@ def test_end_session_writes_summary(tmp_path, monkeypatch):
         assert row and row["place_hint"] == "office"
 
 
+def test_focus_search_rehydrates_latest_owner_sighting_across_sessions(tmp_path, monkeypatch):
+    """A fresh PhoneOnly process must answer from durable memory, not RAM."""
+    db_path = tmp_path / "memory.db"
+    monkeypatch.setenv("MLOMEGA_DB", str(db_path))
+    monkeypatch.setenv("MLOMEGA_HOME", str(tmp_path))
+    config = worldbrain.WorldBrainConfig(
+        promote_min_observations=1, promote_min_confidence=0.3
+    )
+    first = worldbrain.WorldBrain(
+        person_id="me", live_session_id="session-salon", db_path=db_path,
+        config=config, publish_world_state=False,
+    )
+    first.ingest_scene_delta(
+        _delta("glasses-1", [_ent("track-old", "lunettes", [10, 10, 40, 30], conf=0.83)])
+    )
+    first.end_session(place_hint="salon")
+
+    fresh_process = worldbrain.WorldBrain(
+        person_id="me", live_session_id="session-next", db_path=db_path,
+        config=config, publish_world_state=False,
+    )
+    remembered = fresh_process.find_entity_record("où sont mes lunettes ?")
+    assert remembered is not None
+    assert remembered["visible"] is False
+    assert remembered["label"] == "lunettes"
+    assert remembered["place_hint"] == "salon"
+    assert remembered["confidence"] == pytest.approx(0.83)
+    assert remembered["source"] == "durable_registry"
+    assert remembered["evidence"] == [
+        f"worldbrain_entity_registry_v19:{remembered['entity_id']}"
+    ]
+
+    # A later real sighting updates the latest state while visual_events keeps
+    # the prior observed history.  It is never collapsed into a fake single fact.
+    fresh_process.ingest_scene_delta(
+        _delta("glasses-2", [_ent("track-new", "lunettes", [200, 40, 240, 70], conf=0.91)])
+    )
+    current = fresh_process.find_entity_record("mes lunettes")
+    assert current is not None and current["visible"] is True
+    assert current["last_session_id"] == "session-next"
+    assert current["last_bbox"] == [200.0, 40.0, 240.0, 70.0]
+
+    from mlomega_audio_elite.db import connect
+    with connect(db_path) as con:
+        history = con.execute(
+            """SELECT COUNT(*) FROM visual_events_v19
+               WHERE person_id='me' AND event_type='entity_last_seen'"""
+        ).fetchone()[0]
+    assert history >= 2
+
+
 # --------------------------------------------------------------------------- scene adapter
 def test_scene_adapter_enqueues_delivery_for_known_person(tmp_path, monkeypatch):
     db_path = tmp_path / "memory.db"

@@ -1353,3 +1353,30 @@ bloque le bundle avant VLM; aucune réduction implicite du nombre sélectionné.
 deux sélections, un JPEG live et un manquant → extraction automatique et `2=2=2`; sans
 clip → `blocked`, `2/1/0`. La preuve VLM réelle 20/20 d'I4.4 reste valable pour la qualité;
 ce lot ferme son dernier raccord produit sans repayer le réseau VLM.
+
+## 2026-07-16 — E64-I0.6/I6 : spatial durable branché, proactivité déclenchée et appels explicables
+
+**Spatial.** Une requête « où est X ? » ne dépend plus de la seule frame courante. Le
+chemin connecté relit d'abord le registre durable owner-scopé de WorldBrain, préfère une
+entité visible de la session active, puis la dernière observation inter-session. La
+réponse expose état, fraîcheur, confiance et provenance; l'absence reste inconnue et ne
+fabrique ni position ni flèche. Les observations historiques ne sont pas écrasées : le
+registre porte le dernier état, `visual_events_v19` conserve la trajectoire. En mode
+Reflex seul, le transcript ASR final déclenche le skill local; en mode connecté il ne
+duplique pas le routage PC.
+
+**Cadences.** Les 2 secondes concernent uniquement la reconstruction mémoire et
+l'évaluation proactive périodique. Elles ne remplacent pas le flux VisionRT/UI par frame :
+outlines, couleurs, flèches, gestes, sous-titres et focus explicite restent événementiels.
+Le `BrainLiveSceneAdapter`, auparavant construit mais jamais évalué en PhoneOnly, est
+maintenant appelé. L'apparence d'une personne durablement nommée est décrite une fois par
+track/session; un vrai changement inter-session alimente AttributeMemory puis la file H1.
+Aucun changement n'est inventé à partir d'une absence.
+
+**Conditionnement nocturne et observabilité.** Le 9B d'identité ne tourne que si la
+résolution est absente, ambiguë ou contradictoire. Les calculs exactement mappables
+restent déterministes. L'exécuteur nocturne persiste désormais une ligne par tentative
+et par cache hit dans `night_llm_call_telemetry_v19`, avec raison, faits lus/produits,
+modèle, tokens fournisseur, latence et verdict. Cette table est la source du compteur
+I7; un appel produit nocturne non représenté lors du Gate B sera un échec de mesure, pas
+un succès silencieux.

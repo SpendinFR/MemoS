@@ -189,9 +189,10 @@ class AttributeMemory:
             with self._db_lock:
                 existing = self._svc_db.execute(
                     """SELECT 1 FROM attribute_memory_observations
-                       WHERE person_id=? AND source=? AND session=? AND evidence_ref=?
+                       WHERE person_id=? AND subject=? AND attribute=?
+                         AND source=? AND session=? AND evidence_ref=?
                        LIMIT 1""",
-                    (self.person_id, source, session, evidence_ref),
+                    (self.person_id, subject, attribute, source, session, evidence_ref),
                 ).fetchone()
             if existing:
                 return None

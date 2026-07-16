@@ -305,6 +305,10 @@ class LivePipeline:
         self.worldbrain: Any = None
         self.scene_adapter: Any = None
         self.change_attention: Any = None
+        self.spatial_find_metrics = {
+            "queries": 0, "visible_hits": 0, "durable_hits": 0,
+            "current_frame_hits": 0, "honest_misses": 0,
+        }
         # ---- Proactivity (E34): nightly engines → live + dense retrieval --------
         self.enable_proactivity = enable_proactivity
         self.proactive: Any = None
@@ -966,13 +970,87 @@ class LivePipeline:
     def _route_vision_focus(self, request: dict[str, Any]) -> Any:
         """Bridge a router vision intent (what_is/find/ocr/zoom) to the vision handler.
 
-        A handler injected by the pipeline owner (which holds the current frame)
-        takes precedence; otherwise there is no frame here, so return None (the
-        router still records the target for multi-turn deixis)."""
+        ``find`` is different from ``what_is``: it first consults WorldBrain's
+        owner-scoped durable registry.  A current-frame scan alone cannot answer
+        "where did I last see X?" after the object or session disappeared.
+        """
+        if str(request.get("kind") or "") == "find":
+            self.spatial_find_metrics["queries"] += 1
+            query = str(request.get("query") or "").strip()
+            record = None
+            if query and self.worldbrain is not None and hasattr(self.worldbrain, "find_entity_record"):
+                try:
+                    record = self.worldbrain.find_entity_record(query)
+                except Exception as exc:
+                    self._report_error("worldbrain.find_entity_record", exc)
+            if record:
+                visible = bool(record.get("visible"))
+                result = spatial.answer_find(
+                    entity_id=str(record.get("entity_id") or "") or None,
+                    entity=record,
+                    spatial=self.spatial,
+                    session_id=self.live_session_id,
+                    visible=visible,
+                    query=query,
+                )
+                result.update({
+                    "type": "ui_intent",
+                    "ui_intent_id": f"spatial-find-{self.live_session_id}-{time.time_ns()}",
+                    "producer": "worldbrain",
+                    "priority": 0.8,
+                    "ttl_ms": 8000,
+                    "evidence_refs": list(record.get("evidence") or []),
+                })
+                content = result.get("content") or {}
+                place = content.get("place_hint")
+                age = content.get("age_seconds")
+                if visible:
+                    content["text"] = f"{content.get('label') or query} est visible maintenant."
+                    self.spatial_find_metrics["visible_hits"] += 1
+                else:
+                    where = f" à {place}" if place else ""
+                    freshness = f" il y a {int(age)} s" if isinstance(age, (int, float)) else ""
+                    content["text"] = (
+                        f"Dernière observation de {content.get('label') or query}{where}{freshness}."
+                    )
+                    self.spatial_find_metrics["durable_hits"] += 1
+                result["content"] = content
+                self._push_intent(result)
+                return result
         if self.vision_focus_handler is not None:
-            return self.vision_focus_handler(request)
+            result = self.vision_focus_handler(request)
+            if str(request.get("kind") or "") == "find":
+                content = result.get("content") if isinstance(result, dict) else None
+                if isinstance(content, dict) and content.get("matches"):
+                    self.spatial_find_metrics["current_frame_hits"] += 1
+                else:
+                    self.spatial_find_metrics["honest_misses"] += 1
+            return result
         if self._latest_frame_bgr is not None and self._latest_envelope is not None:
-            return self.on_focus_request(request, self._latest_frame_bgr, self._latest_envelope)
+            result = self.on_focus_request(request, self._latest_frame_bgr, self._latest_envelope)
+            if str(request.get("kind") or "") == "find":
+                content = result.get("content") if isinstance(result, dict) else None
+                if isinstance(content, dict) and content.get("matches"):
+                    self.spatial_find_metrics["current_frame_hits"] += 1
+                else:
+                    self.spatial_find_metrics["honest_misses"] += 1
+            return result
+        if str(request.get("kind") or "") == "find":
+            miss = {
+                "type": "ui_intent",
+                "ui_intent_id": f"spatial-find-{self.live_session_id}-{time.time_ns()}",
+                "producer": "worldbrain",
+                "component": "context_card",
+                "content": {
+                    "kind": "find", "state": "unknown", "query": request.get("query"),
+                    "text": "Je n'ai aucune observation suffisamment fiable de cet objet.",
+                },
+                "truth_level": "unknown", "confidence": 0.0,
+                "priority": 0.7, "ttl_ms": 7000, "evidence_refs": [],
+            }
+            self.spatial_find_metrics["honest_misses"] += 1
+            self._push_intent(miss)
+            return miss
         return None
 
     def _on_scene_delta(self, delta: dict[str, Any]) -> None:
@@ -1007,6 +1085,14 @@ class LivePipeline:
                     self.routine_associations.on_approach(place_key=place, visible_labels=visible)
             except Exception as exc:
                 self._report_error("routine_associations.on_approach", exc)
+        # E64-I0.6: production trigger for the live memory loop. The adapter was
+        # previously constructed but never evaluated by PhoneOnly, leaving its
+        # known-person, found-object, spatial and proactive cues dormant.
+        if self.scene_adapter is not None:
+            try:
+                self.scene_adapter.evaluate_periodic()
+            except Exception as exc:
+                self._report_error("scene_adapter.evaluate_periodic", exc)
         # E53: the help engine's no-progress watchdog is event-driven — ticked on
         # the scene cadence (cheap, no cloud unless the escalation gate fires).
         if self.help_engine is not None:
@@ -1130,26 +1216,41 @@ class LivePipeline:
             entity_id = self._person_entity_id(track_id)
             is_named = track_id in named_tracks
             crop = None
-            if not is_named:
-                bbox = ent.get("bbox")
-                crop = self.vision._crop(frame_bgr, bbox) if bbox else None
-                if crop is not None and getattr(crop, "size", 0) == 0:
-                    crop = None
-            profile = self.stranger_profiler.observe_track(
-                track_id, entity_id=entity_id, is_person=True,
-                is_named=is_named, crop_bgr=crop,
-            )
+            bbox = ent.get("bbox")
+            crop = self.vision._crop(frame_bgr, bbox) if bbox else None
+            if crop is not None and getattr(crop, "size", 0) == 0:
+                crop = None
+            profile = None
+            appearance = None
+            if is_named:
+                appearance = self.stranger_profiler.observe_named_appearance(
+                    track_id, entity_id=entity_id, crop_bgr=crop,
+                )
+            else:
+                profile = self.stranger_profiler.observe_track(
+                    track_id, entity_id=entity_id, is_person=True,
+                    is_named=False, crop_bgr=crop,
+                )
             # E38 §2: a fresh VLM appearance descriptor is stored as attribute
             # observations of the person entity → inter-session diff = attribute_changed
             # (same mechanism as any other attribute; no special person path).
+            descriptor = appearance if appearance is not None else (
+                getattr(profile, "attributes", {}) if profile is not None else None
+            )
             if (self.enable_fine_intel and self.attribute_memory is not None
-                    and profile is not None and entity_id):
+                    and descriptor and entity_id):
                 try:
-                    self.attribute_memory.observe_person_appearance(
-                        entity_id=entity_id, descriptor=getattr(profile, "attributes", {}) or {},
+                    changes = self.attribute_memory.observe_person_appearance(
+                        entity_id=entity_id, descriptor=descriptor,
                         session=self._brainlive_session_id() or self.live_session_id,
                         evidence_ref=f"vlm:{track_id}",
                     )
+                    # The appearance diff is appended after the scene callback
+                    # already ran for this frame. Surface a real inter-session
+                    # change immediately; adapter source-key dedup prevents a
+                    # duplicate on the next periodic tick.
+                    if changes and self.scene_adapter is not None:
+                        self.scene_adapter.evaluate_situations()
                 except Exception as exc:
                     self._report_error("attribute_memory.person_appearance", exc)
 
@@ -1594,9 +1695,15 @@ class LivePipeline:
             m["last_seen_count"] = wm.get("last_seen_count", 0)
             m["change_events"] = wm.get("change_events", 0)
             m["entities_promoted"] = wm.get("entities_promoted", 0)
+            m.update({f"spatial_find_{k}": v for k, v in self.spatial_find_metrics.items()})
         if self.scene_adapter is not None:
-            m["hot_context_builds"] = self.scene_adapter.metrics.get("hot_context_builds", 0)
-            m["deliveries_enqueued"] = self.scene_adapter.metrics.get("deliveries_enqueued", 0)
+            sm = self.scene_adapter.metrics
+            for key in (
+                "hot_context_builds", "deliveries_enqueued", "entity_hot_updates",
+                "spatial_hot_updates", "object_hot_updates", "task_hot_updates",
+                "attribute_change_cues",
+            ):
+                m[key] = sm.get(key, 0)
         if self.conversation is not None:
             cm = self.conversation.metrics
             m["conversation_turns"] = cm.get("conversation_turns", 0)

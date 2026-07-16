@@ -1228,3 +1228,44 @@ Tests ciblés sans réseau VLM :
 
 Résultat de clôture : **52 passed**. Le test matérialisation utilise un vrai MP4/ffmpeg
 mais un transport VLM fake; la qualité réelle Qwen3-VL reste la mesure antérieure 20/20.
+
+### I0.6 + I6 — raccords produit fermés (2026-07-16)
+
+Le prochain travail n'est plus un audit statique spatial : exécuter **I7 Gate B** en deux
+temps, d'abord le scénario VIKI live inchangé (hot context, interaction, suggestion,
+help mode et recherche spatiale), puis seulement le CloseDay complet et le dashboard.
+
+Raccords à diagnostiquer si le gate échoue :
+
+- connecté : `device_transcript` → `IntentRouter` → `_route_vision_focus` →
+  `WorldBrain.find_entity_record` → `spatial.answer_find` → UI intent;
+- hors connexion : `AsrBridge.Transcript` → `ReflexScheduler` → `FocusSearchSkill`;
+- proactivité : `_on_scene_delta` → `BrainLiveSceneAdapter.evaluate_periodic` et, pour
+  l'apparence nommée, `observe_named_appearance` → `AttributeMemory` →
+  `evaluate_situations` → file H1;
+- télémétrie nocturne : `night_llm_call_telemetry_v19`. Toute fenêtre réellement appelée
+  doit avoir une ligne, y compris erreur; une reprise checkpoint porte `cache_hit=1`.
+
+La cadence scène de 2 s est une cadence mémoire/proactivité, **pas** la cadence de rendu
+VisionRT/UI. Ne pas la remonter à 30 FPS pour faire fonctionner outlines/flèches : ceux-ci
+restent sur les événements immédiats. La dernière position et l'historique ont des rôles
+différents : registre durable actualisé versus événements immuables.
+
+Validations déjà exécutées — ne pas les refaire avant Gate B :
+
+```powershell
+# PC live/vision/proactivité : 128 passed
+.venv-live\Scripts\python.exe -m pytest -q tests\v19\test_e28_worldbrain.py `
+  tests\v19\test_e33_scene_delta.py tests\v19\test_e34_proactivity.py `
+  tests\v19\test_e35_intent_router.py tests\v19\test_e36_ops.py `
+  tests\v19\test_e38_attribute_memory.py tests\v19\test_phoneonly_runtime.py
+
+# I6 final : 38 passed (75 au lot élargi précédent)
+.venv\Scripts\python.exe -m pytest -q tests\v19\test_e64c_executor.py `
+  tests\v19\test_e64i_shared_facts.py
+
+# Unity ciblé : 13/13 passed, résultat apps/xr-mobile/i06-reflex.xml
+```
+
+Le test Unity a écrit `i06-reflex.xml`, artefact local à ne jamais ajouter au commit. Le
+S25 et les APK ne sont pas certifiés par ces tests; ils appartiennent aux gates I7.
