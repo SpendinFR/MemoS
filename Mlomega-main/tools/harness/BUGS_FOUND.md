@@ -553,6 +553,18 @@ même lecteur paginé. `limit` ne coupe plus les résultats. Les tours non cité
 et manifestés mais ne gonflent pas le prompt. Tests 121 signaux et 121 routines courantes
 en quatre pages; kill/restart avant et après commit couvert.
 
+## Mise à jour OBS-28 (3) — CLOS par I4.4 (2026-07-16, verdict GO)
+
+Le gate réel a tourné : probe + 11 moments de vérité extraits de la vidéo référence
+(10 corrects, 1 partiel honnête, 0 hallucination, 0 JSON vide), run complet 20
+keyframes sélectionnées = 20 analysées, couverture 473/473, cache 0 réseau au 2e
+passage, p50 16,7 s / p95 27,1 s, ~208 images/h, VRAM pic 7891 MiB. Le `except:
+pass` de persistance de couverture est remplacé par `DeepVisionCoveragePersistError`
+→ run `blocked`, capacité `failed`, `complete=1` interdit. Gate I0.4 prouvé dans
+les deux sens (run propre → product_validated ; ligne stale 1/0 → degraded).
+Contrainte opérationnelle : P1 9B et qwen3-vl:8b ne tiennent pas ensemble en 8 Go —
+arrêter le llama-server pendant le pass VLM.
+
 ## Mise à jour OBS-28 (2) — backend corrigé en I4.2, gate final = I4.4 (2026-07-16)
 
 I4.2 ferme le volet backend : l'override `install_deep` retombait sur le modèle TEXTE

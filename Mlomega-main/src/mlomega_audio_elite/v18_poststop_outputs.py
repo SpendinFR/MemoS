@@ -153,7 +153,26 @@ def install_deep(module: Any) -> dict[str, Any]:
                 # files.  Inspect the complete candidate set first so a broken
                 # evidence bridge never becomes a false successful VLM stage.
                 all_candidates = module._keyframe_candidates(bundle)
-                frames = module.select_keyframes_for_bundle(bundle, max_keyframes=max_keyframes_per_bundle)
+                try:
+                    frames = module.select_keyframes_for_bundle(bundle, max_keyframes=max_keyframes_per_bundle)
+                except module.DeepVisionCoveragePersistError as exc:
+                    # E64-I4.4: the durable coverage proof could not be written.
+                    # We refuse to analyse on an unverifiable coverage: record a
+                    # non-retryable blocked failure (evidence-integrity class, like
+                    # missing raw pixels) so the run row is ``status='blocked'`` and
+                    # the I0.4 gate marks Deep Vision failed. Do NOT re-raise (that
+                    # would crash the whole close-day); block this run honestly.
+                    failure = {
+                        "bundle_id": bundle.get("bundle_id"),
+                        "frame_id": (all_candidates[0].get("frame_id") if all_candidates else None),
+                        "image_path": (str(all_candidates[0].get("image_path") or "") if all_candidates else ""),
+                        "error_code": "blocked_coverage_persist_failed",
+                        "error": str(exc)[:1500],
+                    }
+                    visual_evidence_failures.append(failure)
+                    terminal_status = "blocked"
+                    run_error = failure["error"]
+                    continue
                 if all_candidates and not frames:
                     frame = all_candidates[0]
                     image_path = str(frame.get("image_path") or "")

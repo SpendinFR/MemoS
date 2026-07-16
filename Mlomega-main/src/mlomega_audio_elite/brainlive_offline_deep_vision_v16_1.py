@@ -37,6 +37,22 @@ from .utils import json_dumps, json_loads, now_iso, stable_id
 
 VERSION = "16.1.1-v18.8.1-evidence-connected"
 
+
+class DeepVisionCoveragePersistError(RuntimeError):
+    """E64-I4.4: durable frame-coverage persistence failed.
+
+    Coverage is the proof that 100% of the session's frames are accounted for
+    (selected keyframe or represented-by).  If that proof cannot be durably
+    written, the Deep Vision product output is NOT trustworthy: the in-memory
+    mapping still exists for the current process, but a resume/audit/gate can no
+    longer verify coverage from the database.  We therefore refuse to report a
+    silent success.  This error is raised at selection time and converted, in
+    the bundle loop, into a non-retryable ``blocked`` frame failure so the
+    durable ``brainlive_deep_vision_runs_v161`` row lands ``status='blocked'`` and
+    the I0.4 capability manifest (``_deep_vision_capability``) marks Deep Vision
+    ``failed`` — which forbids ``complete=1``.
+    """
+
 # E64-I4.2: the offline heavy pass is a VISION-language model. When no explicit
 # override is set, fall back to a real VLM, NOT ``settings.ollama_model`` (which
 # is the TEXT model, ``qwen3.5:9b``). Sending images to a text model produced
@@ -516,14 +532,28 @@ def select_keyframes_for_bundle(bundle: dict[str, Any], *, max_keyframes: int = 
     # is additive provenance; raw frames/observations are never touched.
     person_id = str(bundle.get("person_id") or "me")
     package_date = str(bundle.get("package_date") or "")
+    # E64-I4.4: coverage persistence is the DURABLE proof that 100% of the
+    # session's frames are accounted for. A silent ``except: pass`` here let a
+    # run report a green Deep Vision while the coverage proof was never written
+    # (a resume/audit/gate could no longer verify it from the DB). We now raise a
+    # STRUCTURED error; the caller (bundle loop) turns it into a non-retryable
+    # ``blocked`` frame failure so the run row is ``status='blocked'`` and the
+    # I0.4 gate marks Deep Vision ``failed`` (no ``complete=1``).
     try:
         with connect() as con:
             persist_frame_coverage(con, person_id=person_id, package_date=package_date, result=result)
             con.commit()
-    except Exception:
-        # Coverage persistence must never break the analysis path; the in-memory
-        # result still guarantees the mapping used below.
-        pass
+    except Exception as exc:
+        record_phase_event(
+            "deep_vision_coverage_persist_failed",
+            bundle_id=bundle.get("bundle_id"),
+            person_id=person_id,
+            package_date=package_date,
+            error=str(exc)[:400],
+        )
+        raise DeepVisionCoveragePersistError(
+            f"deep vision frame coverage not persisted for {person_id}/{package_date}: {exc}"
+        ) from exc
 
     by_frame_id = {}
     for c in all_candidates:
@@ -767,7 +797,21 @@ def run_offline_deep_vision_for_bundles(
                     if transcript_char_threshold is not None and _transcript_chars(b) > int(transcript_char_threshold):
                         continue
                     all_candidates = _keyframe_candidates(b)
-                    frames = select_keyframes_for_bundle(b, max_keyframes=max_keyframes_per_bundle)
+                    try:
+                        frames = select_keyframes_for_bundle(b, max_keyframes=max_keyframes_per_bundle)
+                    except DeepVisionCoveragePersistError as exc:
+                        # E64-I4.4: coverage proof could not be durably written.
+                        # Do not analyse on an unverifiable coverage: record a
+                        # non-retryable blocked failure so the run row is blocked
+                        # and the I0.4 gate marks Deep Vision failed.
+                        frame_failures.append({
+                            "bundle_id": b.get("bundle_id"),
+                            "frame_id": (all_candidates[0].get("frame_id") if all_candidates else None),
+                            "error_code": "blocked_coverage_persist_failed",
+                            "retryable": False,
+                            "error": str(exc)[:1500],
+                        })
+                        continue
                     # A bundle with captured visual evidence must not silently
                     # report a successful deep-vision stage with zero usable
                     # pixels. This blocks cleanup and leaves the source files for

@@ -204,3 +204,87 @@ def test_override_status_honest_when_selected_but_none_analyzed(monkeypatch, tmp
         ).fetchone()
     assert row["selected_keyframes"] > 0 and row["analyzed_keyframes"] == 0
     assert str(row["status"]).lower() != "ok"
+
+
+def test_coverage_persist_failure_blocks_run_and_gate(monkeypatch, tmp_path):
+    """Codex I4.4 point 1: coverage-persist failure is a STRUCTURED error.
+
+    When ``persist_frame_coverage`` fails, the run must NOT report a silent
+    green: it lands ``status='blocked'`` in the durable
+    ``brainlive_deep_vision_runs_v161`` row, and the I0.4 capability manifest
+    (``_deep_vision_capability``) marks Deep Vision ``failed`` (no complete=1).
+    """
+    _install_env(monkeypatch, tmp_path)
+    from mlomega_audio_elite import v18_poststop_outputs as ov
+    from mlomega_audio_elite.night_orchestrator import deep_vision_selection as dvsel
+
+    bundle = _seed_bundle(tmp_path)
+    monkeypatch.setattr(
+        ov, "strict_many",
+        lambda con, sql, params=(), purpose=None: [bundle] if "brainlive_event_bundles_v1514" in sql else [],
+    )
+    monkeypatch.setattr(base, "_image_exists", lambda p: bool(p))
+
+    # Durable coverage persistence fails -> the proof is not written.
+    def boom_persist(*a, **k):
+        raise RuntimeError("disk full: coverage not persisted")
+
+    monkeypatch.setattr(dvsel, "persist_frame_coverage", boom_persist)
+
+    # The VLM must never be reached: we refuse to analyse on unverifiable coverage.
+    def vlm_should_not_run(*a, **k):
+        raise AssertionError("VLM must not be called when coverage persistence failed")
+
+    monkeypatch.setattr(base, "_deep_vlm_json", vlm_should_not_run)
+
+    funcs = ov.install_deep(base)
+    out = funcs["run_offline_deep_vision_for_bundles"](
+        person_id="me", package_date="2026-07-16", live_session_id="s1",
+        append_to_brain2=False, use_vlm=True,
+    )
+    # A structured block, not a silent green and not a raised crash.
+    assert out["status"] == "blocked"
+    assert out["analyzed_keyframes"] == 0
+    assert any(
+        f.get("error_code") == "blocked_coverage_persist_failed"
+        for f in out["visual_evidence_failures"]
+    )
+
+    from mlomega_audio_elite.db import connect
+    with connect() as con:
+        row = con.execute(
+            "SELECT selected_keyframes, analyzed_keyframes, status "
+            "FROM brainlive_deep_vision_runs_v161 WHERE run_id=?",
+            (out["run_id"],),
+        ).fetchone()
+    assert str(row["status"]).lower() == "blocked"
+    assert int(row["analyzed_keyframes"]) == 0
+
+    # The I0.4 gate reads the durable row and must mark Deep Vision failed.
+    from mlomega_audio_elite.night_orchestrator.capability_manifest import build_capability_manifest
+
+    stage_results = {
+        "post_stop": {
+            "status": "completed",
+            "assembly": {"bundles": 1, "raw_rows": 5, "incomplete": False},
+            "v18_deep_audio": {"status": "ok"},
+            "v16_deep_vision": {"status": out["status"]},
+            "brain2_processed": [{"conversation_id": "c1", "status": "ok"}],
+        },
+        "visual_consolidation": {"status": "completed", "summary_id": "s1"},
+        "longitudinal": {"status": "completed"},
+        "coordination": {"status": "ok", "package": {"status": "llm_ready"}, "bindings": {"status": "compiled_ready"}, "reconciliation": {"status": "no_candidates"}},
+        "life_model": {"status": "llm_patch_ready"},
+        "outcome_resolution": {"status": "completed", "outcome_ids": []},
+        "life_model_v19": {"status": "completed", "confirmed": [], "contradicted": [], "weakened": []},
+        "prediction_emission": {"status": "completed", "prediction_ids": []},
+        "self_schema": {"status": "completed", "schema_entry_ids": []},
+        "live_ready": {"status": "active"},
+    }
+    manifest = build_capability_manifest(
+        person_id="me", package_date="2026-07-16", stage_results=stage_results,
+    )
+    deep = next(c for c in manifest["capabilities"] if c["capability"] == "deep_vision")
+    assert deep["verdict"] == "failed"
+    assert manifest["complete"] is False
+    assert "deep_vision" in (manifest["reason"] or "")

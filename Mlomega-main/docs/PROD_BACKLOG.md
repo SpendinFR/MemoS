@@ -738,7 +738,9 @@ Le problème est transversal : tout stage nocturne qui concatène un jour, une c
 
 #### I0 — vérité avant optimisation (bloque toute certification)
 
-- [ ] **I0.1 Deep Vision** : dans l'override réellement appelé, forcer `think=false`, JSON strict et `analyzed_keyframes > 0` lorsque des images sont sélectionnées; zéro analyse devient `retryable|degraded|failed`, jamais `ok` (OBS-28).
+- [x] **I0.1 Deep Vision** : dans l'override réellement appelé, forcer `think=false`, JSON strict et `analyzed_keyframes > 0` lorsque des images sont sélectionnées; zéro analyse devient `retryable|degraded|failed`, jamais `ok` (OBS-28).
+
+> **Suivi I0.1 — fermé par I4.2 + I4.4 (2026-07-16), conformément au plan (« I0.1 Deep Vision sera fermé par I4.2/I4.4 »)** : think=false + JSON strict validé + modèle VLM réel (I4.2, commit cadc777) ; selected>0/analyzed=0 → jamais ok + couverture non persistée → failed + gate prouvé dans les deux sens sur run réel 20/20 (I4.4).
 - [x] **I0.2 Qualité des preuves** : propager confiance ASR, diarisation, langue et alignement jusqu'aux faits; une confiance dérivée ne dépasse pas sa meilleure preuve sans corroboration indépendante; fragments linguistiques incohérents en quarantaine (OBS-29).
 - [x] **I0.3 Épistémologie** : `non_observed` reste `unknown`; seul un fait positif incompatible peut donner `contradicted`; toute promotion Life Model commence `watch` et exige répétition ou sources indépendantes (OBS-30/37). Preuves : `build_reconciliation_candidates` ignore l'absence/non-outcome, compile seulement les statuts positifs explicites; Life écrit `watching` puis `promotion_ready` après deux groupes indépendants; tests `test_e64i_daily_projection.py`.
 - [x] **I0.4 Manifeste de capacité** : agréger les verdicts des sous-moteurs et interdire `complete=1` si une capacité obligatoire est bypassée, abstentionniste ou faux-verte (OBS-38).
@@ -1022,7 +1024,15 @@ réduction statique de JSON comme une validation modèle.
 > - **Sémantiques consommées par les writers historiques** : le réemploi tourne désormais AVANT l'agrégation ; les activités/localisations VLM validées alimentent le résumé `scene_session_summaries_v19` (`observed_activities`, `deep_vision_locations`, refs vers les analyses d'origine) ET les routines/mouvements : un événement VisionRT sans lieu live prend la localisation Deep Vision de sa frame comme lieu (avec ref `deep_vision_location_hint` dans la provenance de la routine). Plus un simple compteur.
 > - **Multi-objets par frame** : `vrt_by_frame` ne gardait qu'une ligne — toutes les détections d'une frame sont conservées (identité de frame via les refs `frame:<id>` réelles de worldbrain), le réemploi référence CHAQUE événement.
 > - Tests : +3 (`test_pixel_bboxes_normalised...`, `test_multi_object_frame...`, `test_deep_semantics_feed_summary_and_routines`) → 8/8 réemploi, 42 verts sur les chemins touchés.
-- [ ] **I4.4 Gate** : 11/11 images référence valides ou dégradation explicite; comparer événements humains/OCR/objets à la vérité de la vidéo. Mesurer froid, chaud, images/heure et temps GPU avant projection.
+- [x] **I4.4 Gate** : 11/11 images référence valides ou dégradation explicite; comparer événements humains/OCR/objets à la vérité de la vidéo. Mesurer froid, chaud, images/heure et temps GPU avant projection.
+
+> **Suivi I4.4 — FAIT 2026-07-16, VERDICT GO (réserve VRAM) :**
+> - **Directive 1** : `except: pass` de persistance de couverture remplacé par `DeepVisionCoveragePersistError` structurée, consommée par les DEUX runners (base + override V18) → run `blocked_coverage_persist_failed`, VLM jamais rappelé sur couverture invérifiable, capacité I0.4 `failed`, `complete=1` interdit. Test `test_coverage_persist_failure_blocks_run_and_gate`.
+> - **Probe + 11 moments de vérité** (frames extraites de la vidéo référence par ffmpeg aux offsets réels ; mapping temps validé : captured_at ↔ 301,67 s de vidéo) : **10 corrects, 1 partiel (machine à café en plan trop serré, sous-engagement honnête), 0 halluciné, 0 JSON vide**. OCR réel lu (listes horaires, « Midea »).
+> - **Run complet** : sélection recalculée sur le clone = **20 keyframes** (le vrai chiffre post-I4.3 — les positions VisionRT injectées ont affiné le regroupement vs les 44 estimées en I4.2), 453 représentées, **473/473 couvertes, 0 orphelin** ; 19 frames re-matérialisées par ffmpeg à leur offset (reconstruction des mêmes pixels, documentée) ; à froid `ok, selected=20, analyzed=20, quarantined=0` ; **2e passage 2,1 s, 0 appel réseau** (cache). Gate vérifié dans les deux sens (run propre → `product_validated` ; ligne stale 1/0 → `degraded`).
+> - **Mesures** : froid moyenne 17,3 s, **p50 16,7 s, p95 27,1 s**, cache 2-8 ms, **~208 images/heure**, VRAM pic **7891/8192 MiB**. Projection à densité observée (walkthrough dense, pire cas) : 1 h ≈ 238 keyframes ≈ 1,1 h VLM série ; 8 h ≈ 1907 ≈ 9,2 h série — une journée réelle est bien plus statique ; sélection NON réduite pour verdir.
+> - **Réserve opérationnelle** : 8 Go ne tiennent PAS P1 9B + qwen3-vl:8b simultanément (un llama-server s'est même relancé seul pendant le gate) → le pass VLM doit être séquentiel avec P1 ARRÊTÉ (`Get-Process llama-server | Stop-Process -Force`), relance ensuite via la commande canonique du BUILD_GUIDE.
+> - 40/40 tests verts. Stage ciblé seulement, CloseDay complet non lancé. I0.1 fermé par I4.2+I4.4 comme prévu au plan.
 
 #### I5 — modèle et backend choisis par tâche, après preuve
 
