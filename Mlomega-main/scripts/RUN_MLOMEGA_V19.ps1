@@ -94,6 +94,9 @@ if ($LivePhone) {
   Import-DotEnv
   Remove-KnownBlackholeProxy
   Initialize-CoreCudaPath
+  # Orchestration GPU par phase active par defaut en production (preflight teste
+  # P1 puis l'arrete; live = Ollama seul; nuit = P1/VLM en sequence). "0" = rollback.
+  if (-not $env:MLOMEGA_GPU_PHASE_ORCHESTRATION) { $env:MLOMEGA_GPU_PHASE_ORCHESTRATION = "1" }
   $Python = Resolve-Python
   if (-not $Python) { Write-Host "[FAIL] Aucun interpreteur Python." -ForegroundColor Red; exit 1 }
   & $Python -c "import aiortc, aiohttp, av, fastapi, uvicorn, numpy, python_multipart, dotenv, faster_whisper, webrtcvad, onnxruntime, rapidocr_onnxruntime"

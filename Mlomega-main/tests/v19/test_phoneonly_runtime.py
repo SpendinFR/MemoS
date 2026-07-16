@@ -277,12 +277,15 @@ def test_drain_timeout_blocks_brainlive_end_and_close_day():
         )
         await rt.start()
         result = await rt.end_and_close_day()
-        # Pending final turns make this an incomplete close. BrainLive must stay
-        # retryable and CloseDay must never overtake the worker.
-        assert result["end_session"] == "error", result
-        assert result["close_day"] == "not_started", result
-        assert close_calls == []
-        assert rt.ended is False
+        # E64-i async boundary (Codex): /session/end answers fast (media stop +
+        # raw drain + durable recovery job) and the pending final turns now fail
+        # the BACKGROUND finalization instead. Guarantees unchanged: the failure
+        # is loud, CloseDay never overtakes the worker, the runtime is retryable.
+        assert rt.ended is True  # fast boundary answered; recovery job durable
+        assert result["end_session"] == "error", result  # finalization failed loudly
+        assert rt.fine_intel_drain_status == "error"
+        assert result["close_day"] == "error", result  # gated on the drain, never ran
+        assert close_calls == []  # CloseDay body never overtook the worker
         assert any("did not drain" in e for e in rt.recent_errors)
 
     asyncio.run(scenario())

@@ -698,42 +698,39 @@ class PhoneOnlyRuntime:
         return out
 
     async def end_session_only(self, *, drain_timeout_s: float = 5.0) -> dict[str, Any]:
+        """Fast end boundary: the phone is released after media stop, the RAW
+        audio drain and the DURABLE recovery job — never after semantic work.
+
+        Everything model/semantic-bearing (in-flight receipts, the final turn
+        worker, the BrainLive seal, resource release, the fine-intel backlog) is
+        finalized in the BACKGROUND task; ``run_close_day`` gates on it. A kill
+        anywhere after the recovery job is recoverable: the durable job plus the
+        v18 recovery of still-``active`` BrainLive sessions replay the seal.
+        """
         async with self._end_lock:
             if self.ended:
                 return self.status()
             try:
                 self.end_status = "draining"
-                if hasattr(self.ingress, "drain_receipts"):
-                    # A receipt may still be executing an intent/VLM call off the
-                    # WebRTC loop. It must finish before BrainLive is sealed.
-                    receipt_timeout_s = max(
-                        float(drain_timeout_s),
-                        float(os.getenv("MLOMEGA_FINAL_DRAIN_TIMEOUT_S", "300")),
-                    )
-                    await self.ingress.drain_receipts(timeout_s=receipt_timeout_s)
+                # 1. Stop input FIRST so the raw drain is bounded by what is
+                #    already in flight, not by new media.
                 if hasattr(self.ingress, "stop_accepting_media"):
                     await self.ingress.stop_accepting_media()
+                # 2. RAW audio drain only (chunks -> durable turns). Short cap:
+                #    with media stopped this is pure backlog, not model work.
                 if hasattr(self.ingress, "drain_audio"):
                     audio_timeout_s = max(
                         float(drain_timeout_s),
-                        float(os.getenv("MLOMEGA_FINAL_DRAIN_TIMEOUT_S", "300")),
+                        float(os.getenv("MLOMEGA_RAW_DRAIN_TIMEOUT_S", "30")),
                     )
                     await self.ingress.drain_audio(timeout_s=audio_timeout_s)
-                if hasattr(self.pipeline, "flush_audio"):
-                    # LivePipeline waits up to five minutes for the semantic
-                    # worker. A timeout is a real incomplete close: propagate it
-                    # so neither BrainLive nor CloseDay can overtake pending turns.
-                    await asyncio.to_thread(self.pipeline.flush_audio)
-                await self.close_transport()
-                self.end_status = "ending_pipeline"
+                # 3. Durable recovery job BEFORE anything can seal BrainLive.
                 conversation = getattr(self.pipeline, "conversation", None)
                 self.live_session_id = self.live_session_id or getattr(
                     conversation, "live_session_id", None
                 )
                 if not self.live_session_id:
                     raise RuntimeError("BrainLive live_session_id was never created")
-                # Commit the recovery job BEFORE either end_session call can mark
-                # BrainLive ended. A kill in the historical gap is now recoverable.
                 if self._product_pipeline:
                     await asyncio.to_thread(
                         _ensure_recovery_job,
@@ -741,26 +738,16 @@ class PhoneOnlyRuntime:
                         live_session_id=self.live_session_id,
                         db_path=self.db_path,
                     )
-                await asyncio.to_thread(self.pipeline.end_session, strict=True)
-                self.live_session_id = getattr(conversation, "live_session_id", None)
-                if conversation is not None:
-                    await asyncio.to_thread(
-                        conversation.end_session, notes="explicit phone_only end", strict=True,
-                    )
-                if not self.live_session_id:
-                    raise RuntimeError("BrainLive live_session_id was never created")
-                if hasattr(self.pipeline, "release_live_resources"):
-                    await asyncio.to_thread(self.pipeline.release_live_resources)
-                await asyncio.to_thread(self._release_core_live_caches)
+                await self.close_transport()
                 self.ended = True
                 self.end_status = "completed"
                 if self.delivery_task is not None:
                     self.delivery_task.cancel()
                     await asyncio.gather(self.delivery_task, return_exceptions=True)
-                # Media is stopped, raw turns/audio drained and the recovery job is
-                # durable: the phone can now be released. Drain any remaining
-                # fine-intel backlog in the BACKGROUND so /session/end never blocks
-                # on the model queue. run_close_day() gates on this task.
+                # 4. Everything else is background: receipts still executing an
+                #    intent/VLM call, the semantic final worker, the BrainLive
+                #    seal, resource release and the fine-intel backlog. The phone
+                #    is already free; run_close_day() gates on this task.
                 self._start_background_fine_intel_drain()
             except Exception as exc:
                 self.recent_errors.append(str(exc)[:500])
@@ -775,6 +762,32 @@ class PhoneOnlyRuntime:
                 await asyncio.to_thread(self._stop_clip_recorder)
             return self.status()
 
+    def _finalize_session_blocking(self) -> None:
+        """Semantic finalization moved OFF the /session/end HTTP path.
+
+        Runs in a worker thread inside the background drain task, BEFORE the
+        fine-intel backlog drain. Order preserved from the historical inline
+        path: receipts -> final-worker flush -> pipeline end (discourse/summary)
+        -> BrainLive seal -> resource release. Any failure propagates: the drain
+        task status becomes ``error`` and CloseDay stays gated (retryable via
+        the durable recovery job)."""
+        self.end_status = "finalizing"
+        if hasattr(self.pipeline, "flush_audio"):
+            # LivePipeline waits for the semantic worker. A timeout is a real
+            # incomplete close: propagate it so CloseDay cannot overtake turns.
+            self.pipeline.flush_audio()
+        conversation = getattr(self.pipeline, "conversation", None)
+        self.pipeline.end_session(strict=True)
+        self.live_session_id = getattr(conversation, "live_session_id", None) or self.live_session_id
+        if conversation is not None:
+            conversation.end_session(notes="explicit phone_only end", strict=True)
+        if not self.live_session_id:
+            raise RuntimeError("BrainLive live_session_id was never created")
+        if hasattr(self.pipeline, "release_live_resources"):
+            self.pipeline.release_live_resources()
+        self._release_core_live_caches()
+        self.end_status = "completed"
+
     def _drain_deferred_semantics_blocking(self) -> dict[str, Any]:
         """Synchronous fine-intel backlog drain (runs in a worker thread)."""
         if not hasattr(self.pipeline, "drain_deferred_semantics"):
@@ -782,17 +795,30 @@ class PhoneOnlyRuntime:
         return dict(self.pipeline.drain_deferred_semantics() or {})
 
     def _start_background_fine_intel_drain(self) -> asyncio.Task[Any] | None:
-        """Launch (once) the post-stop fine-intel drain without blocking /session/end."""
+        """Launch (once) the background FINALIZE + fine-intel drain task.
+
+        The task now carries the whole semantic finalization (receipts, final
+        worker flush, BrainLive seal, resource release) and THEN the fine-intel
+        backlog. It must therefore run for EVERY pipeline, including injected/
+        legacy ones without a deferred queue (their semantics drain is simply
+        ``not_applicable``); otherwise the session would never be sealed."""
         if self.fine_intel_drain_task is not None:
             return self.fine_intel_drain_task
-        if not hasattr(self.pipeline, "drain_deferred_semantics"):
-            # Injected/legacy pipelines with no deferred queue: nothing to drain.
-            self.fine_intel_drain_status = "not_applicable"
-            return None
         self.fine_intel_drain_status = "running"
 
         async def _drain() -> dict[str, Any]:
             try:
+                # In-flight receipts may still be executing an intent/VLM call
+                # off the WebRTC loop; they must finish before BrainLive is
+                # sealed. Awaited here (async), no longer on the HTTP path.
+                if hasattr(self.ingress, "drain_receipts"):
+                    receipt_timeout_s = float(
+                        os.getenv("MLOMEGA_FINAL_DRAIN_TIMEOUT_S", "300")
+                    )
+                    await self.ingress.drain_receipts(timeout_s=receipt_timeout_s)
+                # Semantic finalization (final worker flush, discourse/summary,
+                # BrainLive seal, resource release) then the fine-intel backlog.
+                await asyncio.to_thread(self._finalize_session_blocking)
                 semantic = await asyncio.to_thread(self._drain_deferred_semantics_blocking)
                 self.fine_intel_drain_result = dict(semantic or {})
                 self.fine_intel_drain_status = str(
@@ -801,6 +827,11 @@ class PhoneOnlyRuntime:
                 return self.fine_intel_drain_result
             except Exception as exc:
                 self.fine_intel_drain_status = "error"
+                if self.end_status == "finalizing":
+                    # The phone was already released (fast path answered
+                    # "completed"); the observable runtime state must still say
+                    # the truth: finalization failed, CloseDay stays gated.
+                    self.end_status = "error"
                 self.recent_errors.append(("fine_intel_drain: " + str(exc))[:500])
                 raise
 

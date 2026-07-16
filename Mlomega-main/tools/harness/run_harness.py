@@ -79,6 +79,10 @@ def _fetch_metrics(host: str, port: int) -> dict[str, Any]:
 def start_server(host: str, port: int, db: Path, *, log: Path) -> subprocess.Popen:
     env = os.environ.copy()
     env["MLOMEGA_DB"] = str(db.resolve())
+    # Production default: the GPU phase orchestration (preflight tests P1 then
+    # stops it; live runs Ollama only; night text/vision phases swap P1/VLM) must
+    # be ACTIVE without a manual export. Explicit "0" remains the rollback.
+    env.setdefault("MLOMEGA_GPU_PHASE_ORCHESTRATION", "1")
     py = _venv_python()
     cmd = [
         str(py), str(ROOT / "services" / "live-pc" / "sessionhub_http.py"),
