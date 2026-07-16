@@ -1114,7 +1114,7 @@ réduction statique de JSON comme une validation modèle.
 
 #### I7 — validation progressive et décision de production
 
-- [ ] **Gate A — minute shadow** : I1 réel versus baseline, puis estimation aval recalculée depuis les cardinalités observées.
+- [x] **Gate A — minute shadow** : I1 réel versus baseline, puis estimation aval recalculée depuis les cardinalités observées. Clos par I1.6 : 2 appels, 15 772 tokens d'entrée, 32,6 s, 1 parent + 4 sous-thèmes, Karim/Netflix séparés et 26/26 tours couverts.
 - [ ] **Gate B — cinq minutes** : scénario VIKI inchangé + vidéo de référence; chaîne complète, dashboard, preuves audio/vision, reprise et comparaison qualité. Cible intermédiaire : appels réduits ≥×5 contre chemin mesuré, aucune capacité perdue.
 
 > **Suivi Gate B fonctionnel — 2026-07-16 (commande/chaîne CLOSES, benchmark propre encore ouvert) :**
@@ -1150,6 +1150,260 @@ réduction statique de JSON comme une validation modèle.
 - [ ] **Gate C — une heure synthétique réaliste** : alternance silence/conversation/déplacements/OCR/personnes, chaos réseau/LLM/VLM/disque et reprise. Prouver `1 h capture ≤1 h consolidation` sur la RTX 3070 ou mesurer précisément l'écart.
 - [ ] **Gate D — huit heures** : base fraîche, multi-session/jour, aucun cap, mémoire/VRAM bornées, manifeste complet, reprise idempotente, coût cloud si utilisé. Seulement ici annoncer le temps d'une nuit.
 - [ ] **Décision stop/go** : si I1+I2 ne donnent pas au moins ×5 sans perte, ne pas poursuivre les micro-optimisations; comparer architecture cloud/hybride ou matériel. Si les gates passent, fixer le backend FIRST_TRY et rendre ses préflights bloquants.
+
+### I7-FINAL — ordre autoritaire des derniers gates (S25 volontairement en étape 4)
+
+> **Règle pour l'exécuteur et le vérificateur.** Suivre 1→2→3→4→5. Ne pas lancer
+> Gate C parce que Gate B « a déjà marché après plusieurs reprises » : la DB Gate B de
+> mise au point n'est pas un benchmark. Ne pas utiliser le S25 pour déboguer une chaîne PC
+> qui échoue déjà avec le faux device. Inversement, aucun test fake ne certifie Kotlin,
+> permissions Android, wake word, micro/caméra, écran éteint ou receipts matériels.
+> Chaque étape produit une DB et un rapport nouveaux; jamais `memory.db` utilisateur.
+
+#### Étape finale 1 — Gate B propre, one-shot, même vidéo cinq minutes
+
+- [ ] **1.1 Préflight sans capture.** Fermer toute ancienne instance SessionHub/Unity;
+  démarrer les services puis exiger `ready=true`. Depuis la racine :
+
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File scripts\START_QDRANT.ps1
+  .\.venv-live\Scripts\python.exe scripts\check_phoneonly_readiness.py --person-id me --deep
+  ```
+
+  STOP si le second processus sort non-zéro : corriger le check nommé (HF gated/cache,
+  proxy, Qdrant, Ollama/llama.cpp et contexte, CUDA/cuDNN, VLM, disque ou venv nuit).
+  Ne jamais lancer cinq minutes « pour voir » avec un préflight rouge. Ne pas changer de
+  backend ou de modèle entre le preflight et le run.
+
+- [ ] **1.2 Run neuf.** Retrouver le MP4 de référence réel; ne pas substituer une vidéo
+  synthétique ni modifier `real_video_session.json`. Le timestamp rend DB/rapport uniques,
+  donc aucune suppression de l'ancienne preuve :
+
+  ```powershell
+  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+  $video = (Resolve-Path 'CHEMIN\VERS\LA_VIDEO_REFERENCE_5MIN.mp4').Path
+  $db = "$pwd\tools\harness\_run\gateb-clean-$stamp.db"
+  $report = "$pwd\tools\harness\_run\gateb-clean-$stamp.json"
+  .\.venv-live\Scripts\python.exe tools\harness\run_harness.py `
+    --port 8730 --db $db --media $video `
+    --scenario tools\harness\scenarios\real_video_session.json `
+    --duration 305 --with-close-day --out $report
+  ```
+
+  Une seule exécution autorisée. Si elle échoue, garder DB/log/report, expliquer la cause
+  et corriger; ne pas relancer dans la même DB pour fabriquer un vert.
+
+- [ ] **1.3 Verdict fonctionnel.** Exiger dans le rapport : 13 événements envoyés, 13
+  `command_execution_trace` corrélées aux textes exacts, `handled=true`, zéro `unknown`,
+  aucun effet `error`; vérifier les payloads, pas seulement `intents_routed=13`. Exiger
+  audio réel, clip E55, turns BrainLive, OCR non vide ou abstention explicite, recherche
+  spatiale honnête, aide start+advance, deux faits mémorisés et requête mémoire. Toute
+  commande « routée » sans UI/device/effect = FAIL.
+
+- [ ] **1.4 Verdict nocturne et performance.** Exiger CloseDay `completed`, recovery
+  `completed`, output/capability manifests complets, Deep Vision
+  `selected=readable=analyzed`, zéro capacité obligatoire `degraded|bypassed|failed`,
+  aucune page/cap silencieux. Relever dans `night_llm_call_telemetry_v19` appels validés,
+  retries, checkpoint reuse, tokens entrée/sortie, latence par stage et durée post-stop.
+  Comparer au baseline autoritaire de la fixture auditée (169 appels / 1,119 M tokens /
+  83 min), en signalant que ce n'est pas exactement la même durée si la cardinalité
+  diffère. GO intermédiaire seulement si aucune capacité ne baisse et gain chaîne ≥×5;
+  sinon STOP et décision architecture/modèle, pas une nouvelle micro-optimisation aveugle.
+
+- [ ] **1.5 Dashboard sur la DB du run uniquement.** Dans une deuxième console :
+
+  ```powershell
+  $env:MLOMEGA_DB = $db
+  .\scripts\RUN_DASHBOARD.ps1
+  # ouvrir http://localhost:8720
+  ```
+
+  Vérifier épisodes/parents/sous-thèmes, tours sources, personnes, événements visuels,
+  Life Model, prédictions/outcomes, preuves et absence de doublons. Conserver captures et
+  jugement humain dans le rapport Gate B; le dashboard ne doit jamais écrire la DB.
+
+#### Étape finale 2 — gate qualité « propriétaire = William », avant le volume d'une heure
+
+- [ ] **2.1 Séparer identité vocale et qualité sémantique.** Sur un clone de la DB Gate B,
+  fournir une vérité d'évaluation qui mappe les tours du porteur vers `person_id=me`, alias
+  `William`, et l'autre voix vers une personne distincte. Ce mapping est une fixture de
+  test, jamais un patch de la DB source ni un nom codé en dur dans les prompts. L'enrôlement
+  vocal réel qui doit produire ce mapping reste réservé à l'étape S25 n°4.
+
+- [ ] **2.2 Outil à créer avant exécution** :
+  `tools/harness/owner_quality_gate.py` +
+  `tools/harness/scenarios/owner_quality_truth.json`. Le script prend une DB source en
+  lecture seule, fabrique son propre clone, relance uniquement les consommateurs
+  sémantiques nécessaires et écrit un JSON de comparaison. Interface obligatoire :
+
+  ```powershell
+  .\.venv\Scripts\python.exe tools\harness\owner_quality_gate.py `
+    --db $db --owner-id me --owner-name William `
+    --truth tools\harness\scenarios\owner_quality_truth.json `
+    --out tools\harness\_run\owner-quality-$stamp.json
+  ```
+
+  Tant que ce script/fixture n'existent pas et ne sont pas testés, la case reste ouverte;
+  ne pas remplacer ce gate par une inspection subjective de trois cartes dashboard.
+
+- [ ] **2.3 Contrat de perspective.** Les moteurs personnels reçoivent un
+  `owner_context` canonique (`person_id=me`, alias courant, IDs de voix/personne), pas la
+  chaîne « William » recopiée dans chaque prompt. Chaque claim personnel répond à : que
+  fait/dit William, dans quel contexte, avec qui, réaction/issue, preuves exactes. Les
+  moteurs relationnels peuvent analyser Karim/Max/etc., mais leur modèle reste distinct et
+  leur lien avec William est explicite. Une voix inconnue ne devient jamais William.
+
+- [ ] **2.4 Épistémologie et profondeur.** Une minute peut produire événements/états et
+  candidats `watch`, jamais un trait émotionnel/habitude à forte confiance. Promotion
+  durable seulement après répétitions ou sources indépendantes. Distinguer : observation,
+  état ponctuel, hypothèse, pattern longitudinal, prédiction. Une prédiction doit citer des
+  précédents comparables (`X occurrences`, contextes, émotions observables, personne,
+  issues) et rester probabiliste; aucune « prochaine pensée » présentée comme vérité.
+
+- [ ] **2.5 Déduplication/responsabilité.** Pour chaque sortie, comparer
+  claim canonique → writer → consommateur. Deux moteurs peuvent apporter des preuves ou
+  responsabilités différentes, mais ne doivent pas persister le même fait sous plusieurs
+  classes. Mesurer doublons sémantiques, contradictions, claims sans preuve, promotions
+  trop rapides, confusion owner/autre et remplissage de schéma. GO : 100 % des claims
+  relisibles, zéro attribution owner fausse, zéro trait durable mono-occurrence, capacités
+  intactes et qualité au moins égale à la référence humaine. Ce gate peut améliorer la
+  qualité tout en réduisant tokens et auto-confirmation; il ne doit pas être « verdi » en
+  supprimant les couches psychologie/Life utiles.
+
+#### Étape finale 3 — Gate C, une heure synthétique réaliste (aucun tournage d'une heure)
+
+- [ ] **3.1 Fixture d'une heure à créer, pas une boucle ×12.** Créer
+  `tools/harness/build_gate_c_fixture.py` et `scenarios/gate_c_hour.json`. Le générateur
+  assemble la vidéo 5 min, des périodes statiques/silencieuses, des conversations audio
+  distinctes, déplacements/objets, OCR/écrans, personnes et tâche manuelle. Répartition de
+  référence : ~35 min calme/statique, 10 min conversations, 8 min mouvement/objets, 3 min
+  OCR/écran, 4 min personnes/tâche. Des clips réutilisés gardent leur provenance et ne
+  comptent jamais comme preuves indépendantes. Idéalement ajouter quelques clips courts
+  variés, mais **aucun besoin de filmer 60 minutes**.
+
+- [ ] **3.2 Résolution contrôlée.** Fixture principale = chemin produit 1280×720/30 fps;
+  Deep Vision reste piloté par changements/keyframes, pas par les 108 000 frames. Ajouter
+  un stress séparé 10 min en 1080p, jamais mélangé à la mesure SLA principale. Relever
+  débit/drops, CPU, disque et qualité OCR/détection. La résolution peut augmenter
+  décodage/transfert/stockage; elle ne doit pas multiplier les prompts LLM ni la
+  cardinalité sémantique à scène identique.
+
+- [ ] **3.3 Interfaces à livrer/tester avant le run.** Le builder doit produire MP4,
+  scénario, vérité temporelle et SHA. Ajouter à `run_harness.py` un argument
+  `--close-day-timeout` (défaut historique inchangé) car 1 h de consolidation ne peut pas
+  être jugée par le timeout fixe 1 800 s. Commandes cibles :
+
+  ```powershell
+  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+  .\.venv-live\Scripts\python.exe tools\harness\build_gate_c_fixture.py `
+    --reference $video --duration 3600 --width 1280 --height 720 --fps 30 `
+    --out tools\harness\_run\gatec-$stamp.mp4 `
+    --manifest tools\harness\_run\gatec-$stamp-manifest.json
+  .\.venv-live\Scripts\python.exe tools\harness\run_harness.py `
+    --port 8740 --db tools\harness\_run\gatec-$stamp.db `
+    --media tools\harness\_run\gatec-$stamp.mp4 `
+    --scenario tools\harness\scenarios\gate_c_hour.json `
+    --duration 3605 --with-close-day --close-day-timeout 4200 `
+    --out tools\harness\_run\gatec-$stamp.json
+  ```
+
+- [ ] **3.4 SLA/qualité.** Chronométrer séparément capture et post-stop. GO cible :
+  `1 h capturée ≤1 h consolidation` sur RTX 3070, ou écart précisément expliqué avant
+  toute promesse. Exiger couverture 100 %, manifests complets, mémoire/VRAM bornées,
+  aucune troncature/cap, reprise idempotente, aucune répétition synthétique promue comme
+  pattern indépendant. Spot-check humain aux transitions connues de la fixture et rapport
+  appels/tokens/images VLM/temps par stage.
+
+- [ ] **3.5 Chaos séparé, DB fraîche par faute.** Ne pas injecter toutes les pannes dans
+  le run SLA (mesure illisible). Après le GO nominal :
+
+  ```powershell
+  .\.venv-live\Scripts\python.exe tools\harness\chaos.py --port 8742 `
+    --scenarios net_drop_reconnect,double_end,ollama_down,kill_before_close_day `
+    --with-recovery-close-day
+  ```
+
+  Vérifier reconnexion sans double peer/tour, BrainLive ID stable, double end idempotent,
+  Ollama down dégradé honnête, kill/recovery reprenant checkpoints sans double écriture.
+
+#### Étape finale 4 — vrai Samsung S25, APK fraîche et identité owner réelle
+
+- [ ] **4.1 Rebuild PhoneOnly obligatoire.** Le commit `de39fef` modifie le C# Unity
+  (`translate_text`) : l'ancienne APK ne contient pas le pont. Fermer Unity, puis depuis
+  `apps\xr-mobile` :
+
+  ```powershell
+  $u = 'C:\Program Files\Unity\Hub\Editor\6000.0.23f1\Editor\Unity.exe'
+  $env:MLOMEGA_PC_HOST = '192.168.1.199'; $env:MLOMEGA_PC_PORT = '8710'
+  $p = Start-Process $u -ArgumentList '-batchmode','-quit','-projectPath','.', `
+    '-executeMethod','MLOmega.XR.Editor.AndroidBuild.BuildApk', `
+    '-logFile',"$pwd\apk-phone.log" -Wait -PassThru -NoNewWindow
+  "exit=$($p.ExitCode)"
+  Get-FileHash .\build\android\mlomega-phoneonly.apk -Algorithm SHA256
+  ```
+
+  GO seulement sur exit 0 + `Build succeeded` et APK fraîche. Les warnings licence 500 ne
+  sont pas le verdict. Reverter uniquement les artefacts Unity générés documentés; ne pas
+  écraser des modifications utilisateur de scène. Installer :
+
+  ```powershell
+  adb install -r .\build\android\mlomega-phoneonly.apk
+  adb shell pm path com.mlomega.xr.phoneonly
+  ```
+
+- [ ] **4.2 PC réellement prêt avant ouverture de l'app.** Depuis la racine, même Wi-Fi,
+  port 8710 privé autorisé :
+
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File scripts\START_QDRANT.ps1
+  .\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -BindHost 0.0.0.0 -Port 8710
+  ```
+
+  RUN exécute le preflight profond : aucun contournement manuel si rouge. Garder cette
+  console ouverte; elle est le journal live.
+
+- [ ] **4.3 Première action = enrôlement propriétaire.** Dire « configure ma voix » ou
+  Menu → Ma voix, suivre la capture, puis vérifier en DB que les tours du porteur portent
+  `speaker_person_id=me`/alias William et que l'autre personne reste distincte. Répéter
+  avec une phrase hors commande; aucune attribution owner par simple texte/contexte. Sans
+  cette preuve, toutes les conclusions personnelles du dashboard sont non certifiées.
+
+- [ ] **4.4 Checklist matérielle minimale.** Vérifier réellement, avec rendu/receipt :
+  wake word Viki; ASR/sous-titres Reflex PC joignable puis PC coupé; micro WebRTC+ASR sans
+  conflit 10 min; caméra/rotation; `what_is`; clés/lunettes visibles puis déplacées et
+  dernière position connue; OCR puis `translate_text` offline; personne connue/inconnue;
+  ChangeAttention après retour dans une zone; mode aide start/next au milieu d'une tâche;
+  deux `retiens ...` puis requête mémoire; privacy pause libérant caméra/micro; perte Wi-Fi
+  et reconnexion sans double audio; arrière-plan/écran éteint 10 min; fin explicite avec
+  drain→archive→BrainLive→CloseDay. Toute réponse doit être observée à l'écran ou prouvée
+  par receipt/trace, jamais déduite d'un compteur PC.
+
+- [ ] **4.5 Contrôle lendemain/dashboard.** Exiger CloseDay/manifeste complet puis lancer
+  le dashboard sur cette DB. Contrôler perspective William, séparation des autres,
+  souvenirs, positions, clips/replay, Life watch sans psychologie inventée et prédictions
+  avec précédents. Conserver APK hash, version Android, réseau, températures, batterie,
+  latences, logs et anomalies. S25 GO ne ferme pas Gate D capacité huit heures.
+
+#### Étape finale 5 — Gate D huit heures et décision production
+
+- [ ] **5.1 Deux preuves, sans demander huit heures de tournage.** (a) test capacité
+  accéléré sur une journée temporelle de 8 h/multi-session issue du générateur Gate C;
+  (b) soak temps réel overnight avec faux device, puis un pilote réel longue durée après
+  le S25 court. Les répétitions synthétiques restent liées à leur source et ne corroborent
+  jamais un trait. Ajouter un outil `tools/harness/run_gate_d_day.py` qui crée DB neuve,
+  sessions matin/midi/soir, redémarrage PC entre deux sessions et rapport final.
+
+- [ ] **5.2 Critères finaux.** Aucun cap silencieux; tous les événements couverts;
+  mémoire/VRAM/disque bornés; multi-session/jour consolidé; CloseDay/recovery idempotents;
+  rétention et archives relues; owner/relations corrects; temps et éventuel coût cloud
+  mesurés. Seulement après Gate D annoncer une durée nocturne et fixer backend/modèles/
+  contextes FIRST_TRY.
+
+- [ ] **5.3 Verdict Codex indépendant.** Relire rapports B/qualité/C/S25/D et le code des
+  frontières réellement exercées. GO production uniquement si zéro blocker fonctionnel,
+  qualité propriétaire non régressive, SLA accepté et cas négatifs prouvés. Sinon produire
+  une liste bornée de corrections avec preuve; ne pas rouvrir un audit intégral ni cocher
+  une capacité au nom d'une classe, d'une route ou d'un test isolé.
 
 #### Checkpoint Codex — activation I1/I2, frontière live et FirstTry hermétique (2026-07-15)
 
