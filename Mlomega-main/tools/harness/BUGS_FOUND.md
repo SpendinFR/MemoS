@@ -553,6 +553,18 @@ même lecteur paginé. `limit` ne coupe plus les résultats. Les tours non cité
 et manifestés mais ne gonflent pas le prompt. Tests 121 signaux et 121 routines courantes
 en quatre pages; kill/restart avant et après commit couvert.
 
+## Mise à jour OBS-28 (2) — backend corrigé en I4.2, gate final = I4.4 (2026-07-16)
+
+I4.2 ferme le volet backend : l'override `install_deep` retombait sur le modèle TEXTE
+`qwen3.5:9b` sans var d'env (corrigé, défaut `qwen3-vl:8b`) ; `think:false` explicite ;
+sur ce build Ollama qwen3-vl:8b renvoie son JSON dans `thinking` avec `response` vide
+(lecture de secours ajoutée — c'était la cause des « 11 JSON vides/invalides ») ;
+validation stricte ; cache `deep_vision_vlm_cache_v19` (hit 8 ms/0 réseau prouvé) ;
+sélectionnées>0 & analysées=0 → `retryable_error/failed`, jamais ok. Appel réel unique
+prouvé (JSON valide, 15,5 s froid, 665 tokens). Reste pour clore OBS-28 : le gate
+I4.4 (11 images référence, mesures froid/chaud, + fermer le `except: pass` de
+persistance de couverture, `brainlive_offline_deep_vision_v16_1.py:482-486`).
+
 ## Mise à jour OBS-28 — cause Deep Vision confirmée (OUVERT)
 
 Le module de base possède un meilleur gate, mais `v18_poststop_outputs.install_deep`

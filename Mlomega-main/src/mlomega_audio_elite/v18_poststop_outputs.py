@@ -129,7 +129,10 @@ def install_deep(module: Any) -> dict[str, Any]:
             raise ValueError("V18 deep vision requires explicit person_id")
         ensure_deep_vision_schema()
         day = _package_day(module, package_date)
-        chosen = model or os.environ.get("MLOMEGA_OFFLINE_VLM_MODEL") or os.environ.get("MLOMEGA_VLM_HEAVY_MODEL") or os.environ.get("MLOMEGA_VLM_MODEL") or module.get_settings().ollama_model
+        # E64-I4.2: resolve the offline VLM through the shared resolver so a
+        # missing override falls back to a real VLM (qwen3-vl:8b), never the text
+        # model. ``module`` is the base deep-vision module that owns the resolver.
+        chosen = module._resolve_offline_vlm_model(model)
         run_id = stable_id("v18deepvisionrun", person_id, day, live_session_id or "all", chosen, now_iso(), uuid4().hex)
         scanned = selected = analyzed = quarantined = 0
         # These are evidence-integrity failures, not ordinary VLM failures.  A
@@ -267,6 +270,16 @@ def install_deep(module: Any) -> dict[str, Any]:
                             projection_kind="deep_vision", source_table="brainlive_deep_vision_observations_v161", source_id=obs_id,
                             person_id=person_id, active=False, reason=status,
                         )
+            # E64-I4.2 honest terminal status: selecting keyframes but analysing
+            # NONE (all quarantined) is never a product 'ok'. Align the override's
+            # own run status with the I0.4 gate that reads this row, instead of
+            # leaving the false-green for the gate alone to catch. A partial
+            # analysis (some quarantined) is degraded; a full quarantine is
+            # retryable when every failure is a transient VLM error, else failed.
+            if terminal_status == "ok" and selected > 0 and analyzed == 0:
+                terminal_status = "retryable_error" if quarantined == selected else "failed"
+            elif terminal_status == "ok" and analyzed < selected:
+                terminal_status = "degraded"
             # Never let Brain2 continue with a partial visual record after an
             # evidence-integrity block. Ordinary VLM failures remain quarantined
             # as before; missing raw pixels are a stronger, repair-required state.

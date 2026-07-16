@@ -59,6 +59,24 @@ COVER_REPRESENTED_BY_KEYFRAME = "represented_by_keyframe"
 DEFAULT_SAFETY_INTERVAL_S = 60.0
 SAFETY_INTERVAL_ENV = "MLOMEGA_DEEP_VISION_SAFETY_INTERVAL_S"
 
+# E64-I4.2 Codex arbitrage: the state signature that OPENS a keyframe is
+# track-agnostic. A change of ``track_id`` alone (the tracker re-numbering the
+# same person) is NOT a cognitive event and must not open a keyframe.  Two
+# neighbouring "micro-transitions" (a brief A->B->A flip, or a burst of changes
+# inside a short temporal window) are grouped into a single keyframe event.  A
+# genuine change of labels / people-count / OCR text / location/scene, or a major
+# spatial displacement of a bounding box, still opens a keyframe.  Every frame -
+# keyframe or not - stays 100% covered.
+DEFAULT_MICRO_TRANSITION_WINDOW_S = 2.5
+MICRO_TRANSITION_WINDOW_ENV = "MLOMEGA_DEEP_VISION_MICRO_TRANSITION_WINDOW_S"
+
+# A bbox centroid must move by at least this fraction of the frame's diagonal
+# (normalised 0..1 coordinates) to count as a real spatial change when labels are
+# otherwise identical. Only used when bbox/position is present in observations;
+# see ``_spatial_signature`` for the documented no-position limitation.
+DEFAULT_SPATIAL_MOVE_THRESHOLD = 0.20
+SPATIAL_MOVE_THRESHOLD_ENV = "MLOMEGA_DEEP_VISION_SPATIAL_MOVE_THRESHOLD"
+
 COVERAGE_TABLE = "deep_vision_frame_coverage_v19"
 
 _COVERAGE_SCHEMA = f"""
@@ -92,8 +110,156 @@ def safety_interval_seconds() -> float:
     return value if value > 0 else DEFAULT_SAFETY_INTERVAL_S
 
 
+def _float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 0 else default
+
+
+def micro_transition_window_seconds() -> float:
+    """Temporal window inside which neighbouring flips are grouped into one event.
+
+    ``0`` disables grouping (every track-agnostic change opens a keyframe).
+    """
+    return _float_env(MICRO_TRANSITION_WINDOW_ENV, DEFAULT_MICRO_TRANSITION_WINDOW_S)
+
+
+def spatial_move_threshold() -> float:
+    return _float_env(SPATIAL_MOVE_THRESHOLD_ENV, DEFAULT_SPATIAL_MOVE_THRESHOLD)
+
+
 def ensure_coverage_schema(con: Any) -> None:
     con.executescript(_COVERAGE_SCHEMA)
+
+
+# --------------------------------------------------------------------------- #
+# Track-agnostic semantic signature (Codex I4.2 option (b))                    #
+# --------------------------------------------------------------------------- #
+
+def _label_multiset(objects: Any) -> tuple[str, ...]:
+    """Sorted multiset of visible labels, IGNORING track_id.
+
+    ``[{person,t1},{person,t2}]`` and ``[{person,t9},{person,t3}]`` compare equal
+    (same two people, tracker just renumbered them).  ``[{person},{dog}]`` differs
+    from ``[{person}]`` (a real object appeared).  The multiset (not the set) is
+    kept so ``person,person`` differs from ``person`` - a second person arriving
+    IS a real change even though the label string is identical.
+    """
+    out: list[str] = []
+    for obj in objects or []:
+        if isinstance(obj, Mapping):
+            label = str(obj.get("label") or "").strip()
+        else:
+            label = str(obj or "").strip()
+        if label:
+            out.append(label)
+    out.sort()
+    return tuple(out)
+
+
+def _bbox_of(obj: Mapping[str, Any]) -> tuple[float, float, float, float] | None:
+    """Best-effort normalised (cx, cy, w, h) centroid+size for one detection.
+
+    Accepts a few common shapes (``bbox``/``box`` as [x1,y1,x2,y2] or
+    {x,y,w,h}).  Returns ``None`` when no position is present - which is the
+    common case in this dataset (see the documented limitation in
+    ``_spatial_signature``).
+    """
+    raw = obj.get("bbox")
+    if raw is None:
+        raw = obj.get("box")
+    if raw is None:
+        raw = obj.get("position")
+    if isinstance(raw, Mapping):
+        try:
+            x = float(raw.get("x", raw.get("cx", raw.get("left"))))
+            y = float(raw.get("y", raw.get("cy", raw.get("top"))))
+            w = float(raw.get("w", raw.get("width", 0.0)) or 0.0)
+            h = float(raw.get("h", raw.get("height", 0.0)) or 0.0)
+        except (TypeError, ValueError):
+            return None
+        return (x + w / 2.0, y + h / 2.0, w, h)
+    if isinstance(raw, (list, tuple)) and len(raw) >= 4:
+        try:
+            x1, y1, x2, y2 = (float(raw[0]), float(raw[1]), float(raw[2]), float(raw[3]))
+        except (TypeError, ValueError):
+            return None
+        return ((x1 + x2) / 2.0, (y1 + y2) / 2.0, abs(x2 - x1), abs(y2 - y1))
+    return None
+
+
+def _spatial_signature(objects: Any, threshold: float) -> tuple[tuple[str, int, int], ...] | None:
+    """Coarse per-label centroid buckets so a MAJOR displacement counts as change.
+
+    Returns ``None`` when NO detection carries a usable bbox/position (the case in
+    the current ``vision_scene_observations`` data, which stores only label +
+    track_id + confidence). LIMITATION: without positions, a pure spatial move of
+    an object whose label set is unchanged CANNOT be detected here and will not
+    open a keyframe - this is the documented cost of the label-set-only signal and
+    is safe (the frame stays covered by its representative). When positions ARE
+    present, the centroid is bucketed on a grid of ``1/threshold`` cells so only a
+    displacement beyond ``threshold`` of the frame changes the bucket.
+    """
+    buckets: list[tuple[str, int, int]] = []
+    saw_position = False
+    grid = max(1, int(round(1.0 / threshold))) if threshold > 0 else 1
+    for obj in objects or []:
+        if not isinstance(obj, Mapping):
+            continue
+        box = _bbox_of(obj)
+        if box is None:
+            continue
+        saw_position = True
+        cx, cy, _w, _h = box
+        gx = int(min(max(cx, 0.0), 0.999999) * grid)
+        gy = int(min(max(cy, 0.0), 0.999999) * grid)
+        buckets.append((str(obj.get("label") or ""), gx, gy))
+    if not saw_position:
+        return None
+    buckets.sort()
+    return tuple(buckets)
+
+
+def frame_signature(
+    item: Mapping[str, Any], *, spatial_threshold: float | None = None
+) -> tuple[Any, ...]:
+    """Track-agnostic semantic signature of ONE timeline/observation item.
+
+    Two items with the same signature are the SAME cognitive state and must not
+    each open a keyframe. ``track_id`` is intentionally excluded; a spatial
+    signature is appended only when position data exists.
+    """
+    threshold = spatial_move_threshold() if spatial_threshold is None else spatial_threshold
+    objects = item.get("objects")
+    if objects is None:
+        objects = item.get("objects_json")
+    if isinstance(objects, str):
+        import json
+
+        try:
+            objects = json.loads(objects)
+        except (TypeError, ValueError):
+            objects = []
+    people = item.get("people_count")
+    try:
+        people = None if people is None else int(people)
+    except (TypeError, ValueError):
+        people = None
+    location = item.get("location_hint") or item.get("location") or None
+    scene = item.get("summary") if item.get("summary") is not None else item.get("scene_summary")
+    return (
+        _label_multiset(objects),
+        people,
+        tuple(_visible_text_of(item)),
+        str(location) if location else None,
+        str(scene) if scene else None,
+        _spatial_signature(objects, threshold),
+    )
 
 
 @dataclass(frozen=True)
@@ -205,21 +371,114 @@ def _atom_index_for_semantic_frame(
     return index
 
 
+def _plan_keyframe_events(
+    ordered: Sequence[tuple[str, tuple[Any, ...], float | None]],
+    *,
+    forced_frames: set[str],
+    window_s: float,
+) -> dict[str, str]:
+    """Decide which frames OPEN a keyframe, grouping micro-transitions.
+
+    ``ordered`` is a time-sorted list of ``(frame_id, signature, time)``.  Returns
+    a mapping ``frame_id -> REASON_SCENE_CHANGE`` for every frame that opens a
+    keyframe by a genuine, track-agnostic state change (forced OCR/user/safety
+    frames are handled by the caller and are NOT included here).
+
+    Grouping (Codex I4.2):
+    * a signature differing from the last CONFIRMED signature is a *candidate*
+      change; it opens a keyframe only once it is confirmed;
+    * a candidate that reverts to the previous confirmed signature within
+      ``window_s`` (a brief A->B->A flip) is a flicker and is dropped - no
+      keyframe, the frames stay covered by the A representative;
+    * a burst of several distinct signatures inside ``window_s`` collapses to the
+      LAST one in the burst (successive neighbouring transitions = one event);
+    * ``window_s <= 0`` disables grouping: every distinct signature opens.
+
+    A frame in ``forced_frames`` (OCR / explicit request) anchors the running
+    confirmed signature so a forced keyframe is never immediately re-opened as a
+    redundant scene change.
+    """
+    opens: dict[str, str] = {}
+    confirmed_sig: tuple[Any, ...] | None = None
+    # A pending burst: the first differing frame and its running "best" (latest)
+    # candidate frame/sig, plus the burst start time.
+    pending_fid: str | None = None
+    pending_sig: tuple[Any, ...] | None = None
+    pending_start: float | None = None
+
+    def _commit_pending() -> None:
+        nonlocal confirmed_sig, pending_fid, pending_sig, pending_start
+        if pending_fid is not None and pending_sig is not None:
+            # A real, confirmed change: the last frame of the burst opens.
+            if pending_sig != confirmed_sig:
+                opens[pending_fid] = REASON_SCENE_CHANGE
+                confirmed_sig = pending_sig
+        pending_fid = pending_sig = pending_start = None
+
+    for fid, sig, t in ordered:
+        if confirmed_sig is None and pending_fid is None:
+            # First frame: opens coverage as the initial confirmed state.
+            opens[fid] = REASON_SCENE_CHANGE
+            confirmed_sig = sig
+            continue
+        if fid in forced_frames:
+            # A forced keyframe resets the running state to whatever it shows, so
+            # the very next identical frame is not re-opened.
+            _commit_pending()
+            confirmed_sig = sig
+            continue
+        if sig == confirmed_sig:
+            # Back to (or still) the confirmed state: any pending flip was a
+            # flicker -> drop it.
+            pending_fid = pending_sig = pending_start = None
+            continue
+        # sig differs from the confirmed state.
+        if window_s <= 0:
+            opens[fid] = REASON_SCENE_CHANGE
+            confirmed_sig = sig
+            continue
+        if pending_fid is None:
+            pending_fid, pending_sig, pending_start = fid, sig, t
+            continue
+        # A burst is in progress. If we are still inside the window, keep the
+        # latest differing signature as the burst's representative.
+        within = (
+            pending_start is not None and t is not None and (t - pending_start) <= window_s
+        )
+        if within:
+            pending_fid, pending_sig = fid, sig
+        else:
+            # The previous burst has settled on a stable new state -> commit it,
+            # then start a fresh pending burst for the current frame.
+            _commit_pending()
+            if sig == confirmed_sig:
+                pending_fid = pending_sig = pending_start = None
+            else:
+                pending_fid, pending_sig, pending_start = fid, sig, t
+    _commit_pending()
+    return opens
+
+
 def select_keyframes_with_coverage(
     bundle: Mapping[str, Any],
     candidates: Sequence[Mapping[str, Any]],
     *,
     requested_frame_ids: Iterable[str] = (),
     safety_interval_s: float | None = None,
+    micro_transition_window_s: float | None = None,
 ) -> SelectionResult:
     """Select coverage-complete keyframes for one event bundle.
 
     ``candidates`` are the deduplicated raw-pixel candidates the base module
     already builds (``_keyframe_candidates``): one dict per usable frame with at
-    least ``frame_id``/``image_path``/``frame_time``. The vision *timeline* of the
-    bundle (semantic observations) drives change detection via the tested
-    ``reduce_vision_timeline`` reducer, so a change of scene/object/person opens a
-    new atom while pure confidence jitter never does.
+    least ``frame_id``/``image_path``/``frame_time``. Change detection uses a
+    TRACK-AGNOSTIC semantic signature (Codex I4.2): a bare ``track_id`` change
+    never opens a keyframe, and neighbouring micro-transitions (A->B->A flips, or
+    bursts inside ``micro_transition_window_s``) are grouped into a single event.
+    A genuine change of labels/people/OCR/location/scene (or a major spatial
+    displacement when positions exist) still opens a keyframe. The lossless
+    ``reduce_vision_timeline`` atoms are still computed for provenance so every
+    covered frame links to a stable representative.
 
     Returns a :class:`SelectionResult` where every candidate frame is either a
     keyframe or mapped to the keyframe/atom that represents it - zero orphans.
@@ -228,6 +487,11 @@ def select_keyframes_with_coverage(
     live_session_id = bundle.get("live_session_id")
     requested = {str(f) for f in requested_frame_ids if str(f).strip()}
     interval = safety_interval_s if safety_interval_s is not None else safety_interval_seconds()
+    window_s = (
+        micro_transition_window_s
+        if micro_transition_window_s is not None
+        else micro_transition_window_seconds()
+    )
 
     # --- 1. change atoms from the semantic vision timeline (lossless) ---------
     timeline = bundle.get("vision_timeline_json")
@@ -247,14 +511,17 @@ def select_keyframes_with_coverage(
         if atom.frame_refs:
             atom_first_frame[atom.atom_id] = str(atom.frame_refs[0])
 
-    # Per-frame OCR / user-request signals, read from the timeline items so the
-    # signal survives even for frames without a readable image path.
+    # Per-frame OCR / user-request signals AND the track-agnostic signature, read
+    # from the timeline items so the signal survives even for frames without a
+    # readable image path.
     ocr_frames: set[str] = set()
     user_frames: set[str] = set()
+    frame_signatures: dict[str, tuple[Any, ...]] = {}
     for it in timeline_items:
         fid = str(it.get("frame_id") or "").strip()
         if not fid:
             continue
+        frame_signatures[fid] = frame_signature(it)
         if _visible_text_of(it):
             ocr_frames.add(fid)
         if _is_user_requested(it, requested):
@@ -267,16 +534,40 @@ def select_keyframes_with_coverage(
 
     ordered = sorted(candidates, key=_sort_key)
 
+    # --- 3. plan the grouped scene-change keyframe openings -------------------
+    # A candidate's signature falls back to the atom identity when the timeline
+    # carried no per-frame observation (raw camera-only frames), so those still
+    # get one anchor instead of one keyframe per frame.
+    def _sig_for(fid: str) -> tuple[Any, ...]:
+        sig = frame_signatures.get(fid)
+        if sig is not None:
+            return sig
+        atom = frame_to_atom.get(fid)
+        return ("__atom__", atom.atom_id if atom else None)
+
+    ordered_sig_seq = [
+        (
+            str(c.get("frame_id") or c.get("image_path") or "").strip(),
+            _sig_for(str(c.get("frame_id") or c.get("image_path") or "").strip()),
+            _parse_time(c.get("frame_time")),
+        )
+        for c in ordered
+        if str(c.get("frame_id") or c.get("image_path") or "").strip()
+    ]
+    scene_change_opens = _plan_keyframe_events(
+        ordered_sig_seq,
+        forced_frames=ocr_frames | user_frames,
+        window_s=window_s,
+    )
+
     reasons_by_frame: dict[str, list[str]] = {}
     selected_frame_ids: list[str] = []
     coverage: list[FrameCoverage] = []
 
-    # Representative keyframe currently standing in for the running state. When an
-    # atom changes, the first frame of the new atom becomes the representative.
+    # Representative keyframe currently standing in for the running state.
     current_keyframe_id: str | None = None
     current_atom_id: str | None = None
     last_keyframe_time: float | None = None
-    seen_atoms: set[str] = set()
 
     def _add_reason(fid: str, reason: str) -> None:
         reasons_by_frame.setdefault(fid, [])
@@ -292,9 +583,9 @@ def select_keyframes_with_coverage(
         ctime = _parse_time(c.get("frame_time"))
 
         reasons: list[str] = []
-        # (a) scene/object/person change: this frame belongs to an atom we have
-        # not opened yet.
-        if atom_id is not None and atom_id not in seen_atoms:
+        # (a) track-agnostic scene/object/person change (grouped): this frame was
+        # planned to open a keyframe by the micro-transition-aware planner.
+        if fid in scene_change_opens:
             reasons.append(REASON_SCENE_CHANGE)
         # (b) OCR.
         if fid in ocr_frames:
@@ -320,8 +611,6 @@ def select_keyframes_with_coverage(
                 _add_reason(fid, r)
             current_keyframe_id = fid
             current_atom_id = atom_id
-            if atom_id is not None:
-                seen_atoms.add(atom_id)
             if ctime is not None:
                 last_keyframe_time = ctime
             coverage.append(
@@ -336,10 +625,17 @@ def select_keyframes_with_coverage(
             )
         else:
             # Represented by the current keyframe. Prefer the atom's own first
-            # frame as the representative when available (stable across reruns).
+            # frame as the representative when available (stable across reruns),
+            # but ONLY if that atom-first frame was actually selected - micro-
+            # transition grouping can suppress an atom's opening frame, and a
+            # represented frame must never point to a non-selected keyframe.
             rep_keyframe = current_keyframe_id
             rep_atom = atom_id if atom_id is not None else current_atom_id
-            if rep_atom is not None and rep_atom in atom_first_frame:
+            if (
+                rep_atom is not None
+                and rep_atom in atom_first_frame
+                and atom_first_frame[rep_atom] in selected_frame_ids
+            ):
                 rep_keyframe = atom_first_frame[rep_atom]
             coverage.append(
                 FrameCoverage(

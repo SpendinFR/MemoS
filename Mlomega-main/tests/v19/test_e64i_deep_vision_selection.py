@@ -96,20 +96,83 @@ def _ts(sec):
 def test_scene_object_person_change_opens_keyframe():
     person = [{"label": "person", "track_id": "t1"}]
     person_plus_dog = [{"label": "person", "track_id": "t1"}, {"label": "dog", "track_id": "t2"}]
+    # I4.2: a REAL change must PERSIST past the micro-transition window to open a
+    # keyframe (a brief dog-in/dog-out flip is a flicker, tested separately). Here
+    # the dog appears and stays, then the person-only state returns and stays.
     items = [
         _obs_item(0, ts=_ts(0), objects=person),
         _obs_item(1, ts=_ts(2), objects=person),          # identical -> represented
-        _obs_item(2, ts=_ts(4), objects=person_plus_dog), # new object -> keyframe
-        _obs_item(3, ts=_ts(6), objects=person),          # dog left -> keyframe
+        _obs_item(2, ts=_ts(4), objects=person_plus_dog), # dog appears...
+        _obs_item(3, ts=_ts(8), objects=person_plus_dog), # ...and stays -> keyframe
+        _obs_item(4, ts=_ts(12), objects=person),         # dog left...
+        _obs_item(5, ts=_ts(16), objects=person),         # ...and stays -> keyframe
     ]
-    cands = [_candidate(i, ts=_ts(t)) for i, t in ((0, 0), (1, 2), (2, 4), (3, 6))]
-    result = select_keyframes_with_coverage(_bundle(items), cands, safety_interval_s=999)
+    cands = [_candidate(i, ts=_ts(t)) for i, t in ((0, 0), (1, 2), (2, 4), (3, 8), (4, 12), (5, 16))]
+    result = select_keyframes_with_coverage(
+        _bundle(items), cands, safety_interval_s=999, micro_transition_window_s=2.5
+    )
 
     assert "frame_0" in result.selected_frame_ids  # first state
-    assert "frame_2" in result.selected_frame_ids  # object appeared
-    assert "frame_3" in result.selected_frame_ids  # object left
     assert "frame_1" not in result.selected_frame_ids  # identical to frame_0
-    assert REASON_SCENE_CHANGE in result.reasons_by_frame["frame_2"]
+    # The dog-present state and the returned person-only state each opened a
+    # keyframe (3 distinct confirmed states in total).
+    assert result.selected_count == 3
+    dog_kf = [f for f in ("frame_2", "frame_3") if f in result.selected_frame_ids]
+    assert dog_kf, "the persistent dog-present state must open a keyframe"
+    assert REASON_SCENE_CHANGE in result.reasons_by_frame[dog_kf[0]]
+    assert result.fully_covered
+
+
+def test_track_id_churn_alone_does_not_open_keyframe():
+    """Codex I4.2: a bare track_id renumbering is NOT a cognitive change."""
+    items = [
+        _obs_item(i, ts=_ts(i), objects=[{"label": "person", "track_id": f"t{i}"}])
+        for i in range(6)
+    ]
+    cands = [_candidate(i, ts=_ts(i)) for i in range(6)]
+    result = select_keyframes_with_coverage(_bundle(items), cands, safety_interval_s=999)
+    # Same person throughout, only the tracker renumbered -> one keyframe.
+    assert result.selected_count == 1
+    assert result.total_frames == 6
+    assert result.fully_covered
+
+
+def test_micro_transition_flip_is_grouped_into_one_event():
+    """Codex I4.2: a brief A->B->A flip inside the window is a single event (no B keyframe)."""
+    person = [{"label": "person", "track_id": "t1"}]
+    person_plus_dog = [{"label": "person", "track_id": "t1"}, {"label": "dog", "track_id": "t2"}]
+    items = [
+        _obs_item(0, ts=_ts(0), objects=person),
+        _obs_item(1, ts=_ts(1), objects=person_plus_dog),  # dog flickers in...
+        _obs_item(2, ts=_ts(2), objects=person),           # ...and out within window
+        _obs_item(3, ts=_ts(3), objects=person),
+    ]
+    cands = [_candidate(i, ts=_ts(i)) for i in range(4)]
+    result = select_keyframes_with_coverage(
+        _bundle(items), cands, safety_interval_s=999, micro_transition_window_s=2.5
+    )
+    # The flicker did not open its own keyframe; everything stays covered.
+    assert result.selected_frame_ids == ("frame_0",)
+    assert "frame_1" not in result.selected_frame_ids
+    assert result.total_frames == 4
+    assert result.fully_covered
+
+
+def test_people_count_change_opens_keyframe_even_with_same_label():
+    """A second person arriving IS a real change though the label string repeats."""
+    one = [{"label": "person", "track_id": "t1"}]
+    two = [{"label": "person", "track_id": "t1"}, {"label": "person", "track_id": "t2"}]
+    items = [
+        _obs_item(0, ts=_ts(0), objects=one, people=1),
+        _obs_item(1, ts=_ts(4), objects=two, people=2),
+        _obs_item(2, ts=_ts(8), objects=two, people=2),
+    ]
+    cands = [_candidate(i, ts=_ts(t)) for i, t in ((0, 0), (1, 4), (2, 8))]
+    result = select_keyframes_with_coverage(
+        _bundle(items), cands, safety_interval_s=999, micro_transition_window_s=2.5
+    )
+    assert result.selected_count == 2
+    assert result.fully_covered
 
 
 def test_repeated_identical_frames_are_covered_not_reselected():
@@ -306,13 +369,17 @@ def test_optional_ceiling_demotes_overflow_without_dropping_frames():
     )
 
     # 5 distinct states -> 5 keyframes; cap at 2 must keep 2, demote 3, cover all.
+    # Grouping is disabled here (window=0) so the ceiling is tested in isolation:
+    # its job is to cap a genuine change-storm, independent of flip grouping.
     items = []
     cands = []
     for i in range(5):
         objs = [{"label": "person", "track_id": "t1"}, {"label": f"obj{i}", "track_id": f"o{i}"}]
         items.append(_obs_item(i, ts=_ts(i), objects=objs))
         cands.append(_candidate(i, ts=_ts(i)))
-    result = select_keyframes_with_coverage(_bundle(items), cands, safety_interval_s=999)
+    result = select_keyframes_with_coverage(
+        _bundle(items), cands, safety_interval_s=999, micro_transition_window_s=0
+    )
     assert result.selected_count == 5
 
     capped = apply_max_keyframes_ceiling(result, 2)

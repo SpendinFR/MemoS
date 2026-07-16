@@ -21,6 +21,7 @@ Important contract:
 """
 
 import base64
+import hashlib
 import json
 import os
 import time
@@ -35,6 +36,136 @@ from .runtime_v18_7 import classify_failure, gpu_phase, record_phase_event
 from .utils import json_dumps, json_loads, now_iso, stable_id
 
 VERSION = "16.1.1-v18.8.1-evidence-connected"
+
+# E64-I4.2: the offline heavy pass is a VISION-language model. When no explicit
+# override is set, fall back to a real VLM, NOT ``settings.ollama_model`` (which
+# is the TEXT model, ``qwen3.5:9b``). Sending images to a text model produced
+# empty/garbage JSON silently. ``.env`` still overrides via the env vars below.
+DEFAULT_OFFLINE_VLM_MODEL = "qwen3-vl:8b"
+
+
+def _resolve_offline_vlm_model(model: str | None = None) -> str:
+    """Deterministic offline-VLM model resolution used by every Deep Vision path.
+
+    Priority: explicit ``model`` arg > ``MLOMEGA_OFFLINE_VLM_MODEL`` >
+    ``MLOMEGA_VLM_HEAVY_MODEL`` > ``MLOMEGA_VLM_MODEL`` > the VLM default. The
+    text ``settings.ollama_model`` is intentionally NOT a fallback here.
+    """
+    return (
+        model
+        or os.environ.get("MLOMEGA_OFFLINE_VLM_MODEL")
+        or os.environ.get("MLOMEGA_VLM_HEAVY_MODEL")
+        or os.environ.get("MLOMEGA_VLM_MODEL")
+        or DEFAULT_OFFLINE_VLM_MODEL
+    )
+
+
+# E64-I4.2 prompt version: bump ANY time the system prompt, user prompt template,
+# expected JSON shape, or decoding options change. It is part of the cache key so
+# a prompt change forces a cache miss (a stale answer is never reused).
+DEEP_VISION_PROMPT_VERSION = "dv-2026-07-16.1"
+
+# E64-I4.2 additive VLM cache: keyed ONLY by sha256(image) + exact model +
+# prompt version. A retry/rerun on an already-VALIDATED image never re-hits the
+# network. Only strictly-valid JSON is ever cached.
+DEEP_VISION_CACHE_TABLE = "deep_vision_vlm_cache_v19"
+
+DEEP_VISION_CACHE_SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS {DEEP_VISION_CACHE_TABLE}(
+  cache_key TEXT PRIMARY KEY,
+  image_sha256 TEXT NOT NULL,
+  model TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  response_json TEXT NOT NULL,
+  output_tokens INTEGER,
+  latency_ms INTEGER,
+  created_at TEXT NOT NULL,
+  UNIQUE(image_sha256, model, prompt_version)
+);
+CREATE INDEX IF NOT EXISTS idx_deep_vision_vlm_cache_lookup
+  ON {DEEP_VISION_CACHE_TABLE}(image_sha256, model, prompt_version);
+"""
+
+# Keys the offline VLM must return for its JSON to be accepted as valid. A subset
+# of DEEP_VISION_SCHEMA_HINT: the fields normalisation and downstream evidence
+# actually consume. Missing all of them => the model returned garbage/empty.
+_DEEP_VISION_REQUIRED_KEYS = ("scene_summary_detailed", "observed_activity")
+
+
+def _image_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    h.update(path.read_bytes())
+    return h.hexdigest()
+
+
+def _deep_vision_cache_key(image_sha256: str, model: str, prompt_version: str) -> str:
+    return hashlib.sha256(f"{image_sha256}|{model}|{prompt_version}".encode("utf-8")).hexdigest()
+
+
+def _validate_deep_vision_json(data: Any) -> dict[str, Any]:
+    """Strict-enough validation: an object carrying the required evidence fields.
+
+    An empty ``{}`` (the classic Qwen "burned its budget thinking" result) or a
+    non-object is rejected so it is NEVER cached or applied. Raises
+    ``EliteLLMError`` on failure.
+    """
+    if not isinstance(data, dict):
+        raise EliteLLMError("Réponse VLM offline JSON non-objet.")
+    present = [k for k in _DEEP_VISION_REQUIRED_KEYS if str(data.get(k) or "").strip()]
+    if not present:
+        raise EliteLLMError(
+            "Réponse VLM offline invalide: aucun champ requis "
+            f"{list(_DEEP_VISION_REQUIRED_KEYS)} non vide."
+        )
+    return data
+
+
+def ensure_deep_vision_cache_schema(con: Any) -> None:
+    con.executescript(DEEP_VISION_CACHE_SCHEMA)
+
+
+def _deep_vision_cache_get(image_sha256: str, model: str, prompt_version: str) -> dict[str, Any] | None:
+    """Return the cached VALID response for this exact image+model+prompt, or None.
+
+    A cache hit proves a 2nd run pays zero network cost. Any read error degrades
+    gracefully to a miss (the caller then makes the real call).
+    """
+    try:
+        with connect() as con:
+            ensure_deep_vision_cache_schema(con)
+            row = con.execute(
+                f"SELECT response_json FROM {DEEP_VISION_CACHE_TABLE} WHERE image_sha256=? AND model=? AND prompt_version=?",
+                (image_sha256, model, prompt_version),
+            ).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    try:
+        data = json.loads(row["response_json"] if not isinstance(row, tuple) else row[0])
+    except (TypeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _deep_vision_cache_put(
+    *, image_sha256: str, model: str, prompt_version: str, data: dict[str, Any], output_tokens: int | None, latency_ms: int | None
+) -> None:
+    key = _deep_vision_cache_key(image_sha256, model, prompt_version)
+    try:
+        with connect() as con:
+            ensure_deep_vision_cache_schema(con)
+            con.execute(
+                f"""INSERT OR IGNORE INTO {DEEP_VISION_CACHE_TABLE}(
+                      cache_key, image_sha256, model, prompt_version, response_json,
+                      output_tokens, latency_ms, created_at)
+                    VALUES(?,?,?,?,?,?,?,?)""",
+                (key, image_sha256, model, prompt_version, json_dumps(data), output_tokens, latency_ms, now_iso()),
+            )
+            con.commit()
+    except Exception:
+        # Cache write must never break the analysis path.
+        pass
 
 SCHEMA = r"""
 CREATE TABLE IF NOT EXISTS brainlive_deep_vision_runs_v161(
@@ -378,14 +509,26 @@ def select_keyframes_for_bundle(bundle: dict[str, Any], *, max_keyframes: int = 
     return selected
 
 
-def _deep_vlm_json(image_path: str, *, model: str | None, timeout: float, personal_context: dict[str, Any] | None = None, num_predict: int = 900) -> dict[str, Any]:
+def _deep_vlm_json(image_path: str, *, model: str | None, timeout: float, personal_context: dict[str, Any] | None = None, num_predict: int = 900, use_cache: bool = True) -> dict[str, Any]:
     settings = get_settings()
     if not settings.enable_ollama:
         raise EliteLLMError("MLOMEGA_ENABLE_OLLAMA=false: VLM offline requis pour analyse visuelle profonde.")
     p = Path(image_path).expanduser().resolve()
     if not p.exists():
         raise FileNotFoundError(p)
-    chosen_model = model or os.environ.get("MLOMEGA_OFFLINE_VLM_MODEL") or os.environ.get("MLOMEGA_VLM_HEAVY_MODEL") or os.environ.get("MLOMEGA_VLM_MODEL") or settings.ollama_model
+    chosen_model = _resolve_offline_vlm_model(model)
+    image_sha = _image_sha256(p)
+    # CACHE READ (Codex I4.2 point 5): a validated result for this exact
+    # image+model+prompt_version is returned WITHOUT any network call. The cache
+    # is content-addressed, so the (bundle-specific) personal_context does not
+    # affect the visual analysis identity.
+    if use_cache:
+        cached = _deep_vision_cache_get(image_sha, chosen_model, DEEP_VISION_PROMPT_VERSION)
+        if cached is not None:
+            out = dict(cached)
+            out["_model"] = chosen_model
+            out["_cache_hit"] = True
+            return out
     image_b64 = base64.b64encode(p.read_bytes()).decode("ascii")
     system = (
         "Tu es le VLM offline lourd de Brain2/BrainLive. Tu analyses une keyframe d'un événement de vie. "
@@ -412,18 +555,52 @@ def _deep_vlm_json(image_path: str, *, model: str | None, timeout: float, person
         "images": [image_b64],
         "stream": False,
         "format": "json",
+        # Qwen3-VL trap (Codex I4.2 point 2): without think=false the model burns
+        # its whole output budget on hidden reasoning and returns empty JSON with
+        # finish_reason=length. ``ollama_generate`` also sets this by default; we
+        # set it explicitly here so the contract is visible at the call site.
+        "think": False,
         "options": {"temperature": 0.0, "num_predict": int(num_predict or 900)},
     }
+    started = time.time()
     outer = ollama_generate(
         payload,
         timeout=max(float(timeout), settings.poststop_vlm_timeout_s),
         component="post_stop_deep_vision",
         poststop_min_timeout_s=settings.poststop_vlm_timeout_s,
     )
-    data = json.loads(outer.get("response", "{}"))
-    if not isinstance(data, dict):
-        raise EliteLLMError("Réponse VLM offline JSON non-objet.")
+    latency_ms = int((time.time() - started) * 1000)
+    # E64-I4.2: qwen3-vl:8b on this Ollama build returns the JSON in the separate
+    # ``thinking`` channel and leaves ``response`` EMPTY even with think=false and
+    # format=json. Treat a non-empty ``thinking`` as the answer when ``response``
+    # is blank, so the real analysis is never silently lost as "empty JSON".
+    body_text = str(outer.get("response") or "").strip()
+    if not body_text:
+        body_text = str(outer.get("thinking") or "").strip()
+    try:
+        data = json.loads(body_text or "{}")
+    except (TypeError, ValueError) as exc:
+        raise EliteLLMError(f"Réponse VLM offline non-JSON: {exc}") from exc
+    # STRICT validation (Codex I4.2 point 3): invalid/empty output is an explicit
+    # failure, never cached and never applied.
+    data = _validate_deep_vision_json(data)
+    # Measured output budget (point 4): Ollama returns eval_count = tokens the
+    # model actually generated for this image.
+    output_tokens = None
+    try:
+        output_tokens = int(outer.get("eval_count")) if outer.get("eval_count") is not None else None
+    except (TypeError, ValueError):
+        output_tokens = None
     data["_model"] = chosen_model
+    data["_cache_hit"] = False
+    data["_output_tokens"] = output_tokens
+    data["_latency_ms"] = latency_ms
+    if use_cache:
+        _deep_vision_cache_put(
+            image_sha256=image_sha, model=chosen_model, prompt_version=DEEP_VISION_PROMPT_VERSION,
+            data={k: v for k, v in data.items() if not k.startswith("_")},
+            output_tokens=output_tokens, latency_ms=latency_ms,
+        )
     return data
 
 
@@ -527,7 +704,7 @@ def run_offline_deep_vision_for_bundles(
     status = "ok"
     error_text = None
     frame_failures: list[dict[str, Any]] = []
-    chosen_model = model or os.environ.get("MLOMEGA_OFFLINE_VLM_MODEL") or os.environ.get("MLOMEGA_VLM_HEAVY_MODEL") or os.environ.get("MLOMEGA_VLM_MODEL") or get_settings().ollama_model
+    chosen_model = _resolve_offline_vlm_model(model)
     try:
         with connect() as con:
             if not _table_exists(con, "brainlive_event_bundles_v1514"):
