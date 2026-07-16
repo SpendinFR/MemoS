@@ -27,6 +27,35 @@ from .v19_visual_store import ensure_v19_visual_schema, store_scene_summary
 
 SPATIAL_ROUTINE_MIN_OCCURRENCES = 3
 
+# E64-I4.3: durable, additive record proving that the day's visual consolidation
+# REUSED an already-validated Deep Vision analysis (semantics) joined to the
+# VisionRT live detection/track/bbox for the SAME image, instead of paying a
+# second VLM inference. Keyed by stable ids so a rejeu upserts (never duplicates)
+# and always carries provenance back to the origin observation + live event.
+DEEP_VISION_REUSE_TABLE = "visual_consolidation_deep_reuse_v19"
+
+_DEEP_VISION_REUSE_SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS {DEEP_VISION_REUSE_TABLE}(
+  reuse_id TEXT PRIMARY KEY,
+  person_id TEXT NOT NULL,
+  package_date TEXT NOT NULL,
+  bundle_id TEXT NOT NULL,
+  frame_id TEXT,
+  deep_observation_id TEXT NOT NULL,
+  live_session_id TEXT,
+  observed_activity TEXT,
+  location_hint TEXT,
+  visionrt_track_present INTEGER NOT NULL DEFAULT 0,
+  visionrt_bbox_present INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL,
+  source_refs_json TEXT DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_vc_deep_reuse_owner
+  ON {DEEP_VISION_REUSE_TABLE}(person_id, package_date, bundle_id);
+"""
+
 
 def _entity_key(event: dict[str, Any]) -> str | None:
     entity = json_loads(event.get("entity_json"), {}) or {}
@@ -88,6 +117,153 @@ def _time_slot(occurred_at: str | None) -> str:
     if hour < 18:
         return "afternoon"
     return "evening"
+
+
+def _frame_bbox_from_event(event: dict[str, Any]) -> list[float] | None:
+    """Extract the VisionRT bbox this event carries (last-seen or moved-after)."""
+    obs = json_loads(event.get("observation_json"), {}) or {}
+    if not isinstance(obs, dict):
+        return None
+    bbox = obs.get("bbox")
+    if bbox is None and isinstance(obs.get("after"), dict):
+        bbox = obs["after"].get("bbox")
+    if isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
+        try:
+            return [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])]
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def reuse_deep_vision_outputs(
+    *,
+    person_id: str,
+    package_date: str,
+    day_start: str,
+    day_end: str,
+    live_session_id: str | None = None,
+    db_path=None,
+) -> dict[str, Any]:
+    """Reuse already-validated Deep Vision semantics + VisionRT positions by code.
+
+    E64-I4.3: at close-day the offline Deep Vision pass (post_stop, which runs
+    BEFORE this stage) has already written validated observations for the day's
+    keyframes into ``brainlive_deep_vision_observations_v161`` (status='ok'), and
+    VisionRT has already recorded live detections/tracks/bbox in
+    ``visual_events_v19``. This joins the two by person/date/bundle/frame and
+    records a durable reuse row per validated observation - WITHOUT any new VLM
+    call. Provenance (``source_refs``) points back to the origin observation and,
+    when available, the matching VisionRT visual event, so the reuse is fully
+    traceable. Idempotent by ``reuse_id`` (a rejeu upserts, never duplicates).
+
+    Explicit fallback: an observation whose image has no validated analysis is
+    never reached here (status filter); a reused observation with no matching
+    VisionRT bbox/track is recorded with ``status='reused_no_position'`` rather
+    than silently dropped, so the degraded case is documented, never a crash.
+    """
+    with connect(db_path) as con:
+        has_obs = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='brainlive_deep_vision_observations_v161'"
+        ).fetchone()
+        if not has_obs:
+            return {"status": "absent", "reused": 0, "with_position": 0, "reason": "no_deep_vision_observations_table"}
+        # Only ALREADY-VALIDATED semantics are reused; a failed/degraded image is
+        # not reused as if it were analysed.
+        obs_rows = [
+            dict(r)
+            for r in con.execute(
+                "SELECT deep_observation_id, bundle_id, frame_id, live_session_id, "
+                "observed_activity, location_hint, image_path "
+                "FROM brainlive_deep_vision_observations_v161 "
+                "WHERE person_id=? AND package_date=? AND status='ok'"
+                + (" AND live_session_id=?" if live_session_id else ""),
+                (person_id, package_date, live_session_id) if live_session_id else (person_id, package_date),
+            ).fetchall()
+        ]
+        # VisionRT live events for the day, indexed by frame_id (bbox/track reuse).
+        vrt_q = (
+            "SELECT e.visual_event_id, e.event_type, e.entity_json, e.observation_json, "
+            "a.frame_id AS asset_frame_id "
+            "FROM visual_events_v19 e "
+            "LEFT JOIN visual_evidence_assets_v19 a ON a.visual_asset_id = e.asset_id "
+            "WHERE e.person_id=? AND e.occurred_at>=? AND e.occurred_at<? AND e.truth_level='observed'"
+        )
+        vrt_params: list[Any] = [person_id, day_start, day_end]
+        if live_session_id:
+            vrt_q += " AND e.live_session_id=?"
+            vrt_params.append(live_session_id)
+        vrt_by_frame: dict[str, dict[str, Any]] = {}
+        for r in con.execute(vrt_q, tuple(vrt_params)).fetchall():
+            row = dict(r)
+            obs = json_loads(row.get("observation_json"), {}) or {}
+            fid = str(row.get("asset_frame_id") or (obs.get("frame_id") if isinstance(obs, dict) else "") or "").strip()
+            if fid and fid not in vrt_by_frame:
+                vrt_by_frame[fid] = row
+
+    if not obs_rows:
+        return {"status": "absent", "reused": 0, "with_position": 0, "reason": "no_validated_deep_vision_observations"}
+
+    now = now_iso()
+    reused = 0
+    with_position = 0
+    with connect(db_path) as con, write_transaction(con):
+        con.executescript(_DEEP_VISION_REUSE_SCHEMA)
+        for obs in obs_rows:
+            fid = str(obs.get("frame_id") or "").strip()
+            vrt = vrt_by_frame.get(fid) if fid else None
+            bbox = _frame_bbox_from_event(vrt) if vrt else None
+            track_present = bool(vrt)
+            bbox_present = bbox is not None
+            if bbox_present:
+                with_position += 1
+            source_refs = [
+                {
+                    "source_table": "brainlive_deep_vision_observations_v161",
+                    "source_id": obs.get("deep_observation_id"),
+                    "reuse": "validated_vlm_semantics",
+                }
+            ]
+            if vrt:
+                source_refs.append(
+                    {
+                        "source_table": "visual_events_v19",
+                        "source_id": vrt.get("visual_event_id"),
+                        "reuse": "visionrt_detection_track_bbox",
+                    }
+                )
+            reuse_id = stable_id(
+                "vcdeepreuse", person_id, package_date, obs.get("bundle_id"), obs.get("deep_observation_id")
+            )
+            status = "reused" if bbox_present else "reused_no_position"
+            upsert(
+                con,
+                DEEP_VISION_REUSE_TABLE,
+                {
+                    "reuse_id": reuse_id,
+                    "person_id": person_id,
+                    "package_date": package_date,
+                    "bundle_id": str(obs.get("bundle_id") or ""),
+                    "frame_id": fid or None,
+                    "deep_observation_id": obs.get("deep_observation_id"),
+                    "live_session_id": obs.get("live_session_id") or live_session_id,
+                    "observed_activity": obs.get("observed_activity"),
+                    "location_hint": obs.get("location_hint"),
+                    "visionrt_track_present": 1 if track_present else 0,
+                    "visionrt_bbox_present": 1 if bbox_present else 0,
+                    "status": status,
+                    "source_refs_json": json_dumps(source_refs),
+                    "created_at": now,
+                    "updated_at": now,
+                },
+                "reuse_id",
+            )
+            reused += 1
+
+    return {
+        "status": "reused" if with_position else "reused_no_position",
+        "reused": reused,
+        "with_position": with_position,
+    }
 
 
 def run_visual_consolidation(
@@ -224,6 +400,18 @@ def run_visual_consolidation(
             )
             routine_ids.append(rid)
 
+    # E64-I4.3: reuse the already-validated Deep Vision semantics + VisionRT
+    # positions BY CODE (join on person/date/bundle/frame). No VLM is re-called;
+    # a validated image is never re-analysed. Provenance points to the origin.
+    reuse = reuse_deep_vision_outputs(
+        person_id=person_id,
+        package_date=package_date,
+        day_start=day_start,
+        day_end=day_end,
+        live_session_id=live_session_id,
+        db_path=db_path,
+    )
+
     summary_id = None
     if day_events:
         summary_id = store_scene_summary(
@@ -238,6 +426,8 @@ def run_visual_consolidation(
                     "entities_last_seen": {k: v.get("place") for k, v in last_seen.items()},
                     "object_moves": len(inferred_ids),
                     "spatial_routines": len(routine_ids),
+                    "deep_vision_reused": reuse.get("reused", 0),
+                    "deep_vision_reused_with_position": reuse.get("with_position", 0),
                 },
                 "evidence_refs": [
                     {"source_table": "visual_events_v19", "source_id": r["visual_event_id"]} for r in day_events[:20]
@@ -253,5 +443,6 @@ def run_visual_consolidation(
         "visual_event_count": len(day_events),
         "object_moved_count": len(inferred_ids),
         "spatial_routine_count": len(routine_ids),
+        "deep_vision_reuse": reuse,
         "package_date": package_date,
     }

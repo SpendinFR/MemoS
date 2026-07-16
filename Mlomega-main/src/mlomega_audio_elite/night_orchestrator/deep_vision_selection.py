@@ -262,6 +262,153 @@ def frame_signature(
     )
 
 
+# --------------------------------------------------------------------------- #
+# E64-I4.3 VisionRT position bridge (constant-label displacement)              #
+# --------------------------------------------------------------------------- #
+# The semantic ``vision_scene_observations`` timeline carries label + track_id +
+# confidence but NO bbox, so ``_spatial_signature`` returned ``None`` and a pure
+# spatial move at constant labels never opened a keyframe (the documented I4.2
+# limitation). VisionRT (worldbrain) DID record the positions live: it writes
+# ``visual_events_v19`` rows whose ``observation_json`` carries ``bbox`` (an
+# ``entity_last_seen`` row's ``{"bbox":[...]}`` or a ``change_moved`` row's
+# ``{"after":{"bbox":[...]}}``). These positions are already in the DB at night,
+# keyed by the same frame_id/live_session_id the bundle timeline uses. We reuse
+# them here (no new detection, no VLM) to inject positions into timeline items
+# that lack them, so a real displacement opens a keyframe. Absent bbox -> nothing
+# injected -> the documented safe fallback (frame stays covered by its rep).
+
+
+def load_visionrt_frame_positions(
+    con: Any,
+    *,
+    person_id: str,
+    live_session_id: str | None = None,
+    frame_ids: Iterable[str] = (),
+) -> dict[str, list[dict[str, Any]]]:
+    """Map ``frame_id -> [{label, bbox:[x,y,w,h]}]`` from VisionRT ``visual_events_v19``.
+
+    Reads only positions VisionRT actually emitted live; nothing is fabricated.
+    A row with no usable bbox or no ``frame_id`` (via its evidence asset) is
+    skipped. Returns an empty map on any error or when the table is absent -
+    the caller then degrades to the label-set-only signal (documented fallback).
+    """
+    import json as _json
+
+    wanted = {str(f).strip() for f in frame_ids if str(f).strip()}
+    positions: dict[str, list[dict[str, Any]]] = {}
+    try:
+        exists = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='visual_events_v19'"
+        ).fetchone()
+        if not exists:
+            return {}
+        # Join to the asset table to recover the frame_id VisionRT captured; the
+        # event row itself does not store frame_id, but its evidence asset does.
+        sql = (
+            "SELECT e.entity_json, e.observation_json, a.frame_id AS asset_frame_id "
+            "FROM visual_events_v19 e "
+            "LEFT JOIN visual_evidence_assets_v19 a ON a.visual_asset_id = e.asset_id "
+            "WHERE e.person_id=? AND e.truth_level='observed' "
+            "AND e.event_type IN ('entity_last_seen','change_moved','change_appeared')"
+        )
+        params: list[Any] = [person_id]
+        if live_session_id:
+            sql += " AND e.live_session_id=?"
+            params.append(str(live_session_id))
+        rows = con.execute(sql, tuple(params)).fetchall()
+    except Exception:
+        return {}
+
+    for row in rows:
+        try:
+            data = dict(row) if not isinstance(row, dict) else row
+        except Exception:
+            data = {"entity_json": row[0], "observation_json": row[1], "asset_frame_id": row[2]}
+        obs_raw = data.get("observation_json")
+        try:
+            obs = _json.loads(obs_raw) if isinstance(obs_raw, str) else (obs_raw or {})
+        except (TypeError, ValueError):
+            obs = {}
+        if not isinstance(obs, Mapping):
+            continue
+        # A move row carries the destination position under ``after.bbox``; a
+        # last-seen/appeared row carries it directly under ``bbox``.
+        bbox = obs.get("bbox")
+        if bbox is None and isinstance(obs.get("after"), Mapping):
+            bbox = obs["after"].get("bbox")
+        if not isinstance(bbox, (list, tuple)) or len(bbox) < 4:
+            continue
+        ent_raw = data.get("entity_json")
+        try:
+            ent = _json.loads(ent_raw) if isinstance(ent_raw, str) else (ent_raw or {})
+        except (TypeError, ValueError):
+            ent = {}
+        label = str((ent or {}).get("label") or "").strip()
+        frame_id = str(data.get("asset_frame_id") or obs.get("frame_id") or "").strip()
+        if not frame_id:
+            continue
+        if wanted and frame_id not in wanted:
+            continue
+        positions.setdefault(frame_id, []).append(
+            {"label": label, "bbox": [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])]}
+        )
+    return positions
+
+
+def _inject_positions(
+    item: Mapping[str, Any], positions: Mapping[str, list[dict[str, Any]]]
+) -> dict[str, Any]:
+    """Return a copy of ``item`` whose objects carry VisionRT bbox by label.
+
+    Only fills a bbox when the object has none, matching VisionRT detections to
+    timeline objects by label (position order for homonyms). If no VisionRT
+    position exists for the frame, the item is returned unchanged -> the
+    signature stays label-set-only (documented safe fallback).
+    """
+    fid = str(item.get("frame_id") or "").strip()
+    vrt = positions.get(fid) if fid else None
+    if not vrt:
+        return dict(item)
+    objects = item.get("objects")
+    if objects is None:
+        objects = item.get("objects_json")
+    if isinstance(objects, str):
+        import json as _json
+
+        try:
+            objects = _json.loads(objects)
+        except (TypeError, ValueError):
+            objects = []
+    if not isinstance(objects, list) or not objects:
+        # No per-object list to enrich: expose the raw VisionRT detections so a
+        # displacement of a tracked entity still contributes a spatial signature.
+        merged = dict(item)
+        merged["objects"] = [dict(d) for d in vrt]
+        return merged
+    # Group VisionRT positions by label so homonyms are matched in order.
+    by_label: dict[str, list[list[float]]] = {}
+    for d in vrt:
+        by_label.setdefault(str(d.get("label") or ""), []).append(list(d.get("bbox") or []))
+    used: dict[str, int] = {}
+    new_objects: list[Any] = []
+    for obj in objects:
+        if not isinstance(obj, Mapping):
+            new_objects.append(obj)
+            continue
+        obj = dict(obj)
+        if _bbox_of(obj) is None:
+            lbl = str(obj.get("label") or "").strip()
+            slots = by_label.get(lbl) or []
+            idx = used.get(lbl, 0)
+            if idx < len(slots) and len(slots[idx]) >= 4:
+                obj["bbox"] = slots[idx]
+                used[lbl] = idx + 1
+        new_objects.append(obj)
+    merged = dict(item)
+    merged["objects"] = new_objects
+    return merged
+
+
 @dataclass(frozen=True)
 class FrameCoverage:
     """One frame's durable accounting: either a keyframe or represented by one."""
@@ -466,6 +613,7 @@ def select_keyframes_with_coverage(
     requested_frame_ids: Iterable[str] = (),
     safety_interval_s: float | None = None,
     micro_transition_window_s: float | None = None,
+    frame_positions: Mapping[str, list[dict[str, Any]]] | None = None,
 ) -> SelectionResult:
     """Select coverage-complete keyframes for one event bundle.
 
@@ -517,11 +665,17 @@ def select_keyframes_with_coverage(
     ocr_frames: set[str] = set()
     user_frames: set[str] = set()
     frame_signatures: dict[str, tuple[Any, ...]] = {}
+    # E64-I4.3: enrich each item with VisionRT positions (already-recorded live
+    # bbox) so a constant-label displacement contributes a spatial signature and
+    # opens a keyframe. When no position exists, the item is unchanged and the
+    # signature stays label-set-only (documented safe fallback).
+    positions = frame_positions or {}
     for it in timeline_items:
         fid = str(it.get("frame_id") or "").strip()
         if not fid:
             continue
-        frame_signatures[fid] = frame_signature(it)
+        enriched = _inject_positions(it, positions) if positions else it
+        frame_signatures[fid] = frame_signature(enriched)
         if _visible_text_of(it):
             ocr_frames.add(fid)
         if _is_user_requested(it, requested):

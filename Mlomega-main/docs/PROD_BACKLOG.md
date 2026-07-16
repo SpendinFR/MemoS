@@ -1008,7 +1008,14 @@ réduction statique de JSON comme une validation modèle.
 > - **Appel réel unique prouvé** (vraie keyframe de la session 5 min) : JSON valide décrivant la vraie scène (personne sur canapé gris, polo blanc, lampe...), froid **15 539 ms**, sortie **665 tokens** (num_predict 900 OK).
 > - Tests : 14 sélection (2 adaptés volontairement au regroupement, justifiés) + 7 backend (nouveau `test_e64i_deep_vision_backend.py`) + 10 capability manifest verts ; régression large 72 verts (1 échec pré-existant tokenizer).
 > - **Pour I4.4 (assigné par Codex, non corrigé ici)** : `except: pass` avalant les erreurs de persistance de couverture — `brainlive_offline_deep_vision_v16_1.py` lignes 482-486 — devra empêcher un manifeste faussement complet.
-- [ ] **I4.3 Réemploi** : VisionRT live fournit détection/tracking; Deep Vision ajoute la sémantique aux keyframes; `visual_consolidation` réutilise ces sorties par code et n'est pas supprimé comme faux doublon.
+- [x] **I4.3 Réemploi** : VisionRT live fournit détection/tracking; Deep Vision ajoute la sémantique aux keyframes; `visual_consolidation` réutilise ces sorties par code et n'est pas supprimé comme faux doublon.
+
+> **Suivi I4.3 — FAIT 2026-07-16 (notes, texte intouché) :**
+> - **Raccord tracé** : VisionRT écrit `visual_events_v19` (bbox dans `observation_json`, frame joignable via `visual_evidence_assets_v19`) ; Deep Vision (post_stop, AVANT visual_consolidation dans l'ordre close-day) écrit `brainlive_deep_vision_observations_v161` + cache. `run_visual_consolidation` ne lisait RIEN de Deep Vision.
+> - **Réemploi par code** : passe additive `reuse_deep_vision_outputs` dans `v19_visual_consolidation.py` — jointure person/date/bundle/frame des observations VLM validées avec les events VisionRT, table additive `visual_consolidation_deep_reuse_v19` avec `source_refs` vers l'analyse d'origine. **Zéro appel VLM** ; writers/`summary_id` historiques intacts.
+> - **Limite I4.2 comblée** : `load_visionrt_frame_positions` injecte les bbox de `visual_events_v19` dans la sélection → un déplacement majeur à labels constants ouvre une keyframe (`MLOMEGA_DEEP_VISION_SPATIAL_MOVE_THRESHOLD`, défaut 0.20).
+> - **Fallbacks explicites** : pas d'observations validées → `status=absent` ; observation sans bbox → `reused_no_position` (dégradé documenté, jamais silencieux ni faux-complet). **Zéro doublon** au rejeu (upsert par `reuse_id` stable).
+> - Tests : 5 nouveaux (`test_e64i_visual_reuse.py`) — réemploi 0 réseau, mouvement conservé, 2 fallbacks, idempotence — + suite e64i complète **111 verts** (3 skips env pré-existants). Vidéo complète/CloseDay non relancés (réservés I4.4).
 - [ ] **I4.4 Gate** : 11/11 images référence valides ou dégradation explicite; comparer événements humains/OCR/objets à la vérité de la vidéo. Mesurer froid, chaud, images/heure et temps GPU avant projection.
 
 #### I5 — modèle et backend choisis par tâche, après preuve

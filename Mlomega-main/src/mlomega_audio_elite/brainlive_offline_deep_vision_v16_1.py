@@ -457,6 +457,7 @@ def select_keyframes_for_bundle(bundle: dict[str, Any], *, max_keyframes: int = 
     a silent ``rows[:N]``.
     """
     from .night_orchestrator.deep_vision_selection import (
+        load_visionrt_frame_positions,
         persist_frame_coverage,
         select_keyframes_with_coverage,
     )
@@ -466,7 +467,25 @@ def select_keyframes_for_bundle(bundle: dict[str, Any], *, max_keyframes: int = 
         return []
 
     requested = _collect_requested_frame_ids(bundle)
-    result = select_keyframes_with_coverage(bundle, all_candidates, requested_frame_ids=requested)
+    # E64-I4.3: reuse the VisionRT live positions (bbox recorded in
+    # visual_events_v19) so a major displacement at constant labels opens a
+    # keyframe. This closes the documented I4.2 no-position limitation without
+    # any new detection/VLM. A read failure degrades to the label-set-only signal.
+    frame_positions: dict[str, Any] = {}
+    frame_ids = [str(c.get("frame_id") or "").strip() for c in all_candidates if c.get("frame_id")]
+    try:
+        with connect() as con:
+            frame_positions = load_visionrt_frame_positions(
+                con,
+                person_id=str(bundle.get("person_id") or "me"),
+                live_session_id=bundle.get("live_session_id"),
+                frame_ids=frame_ids,
+            )
+    except Exception:
+        frame_positions = {}
+    result = select_keyframes_with_coverage(
+        bundle, all_candidates, requested_frame_ids=requested, frame_positions=frame_positions
+    )
 
     # Optional pathological ceiling (OFF by default). When set, demote overflow
     # keyframes to represented-by so coverage stays complete; never a silent drop.
