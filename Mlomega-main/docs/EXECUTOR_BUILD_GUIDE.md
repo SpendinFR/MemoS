@@ -1269,3 +1269,47 @@ Validations déjà exécutées — ne pas les refaire avant Gate B :
 
 Le test Unity a écrit `i06-reflex.xml`, artefact local à ne jamais ajouter au commit. Le
 S25 et les APK ne sont pas certifiés par ces tests; ils appartiennent aux gates I7.
+
+### I7 Gate B — état exact après la passe fonctionnelle du 2026-07-16
+
+Ne relancez pas le CloseDay long pour « vérifier » les commandes. La session de référence
+est `blsess_b155c05464f08c85` dans `tools/harness/_run/gateb_memory_v2.db`; son run
+`run_v18_66f56f15fc154e948827d4f4d53e9236` est `completed`. Le Deep Vision autoritaire
+`v18deepvisionrun_20639d09a5894690` porte `selected/readable/analyzed=16/16/16`; capability
+et output manifests sont complets. La dernière reprise a consommé les checkpoints au lieu
+de repayer la chaîne.
+
+Le scénario exact `tools/harness/scenarios/real_video_session.json` contient treize
+commandes. Elles ont un handler et un effet vérifiés 13/13. Le runtime pousse en plus un
+`command_execution_trace`; `FakeXrDevice` collecte `command_execution_traces`,
+`downlink_type_counts` et `meaningful_downlinks`. Une future exécution doit comparer ces
+treize traces aux treize événements : `intents_routed=13` seul est insuffisant.
+
+Corrections du gate à préserver :
+
+- `GpuArbiter.request` raisonne en headroom projetée; ne rétablir ni la comparaison
+  `used_mb > job_budget_mb` ni le faux refus OCR;
+- `WorldBrain.ingest_scene_delta` propage la zone active de `PoseKeyframeMap`; sans elle,
+  ChangeAttention reste à zéro même si les changements sont stockés;
+- `EnrollmentWatcher` ne capture pas les phrases générales `retiens ...`; seule une
+  utterance complète de nom ou une forme explicite d'identité peut enrôler;
+- `traduis le texte` est un flux à deux frontières : OCR PC, puis device command
+  `translate_text` vers `DeviceCommandHandler`/`TranslateBridge`. RapidOCR s'abstient
+  honnêtement; le fallback `qwen3-vl:4b` est JSON contraint et classé `probable`;
+- le capability manifest prend le `run_id` Deep Vision de `post_stop`, afin de ne pas
+  additionner une ancienne tentative bloquée et la tentative autoritaire réparée.
+
+Commandes de validation courte (pas de CloseDay) :
+
+```powershell
+Remove-Item Env:OPENAI_API_KEY,Env:HTTP_PROXY,Env:HTTPS_PROXY,Env:ALL_PROXY -ErrorAction SilentlyContinue
+& .\.venv-live\Scripts\python.exe -m pytest tests\v19\test_e27_pipeline.py tests\v19\test_e33_intents.py tests\v19\test_phoneonly_runtime.py tests\v19\test_gpu_arbiter.py tests\v19\test_change_attention.py tests\v19\test_wake_word_gating.py tests\v19\test_help_mode.py tests\v19\test_e64i_capability_manifest.py tests\v19\test_e61_memory_integrity.py -q
+```
+
+Résultat observé : 147 verts (146 au lot, puis le callback produit VIKI ajouté et vert).
+Unity ciblé : filtre
+`MLOmega.XR.Tests.E33MenuDeviceTests`, 10/10. Le prochain travail I7 n'est pas de réparer
+les treize commandes : c'est (a) S25 pour le Kotlin/offline/receipts et (b) un run cinq
+minutes **one-shot sur DB fraîche** pour mesurer appels/tokens/temps et le seuil ×5. Ne
+benchmarkez pas `gateb_memory_v2.db` : ses 154 lignes de télémétrie cumulent les reprises
+et erreurs corrigées pendant le chantier.

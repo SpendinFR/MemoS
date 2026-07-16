@@ -127,7 +127,7 @@ def project_stage_payload(
     responsibilities the executor later creates.
     """
 
-    from ..utils import json_dumps
+    from ..utils import json_dumps, json_loads
     from .stage_adapter import estimate_tokens_for_text
 
     original = dict(payload)
@@ -244,6 +244,29 @@ def project_stage_payload(
                     key: raw_context.get(key)
                     for key in candidate_keys if key in raw_context
                 }
+                # These are already semantic candidate rows. Remove only SQLite
+                # transport repetition before window planning: audit timestamps
+                # and provider metadata remain durable in their source tables,
+                # while timing fields such as watch_until/horizon/first_seen stay.
+                for key, rows in list(projected_context.items()):
+                    if not isinstance(rows, list):
+                        continue
+                    compact_rows: list[Any] = []
+                    for row in rows:
+                        if not isinstance(row, Mapping):
+                            compact_rows.append(row)
+                            continue
+                        compact: dict[str, Any] = {}
+                        for field, value in row.items():
+                            if field in {"created_at", "updated_at", "metadata_json"}:
+                                continue
+                            if field.endswith("_json") and isinstance(value, str):
+                                parsed = json_loads(value, None)
+                                compact[field[:-5]] = parsed if parsed is not None else value
+                            else:
+                                compact[field] = value
+                        compact_rows.append(compact)
+                    projected_context[key] = compact_rows
                 if stage_input:
                     projected_context["current_conversation"] = {
                         "conversation": stage_input["conversation"],

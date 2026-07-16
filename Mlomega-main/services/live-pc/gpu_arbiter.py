@@ -149,21 +149,40 @@ class GpuArbiter:
             self.degraded_reasons.append("gpu_vram_pressure")
             return {"grant": False, "reason": "gpu_vram_pressure", "snapshot": snap}
 
-        # Per-class budget: applies only to on-demand classes (below the
-        # protected floor). Resident reflex classes (tracker/detector/asr,
-        # handoff §4.1 priority 1) are never budget-denied.
+        # Per-class budget is the estimated *additional footprint* of the job,
+        # not a maximum for total VRAM already used by the process.  Comparing
+        # ``used_mb > budget`` made OCR (768 MiB) permanently unavailable as
+        # soon as ASR + the detector occupied more than 768 MiB.  Admit an
+        # on-demand job when its footprint still fits below the global live
+        # ceiling. Resident reflex classes remain protected.
         budget = self.job_budgets_mb.get(job_class)
-        if budget is not None and snap.used_mb > budget and _PRIORITY[job_class] < protected_floor:
-            self.degraded_reasons.append(f"budget_exceeded:{job_class}")
+        live_limit_mb = int(snap.total_mb * self.max_used_ratio)
+        projected_used_mb = snap.used_mb + int(budget or 0)
+        if (
+            budget is not None
+            and projected_used_mb > live_limit_mb
+            and _PRIORITY[job_class] < protected_floor
+        ):
+            self.degraded_reasons.append(f"insufficient_headroom:{job_class}")
             return {
                 "grant": False,
-                "reason": "job_budget_exceeded",
+                "reason": "insufficient_vram_headroom",
                 "job_class": job_class,
                 "budget_mb": budget,
                 "used_mb": snap.used_mb,
+                "projected_used_mb": projected_used_mb,
+                "live_limit_mb": live_limit_mb,
                 "snapshot": snap,
             }
-        return {"grant": True, "reason": "ok", "job_class": job_class, "budget_mb": budget, "snapshot": snap}
+        return {
+            "grant": True,
+            "reason": "ok",
+            "job_class": job_class,
+            "budget_mb": budget,
+            "projected_used_mb": projected_used_mb,
+            "live_limit_mb": live_limit_mb,
+            "snapshot": snap,
+        }
 
     # ----------------------------------------------------- ollama verification
     def _ollama_ps(self, base_url: str, timeout: float = 8.0) -> list[dict[str, Any]]:

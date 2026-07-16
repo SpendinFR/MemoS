@@ -394,7 +394,15 @@ def install_deep(module: Any) -> dict[str, Any]:
                     # revocation/tombstone returns False and must never be
                     # re-exported as fresh Brain2 evidence.
                     continue
-                conv_id = str(row.get("exported_conversation_id") or row.get("conversation_id") or "")
+                conv_id = str(
+                    module._active_conversation_for_bundle(
+                        con,
+                        person_id=person_id,
+                        bundle_id=str(row.get("bundle_id") or ""),
+                        fallback=row.get("exported_conversation_id") or row.get("conversation_id"),
+                    )
+                    or ""
+                )
                 if not conv_id:
                     continue
                 text = module._deep_turn_text(row)

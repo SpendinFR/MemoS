@@ -64,7 +64,7 @@ class _Sink:
         return {"kind": request.get("kind"), "label": "cup"}
 
 
-def _router(sink, *, llm=None, ask_memory=None, enrollment=None):
+def _router(sink, *, llm=None, ask_memory=None, enrollment=None, **handlers):
     return intent_router.IntentRouter(
         vision_focus=sink.vision_focus,
         on_device_command=sink.emit_device,
@@ -72,6 +72,7 @@ def _router(sink, *, llm=None, ask_memory=None, enrollment=None):
         llm_router=llm,
         enrollment=enrollment,
         emit_ui_intent=sink.emit_ui,
+        **handlers,
     )
 
 
@@ -113,6 +114,111 @@ def test_grammar_covers_at_least_15():
     assert True
 
 
+def test_viki_context_memory_and_scene_commands_execute_handlers():
+    sink = _Sink()
+    remembered = []
+    router = _router(
+        sink,
+        who_is=lambda: {"component": "context_card", "content": {"kind": "who_is", "text": "Max"}},
+        remember_fact=lambda fact: remembered.append(fact) or {
+            "component": "context_card", "content": {"kind": "remember_fact"},
+        },
+        scene_changes=lambda: {
+            "component": "context_card",
+            "content": {"kind": "scene_changes", "changes": [{"kind": "moved"}]},
+        },
+    )
+
+    assert router.on_transcript("qui est cette personne")["handled"] is True
+    assert router.on_transcript("retiens demain je dois racheter des piles")["handled"] is True
+    assert remembered == ["demain je dois racheter des piles"]
+    assert router.on_transcript("qu'est-ce qui a changé dans la pièce")["handled"] is True
+    assert [item["content"]["kind"] for item in sink.ui[-3:]] == [
+        "who_is", "remember_fact", "scene_changes",
+    ]
+
+
+def test_identity_watcher_does_not_steal_general_remember_fact():
+    sink = _Sink()
+    watcher = enrollment_watcher.EnrollmentWatcher(emit_ui_intent=sink.emit_ui)
+    remembered = []
+    router = _router(
+        sink, enrollment=watcher,
+        remember_fact=lambda fact: remembered.append(fact) or {"component": "context_card"},
+    )
+    out = router.on_transcript("retiens rendez-vous avec Karim jeudi 15h")
+    assert out["intent"] == "remember_fact"
+    assert remembered == ["rendez-vous avec Karim jeudi 15h"]
+    assert watcher.metrics["enrollments"] == 0
+
+
+def test_real_video_session_thirteen_commands_reach_an_effect():
+    """Gate B command contract: exact scripted phrases, not simplified aliases."""
+    class _Help:
+        awaiting_description = False
+        active = False
+        plan = None
+
+        def start_from_description(self, desc):
+            self.active = True
+            self.plan = {"steps": [{"text": "Préparer le café"}, {"text": "Lancer la machine"}]}
+            return {"status": "active", "steps": self.plan["steps"], "current_index": 0}
+
+        def advance(self):
+            return {"status": "active", "steps": self.plan["steps"], "current_index": 1}
+
+        def current_step(self):
+            return {"index": 0}
+
+    sink = _Sink()
+    remembered, questions = [], []
+    help_engine = _Help()
+    router = _router(
+        sink, enrollment=enrollment_watcher.EnrollmentWatcher(emit_ui_intent=sink.emit_ui),
+        remember_fact=lambda fact: remembered.append(fact) or {
+            "component": "context_card", "content": {"kind": "remember_fact", "fact": fact},
+        },
+        who_is=lambda: {"component": "context_card", "content": {"kind": "who_is", "text": "Karim"}},
+        scene_changes=lambda: {"component": "context_card", "content": {
+            "kind": "scene_changes", "changes": [{"kind": "moved"}],
+        }},
+        ask_memory=lambda question: questions.append(question) or {
+            "component": "context_card", "content": {"kind": "memory_answer", "text": "Karim est connu"},
+        },
+        help_engine=help_engine,
+    )
+    commands = [
+        "qui est cette personne",
+        "retiens demain je dois racheter des piles",
+        "retiens rendez-vous avec Karim jeudi 15h chez le dentiste",
+        "c'est quoi ca",
+        "c'est quoi cet objet",
+        "ou sont mes cles",
+        "ou est mon telephone",
+        "lis le texte",
+        "traduis le texte",
+        "qu'est-ce qui a change dans la piece",
+        "aide-moi a faire un cafe",
+        "etape suivante",
+        "interroge ma memoire qui est Karim",
+    ]
+    outputs = [router.on_transcript(command) for command in commands]
+
+    assert [output["intent"] for output in outputs] == [
+        "who_is", "remember_fact", "remember_fact", "what_is", "what_is",
+        "find", "find", "ocr", "translate", "scene_changes", "help_start",
+        "help_advance", "ask_memory",
+    ]
+    assert all(output["handled"] for output in outputs)
+    assert remembered == [
+        "demain je dois racheter des piles",
+        "rendez-vous avec Karim jeudi 15h chez le dentiste",
+    ]
+    assert questions == ["qui est Karim"]
+    assert outputs[11]["result"]["current_index"] == 1
+    assert outputs[8]["request"]["kind"] == "ocr"
+
+
 # --------------------------------------------------------------------------- multi-turn
 def test_multiturn_deixis_resolves_last_target():
     sink = _Sink()
@@ -136,6 +242,18 @@ def test_multiturn_translate_deixis():
     out = r.on_transcript("traduis-le")
     assert out["intent"] == "translate"
     assert sink.vision[-1]["track_id"] == "t3"
+
+
+def test_visual_translate_requests_ocr_not_object_classification():
+    seen = []
+    router = intent_router.IntentRouter(vision_focus=lambda request: seen.append(request) or {
+        "component": "lens_window", "content": {"kind": "ocr", "text": "Hello"},
+    })
+    out = router.on_transcript("traduis le texte")
+    assert out["intent"] == "translate"
+    assert out["handled"] is True
+    assert seen == [{"kind": "ocr", "track_id": None, "bbox": None,
+                     "translate": True, "language": "fr"}]
 
 
 # --------------------------------------------------------------------------- device

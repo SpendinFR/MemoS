@@ -103,7 +103,7 @@ def ensure_brain2_flow_schema() -> None:
 
 def _llm_json(
     system: str, payload: dict[str, Any], schema: dict[str, Any],
-    *, stage_context: dict[str, str] | None = None,
+    *, stage_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     client = OllamaJsonClient()
     if stage_context:
@@ -115,6 +115,9 @@ def _llm_json(
             source_ref=stage_context["source_ref"],
             system=system, payload=payload, schema=schema,
             timeout=240.0, client=client,
+            lossless_array_merge=bool(
+                stage_context.get("lossless_array_merge", False)
+            ),
         )
     return client.require_json(system, json_dumps(payload), schema_hint=schema, timeout=240)
 
@@ -226,6 +229,12 @@ def build_subtopic_segments(conversation_id: str) -> dict[str, Any]:
                 "person_id": owner,
                 "package_date": str(conv["started_at"] or now_iso())[:10],
                 "source_ref": conversation_id,
+                # Every level-0 window has already performed the semantic
+                # outcome judgement.  The fan-in is therefore a pure union of
+                # disjoint findings, counter-evidence and missing-context rows;
+                # asking the model to copy that JSON again can only truncate or
+                # alter it.  Exact duplicates alone are removed centrally.
+                "lossless_array_merge": True,
             },
         )
         now = now_iso(); ids = []

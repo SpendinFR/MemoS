@@ -218,7 +218,7 @@ def test_compact_stage_input_keeps_every_turn_and_structural_subtheme(tmp_path, 
         )
         finish_episode_fact_run(con, conversation_id="conv-i2", episode_id="ep-i2")
         projection = compact_stage_input(
-            con, "conv-i2", person_id="me", purpose="people_identity"
+            con, "conv-i2", person_id="me", purpose="interpersonal"
         )
         con.commit()
 
@@ -227,6 +227,85 @@ def test_compact_stage_input_keeps_every_turn_and_structural_subtheme(tmp_path, 
         }
         assert projection["turns"][0]["text"] == "J'ai rendez-vous demain."
         assert projection["conversation_outline"]["parent"]["episode_id"] == "ep-i2"
+        assert "situation_summary" not in projection["conversation_outline"]["parent"]
+        assert projection["conversation_outline"]["parent"][
+            "situation_summary_manifest"
+        ]["represented_by"] == "subthemes[].summary"
+
+
+def test_compact_stage_input_replaces_raw_sensor_turns_with_deep_context(
+    tmp_path, monkeypatch,
+):
+    db_path = _fixture_db(Path(tmp_path), monkeypatch)
+    from mlomega_audio_elite import v18_brain2_context as context_module
+    from mlomega_audio_elite.brain2_shared_facts_v19 import compact_stage_input
+    from mlomega_audio_elite.db import connect
+
+    monkeypatch.setattr(
+        context_module,
+        "conversation_context_addenda",
+        lambda *_args, **_kwargs: {
+            "entries": [{
+                "addendum_id": "a1",
+                "source_table": "brainlive_deep_vision_observations_v161",
+                "source_id": "dv1",
+                "event_time": "2026-07-16T10:00:00Z",
+                "evidence_role": "system_visual_observation",
+                "text": "Karim est assis. | activit\u00e9_visible=discussion",
+                "metadata_json": {"provider": "large blob"},
+                "metadata_sha256": "abc",
+            }],
+            "budget": {"omitted_refs": []},
+            "evidence_role_policy": "sensor evidence",
+        },
+    )
+    with connect(db_path) as con:
+        con.execute(
+            """INSERT INTO turns(
+                   turn_id,conversation_id,idx,speaker_label,person_id,start_s,end_s,
+                   text,previous_turn_id,metadata_json
+               ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (
+                "sensor-1", "conv-i2", 1, "CONTEXT", None, 1.0, 1.1,
+                "raw detector duplicate", "t1",
+                json.dumps({
+                    "evidence_role": "system_observation_not_user_speech",
+                    "kind": "vision_context",
+                }),
+            ),
+        )
+        projection = compact_stage_input(
+            con, "conv-i2", person_id="me", purpose="interpersonal"
+        )
+
+    assert [turn["text"] for turn in projection["turns"]] == [
+        "J'ai rendez-vous demain."
+    ]
+    assert projection["raw_sensor_manifest"]["count"] == 1
+    assert projection["raw_sensor_manifest"]["represented_by"] == (
+        "context_addenda.entries"
+    )
+    assert projection["context_addenda"]["entries"][0]["text"].startswith(
+        "Karim est assis."
+    )
+    assert "metadata_json" not in projection["context_addenda"]["entries"][0]
+
+
+def test_identity_ambiguity_ignores_system_sensor_pseudo_turns():
+    from mlomega_audio_elite.people_openloops_v14_5 import (
+        identity_ambiguity_reasons,
+    )
+
+    assert identity_ambiguity_reasons({
+        "turns": [{
+            "speaker_label": "CONTEXT",
+            "person_id": None,
+            "metadata_json": json.dumps({
+                "evidence_role": "system_observation_not_user_speech",
+                "kind": "vision_context",
+            }),
+        }]
+    }) == []
 
 
 def test_orchestrator_projects_identity_and_restores_turn_ids(tmp_path, monkeypatch):

@@ -51,14 +51,25 @@ def test_request_denies_low_priority_under_global_pressure():
     assert "gpu_vram_pressure" in arb.degraded_reasons
 
 
-def test_request_denies_when_class_budget_exceeded():
-    # Plenty of headroom globally, but live_llm budget is small.
+def test_request_denies_when_job_does_not_fit_under_live_ceiling():
     arb = _arbiter_with_snapshot(8192, 4000, max_used_ratio=0.99,
-                                 job_budgets_mb={"live_llm": 3072})
+                                 job_budgets_mb={"live_llm": 5000})
     res = arb.request("live_llm")
     assert res["grant"] is False
-    assert res["reason"] == "job_budget_exceeded"
-    assert res["budget_mb"] == 3072
+    assert res["reason"] == "insufficient_vram_headroom"
+    assert res["budget_mb"] == 5000
+    assert res["projected_used_mb"] == 9000
+
+
+def test_request_grants_ocr_when_its_incremental_footprint_fits():
+    # ASR + detector already use more than the OCR footprint itself. This is
+    # normal: only used + OCR footprint versus the live ceiling matters.
+    arb = _arbiter_with_snapshot(8192, 3000, max_used_ratio=0.90,
+                                 job_budgets_mb={"ocr": 768})
+    res = arb.request("ocr")
+    assert res["grant"] is True
+    assert res["projected_used_mb"] == 3768
+    assert res["live_limit_mb"] == 7372
 
 
 def test_verify_ollama_unload_warns_when_still_resident():

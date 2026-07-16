@@ -104,6 +104,11 @@ def install(module: Any) -> dict[str, Any]:
                         "person_id":person_id,
                         "package_date":str(conv.get("started_at") or now_iso())[:10],
                         "source_ref":conversation_id,
+                        # Semantic resolution is complete in the evidence
+                        # windows.  Preserve their distinct findings through a
+                        # deterministic array union instead of paying a fragile
+                        # final LLM JSON-copy pass.
+                        "lossless_array_merge":True,
                     },
                 )
             else:

@@ -23,6 +23,7 @@ Metrics: :meth:`metrics` merges VisionRT + AudioRT + queue counters, exposed by
 import asyncio
 import importlib.util
 import json
+import hashlib
 import queue
 import sys
 import threading
@@ -611,6 +612,9 @@ class LivePipeline:
                 vision_focus=self._route_vision_focus,
                 on_device_command=self._push_device_command,
                 ask_memory=self.memory_query.ask,
+                remember_fact=self._remember_explicit_fact,
+                who_is=self._who_is_active,
+                scene_changes=self._recent_scene_changes,
                 llm_router=self.llm_router,
                 enrollment=self.enrollment,
                 emit_ui_intent=self._push_intent,
@@ -862,9 +866,100 @@ class LivePipeline:
             routed = self.intents.on_transcript(text)
             self.wake_word_metrics["turns_routed"] += 1
             self._speak_routed_reply(routed)
+            self._push_command_execution_trace(segment_id, text, routed)
             return routed
-        except Exception:
+        except Exception as exc:
+            self._push_intent({
+                "type": "command_execution_trace", "segment_id": segment_id,
+                "text": text, "intent": None, "handled": False,
+                "effect": {"status": "error", "error": type(exc).__name__},
+            })
             return None
+
+    def _push_command_execution_trace(self, segment_id: str, text: str, routed: Any) -> None:
+        data = dict(routed) if isinstance(routed, dict) else {}
+        effect = data.get("result") or data.get("ui_intent") or data.get("replay")
+        compact: dict[str, Any] = {}
+        if isinstance(effect, dict):
+            compact = {
+                key: effect.get(key)
+                for key in ("status", "ok", "component", "truth_level", "confidence", "content")
+                if key in effect
+            }
+            if "steps" in effect:
+                compact["steps_count"] = len(effect.get("steps") or [])
+                compact["current_index"] = effect.get("current_index")
+        elif effect is not None:
+            compact = {"value": str(effect)[:300]}
+        self._push_intent({
+            "type": "command_execution_trace", "segment_id": segment_id,
+            "text": text, "intent": data.get("intent"),
+            "handled": bool(data.get("handled", effect is not None)),
+            "request": data.get("request"),
+            "device_command": data.get("device_command"),
+            "effect": compact,
+        })
+
+    def _remember_explicit_fact(self, fact: str) -> dict[str, Any]:
+        text = str(fact or "").strip()
+        if not text or self.conversation is None:
+            raise RuntimeError("conversation memory unavailable")
+        result = self.conversation.ingest_segment(
+            text, language="fr", is_final=True, speaker_label="user",
+            speaker_person_id=self.person_id, asr_confidence=1.0,
+            event_id=(
+                f"device-memory:{self.live_session_id}:"
+                f"{hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]}"
+            ),
+        )
+        return {
+            "type": "ui_intent", "ui_intent_id": f"remember-{time.time_ns()}",
+            "producer": "brainlive", "component": "context_card",
+            "content": {"kind": "remember_fact", "text": "C'est retenu.", "fact": text},
+            "truth_level": "remembered", "confidence": 1.0,
+            "priority": 0.55, "ttl_ms": 4000,
+            "evidence_refs": [str((result or {}).get("live_turn_id") or "")],
+        }
+
+    def _who_is_active(self) -> dict[str, Any]:
+        people: list[dict[str, Any]] = []
+        if self.scene_adapter is not None and self.worldbrain is not None:
+            people = self.scene_adapter._identify_people(self.worldbrain.snapshot())
+        known = [p for p in people if p.get("identified") and p.get("name")]
+        if known:
+            names = [str(p["name"]) for p in known]
+            message = "C'est " + ", ".join(names) + "."
+            truth = "observed"
+            confidence = max(float(p.get("confidence") or 0.0) for p in known)
+        elif people:
+            message, truth, confidence = "Je vois une personne, mais je ne l'ai pas identifiée.", "unknown", 0.0
+        else:
+            message, truth, confidence = "Je ne vois aucune personne suffisamment fiable.", "unknown", 0.0
+        return {
+            "type": "ui_intent", "ui_intent_id": f"who-is-{time.time_ns()}",
+            "producer": "worldbrain", "component": "context_card",
+            "content": {"kind": "who_is", "text": message, "people": people},
+            "truth_level": truth, "confidence": round(confidence, 3),
+            "priority": 0.7, "ttl_ms": 6000,
+            "evidence_refs": [f"entity:{p.get('entity_id')}" for p in known if p.get("entity_id")],
+        }
+
+    def _recent_scene_changes(self) -> dict[str, Any]:
+        snapshot = self.worldbrain.snapshot() if self.worldbrain is not None else {}
+        recent = list(snapshot.get("recent_changes") or [])[-5:]
+        if recent:
+            labels = [str(c.get("label") or c.get("kind") or c.get("event_type") or "changement") for c in recent]
+            message, truth, confidence = "Changements récents : " + ", ".join(labels) + ".", "observed", 0.8
+        else:
+            message, truth, confidence = "Je n'ai pas observé de changement fiable ici.", "unknown", 0.0
+        return {
+            "type": "ui_intent", "ui_intent_id": f"scene-changes-{time.time_ns()}",
+            "producer": "worldbrain", "component": "context_card",
+            "content": {"kind": "scene_changes", "text": message, "changes": recent},
+            "truth_level": truth, "confidence": confidence,
+            "priority": 0.6, "ttl_ms": 7000,
+            "evidence_refs": sorted({ref for c in recent for ref in (c.get("evidence_refs") or [])}),
+        }
 
     # ------------------------------------------------------ wake-word gating (E47-C §4)
     def set_wake_word_policy(self, policy: str) -> None:
@@ -1025,7 +1120,7 @@ class LivePipeline:
                     self.spatial_find_metrics["current_frame_hits"] += 1
                 else:
                     self.spatial_find_metrics["honest_misses"] += 1
-            return result
+            return self._forward_visual_translation(request, result)
         if self._latest_frame_bgr is not None and self._latest_envelope is not None:
             result = self.on_focus_request(request, self._latest_frame_bgr, self._latest_envelope)
             if str(request.get("kind") or "") == "find":
@@ -1034,7 +1129,7 @@ class LivePipeline:
                     self.spatial_find_metrics["current_frame_hits"] += 1
                 else:
                     self.spatial_find_metrics["honest_misses"] += 1
-            return result
+            return self._forward_visual_translation(request, result)
         if str(request.get("kind") or "") == "find":
             miss = {
                 "type": "ui_intent",
@@ -1052,6 +1147,41 @@ class LivePipeline:
             self._push_intent(miss)
             return miss
         return None
+
+    def _forward_visual_translation(
+        self, request: dict[str, Any], result: Any,
+    ) -> Any:
+        """Send OCR text to the phone's offline translator for ``traduis le texte``.
+
+        OCR stays on the PC where the current video frame lives; translation stays
+        in the already-provisioned Android Reflex bridge.  The shipped packs are
+        FR<->EN, so an unspecified source is the opposite of the requested target.
+        The OCR UIIntent remains the returned/evidenced result and records whether
+        the device command was actually put on the DataChannel.
+        """
+        if not request.get("translate") or not isinstance(result, dict):
+            return result
+        content = result.get("content")
+        if not isinstance(content, dict):
+            return result
+        text = str(content.get("text") or "").strip()
+        if not text:
+            content["translation_status"] = "no_ocr_text"
+            return result
+        target = str(request.get("language") or "fr").strip().lower()
+        if target not in ("fr", "en"):
+            content["translation_status"] = "unsupported_language"
+            return result
+        source = "en" if target == "fr" else "fr"
+        command_id = f"translate-{self.live_session_id}-{time.time_ns()}"
+        delivered = self._push_device_command({
+            "type": "device_command", "command_id": command_id,
+            "action": "translate_text", "text": text,
+            "source_language": source, "target_language": target,
+        })
+        content["translation_status"] = "sent_to_device" if delivered else "device_unreachable"
+        content["translation_language"] = target
+        return result
 
     def _on_scene_delta(self, delta: dict[str, Any]) -> None:
         # Push to device (DataChannel) and mirror to WorldBrain (E28) callback.

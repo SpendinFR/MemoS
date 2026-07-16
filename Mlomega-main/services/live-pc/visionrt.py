@@ -28,6 +28,7 @@ degrades honestly.
 import base64
 import json
 import math
+import os
 import time
 import urllib.error
 import urllib.request
@@ -347,7 +348,9 @@ class VlmCrop:
         model: str | None = None,
         *,
         base_url: str = "http://127.0.0.1:11434",
-        timeout_s: float = 8.0,
+        # Real qwen3-vl:8b gate p50 is ~16.7 s on the target RTX 3070; eight
+        # seconds made every honest OCR/VLM fallback time out before inference.
+        timeout_s: float = 30.0,
     ) -> None:
         import os
 
@@ -356,7 +359,13 @@ class VlmCrop:
         self.timeout_s = timeout_s
         self._busy = False  # semaphore of 1 (single-threaded caller)
 
-    def describe(self, crop_bgr: np.ndarray, prompt: str = "What is in this image? Answer briefly.") -> dict[str, Any]:
+    def describe(
+        self,
+        crop_bgr: np.ndarray,
+        prompt: str = "What is in this image? Answer briefly.",
+        *,
+        format_schema: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if self._busy:
             return {"status": "vlm_busy", "text": None, "model": self.model}
         import cv2
@@ -365,9 +374,15 @@ class VlmCrop:
         if not ok:
             return {"status": "vlm_encode_error", "text": None, "model": self.model}
         b64 = base64.b64encode(buf.tobytes()).decode("ascii")
-        payload = json.dumps(
-            {"model": self.model, "prompt": prompt, "images": [b64], "stream": False}
-        ).encode("utf-8")
+        request_body: dict[str, Any] = {
+            "model": self.model, "prompt": prompt, "images": [b64],
+            "stream": False, "think": False,
+            "options": {"temperature": 0.0, "num_predict": 512},
+        }
+        if format_schema is not None:
+            request_body["format"] = format_schema
+            request_body["options"]["num_predict"] = 900
+        payload = json.dumps(request_body).encode("utf-8")
         req = urllib.request.Request(
             self.base_url + "/api/generate", data=payload, headers={"Content-Type": "application/json"}
         )
@@ -375,7 +390,17 @@ class VlmCrop:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:  # noqa: S310
                 data = json.loads(resp.read().decode("utf-8"))
-            return {"status": "ok", "text": (data.get("response") or "").strip(), "model": self.model}
+            # qwen3-vl may return the actual answer in ``thinking`` and leave
+            # ``response`` blank on the deployed Ollama build (same behaviour as
+            # the post-stop Deep Vision backend).
+            text = (data.get("response") or data.get("thinking") or "").strip()
+            if format_schema is not None and text:
+                try:
+                    decoded = json.loads(text)
+                    text = str(decoded.get("text") or "").strip()
+                except (TypeError, ValueError):
+                    text = ""
+            return {"status": "ok", "text": text, "model": self.model}
         except (urllib.error.URLError, TimeoutError, OSError, ValueError):
             # Ollama unreachable / timed out: degrade honestly, never block.
             return {"status": "vlm_unavailable", "text": None, "model": self.model}
@@ -436,6 +461,7 @@ class VisionRT:
         keyframes: KeyframeSelector | None = None,
         ocr: OcrRoi | None = None,
         vlm: VlmCrop | None = None,
+        ocr_vlm: VlmCrop | None = None,
         arbiter: Any = None,
         session_id: str = "visionrt",
         scene_ttl_ms: int = 2000,
@@ -458,6 +484,13 @@ class VisionRT:
         self.keyframes = keyframes or KeyframeSelector()
         self.ocr = ocr or OcrRoi()
         self.vlm = vlm or VlmCrop()
+        # Moondream remains the cheap live classifier, but it returns empty OCR on
+        # the deployed Ollama build.  A small dedicated vision model is loaded only
+        # after RapidOCR abstains on an explicit user request.
+        self.ocr_vlm = ocr_vlm or VlmCrop(
+            model=os.environ.get("MLOMEGA_OCR_VLM_MODEL") or "qwen3-vl:4b",
+            timeout_s=30.0,
+        )
         self.arbiter = arbiter
         self.session_id = session_id
         self.scene_ttl_ms = scene_ttl_ms
@@ -633,9 +666,39 @@ class VisionRT:
                 lines = self.ocr.read(crop)
                 self.metrics.ocr_ms.append((time.perf_counter() - t0) * 1000.0)
                 text = " ".join(l["text"] for l in lines)
-                content = {"kind": "ocr", "text": text, "lines": lines}
-                truth_level = "observed" if text else "inferred"
+                source = "rapidocr"
+                # Small/angled appliance displays are a known RapidOCR blind spot.
+                # The already-provisioned crop VLM is an honest on-demand fallback,
+                # never a full-frame continuous pass and never presented as OCR fact
+                # when it also abstains.
+                if not text and not self._vlm_refused and self._admit("vlm"):
+                    self.metrics.vlm_queue_depth += 1
+                    fallback = self.ocr_vlm.describe(
+                        crop,
+                        prompt=(
+                            "Transcribe every visible word and number exactly. "
+                            "Return only the text, preserving reading order. "
+                            "If no text is readable, return an empty response."
+                        ),
+                        format_schema={
+                            "type": "object",
+                            "properties": {"text": {"type": "string"}},
+                            "required": ["text"],
+                            "additionalProperties": False,
+                        },
+                    )
+                    self.metrics.vlm_queue_depth = max(0, self.metrics.vlm_queue_depth - 1)
+                    if fallback.get("status") == "ok" and fallback.get("text"):
+                        text = str(fallback["text"]).strip()
+                        lines = [{"text": text, "confidence": 0.5, "box": None}]
+                        source = "vlm_ocr_fallback"
+                content = {"kind": "ocr", "text": text, "lines": lines, "source": source}
+                truth_level = "observed" if text and source == "rapidocr" else (
+                    "probable" if text else "unknown"
+                )
                 confidence = max((l["confidence"] for l in lines), default=0.0)
+                if not text:
+                    content["status"] = "no_text_readable"
             else:
                 content = {"kind": "ocr", "text": None, "status": "ocr_refused"}
         elif kind == "find":

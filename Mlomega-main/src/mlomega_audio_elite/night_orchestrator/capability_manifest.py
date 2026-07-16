@@ -175,11 +175,26 @@ def _deep_vision_capability(con: Any, *, person_id: str, package_date: str, post
     }
     readable_proof_present = "readable_keyframes" in run_columns
     readable_sql = "readable_keyframes" if readable_proof_present else "NULL AS readable_keyframes"
-    rows = con.execute(
-        "SELECT scanned_bundles,selected_keyframes," + readable_sql + ",analyzed_keyframes,status "
-        "FROM brainlive_deep_vision_runs_v161 WHERE person_id=? AND package_date=?",
-        (person_id, package_date),
-    ).fetchall()
+    # A retry creates a new durable run and deliberately keeps the failed row as
+    # audit evidence.  The post-stop result names the run that belongs to this
+    # execution: validate that exact row instead of summing every historical
+    # attempt for the day (which turns a repaired 16/16/16 run into a synthetic
+    # 32/25/16 failure).  Older schemas/results without a run id retain the
+    # conservative day-wide fallback.
+    authoritative_run_id = str(deep.get("run_id") or "").strip()
+    if authoritative_run_id:
+        rows = con.execute(
+            "SELECT scanned_bundles,selected_keyframes," + readable_sql + ",analyzed_keyframes,status "
+            "FROM brainlive_deep_vision_runs_v161 "
+            "WHERE person_id=? AND package_date=? AND run_id=?",
+            (person_id, package_date, authoritative_run_id),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT scanned_bundles,selected_keyframes," + readable_sql + ",analyzed_keyframes,status "
+            "FROM brainlive_deep_vision_runs_v161 WHERE person_id=? AND package_date=?",
+            (person_id, package_date),
+        ).fetchall()
     if not rows:
         # No run row at all: emptiness is only valid if the stage itself is ok
         # (nothing to analyse). A non-ok stage without a row is a bypass.
@@ -192,6 +207,7 @@ def _deep_vision_capability(con: Any, *, person_id: str, package_date: str, post
     scanned = sum(int(r["scanned_bundles"] or 0) for r in rows)
     row_statuses = {str(r["status"] or "").strip().lower() for r in rows}
     evidence = {
+        "authoritative_run_id": authoritative_run_id or None,
         "scanned_bundles": scanned,
         "selected_keyframes": selected,
         "readable_keyframes": readable,

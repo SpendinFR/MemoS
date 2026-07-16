@@ -91,13 +91,38 @@ def test_reentry_with_disappeared_object_emits_one_cue():
     assert result["disappeared"] == ["phone"]
     assert result["appeared"] == []
     assert ca.metrics["cues_emitted"] == 1
-
     # A further re-entry with the SAME (already-cued) state must not fire again.
     ca.on_scene_snapshot(_snap("zone-2", ["chair"]))
     clock.advance(1.0)
     again = ca.on_scene_snapshot(_snap("zone-1", ["cup"]))
     assert again is None, "no material change since the last cue → silence"
     assert ca.metrics["cues_emitted"] == 1
+
+
+def test_worldbrain_propagates_spatial_active_zone_into_product_snapshot(tmp_path):
+    class _Spatial:
+        zone = "zone-1"
+
+        def map_quality(self):
+            return 0.8
+
+        def active_zone(self):
+            return self.zone
+
+    spatial = _Spatial()
+    wb = worldbrain.WorldBrain(
+        person_id="me", live_session_id="s-spatial", db_path=tmp_path / "memory.db",
+        spatial=spatial, publish_world_state=False,
+    )
+    delta = {"source_frame_id": "f1", "entities": [], "map_quality": 0.0}
+
+    wb.ingest_scene_delta(delta)
+    assert wb.snapshot()["active_zone"] == "zone-1"
+    assert wb.snapshot()["map_quality"] == pytest.approx(0.8)
+
+    spatial.zone = "zone-2"
+    wb.ingest_scene_delta({**delta, "source_frame_id": "f2"})
+    assert wb.snapshot()["active_zone"] == "zone-2"
 
 
 # --------------------------------------------------------------------------- reentry, no change

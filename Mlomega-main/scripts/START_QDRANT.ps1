@@ -40,6 +40,17 @@ if (-not (Test-Path $Config)) { throw "config.yaml introuvable: $Config." }
 New-Item -ItemType Directory -Force (Join-Path $ProjectRoot "storage\qdrant") | Out-Null
 $env:QDRANT__SERVICE__HTTP_PORT = "6333"
 
+# Windows treats environment names case-insensitively, but some launchers can
+# still hand PowerShell a process block containing both `Path` and `PATH`.
+# Start-Process then builds a case-insensitive dictionary and aborts with
+# "key already added" before Qdrant is even spawned. Keep the canonical Windows
+# spelling locally; the value is identical and the parent environment is not
+# modified by this script process.
+$pathKeys = @([Environment]::GetEnvironmentVariables("Process").Keys | Where-Object { $_ -ieq "Path" })
+if (($pathKeys -contains "Path") -and ($pathKeys -contains "PATH")) {
+  Remove-Item Env:PATH -ErrorAction SilentlyContinue
+}
+
 Write-Host "==> Demarrage de Qdrant (natif Windows, sans Docker)..." -ForegroundColor Cyan
 $log = Join-Path $ProjectRoot "qdrant.log"
 $proc = Start-Process -FilePath $Exe `

@@ -1380,3 +1380,39 @@ et par cache hit dans `night_llm_call_telemetry_v19`, avec raison, faits lus/pro
 modèle, tokens fournisseur, latence et verdict. Cette table est la source du compteur
 I7; un appel produit nocturne non représenté lors du Gate B sera un échec de mesure, pas
 un succès silencieux.
+
+## 2026-07-16 — I7 Gate B : une commande n'est réussie que si son effet est prouvé (ADR)
+
+**Décision de preuve.** `intents_routed` n'est plus une preuve fonctionnelle. Chaque
+transcript device final marqué commande produit un `command_execution_trace` corrélé au
+`segment_id`, contenant intent, request, commande Android et effet compact. Le harnais
+conserve ces traces et les downlinks significatifs. Le gate porte sur les treize phrases
+exactes du scénario, pas sur des alias de test plus faciles.
+
+**Raccords découverts.** (1) `GpuArbiter` comparait la VRAM totale déjà utilisée au petit
+budget d'un job OCR : dès qu'un modèle occupait plus de 768 Mio, l'OCR était toujours
+refusé. L'admission compare maintenant `used + coût_job` au plafond GPU. (2) La carte
+spatiale calculait bien `active_zone`, mais WorldBrain ne la recopiait jamais :
+ChangeAttention n'avait donc aucune zone. (3) le watcher d'enrôlement interprétait
+« retiens demain… » et « retiens rendez-vous… » comme des prénoms; la forme courte
+`retiens <nom>` exige désormais l'utterance entière, les faits généraux vont à BrainLive.
+(4) le flag `translate` était ignoré par VisionRT. La traduction visuelle est désormais
+OCR sur le PC puis texte vers le modèle offline Android par `translate_text`; le PC ne
+duplique pas le moteur de traduction du téléphone.
+
+**OCR honnête.** RapidOCR garde le chemin rapide. Seulement s'il ne lit rien, une demande
+explicite utilise `qwen3-vl:4b` avec JSON contraint, `think=false` et lecture du canal
+`thinking` propre à ce build Ollama. La sortie VLM est `probable` à 0,5, jamais une lecture
+`observed`. La vraie frame difficile du scénario a produit du texte en 7,05 s; ce n'est
+pas présenté comme la latence normale d'un crop net ni comme une transcription parfaite.
+
+**CloseDay et manifeste.** Le capability manifest vérifie le run Deep Vision référencé
+par le post-stop courant, pas la somme de toutes les tentatives historiques de la journée.
+Le run autoritaire 16/16/16 rend le CloseDay complet même si une tentative antérieure
+avait été bloquée 16/9/0. Les tentatives restent en base pour audit.
+
+**Portée du GO.** Les fonctions PC et le contrat Unity sont clos (147 tests PC, Unity
+10/10, CloseDay complet). L'exécution réelle du traducteur Kotlin, les receipts et la
+latence/rendu restent un gate S25. Le run de travail avec retries n'autorise aucune
+projection de débit : I7 Gate B global attend encore un passage one-shot propre pour le
+seuil ×5.

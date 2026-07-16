@@ -152,6 +152,24 @@ namespace MLOmega.XR.Tests
             Assert.IsFalse(handler.TryHandleRaw("{\"ui_intent_id\":\"x\",\"component\":\"context_card\"}"));
         }
 
+        [Test]
+        public void DeviceCommand_TranslateText_ReachesOfflineReflexSubscriber()
+        {
+            var handler = Make<DeviceCommandHandler>("handler");
+            string text = null, source = null, target = null;
+            handler.TranslateTextRequested += (t, s, d) => { text = t; source = s; target = d; };
+
+            bool ok = handler.Execute(new DeviceCommand {
+                Type = "device_command", Action = "translate_text", Text = "Hello",
+                SourceLanguage = "en", TargetLanguage = "fr"
+            });
+
+            Assert.IsTrue(ok);
+            Assert.AreEqual("Hello", text);
+            Assert.AreEqual("en", source);
+            Assert.AreEqual("fr", target);
+        }
+
         // ------------------------------------------------------- swipe -> hide
         [Test]
         public void SwipeHide_Gesture_DrivesHideAll()

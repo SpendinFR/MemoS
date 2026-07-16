@@ -1116,6 +1116,37 @@ réduction statique de JSON comme une validation modèle.
 
 - [ ] **Gate A — minute shadow** : I1 réel versus baseline, puis estimation aval recalculée depuis les cardinalités observées.
 - [ ] **Gate B — cinq minutes** : scénario VIKI inchangé + vidéo de référence; chaîne complète, dashboard, preuves audio/vision, reprise et comparaison qualité. Cible intermédiaire : appels réduits ≥×5 contre chemin mesuré, aucune capacité perdue.
+
+> **Suivi Gate B fonctionnel — 2026-07-16 (commande/chaîne CLOSES, benchmark propre encore ouvert) :**
+> - Session réelle `blsess_b155c05464f08c85` : 5 min audio+vidéo, 33 finals/turns
+>   conversationnels, 13 transcripts de commande, 13 intents connus, zéro `unknown`.
+>   Le faux compteur « routé = exécuté » est supprimé : chaque commande émet maintenant
+>   un `command_execution_trace` corrélé (segment, request, device_command et effet), et
+>   le fake device conserve les payloads significatifs au lieu du seul total downlink.
+> - Les **13 phrases exactes** de `real_video_session.json` traversent leur handler :
+>   identification de personne, deux souvenirs explicites, deux focus `what_is`, deux
+>   recherches spatiales, OCR, traduction du texte, changements de scène, démarrage puis
+>   avancement du mode aide, et requête mémoire. Preuve contractuelle : matrice exacte
+>   13/13; les deux `retiens ...` ne sont plus volés par l'enrôlement de personne.
+> - Ponts réparés pendant ce gate : admission OCR VRAM calculée en headroom (et non
+>   `used_mb < budget_du_job`), `active_zone` spatial réellement propagé à WorldBrain/
+>   ChangeAttention, et `traduis le texte` converti en OCR PC puis `translate_text` vers
+>   le traducteur Reflex offline Android. RapidOCR reste prioritaire; sur la vraie frame
+>   difficile il s'abstient et le fallback structuré `qwen3-vl:4b` lit du texte en 7,05 s,
+>   avec vérité `probable` (jamais faussement `observed`).
+> - CloseDay repris sans repayer les stages validés : run
+>   `run_v18_66f56f15fc154e948827d4f4d53e9236` `completed`; Deep Vision autoritaire
+>   `v18deepvisionrun_20639d09a5894690` = **16 sélectionnées = 16 lisibles = 16
+>   analysées**; capability manifest et output manifest `complete=1`, aucun blocker.
+>   Le manifeste cible désormais le `run_id` Deep Vision du post-stop courant : un ancien
+>   run bloqué de la même journée ne peut plus invalider la réparation autoritaire.
+> - Validation : **147 tests PC** élargis verts (146 + le test final des callbacks
+>   produit VIKI), matrice ciblée finale 3/3, **Unity
+>   E33 10/10** (inclut le consommateur `translate_text`). Le téléphone S25 doit encore
+>   confirmer modèles offline, rendu/latence et receipts matériels; la case Gate B globale
+>   reste ouverte uniquement parce qu'un **run propre one-shot** doit mesurer le gain ≥×5
+>   sans mélanger les retries de mise au point (la DB de travail contient 154 tentatives
+>   télémétrées issues des reprises, donc n'est pas un benchmark temporel valide).
 - [ ] **Gate C — une heure synthétique réaliste** : alternance silence/conversation/déplacements/OCR/personnes, chaos réseau/LLM/VLM/disque et reprise. Prouver `1 h capture ≤1 h consolidation` sur la RTX 3070 ou mesurer précisément l'écart.
 - [ ] **Gate D — huit heures** : base fraîche, multi-session/jour, aucun cap, mémoire/VRAM bornées, manifeste complet, reprise idempotente, coût cloud si utilisé. Seulement ici annoncer le temps d'une nuit.
 - [ ] **Décision stop/go** : si I1+I2 ne donnent pas au moins ×5 sans perte, ne pas poursuivre les micro-optimisations; comparer architecture cloud/hybride ou matériel. Si les gates passent, fixer le backend FIRST_TRY et rendre ses préflights bloquants.

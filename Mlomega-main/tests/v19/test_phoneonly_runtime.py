@@ -327,6 +327,74 @@ def test_audio_frame_conversion_reaches_pcm_callback():
     asyncio.run(scenario())
 
 
+def test_audio_worker_losslessly_batches_adjacent_pcm_and_preserves_timing():
+    async def scenario():
+        ingress = gateway.AiortcIngress(
+            session_id="audio-batch", standalone_signaling=False,
+            audio_queue_max_chunks=64, audio_batch_max_chunks=8,
+        )
+        got = []
+        ingress.on_audio_chunk = lambda pcm, rate, timing: got.append((pcm.copy(), rate, timing))
+        for idx in range(8):
+            pcm = np.full(480, idx, dtype=np.int16)
+            ingress._audio.put_nowait((pcm, 48000, {
+                "absolute_start": f"start-{idx}",
+                "absolute_end": f"end-{idx}",
+                "duration_s": 0.01,
+                "clock_source": "webrtc_pts",
+            }))
+        ingress._audio_worker = asyncio.create_task(ingress._drain_audio())
+        await ingress.drain_audio(timeout_s=2.0)
+        assert len(got) == 1
+        pcm, rate, timing = got[0]
+        assert rate == 48000 and len(pcm) == 8 * 480
+        for idx in range(8):
+            assert np.all(pcm[idx * 480:(idx + 1) * 480] == idx)
+        assert timing["absolute_start"] == "start-0"
+        assert timing["absolute_end"] == "end-7"
+        assert abs(timing["duration_s"] - 0.08) < 1e-9
+        assert ingress.stats()["audio_batch_chunks_peak"] == 8
+        await ingress.close()
+
+    asyncio.run(scenario())
+
+
+def test_audio_drain_timeout_is_diagnostic():
+    async def scenario():
+        ingress = gateway.AiortcIngress(session_id="audio-timeout", standalone_signaling=False)
+        ingress._audio.put_nowait((np.zeros(480, dtype=np.int16), 48000, None))
+        try:
+            await ingress.drain_audio(timeout_s=0.01)
+            assert False, "drain without worker must time out"
+        except TimeoutError as exc:
+            assert "queued=1" in str(exc) and "dropped=0" in str(exc)
+
+    asyncio.run(scenario())
+
+
+def test_runtime_audio_callback_does_not_scan_all_metrics_per_chunk():
+    class CountedPipeline(FakePipeline):
+        def __init__(self, *, ingress, **kwargs):
+            super().__init__(ingress=ingress, **kwargs)
+            self.metric_calls = 0
+
+        def metrics(self):
+            self.metric_calls += 1
+            return super().metrics()
+
+        def on_audio_chunk(self, samples, rate):
+            self.audio_calls.append((samples, rate))
+            return [{"content": {"final": True, "text": "bonjour"}}]
+
+    rt = runtime_mod.PhoneOnlyRuntime(
+        "no-metrics-scan", ingress_factory=FakeIngress, pipeline_factory=CountedPipeline,
+        close_day=lambda **_: {"status": "completed"},
+    )
+    out = rt._on_audio_chunk(np.zeros(480, dtype=np.int16), 48000)
+    assert out and rt.final_segments == 1
+    assert rt.pipeline.metric_calls == 0
+
+
 def test_datachannel_send_from_audio_worker_is_marshaled_to_owner_loop():
     class Channel:
         readyState = "open"
@@ -857,6 +925,60 @@ def test_voice_focus_uses_exactly_one_latest_video_frame():
     assert np.array_equal(seen[0][1], second)
 
 
+def test_visual_translation_ocr_is_forwarded_to_device_reflex():
+    ingress = FakeIngress()
+    ingress.open_channels = 1
+    pipe = runtime_mod.live_pipeline.LivePipeline(
+        ingress=ingress, enable_detector=False, enable_worldbrain=False,
+        enable_conversation=False, enable_intents=False, enable_live_discourse=False,
+    )
+    pipe.vision_focus_handler = lambda request: {
+        "component": "lens_window",
+        "content": {"kind": "ocr", "text": "Hello world", "lines": []},
+    }
+
+    result = pipe._route_vision_focus({
+        "kind": "ocr", "translate": True, "language": "fr",
+    })
+
+    assert result["content"]["translation_status"] == "sent_to_device"
+    sent = [json.loads(raw) for raw in ingress.sent]
+    command = next(item for item in sent if item.get("action") == "translate_text")
+    assert command["text"] == "Hello world"
+    assert command["source_language"] == "en"
+    assert command["target_language"] == "fr"
+
+
+def test_viki_context_callbacks_use_live_product_state():
+    pipe = runtime_mod.live_pipeline.LivePipeline(
+        enable_detector=False, enable_worldbrain=False, enable_conversation=False,
+        enable_intents=False, enable_live_discourse=False,
+    )
+    snapshot = {
+        "recent_changes": [{"label": "clés déplacées", "evidence_refs": ["frame:f2"]}],
+    }
+    pipe.worldbrain = SimpleNamespace(snapshot=lambda: snapshot)
+    pipe.scene_adapter = SimpleNamespace(_identify_people=lambda _snap: [{
+        "identified": True, "name": "Karim", "confidence": 0.91, "entity_id": "person-karim",
+    }])
+    ingested = []
+    pipe.conversation = SimpleNamespace(ingest_segment=lambda text, **kwargs: ingested.append(
+        (text, kwargs)
+    ) or {"live_turn_id": "turn-explicit"})
+
+    who = pipe._who_is_active()
+    changes = pipe._recent_scene_changes()
+    remembered = pipe._remember_explicit_fact("demain je dois racheter des piles")
+
+    assert who["content"]["text"] == "C'est Karim."
+    assert who["truth_level"] == "observed"
+    assert changes["content"]["changes"] == snapshot["recent_changes"]
+    assert changes["evidence_refs"] == ["frame:f2"]
+    assert remembered["truth_level"] == "remembered"
+    assert ingested[0][0] == "demain je dois racheter des piles"
+    assert ingested[0][1]["speaker_person_id"] == pipe.person_id
+
+
 def test_phone_command_where_are_glasses_reaches_durable_spatial_answer(tmp_path, monkeypatch):
     """DataChannel transcript -> IntentRouter -> durable WorldBrain -> downlink."""
     db = tmp_path / "spatial-product.db"
@@ -903,3 +1025,39 @@ def test_phone_command_where_are_glasses_reaches_durable_spatial_answer(tmp_path
     assert answer["truth_level"] == "remembered"
     assert answer.get("bearing") is None  # a new session cannot invent an arrow
     assert current.metrics()["spatial_find_durable_hits"] == 1
+
+
+def test_close_day_subprocess_reports_structured_blocker_not_stderr_warning(tmp_path, monkeypatch):
+    from mlomega_audio_elite import runtime_environment_v19
+
+    monkeypatch.setattr(
+        runtime_environment_v19,
+        "configure_windows_cuda_dlls",
+        lambda _root: (True, {"status": "ok"}),
+    )
+    monkeypatch.setattr(runtime_environment_v19, "sanitize_blackhole_proxy_env", lambda: [])
+    monkeypatch.setattr(
+        runtime_mod.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=2,
+            stdout=json.dumps({
+                "status": "blocked",
+                "error": "deep_vision returned blocked",
+                "run_id": "close-1",
+                "stages": {"deep_vision": {"status": "blocked"}},
+            }) + "\n",
+            stderr="FutureWarning: torch.load noise only",
+        ),
+    )
+
+    try:
+        runtime_mod._run_close_day_subprocess(
+            person_id="me", live_session_id="brain-1", db_path=tmp_path / "memory.db"
+        )
+        raise AssertionError("blocked subprocess must raise")
+    except RuntimeError as exc:
+        detail = str(exc)
+    assert "deep_vision returned blocked" in detail
+    assert "close-1" in detail
+    assert "torch.load" not in detail

@@ -203,14 +203,37 @@ def _run_close_day_subprocess(
         command, cwd=ROOT, env=env, text=True, capture_output=True, check=False
     )
     lines = [line for line in proc.stdout.splitlines() if line.strip()]
+    parsed_result: dict[str, Any] | None = None
     if lines:
         try:
             result = json.loads(lines[-1])
+            parsed_result = result if isinstance(result, dict) else {"result": result}
             if getattr(proc, "returncode", 0) == 0:
-                return result
+                return parsed_result
         except json.JSONDecodeError:
             pass
-    raise RuntimeError((proc.stderr or proc.stdout or "CloseDay subprocess failed")[-2000:])
+    if parsed_result is not None:
+        # The worker deliberately exits non-zero for ``blocked``/``error`` but
+        # still emits the durable, structured CloseDay result on stdout.  Surface
+        # that result instead of the tail of stderr, which is commonly only a
+        # PyTorch/HF warning and hid the actual failed stage during Gate B.
+        summary = {
+            key: parsed_result.get(key)
+            for key in (
+                "status", "error", "run_id", "live_session_id", "package_date",
+                "stages", "cleanup", "recovery",
+            )
+            if key in parsed_result
+        }
+        raise RuntimeError(
+            f"CloseDay subprocess exited {getattr(proc, 'returncode', None)}: "
+            + json.dumps(summary, ensure_ascii=True, default=str)[:6000]
+        )
+    diagnostic = (proc.stderr or proc.stdout or "CloseDay subprocess failed")[-4000:]
+    raise RuntimeError(
+        f"CloseDay subprocess exited {getattr(proc, 'returncode', None)} without JSON result: "
+        + diagnostic
+    )
 
 
 def recover_abandoned_phoneonly_sessions(
@@ -643,7 +666,6 @@ class PhoneOnlyRuntime:
         self, samples: Any, src_rate: int, source_timing: dict[str, Any] | None = None
     ) -> Any:
         self.audio_chunks += 1
-        before = int(self.pipeline.metrics().get("conversation_turns", 0))
         if source_timing is None:
             out = self.pipeline.on_audio_chunk(samples, src_rate)
         else:
@@ -653,12 +675,17 @@ class PhoneOnlyRuntime:
                 # Compatibility for an injected pre-E60 pipeline; the product
                 # LivePipeline accepts and persists source timing.
                 out = self.pipeline.on_audio_chunk(samples, src_rate)
-        after_metrics = self.pipeline.metrics()
-        after = int(after_metrics.get("conversation_turns", 0))
-        if "audio_finals_emitted" in after_metrics:
-            self.final_segments = int(after_metrics["audio_finals_emitted"])
-        else:
-            self.final_segments += max(0, after - before)
+        # Do not aggregate the entire live pipeline twice for every ~30 ms RTP
+        # packet. The authoritative AudioRT metric is read by status(); this
+        # lightweight fallback only serves injected legacy/test pipelines.
+        if isinstance(out, list):
+            self.final_segments += sum(
+                1 for intent in out
+                if isinstance(intent, dict)
+                and isinstance(intent.get("content"), dict)
+                and intent["content"].get("final")
+                and intent["content"].get("text")
+            )
         return out
 
     async def end_session_only(self, *, drain_timeout_s: float = 5.0) -> dict[str, Any]:
@@ -678,7 +705,11 @@ class PhoneOnlyRuntime:
                 if hasattr(self.ingress, "stop_accepting_media"):
                     await self.ingress.stop_accepting_media()
                 if hasattr(self.ingress, "drain_audio"):
-                    await self.ingress.drain_audio(timeout_s=drain_timeout_s)
+                    audio_timeout_s = max(
+                        float(drain_timeout_s),
+                        float(os.getenv("MLOMEGA_FINAL_DRAIN_TIMEOUT_S", "300")),
+                    )
+                    await self.ingress.drain_audio(timeout_s=audio_timeout_s)
                 if hasattr(self.pipeline, "flush_audio"):
                     # LivePipeline waits up to five minutes for the semantic
                     # worker. A timeout is a real incomplete close: propagate it

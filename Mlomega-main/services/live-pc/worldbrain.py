@@ -492,6 +492,16 @@ class WorldBrain:
                     map_quality = float(mq)
             except Exception:
                 pass
+            try:
+                active_zone = self.spatial.active_zone()
+                normalized_zone = str(active_zone).strip() if active_zone else None
+                if normalized_zone and self._norm_label(normalized_zone) in self._suspended_zones:
+                    normalized_zone = None
+                self.session.active_zone = normalized_zone
+            except Exception:
+                # Spatial quality and zone identity degrade independently. Keep
+                # the last proven zone if a provider has a transient failure.
+                pass
         self.session.map_quality = map_quality
 
         raw_entities = list(delta.get("entities") or [])

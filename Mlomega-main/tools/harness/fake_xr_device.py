@@ -150,6 +150,9 @@ class FakeXrDevice:
             "device_commands_received": 0,
             "wake_word_acked": False,
             "downlink_messages": 0,
+            "downlink_type_counts": {},
+            "command_execution_traces": [],
+            "meaningful_downlinks": [],
             "end_session_status": None,
             "errors": [],
         }
@@ -231,6 +234,13 @@ class FakeXrDevice:
             return
         if not isinstance(payload, dict):
             return
+        kind = str(payload.get("type") or payload.get("component") or "untyped")
+        counts = self.report["downlink_type_counts"]
+        counts[kind] = int(counts.get(kind, 0)) + 1
+        if payload.get("type") == "command_execution_trace":
+            self.report["command_execution_traces"].append(payload)
+        elif payload.get("type") != "scene_delta" and len(self.report["meaningful_downlinks"]) < 200:
+            self.report["meaningful_downlinks"].append(payload)
         # A device_command arrives from the PC IntentRouter / wake-word push.
         # DeviceCommand.IsDeviceCommand keys on the literal "device_command".
         if payload.get("type") == "device_command":

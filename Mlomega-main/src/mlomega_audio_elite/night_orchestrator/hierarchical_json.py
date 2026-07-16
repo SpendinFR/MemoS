@@ -144,12 +144,14 @@ def _validate_top_level_cardinality(
 def _lossless_array_union(
     values: Sequence[Mapping[str, Any]], schema: Mapping[str, Any]
 ) -> dict[str, Any] | None:
-    """Union disjoint window findings without asking an LLM to copy JSON.
+    """Union disjoint window projections without asking an LLM to copy JSON.
 
     This is intentionally narrow and opt-in: every top-level field must be an
-    array or a numeric aggregate. Arrays preserve first-seen order and remove
-    exact canonical duplicates only; semantic near-duplicates and contradictions
-    remain. Numeric aggregates use the finite arithmetic mean.
+    array, a numeric aggregate or a presentation-only string. Arrays preserve
+    first-seen order and remove exact canonical duplicates only; semantic
+    near-duplicates and contradictions remain. Numeric aggregates use the finite
+    arithmetic mean. Distinct strings are retained verbatim in encounter order,
+    separated by newlines; no model-authored summary is discarded.
     """
     merged: dict[str, Any] = {}
     for key, template in schema.items():
@@ -176,6 +178,12 @@ def _lossless_array_union(
             if len(numbers) != len(present) or not numbers:
                 return None
             merged[key] = sum(numbers) / len(numbers)
+            continue
+        if isinstance(template, str):
+            if any(not isinstance(item, str) for item in present):
+                return None
+            distinct = list(dict.fromkeys(item for item in present if item))
+            merged[key] = "\n".join(distinct)
             continue
         return None
     return merged
@@ -605,6 +613,17 @@ def _supports_lossless_window_union(schema: Mapping[str, Any]) -> bool:
     )
 
 
+# These stages make their semantic judgement independently inside each evidence
+# window. Their fan-in contains only candidate arrays, confidence aggregates and
+# a presentation summary unused by canonical writers. Re-asking the LLM to copy
+# that material caused repeatable length/contract failures on the real Gate B DB.
+# The central merge preserves every distinct candidate and summary verbatim.
+_LOSSLESS_PROJECTION_STAGES = {
+    "v13_autonomous_insights",
+    "v18_autonomous_candidates",
+}
+
+
 def run_hierarchical_json(
     *,
     stage_name: str,
@@ -630,6 +649,9 @@ def run_hierarchical_json(
     result from another responsibility.
     """
     schema = dict(schema)
+    lossless_array_merge = bool(
+        lossless_array_merge or stage_name in _LOSSLESS_PROJECTION_STAGES
+    )
     from .prompt_projection import project_stage_payload, restore_stage_output
     projection = project_stage_payload(
         stage_name=stage_name,

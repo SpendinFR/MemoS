@@ -556,21 +556,40 @@ def _find_e55_clip_for_frame(
         distance = before + after
         if distance > tolerance:
             continue
-        raw_offset = (target - start).total_seconds()
-        duration = max(0.0, (end - start).total_seconds())
+        wall_offset = (target - start).total_seconds()
+        wall_duration = max(0.0, (end - start).total_seconds())
+        # E55 rotates clips on wall-clock time, while the encoded MP4 duration is
+        # ``frames_encoded / target_fps``.  Under load those clocks legitimately
+        # diverge (for example a 120 s recorder window may contain 80 s of video).
+        # Seeking the MP4 with the wall offset then asks FFmpeg for a frame beyond
+        # EOF.  Map the capture occurrence proportionally onto the durable media
+        # timeline; do not drop the late keyframe or pretend it had no pixels.
+        try:
+            media_duration = max(0.0, float(meta.get("duration_s") or 0.0))
+        except (TypeError, ValueError):
+            media_duration = 0.0
+        if media_duration <= 0.0:
+            media_duration = wall_duration
+        scale = media_duration / wall_duration if wall_duration > 0.0 else 1.0
+        requested_media_offset = wall_offset * scale
         try:
             fps = max(1.0, float(meta.get("fps") or 30.0))
         except (TypeError, ValueError):
             fps = 30.0
-        max_offset = max(0.0, duration - (1.0 / fps))
-        offset = min(max(raw_offset, 0.0), max_offset)
+        max_offset = max(0.0, media_duration - (1.0 / fps))
+        offset = min(max(requested_media_offset, 0.0), max_offset)
         enriched = {
             **row,
             "window_start": start.isoformat(),
             "window_end": end.isoformat(),
             "offset_s": offset,
-            "requested_offset_s": raw_offset,
-            "time_clamped": abs(offset - raw_offset) > 1e-6,
+            "requested_offset_s": requested_media_offset,
+            "wall_requested_offset_s": wall_offset,
+            "wall_duration_s": wall_duration,
+            "media_duration_s": media_duration,
+            "wall_to_media_scale": scale,
+            "time_rescaled": abs(scale - 1.0) > 1e-6,
+            "time_clamped": abs(offset - requested_media_offset) > 1e-6,
             "metadata": meta,
         }
         # Exact containment wins; then choose the closest window and earliest
@@ -624,6 +643,11 @@ def _persist_materialized_keyframe(
         "requested_frame_time": candidate.get("frame_time"),
         "offset_s": round(float(clip.get("offset_s") or 0.0), 6),
         "requested_offset_s": round(float(clip.get("requested_offset_s") or 0.0), 6),
+        "wall_requested_offset_s": round(float(clip.get("wall_requested_offset_s") or 0.0), 6),
+        "wall_duration_s": round(float(clip.get("wall_duration_s") or 0.0), 6),
+        "media_duration_s": round(float(clip.get("media_duration_s") or 0.0), 6),
+        "wall_to_media_scale": float(clip.get("wall_to_media_scale") or 1.0),
+        "time_rescaled": bool(clip.get("time_rescaled")),
         "time_clamped": bool(clip.get("time_clamped")),
     }
     from .night_orchestrator.deep_vision_selection import _image_dimensions
@@ -1429,6 +1453,46 @@ def _deep_turn_text(row: dict[str, Any]) -> str:
     return ("[CONTEXT_VISION_DEEP] " + " | ".join(parts))[:8000]
 
 
+def _active_conversation_for_bundle(
+    con: Any, *, person_id: str, bundle_id: str, fallback: str | None
+) -> str | None:
+    """Resolve the current Brain2 conversation after Deep Audio supersession.
+
+    The V15.14 export points at the first assembled conversation. Deep Audio then
+    creates a refined conversation and marks the first scope inactive. Appending
+    Deep Vision to the stale export made the real Brain2 path miss every VLM
+    observation. Resolve through the durable active scope, without rewriting or
+    deleting the immutable first export.
+    """
+
+    if _table_exists(con, "v18_conversation_scopes"):
+        rows = _rows(
+            con,
+            """SELECT conversation_id,evidence_json
+                 FROM v18_conversation_scopes
+                WHERE person_id=? AND active=1
+                ORDER BY updated_at DESC, conversation_id""",
+            (person_id,),
+        )
+        for row in rows:
+            evidence = _safe_json(row.get("evidence_json"), {})
+            if isinstance(evidence, dict) and str(evidence.get("bundle_id") or "") == bundle_id:
+                return str(row.get("conversation_id"))
+    return str(fallback) if fallback else None
+
+
+def _conversation_relative_seconds(con: Any, *, conversation_id: str, frame_time: Any) -> float | None:
+    row = con.execute(
+        "SELECT started_at FROM conversations WHERE conversation_id=?",
+        (conversation_id,),
+    ).fetchone()
+    started = _parse_utc(row["started_at"] if row else None)
+    captured = _parse_utc(frame_time)
+    if started is None or captured is None:
+        return None
+    return max(0.0, (captured - started).total_seconds())
+
+
 def append_deep_vision_context_turns_to_brain2(person_id: str = "me", *, package_date: str | None = None, only_status_ok: bool = False) -> dict[str, Any]:
     """Append deep VLM observations as context turns in exported Brain2 conversations."""
     ensure_deep_vision_schema()
@@ -1444,7 +1508,12 @@ def append_deep_vision_context_turns_to_brain2(person_id: str = "me", *, package
             ORDER BY o.bundle_id, o.sample_index, o.frame_time
         """, (person_id, day))
         for r in rows:
-            conv_id = r.get("exported_conversation_id") or r.get("conversation_id")
+            conv_id = _active_conversation_for_bundle(
+                con,
+                person_id=person_id,
+                bundle_id=str(r.get("bundle_id") or ""),
+                fallback=r.get("exported_conversation_id") or r.get("conversation_id"),
+            )
             if not conv_id:
                 continue
             export_id = stable_id("bldeep161export", r.get("deep_observation_id"), conv_id)
@@ -1455,14 +1524,17 @@ def append_deep_vision_context_turns_to_brain2(person_id: str = "me", *, package
             text = _deep_turn_text(r)
             turn_id = stable_id("turn_bldeep161", conv_id, r.get("deep_observation_id"), text)
             prev = con.execute("SELECT turn_id FROM turns WHERE conversation_id=? ORDER BY idx DESC LIMIT 1", (conv_id,)).fetchone()
+            relative_s = _conversation_relative_seconds(
+                con, conversation_id=conv_id, frame_time=r.get("frame_time")
+            )
             upsert(con, "turns", {
                 "turn_id": turn_id,
                 "conversation_id": conv_id,
                 "idx": idx,
                 "speaker_label": "context_vision_deep",
                 "person_id": None,
-                "start_s": None,
-                "end_s": None,
+                "start_s": relative_s,
+                "end_s": relative_s,
                 "text": text,
                 "previous_turn_id": prev["turn_id"] if prev else None,
                 "metadata_json": json_dumps({

@@ -42,6 +42,9 @@ namespace MLOmega.XR.UI
         /// <summary>E58: the new wake word for the set_wake_word command (PC push, no rebuild).</summary>
         [JsonProperty("word")] public string Word { get; set; }
         [JsonProperty("command_id")] public string CommandId { get; set; }
+        [JsonProperty("text")] public string Text { get; set; }
+        [JsonProperty("source_language")] public string SourceLanguage { get; set; }
+        [JsonProperty("target_language")] public string TargetLanguage { get; set; }
 
         public static bool IsDeviceCommand(string json)
         {
@@ -67,6 +70,8 @@ namespace MLOmega.XR.UI
         /// (Reflex already references UI; a typed field would be a cycle).
         /// </summary>
         public event Action<bool?> TranslateLiveRequested;
+        /// <summary>One-shot OCR text translation, executed by the same offline Reflex model.</summary>
+        public event Action<string, string, string> TranslateTextRequested;
 
         /// <summary>
         /// E58: raised for "set_wake_word" — the PC pushes the owner-chosen wake word
@@ -160,6 +165,9 @@ namespace MLOmega.XR.UI
                 case "translate_live":
                     ok = TranslateLive(cmd.On);
                     break;
+                case "translate_text":
+                    ok = TranslateText(cmd.Text, cmd.SourceLanguage, cmd.TargetLanguage);
+                    break;
                 case "set_wake_word":
                     ok = SetWakeWord(cmd.Word);
                     break;
@@ -212,6 +220,13 @@ namespace MLOmega.XR.UI
         {
             if (TranslateLiveRequested == null) return false;
             TranslateLiveRequested.Invoke(on);
+            return true;
+        }
+
+        private bool TranslateText(string text, string sourceLanguage, string targetLanguage)
+        {
+            if (string.IsNullOrWhiteSpace(text) || TranslateTextRequested == null) return false;
+            TranslateTextRequested.Invoke(text.Trim(), sourceLanguage, targetLanguage);
             return true;
         }
 

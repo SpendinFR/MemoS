@@ -10,6 +10,7 @@ conversation to the LLM again.
 """
 
 import os
+import re
 from typing import Any, Mapping, Sequence
 
 from .db import connect, init_db, upsert
@@ -26,8 +27,69 @@ from .evidence_quality_v19 import (
 from .utils import json_dumps, json_loads, now_iso, sha256_bytes, stable_id
 
 
-SHARED_FACT_VERSION = "e64-i2-shared-facts-v1"
+SHARED_FACT_VERSION = "e64-i2-shared-facts-v2-sensor-routing"
 SHARED_FACT_ENV = "MLOMEGA_E64_SHARED_FACTS"
+
+_PURPOSE_FACT_TYPES: dict[str, set[str]] = {
+    "people_identity": {
+        "capture_quality", "situation", "resolved_reference", "missing_context",
+        "relationship_update", "social_role", "social_loop", "contradiction",
+    },
+    "open_loops": {
+        "situation", "resolved_reference", "missing_context", "contradiction",
+        "choice", "choice_bias", "intention_outcome", "open_loop",
+        "trajectory_warning", "escape_condition", "intervention_candidate",
+    },
+    "interpersonal": {
+        "situation", "resolved_reference", "missing_context", "contradiction",
+        "internal_state_before", "internal_state_during", "internal_state_after",
+        "dominant_emotion", "secondary_emotion", "thought_hypothesis",
+        "state_transition", "relationship_update", "social_role", "social_loop",
+        "causal_link", "non_causal_correlation", "intention_outcome", "open_loop",
+    },
+    "outcome_resolution": {
+        "situation", "resolved_reference", "missing_context", "contradiction",
+        "intention_outcome", "open_loop",
+    },
+    "subtopic_segmentation": {
+        "situation", "resolved_reference", "missing_context",
+    },
+    "proactive_interventions": {
+        "contradiction", "intention_outcome", "open_loop", "prediction",
+        "trajectory_warning", "escape_condition", "intervention_candidate",
+        "calibration_update",
+    },
+}
+
+_PURPOSE_CAPABILITY_ENGINES: dict[str, set[str]] = {
+    "people_identity": {
+        "capture_engine", "context_resolver", "contradiction_engine",
+        "episode_builder", "social_model_engine",
+    },
+    "open_loops": {
+        "choice_model_engine", "context_resolver", "contradiction_engine",
+        "episode_builder", "intervention_engine", "outcome_tracker",
+    },
+    "interpersonal": {
+        "causality_engine", "context_resolver", "contradiction_engine",
+        "episode_builder", "internal_state_engine", "outcome_tracker",
+        "social_model_engine",
+    },
+    "outcome_resolution": {
+        "context_resolver", "contradiction_engine", "episode_builder",
+        "outcome_tracker",
+    },
+    "subtopic_segmentation": {"context_resolver", "episode_builder"},
+    "proactive_interventions": {
+        "calibration_engine", "contradiction_engine", "intervention_engine",
+        "outcome_tracker", "prediction_engine",
+    },
+}
+
+_PURPOSES_USING_SENSOR_SEMANTICS = {
+    "interpersonal", "autonomous_candidates", "pattern_mirror",
+    "proactive_interventions",
+}
 
 _COMMON_FIELDS = {"evidence", "counter_evidence", "confidence"}
 
@@ -217,6 +279,95 @@ def _clamp(value: Any) -> float:
         return max(0.0, min(1.0, float(value)))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _compact_context_addenda_for_prompt(value: Any) -> dict[str, Any]:
+    """Keep every selected semantic observation, never provider payload blobs."""
+    if not isinstance(value, Mapping):
+        return {}
+    entries: list[dict[str, Any]] = []
+    for raw_entry in value.get("entries") or []:
+        if not isinstance(raw_entry, Mapping):
+            continue
+        full_text = str(raw_entry.get("text") or "")
+        parts = full_text.split(" | ")
+        semantic_parts = parts[:1]
+        for part in parts[1:]:
+            if part.startswith(("activit\u00e9_visible=", "lieu_probable=", "spatial=")):
+                semantic_parts.append(part)
+        entry = {
+            key: raw_entry.get(key) for key in (
+                "addendum_id", "source_table", "source_id", "event_time",
+                "evidence_role", "metadata_sha256",
+            ) if raw_entry.get(key) is not None
+        }
+        entry["text"] = " | ".join(semantic_parts)
+        entry["full_text_digest"] = _digest(full_text)
+        entries.append(entry)
+    raw_budget = dict(value.get("budget") or {})
+    omitted = list(raw_budget.get("omitted_refs") or [])
+    return {
+        "entries": entries,
+        "budget": {
+            "included_items": len(entries),
+            "context_incomplete": bool(omitted),
+            "omitted_manifest": {
+                "count": len(omitted), "digest": _digest(omitted),
+            },
+        },
+        "evidence_role_policy": value.get("evidence_role_policy"),
+        "durable_source": "brain2_context_addenda_v18",
+    }
+
+
+_INLINE_TURN_CITATION = re.compile(r"\s*\(turn_ids?\s*:\s*[^)]*\)", re.IGNORECASE)
+
+
+def _semantic_summary(value: Any) -> str:
+    return _INLINE_TURN_CITATION.sub("", str(value or "")).strip()
+
+
+def _compact_conversation_outline(
+    parent: Any, subthemes: Sequence[Any],
+) -> dict[str, Any]:
+    compact_parent: dict[str, Any] | None = None
+    if isinstance(parent, Mapping):
+        compact_parent = {
+            key: parent.get(key) for key in (
+                "episode_id", "episode_type", "start_turn_id", "end_turn_id",
+                "start_time", "end_time", "participants", "channel", "topic",
+                "outcome_summary", "unresolved_tension", "confidence",
+            ) if parent.get(key) is not None
+        }
+        summary = str(parent.get("situation_summary") or "")
+        if summary:
+            compact_parent["situation_summary_manifest"] = {
+                "digest": _digest(summary),
+                "represented_by": "subthemes[].summary",
+            }
+    compact_subthemes: list[dict[str, Any]] = []
+    for raw in subthemes:
+        if not isinstance(raw, Mapping):
+            continue
+        compact = {
+            key: raw.get(key) for key in (
+                "subtheme_id", "ordinal", "subtheme_type", "title", "summary",
+                "start_turn_id", "end_turn_id", "participants",
+                "outcome_summary", "unresolved_tension", "confidence",
+            ) if raw.get(key) is not None
+        }
+        compact["summary"] = _semantic_summary(raw.get("summary"))
+        memberships = list(raw.get("turn_ids") or [])
+        evidence = list(raw.get("evidence_turn_ids") or [])
+        compact["membership_manifest"] = {
+            "count": len(memberships), "digest": _digest(memberships),
+        }
+        compact["evidence_manifest"] = {
+            "count": len(evidence), "digest": _digest(evidence),
+            "durable_source": "episode_subtheme_evidence_v19",
+        }
+        compact_subthemes.append(compact)
+    return {"parent": compact_parent, "subthemes": compact_subthemes}
 
 
 def _meaningful(value: Any) -> bool:
@@ -848,21 +999,72 @@ def compact_stage_input(
         if json_key in conversation:
             conversation[json_key[:-5]] = json_loads(conversation.pop(json_key), None)
     conversation_started_at = str(conversation.get("started_at") or "9999-12-31")
+    from .v18_brain2_context import conversation_context_addenda
+    raw_context_addenda = conversation_context_addenda(
+        con, conversation_id=conversation_id, person_id=person_id,
+        # The reader itself is capped at 120 active rows.  Request them all,
+        # then remove provider metadata before the orchestrator budgets text.
+        max_items=120, max_chars=240000,
+    )
+    context_addenda = _compact_context_addenda_for_prompt(raw_context_addenda)
+    has_deep_context = any(
+        str(entry.get("source_table") or "")
+        == "brainlive_deep_vision_observations_v161"
+        for entry in context_addenda.get("entries") or []
+        if isinstance(entry, Mapping)
+    )
+    if has_deep_context and purpose not in _PURPOSES_USING_SENSOR_SEMANTICS:
+        available_entries = list(context_addenda.get("entries") or [])
+        context_addenda = {
+            "entries": [],
+            "available_manifest": {
+                "count": len(available_entries),
+                "digest": _digest(available_entries),
+                "routed_to": [
+                    "visual_consolidation", "worldbrain", "silent_life",
+                ],
+                "reason": f"sensor_semantics_outside_{purpose}_responsibility",
+            },
+            "evidence_role_policy": context_addenda.get("evidence_role_policy"),
+            "durable_source": "brain2_context_addenda_v18",
+        }
     turns: list[dict[str, Any]] = []
+    sensor_turns: list[dict[str, Any]] = []
     speaker_resolutions: dict[str, dict[str, Any]] = {}
-    turn_rows = list(con.execute(
+    all_turn_rows = list(con.execute(
         """SELECT turn_id,idx,speaker_label,person_id,start_s,end_s,text,metadata_json
            FROM turns WHERE conversation_id=? ORDER BY idx""",
         (conversation_id,),
     ))
+    parsed_turn_rows: list[tuple[Any, dict[str, Any], bool]] = []
+    for row in all_turn_rows:
+        metadata = json_loads(row["metadata_json"], {})
+        metadata = metadata if isinstance(metadata, dict) else {}
+        is_sensor = (
+            str(metadata.get("evidence_role") or "")
+            == "system_observation_not_user_speech"
+        )
+        parsed_turn_rows.append((row, metadata, is_sensor))
+        if is_sensor:
+            sensor_turns.append({
+                "turn_id": row["turn_id"], "idx": row["idx"],
+                "start_s": row["start_s"], "end_s": row["end_s"],
+                "text_digest": _digest(str(row["text"] or "")),
+                "kind": metadata.get("kind"),
+            })
+    included_rows = [
+        (row, metadata) for row, metadata, is_sensor in parsed_turn_rows
+        if not (is_sensor and has_deep_context)
+    ]
     turn_ref_by_id = {
-        str(row["turn_id"]): f"t{ordinal}" for ordinal, row in enumerate(turn_rows)
+        str(row["turn_id"]): f"t{ordinal}"
+        for ordinal, (row, _metadata) in enumerate(included_rows)
     }
     turn_id_by_ref = {ref: turn_id for turn_id, ref in turn_ref_by_id.items()}
-    for row in turn_rows:
+    for row, metadata in included_rows:
         turn = dict(row)
         turn["turn_id"] = turn_ref_by_id[str(turn["turn_id"])]
-        metadata = json_loads(turn.pop("metadata_json", None), {})
+        turn.pop("metadata_json", None)
         source = metadata.get("source") if isinstance(metadata, Mapping) else None
         resolution = (
             source.get("offline_speaker_resolution")
@@ -988,7 +1190,6 @@ def compact_stage_input(
                     params=(person_id,), limit=30,
                 ),
             })
-    from .v18_brain2_context import conversation_context_addenda
     current_stage_evidence: dict[str, Any] = {
         "speaker_matches": _table_rows(
             con, "speaker_matches", where="conversation_id=?",
@@ -1016,11 +1217,22 @@ def compact_stage_input(
         fact for fact in prompt_facts
         if fact["type"] not in {"conversation_episode", "conversation_subtheme"}
     ]
+    selected_types = _PURPOSE_FACT_TYPES.get(purpose)
+    if selected_types is not None:
+        prompt_facts = [
+            fact for fact in prompt_facts if fact.get("type") in selected_types
+        ]
+    selected_engines = _PURPOSE_CAPABILITY_ENGINES.get(purpose)
+    if selected_engines is not None:
+        capability_manifest = [
+            capability for capability in capability_manifest
+            if capability.get("engine") in selected_engines
+        ]
     history = _prompt_payload_value(history, turn_ref_by_id)
     current_stage_evidence = _prompt_payload_value(
         current_stage_evidence, turn_ref_by_id
     )
-    return {
+    result = {
         "projection_version": SHARED_FACT_VERSION,
         "purpose": purpose,
         "conversation": conversation,
@@ -1028,14 +1240,10 @@ def compact_stage_input(
         "current_people_refs": current_people,
         "speaker_resolutions": list(speaker_resolutions.values()),
         "current_stage_evidence": current_stage_evidence,
-        "context_addenda": conversation_context_addenda(
-            con, conversation_id=conversation_id, person_id=person_id,
-            max_items=24, max_chars=24000,
+        "context_addenda": context_addenda,
+        "conversation_outline": _compact_conversation_outline(
+            parent_outline, subtheme_outline
         ),
-        "conversation_outline": {
-            "parent": parent_outline,
-            "subthemes": subtheme_outline,
-        },
         "facts": prompt_facts,
         "capabilities": capability_manifest,
         "history": history,
@@ -1046,6 +1254,22 @@ def compact_stage_input(
         },
         "_turn_id_map": turn_id_by_ref,
     }
+    if sensor_turns:
+        result["raw_sensor_manifest"] = {
+            "count": len(sensor_turns),
+            "digest": _digest(sensor_turns),
+            "represented_by": (
+                "context_addenda.entries"
+                if has_deep_context and purpose in _PURPOSES_USING_SENSOR_SEMANTICS
+                else (
+                    "visual_consolidation+worldbrain+silent_life"
+                    if has_deep_context else
+                    "turns[evidence_role=system_observation_not_user_speech]"
+                )
+            ),
+            "durable_source": "turns",
+        }
+    return result
 
 
 def expand_turn_refs(value: Any, turn_id_by_ref: Mapping[str, str]) -> Any:

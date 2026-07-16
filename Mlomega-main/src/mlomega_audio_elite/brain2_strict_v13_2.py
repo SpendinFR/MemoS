@@ -801,13 +801,167 @@ def _stable_episode_source_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
     dependencies explicitly through `prior_engine_outputs`, so only immutable
     episode evidence belongs in their shared bundle.
     """
-    stable = {
-        key: bundle.get(key)
+    episode = dict(bundle.get("episode") or {})
+    episode_metadata = _metadata_mapping(episode.get("metadata_json"))
+    compact_episode = {
+        key: episode.get(key)
         for key in (
-            "episode", "conversation", "turns", "subthemes", "missing_context",
-            "context_scope", "context_addenda",
+            "episode_id", "episode_type", "source_conversation_id",
+            "start_turn_id", "end_turn_id", "start_time", "end_time",
+            "participants_json", "location_text", "channel", "topic",
+            "confidence", "importance_score",
         )
-        if key in bundle
+        if episode.get(key) is not None
+    }
+    if episode.get("situation_summary"):
+        # The conversation parent summary is assembled deterministically from
+        # the same subtheme summaries below. Do not pay the identical paragraph
+        # twice in every engine pack.
+        compact_episode["situation_summary_manifest"] = {
+            "digest": _hash_payload(episode.get("situation_summary")),
+            "represented_by": "subthemes[].summary",
+        }
+    if episode_metadata:
+        compact_episode["metadata_manifest"] = {
+            "digest": _hash_payload(episode_metadata),
+            "coverage_status": episode_metadata.get("coverage_status"),
+            "subtheme_types": episode_metadata.get("subtheme_types"),
+            "source_quality_gaps": episode_metadata.get("source_quality_gaps"),
+        }
+
+    speech_turns: list[dict[str, Any]] = []
+    sensor_turns: list[dict[str, Any]] = []
+    for raw_turn in bundle.get("turns") or []:
+        if not isinstance(raw_turn, Mapping):
+            continue
+        metadata = _metadata_mapping(raw_turn.get("metadata_json"))
+        target = sensor_turns if str(metadata.get("evidence_role") or "") == (
+            "system_observation_not_user_speech"
+        ) else speech_turns
+        compact_turn = {
+            key: raw_turn.get(key)
+            for key in (
+                "turn_id", "idx", "speaker_label", "person_id", "start_s",
+                "end_s", "text",
+            )
+            if raw_turn.get(key) is not None
+        }
+        for key in ("start_s", "end_s"):
+            if isinstance(compact_turn.get(key), float):
+                compact_turn[key] = round(float(compact_turn[key]), 3)
+        source = metadata.get("source") if isinstance(metadata, Mapping) else None
+        if isinstance(source, Mapping):
+            resolution = source.get("offline_speaker_resolution")
+            alignment = source.get("word_alignment")
+            compact_turn["quality"] = {
+                "speaker": (
+                    resolution.get("decision")
+                    if isinstance(resolution, Mapping) else None
+                ),
+                "known_score": (
+                    resolution.get("known_score")
+                    if isinstance(resolution, Mapping) else None
+                ),
+                "asr_mean": alignment.get("mean_score") if isinstance(alignment, Mapping) else None,
+                "asr_min": alignment.get("min_score") if isinstance(alignment, Mapping) else None,
+            }
+        target.append(compact_turn)
+
+    compact_subthemes: list[dict[str, Any]] = []
+    for raw_subtheme in bundle.get("subthemes") or []:
+        if not isinstance(raw_subtheme, Mapping):
+            continue
+        membership = [str(item) for item in raw_subtheme.get("membership_turn_ids") or []]
+        primary_evidence = [
+            str(item) for item in raw_subtheme.get("evidence_turn_ids") or []
+        ]
+        compact = {
+            key: raw_subtheme.get(key)
+            for key in (
+                "ordinal", "subtheme_type", "title", "summary",
+                "start_turn_id", "end_turn_id", "participants_json",
+                "outcome_summary", "unresolved_tension", "confidence",
+            )
+            if raw_subtheme.get(key) is not None
+        }
+        compact["membership_manifest"] = {
+            "count": len(membership), "digest": _hash_payload(membership),
+        }
+        compact["primary_evidence_manifest"] = {
+            "count": len(primary_evidence),
+            "digest": _hash_payload(primary_evidence),
+            "durable_source": "episode_subtheme_evidence_v19",
+        }
+        compact_subthemes.append(compact)
+
+    context_addenda = bundle.get("context_addenda")
+    compact_addenda: dict[str, Any] = {}
+    if isinstance(context_addenda, Mapping):
+        entries: list[dict[str, Any]] = []
+        for raw_entry in context_addenda.get("entries") or []:
+            if not isinstance(raw_entry, Mapping):
+                continue
+            full_text = str(raw_entry.get("text") or "")
+            text_parts = full_text.split(" | ")
+            semantic_parts = text_parts[:1]
+            for part in text_parts[1:]:
+                if part.startswith(("activité_visible=", "lieu_probable=", "spatial=")):
+                    semantic_parts.append(part)
+            compact_text = " | ".join(semantic_parts)
+            entry = {
+                key: raw_entry.get(key)
+                for key in (
+                    "addendum_id", "source_id", "event_time", "evidence_role",
+                )
+                if raw_entry.get(key) is not None
+            }
+            entry["text"] = compact_text
+            entry["full_text_digest"] = _hash_payload(full_text)
+            raw_metadata = raw_entry.get("metadata_json")
+            if raw_metadata:
+                entry["metadata_manifest"] = {
+                    "digest": _hash_payload(raw_metadata),
+                    "durable_source": "brain2_context_addenda_v18",
+                }
+            entries.append(entry)
+        raw_budget = dict(context_addenda.get("budget") or {})
+        budget = {
+            key: raw_budget.get(key)
+            for key in ("included_items", "context_incomplete")
+            if raw_budget.get(key) is not None
+        }
+        omitted = list(raw_budget.get("omitted_refs", []) or [])
+        budget["omitted_manifest"] = {
+            "count": len(omitted), "digest": _hash_payload(omitted),
+        }
+        compact_addenda = {
+            "entries": entries,
+            "budget": budget,
+            "evidence_role_policy": context_addenda.get("evidence_role_policy"),
+            "durable_source": "brain2_context_addenda_v18",
+            "omitted_fields": "affordances/proofs/uncertainties consumed by visual consolidation",
+        }
+
+    # Deep Vision descriptions supersede the raw detector turn text for the
+    # cognitive pack. Without a deep description, retain the compact raw sensor
+    # lane explicitly rather than silently losing it.
+    has_deep_context = bool(compact_addenda.get("entries"))
+    stable = {
+        "episode": compact_episode,
+        "conversation": bundle.get("conversation"),
+        "turns": speech_turns,
+        "subthemes": compact_subthemes,
+        "missing_context": bundle.get("missing_context") or [],
+        "context_scope": bundle.get("context_scope"),
+        "context_addenda": compact_addenda,
+        "sensor_context": [] if has_deep_context else sensor_turns,
+        "raw_sensor_manifest": {
+            "count": len(sensor_turns),
+            "digest": _hash_payload(sensor_turns),
+            "represented_by": (
+                "context_addenda.entries" if has_deep_context else "sensor_context"
+            ),
+        },
     }
     # Preserve the legacy prompt shape without feeding any materialized row
     # back. This also lets the first clean run's validated checkpoints remain
@@ -1265,8 +1419,8 @@ def _run_episode_engine_pack(
                 person_id=person_id,
                 package_date=package_date,
                 stage_name=stage_name,
-                adapter_version="e64f-v13-episode-pack-v1",
-                prompt_version=f"{STRICT_VERSION}:episode-pack-v1:{pack_name}",
+                adapter_version="e64f-v13-episode-pack-v2",
+                prompt_version=f"{STRICT_VERSION}:episode-pack-v2:{pack_name}",
                 model=model,
             ),
             llm=window_llm,

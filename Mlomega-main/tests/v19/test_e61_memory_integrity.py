@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -15,6 +16,24 @@ def _env(tmp_path, monkeypatch):
     monkeypatch.setenv("MLOMEGA_HOME", str(tmp_path))
     monkeypatch.setenv("MLOMEGA_LOCAL_TZ", "Europe/Paris")
     return db_path
+
+
+def test_integrity_schema_is_thread_safe_for_live_scene_workers(tmp_path, monkeypatch):
+    db_path = _env(tmp_path, monkeypatch)
+    from mlomega_audio_elite.brainlive_v15 import ensure_brainlive_schema
+    from mlomega_audio_elite.db import connect
+    from mlomega_audio_elite.integrity_v176 import ensure_integrity_schema
+
+    ensure_brainlive_schema()
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        list(pool.map(lambda _index: ensure_integrity_schema(), range(18)))
+
+    with connect(db_path) as con:
+        triggers = con.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' "
+            "AND name='trg_bl_forecast_validate_insert_v176'"
+        ).fetchone()[0]
+    assert triggers == 1
 
 
 def test_canonical_night_model_projects_into_v19_without_seed(tmp_path, monkeypatch):

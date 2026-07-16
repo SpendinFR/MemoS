@@ -488,6 +488,39 @@ def test_selected_missing_pixels_are_materialized_from_e55_and_triple_matches(mo
     assert run["status"] == "ok"
 
 
+def test_e55_wall_clock_is_mapped_to_shorter_media_timeline(monkeypatch, tmp_path):
+    """A throttled recorder window must never seek past its shorter MP4."""
+
+    _seed_e55_materialization_case(monkeypatch, tmp_path, with_clip=True)
+    from mlomega_audio_elite.brainlive_offline_deep_vision_v16_1 import _find_e55_clip_for_frame
+    from mlomega_audio_elite.db import connect, write_transaction
+    from mlomega_audio_elite.utils import json_dumps
+
+    with connect() as con, write_transaction(con):
+        row = con.execute(
+            "SELECT metadata_json FROM visual_evidence_assets_v19 WHERE visual_asset_id='clip-e55'"
+        ).fetchone()
+        metadata = json.loads(row["metadata_json"])
+        metadata["window_end"] = "2026-07-16T10:00:04+00:00"
+        metadata["duration_s"] = 2.0
+        con.execute(
+            "UPDATE visual_evidence_assets_v19 SET metadata_json=? WHERE visual_asset_id='clip-e55'",
+            (json_dumps(metadata),),
+        )
+
+    clip = _find_e55_clip_for_frame(
+        person_id="me",
+        live_session_id="s-e55",
+        frame_time="2026-07-16T10:00:03+00:00",
+    )
+    assert clip is not None
+    assert clip["wall_requested_offset_s"] == pytest.approx(3.0)
+    assert clip["offset_s"] == pytest.approx(1.5)
+    assert clip["wall_to_media_scale"] == pytest.approx(0.5)
+    assert clip["time_rescaled"] is True
+    assert clip["time_clamped"] is False
+
+
 def test_missing_selected_pixels_without_e55_blocks_and_persists_mismatch(monkeypatch, tmp_path):
     out = _run_e55_case(monkeypatch, tmp_path, with_clip=False)
     assert out["status"] == "blocked"
@@ -509,3 +542,30 @@ def test_missing_selected_pixels_without_e55_blocks_and_persists_mismatch(monkey
         ).fetchone()
     assert tuple(row[k] for k in ("selected_keyframes", "readable_keyframes", "analyzed_keyframes")) == (2, 1, 0)
     assert row["status"] == "blocked"
+
+
+def test_deep_vision_resolves_active_deep_audio_conversation(tmp_path, monkeypatch):
+    _install_env(monkeypatch, tmp_path)
+    from mlomega_audio_elite.brainlive_offline_deep_vision_v16_1 import (
+        _active_conversation_for_bundle,
+    )
+    from mlomega_audio_elite.db import connect
+
+    with connect() as con:
+        con.execute(
+            """CREATE TABLE v18_conversation_scopes(
+                 conversation_id TEXT PRIMARY KEY, person_id TEXT,
+                 evidence_json TEXT, active INTEGER, updated_at TEXT)"""
+        )
+        con.execute(
+            "INSERT INTO v18_conversation_scopes VALUES(?,?,?,?,?)",
+            ("conv-old", "me", json.dumps({"bundle_id": "bundle-1"}), 0, "2026-07-16T10:00:00Z"),
+        )
+        con.execute(
+            "INSERT INTO v18_conversation_scopes VALUES(?,?,?,?,?)",
+            ("conv-deep-audio", "me", json.dumps({"bundle_id": "bundle-1"}), 1, "2026-07-16T10:01:00Z"),
+        )
+        resolved = _active_conversation_for_bundle(
+            con, person_id="me", bundle_id="bundle-1", fallback="conv-old"
+        )
+    assert resolved == "conv-deep-audio"

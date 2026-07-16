@@ -20,7 +20,7 @@ from mlomega_audio_elite.utils import now_iso
 
 def _seed_deep_vision_run(
     db_path, *, person_id="me", package_date="2026-07-10",
-    scanned=1, selected=0, readable=None, analyzed=0, status="ok",
+    scanned=1, selected=0, readable=None, analyzed=0, status="ok", run_id="dvrun-1",
 ):
     from mlomega_audio_elite.brainlive_offline_deep_vision_v16_1 import (  # noqa: F401
         VERSION,  # ensures the module (and its SCHEMA install) is importable
@@ -43,7 +43,7 @@ def _seed_deep_vision_run(
                  run_id,person_id,package_date,model,scanned_bundles,selected_keyframes,
                  readable_keyframes,analyzed_keyframes,status,created_at,updated_at
                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-            ("dvrun-1", person_id, package_date, "moondream", scanned, selected,
+            (run_id, person_id, package_date, "moondream", scanned, selected,
              selected if readable is None else readable, analyzed, status, now_iso(), now_iso()),
         )
 
@@ -129,6 +129,33 @@ def test_deep_vision_all_analyzed_passes(tmp_path, monkeypatch):
     _seed_deep_vision_run(db, selected=3, analyzed=3, status="ok")
     manifest = _build(db, monkeypatch, _all_validated_results())
     assert _verdict(manifest, "deep_vision") == "product_validated"
+    assert manifest["complete"] is True
+
+
+def test_deep_vision_retry_validates_only_post_stop_authoritative_run(tmp_path, monkeypatch):
+    db = tmp_path / "memory.db"
+    monkeypatch.setenv("MLOMEGA_DB", str(db))
+    monkeypatch.setenv("MLOMEGA_HOME", str(tmp_path))
+    _seed_deep_vision_run(
+        db, run_id="dvrun-blocked", selected=16, readable=9,
+        analyzed=0, status="blocked",
+    )
+    _seed_deep_vision_run(
+        db, run_id="dvrun-repaired", selected=16, readable=16,
+        analyzed=16, status="ok",
+    )
+    results = _all_validated_results()
+    results["post_stop"]["v16_deep_vision"]["run_id"] = "dvrun-repaired"
+
+    manifest = _build(db, monkeypatch, results)
+
+    deep = next(c for c in manifest["capabilities"] if c["capability"] == "deep_vision")
+    assert deep["verdict"] == "product_validated"
+    assert deep["evidence"]["authoritative_run_id"] == "dvrun-repaired"
+    assert deep["evidence"]["selected_keyframes"] == 16
+    assert deep["evidence"]["readable_keyframes"] == 16
+    assert deep["evidence"]["analyzed_keyframes"] == 16
+    assert deep["evidence"]["run_statuses"] == ["ok"]
     assert manifest["complete"] is True
 
 

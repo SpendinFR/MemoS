@@ -7,9 +7,12 @@ import pytest
 
 from mlomega_audio_elite.brain2_conversation_episode import (
     ConversationEpisodeContractError,
+    assemble_detail_window_outputs,
     build_conversation_episode_v6,
+    normalize_detail_window_output,
     normalize_conversation_episode,
     normalize_segmentation,
+    split_segments_on_silence,
 )
 from mlomega_audio_elite.night_orchestrator.executor import LLMCallResult
 
@@ -150,6 +153,119 @@ def test_normalize_builds_one_parent_and_keeps_topics_separate():
     assert not set(karim["evidence_turn_ids"]) & set(netflix["evidence_turn_ids"])
 
 
+def test_detail_window_rebinds_local_zero_to_single_locked_global_ordinal():
+    output = _model_output()
+    output["conversation_episode"]["subthemes"] = [
+        dict(output["conversation_episode"]["subthemes"][3], ordinal=0)
+    ]
+
+    normalized = normalize_detail_window_output(
+        output,
+        [{"ordinal": 3, "turn_ids": ["t6", "t7"]}],
+    )
+
+    assert normalized is not None
+    assert normalized["subthemes"][0]["ordinal"] == 3
+
+
+def test_detail_window_does_not_guess_multi_segment_ordinals():
+    output = _model_output()
+    output["conversation_episode"]["subthemes"] = [
+        dict(output["conversation_episode"]["subthemes"][1], ordinal=0),
+        dict(output["conversation_episode"]["subthemes"][2], ordinal=1),
+    ]
+
+    normalized = normalize_detail_window_output(
+        output,
+        [
+            {"ordinal": 1, "turn_ids": ["t3"]},
+            {"ordinal": 2, "turn_ids": ["t4", "t5"]},
+        ],
+    )
+
+    assert normalized is None
+
+
+def test_detail_window_accepts_only_lossless_evidence_partition_of_coarse_segment():
+    output = _model_output()
+    output["conversation_episode"]["subthemes"] = [
+        dict(
+            output["conversation_episode"]["subthemes"][0],
+            ordinal=0,
+            evidence_turn_ids=["t0", "t1"],
+        ),
+        dict(
+            output["conversation_episode"]["subthemes"][1],
+            ordinal=1,
+            evidence_turn_ids=["t2", "t3"],
+        ),
+    ]
+    segment = {
+        "ordinal": 3,
+        "turn_ids": ["t0", "t1", "t2", "t3"],
+        "boundary_reason": "explicit_transition",
+    }
+
+    normalized = normalize_detail_window_output(output, [segment])
+
+    assert normalized is not None
+    assert [item["turn_ids"] for item in normalized["subthemes"]] == [
+        ["t0", "t1"], ["t2", "t3"]
+    ]
+    assert normalized["subthemes"][1]["boundary_reason"] == (
+        "semantic_split_complete_evidence"
+    )
+
+    output["conversation_episode"]["subthemes"][1]["evidence_turn_ids"] = ["t3"]
+    assert normalize_detail_window_output(output, [segment]) is None
+
+
+def test_detail_window_assembly_preserves_exact_turn_coverage_after_split():
+    segments = [
+        {"ordinal": 0, "turn_ids": ["t0", "t1"]},
+        {"ordinal": 1, "turn_ids": ["t2", "t3"]},
+    ]
+    persisted = [
+        {"output": {
+            "min_ordinal": 0,
+            "parent": {"participants": ["me"], "location": "salon"},
+            "subthemes": [{
+                "ordinal": 0, "source_ordinal": 0, "part_index": 0,
+                "title": "Karim", "summary": "Rendez-vous avec Karim.",
+                "participants": ["me"], "evidence_turn_ids": ["t0", "t1"],
+                "turn_ids": ["t0", "t1"], "confidence": 0.8,
+            }],
+            "missing_context": [],
+        }},
+        {"output": {
+            "min_ordinal": 1,
+            "parent": {"participants": ["Max"]},
+            "subthemes": [
+                {
+                    "ordinal": 0, "source_ordinal": 1, "part_index": 0,
+                    "title": "Question", "summary": "Une question est posée.",
+                    "participants": ["Max"], "evidence_turn_ids": ["t2"],
+                    "turn_ids": ["t2"], "confidence": 0.7,
+                },
+                {
+                    "ordinal": 1, "source_ordinal": 1, "part_index": 1,
+                    "title": "Réponse", "summary": "Une réponse est donnée.",
+                    "participants": ["Max"], "evidence_turn_ids": ["t3"],
+                    "turn_ids": ["t3"], "confidence": 0.9,
+                },
+            ],
+            "missing_context": ["voix non enrôlée"],
+        }},
+    ]
+
+    combined = assemble_detail_window_outputs(persisted, segments)
+
+    subthemes = combined["conversation_episode"]["subthemes"]
+    assert [item["turn_ids"] for item in subthemes] == [["t0", "t1"], ["t2"], ["t3"]]
+    assert combined["conversation_episode"]["participants"] == ["me", "Max"]
+    assert "Rendez-vous avec Karim" in combined["conversation_episode"]["situation_summary"]
+
+
 @pytest.mark.parametrize("mutation,match", [
     (lambda out: (
         out["conversation_episode"]["subthemes"][0]["turn_ids"].pop(),
@@ -182,6 +298,32 @@ def test_segmentation_canonicalizes_only_inclusive_boundary_overlap():
     assert [turn_id for segment in segments for turn_id in segment["turn_ids"]] == [
         f"t{i}" for i in range(8)
     ]
+
+
+def test_long_silence_refines_membership_without_losing_or_reordering_turns():
+    turns = {
+        "t0": {"start_s": 0.0, "end_s": 1.0},
+        "t1": {"start_s": 1.2, "end_s": 2.0},
+        "t2": {"start_s": 22.5, "end_s": 23.0},
+        "t3": {"start_s": 23.1, "end_s": 24.0},
+    }
+    segments = [{
+        "ordinal": 0,
+        "title_hint": "Discussion",
+        "boundary_reason": "conversation_start",
+        "turn_ids": ["t0", "t1", "t2", "t3"],
+    }]
+
+    refined = split_segments_on_silence(segments, turns, threshold_s=15.0)
+
+    assert [segment["turn_ids"] for segment in refined] == [
+        ["t0", "t1"], ["t2", "t3"]
+    ]
+    assert [turn for segment in refined for turn in segment["turn_ids"]] == [
+        "t0", "t1", "t2", "t3"
+    ]
+    assert refined[1]["boundary_reason"] == "temporal_gap"
+    assert refined[1]["temporal_gap_s"] == pytest.approx(20.5)
 
 
 def test_segmentation_end_boundaries_make_partition_lossless_by_construction():
@@ -374,3 +516,63 @@ def test_conversation_parent_keeps_conditional_v13_capabilities():
         "contradiction_engine", "choice_model_engine", "outcome_tracker",
     ):
         assert _engine_applies_to_episode(engine, episode, profile)[0] is True, engine
+
+
+def test_detail_prefers_temporally_relevant_deep_vision_without_dropping_other_sensors():
+    from mlomega_audio_elite.brain2_conversation_episode import (
+        _context_addenda_as_sensor,
+        _preferred_sensor_context,
+        _sensor_context_for_segments,
+    )
+
+    def sensor(turn_id, kind, start):
+        return {
+            "turn_id": turn_id,
+            "start_s": start,
+            "end_s": start,
+            "text": turn_id,
+            "metadata_json": json.dumps({
+                "kind": kind,
+                "evidence_role": "system_observation_not_user_speech",
+            }),
+        }
+
+    raw = sensor("raw-near", "vision_context", 1.0)
+    deep_near = sensor("deep-near", "deep_vision_context", 1.2)
+    deep_far = sensor("deep-far", "deep_vision_context", 100.0)
+    other = sensor("prediction-near", "prediction_context", 1.4)
+    preferred = _preferred_sensor_context([raw, deep_near, deep_far, other])
+    assert [item["turn_id"] for item in preferred] == [
+        "deep-near", "deep-far", "prediction-near"
+    ]
+
+    by_id = {
+        "t0": {"turn_id": "t0", "start_s": 0.0, "end_s": 0.5},
+        "t1": {"turn_id": "t1", "start_s": 1.0, "end_s": 1.5},
+    }
+    routed = _sensor_context_for_segments(
+        preferred,
+        [{"ordinal": 0, "turn_ids": ["t0", "t1"]}],
+        by_id,
+    )
+    assert [item["turn_id"] for item in routed] == [
+        "deep-near", "prediction-near"
+    ]
+
+    addenda = _context_addenda_as_sensor({
+        "conversation": {"started_at": "2026-07-16T10:00:00+00:00"},
+        "context_addenda": {"entries": [{
+            "addendum_id": "deep-addendum",
+            "source_table": "brainlive_deep_vision_observations_v161",
+            "source_id": "deep-observation",
+            "event_time": "2026-07-16T10:00:01.250+00:00",
+            "text": "[CONTEXT_VISION_DEEP] tasse sur la table",
+        }]},
+    })
+    assert len(addenda) == 1
+    assert addenda[0]["start_s"] == pytest.approx(1.25)
+    assert _sensor_kind_for_test(addenda[0]) == "deep_vision_context"
+
+
+def _sensor_kind_for_test(turn):
+    return json.loads(turn["metadata_json"])["kind"]

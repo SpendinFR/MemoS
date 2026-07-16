@@ -146,10 +146,12 @@ def conversation_context_addenda(
     for row in rows:
         text = str(row.get("text") or "")
         raw_metadata = str(row.get("metadata_json") or "")
-        # Metadata can contain a large raw provider payload.  It is provenance,
-        # not prompt text: retain it only when compact and otherwise emit a
-        # hash/reference explicitly instead of truncating it invisibly.
-        metadata_included = raw_metadata if len(raw_metadata) <= 4096 else None
+        # Provider metadata is durable provenance, not cognitive prompt text.
+        # Keeping it merely because one row happened to be under 4 KiB made the
+        # 5-minute Gate B context stop after 8 of 20 Deep-Vision observations.
+        # The semantic text, source id and exact metadata digest are sufficient
+        # here; visual consolidation remains the full metadata consumer.
+        metadata_included = None
         candidate = {
             "addendum_id": row.get("addendum_id"),
             "source_table": row.get("source_table"),
@@ -158,7 +160,7 @@ def conversation_context_addenda(
             "evidence_role": row.get("evidence_role"),
             "text": text,
             "metadata_json": metadata_included,
-            "metadata_omitted": metadata_included is None and bool(raw_metadata),
+            "metadata_omitted": bool(raw_metadata),
             "metadata_sha256": hashlib.sha256(raw_metadata.encode("utf-8")).hexdigest() if raw_metadata else None,
             "scope": row.get("scope"),
         }

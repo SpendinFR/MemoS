@@ -425,10 +425,28 @@ def test_v13_packed_source_bundle_never_feeds_materialized_outputs_back_in():
     source = {
         "episode": {"episode_id": "ep1"},
         "conversation": {"conversation_id": "conv1"},
-        "turns": [{"turn_id": "t1", "text": "preuve"}],
+        "turns": [
+            {"turn_id": "t1", "text": "preuve", "metadata_json": "{}"},
+            {
+                "turn_id": "sensor1", "text": "personne visible",
+                "metadata_json": json.dumps({
+                    "evidence_role": "system_observation_not_user_speech",
+                    "kind": "vision_context",
+                }),
+            },
+        ],
         "context_scope": {"episode_id": "ep1"},
-        "context_addenda": {"vision": "stable"},
-        "subthemes": [{"ordinal": 0, "title": "Karim"}],
+        "context_addenda": {
+            "entries": [{
+                "addendum_id": "deep1", "text": "Karim est assis.",
+                "metadata_json": "{\"raw\":\"opaque\"}",
+            }],
+            "budget": {"omitted_refs": [{"source_id": "raw1"}]},
+        },
+        "subthemes": [{
+            "ordinal": 0, "title": "Karim", "summary": "Karim est évoqué.",
+            "membership_turn_ids": ["t1"], "evidence_turn_ids": ["t1"],
+        }],
         "situations": [{"situation_id": "derived"}],
         "states": [{"state_id": "derived"}],
         "thoughts": [{"thought_id": "derived"}],
@@ -438,7 +456,14 @@ def test_v13_packed_source_bundle_never_feeds_materialized_outputs_back_in():
     stable = _stable_episode_source_bundle(source)
     assert {"episode", "conversation", "turns", "context_scope", "context_addenda"} <= set(stable)
     assert stable["turns"][0]["turn_id"] == "t1"
-    assert stable["subthemes"] == [{"ordinal": 0, "title": "Karim"}]
+    assert [turn["turn_id"] for turn in stable["turns"]] == ["t1"]
+    assert stable["raw_sensor_manifest"]["count"] == 1
+    assert stable["raw_sensor_manifest"]["represented_by"] == "context_addenda.entries"
+    assert stable["sensor_context"] == []
+    assert stable["context_addenda"]["entries"][0]["text"] == "Karim est assis."
+    assert "metadata_json" not in stable["context_addenda"]["entries"][0]
+    assert stable["subthemes"][0]["primary_evidence_manifest"]["count"] == 1
+    assert stable["subthemes"][0]["membership_manifest"]["count"] == 1
     assert stable["situations"] == [] and stable["states"] == []
     assert stable["causes"] == [] and stable["patterns"] == []
 
@@ -799,6 +824,98 @@ def test_hierarchical_json_windows_persisted_json_collections_instead_of_repeati
         "WHERE stage_name='persisted_json_evidence'"
     ).fetchone()
     assert coverage == (16, 0, 1)
+
+
+def test_brain2_llm_adapter_forwards_lossless_array_merge(monkeypatch):
+    from mlomega_audio_elite import brain2_flow_v13_3 as flow
+    import mlomega_audio_elite.night_orchestrator as orchestrator
+
+    captured = {}
+
+    class FakeClient:
+        pass
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return {"items": [], "confidence": 1.0}
+
+    monkeypatch.setattr(flow, "OllamaJsonClient", FakeClient)
+    monkeypatch.setattr(orchestrator, "run_hierarchical_json", fake_run)
+
+    result = flow._llm_json(
+        "SYS",
+        {"evidence": [1]},
+        {"items": [], "confidence": 0.0},
+        stage_context={
+            "stage_name": "v18_latent_outcomes",
+            "person_id": "me",
+            "package_date": "2026-07-16",
+            "source_ref": "conv-1",
+            "lossless_array_merge": True,
+        },
+    )
+
+    assert result == {"items": [], "confidence": 1.0}
+    assert captured["lossless_array_merge"] is True
+
+
+def test_autonomous_projection_fan_in_is_lossless_and_does_not_reprompt(monkeypatch):
+    from mlomega_audio_elite.night_orchestrator import run_hierarchical_json
+
+    monkeypatch.setenv("MLOMEGA_E64_SHARED_FACTS", "0")
+
+    class AutonomousClient:
+        model = "fake-autonomous"
+
+        def __init__(self):
+            self.levels = []
+
+        def generate_json(
+            self, system, prompt, schema_hint, timeout, *,
+            max_output_tokens, format_schema=None,
+        ):
+            body = json.loads(prompt)
+            self.levels.append(body["level"])
+            refs = ((body.get("input") or {}).get("window_evidence_refs") or [])
+            marker = refs[0] if refs else "none"
+            return _FakeResult(ok=True, data={
+                "insights": [{"ref": marker}],
+                "global_summary": f"summary:{marker}",
+                "missing_context": [f"missing:{marker}"],
+                "confidence": 0.5,
+            })
+
+    client = AutonomousClient()
+    con = sqlite3.connect(":memory:")
+    result = run_hierarchical_json(
+        stage_name="v18_autonomous_candidates",
+        person_id="me",
+        package_date="2026-07-16",
+        source_ref="conv-gate-b",
+        system="SYS",
+        payload={
+            "mission": "analyse",
+            "evidence": [
+                {"id": index, "text": "x" * 900} for index in range(16)
+            ],
+        },
+        schema={
+            "insights": [], "global_summary": "",
+            "missing_context": [], "confidence": 0.0,
+        },
+        timeout=1,
+        client=client,
+        context_window=4096,
+        output_budget=512,
+        connection=con,
+    )
+
+    assert len(client.levels) > 1
+    assert set(client.levels) == {0}
+    assert len(result["insights"]) == len(client.levels)
+    assert len(result["global_summary"].splitlines()) == len(client.levels)
+    assert len(result["missing_context"]) == len(client.levels)
+    assert result["confidence"] == 0.5
 
 
 def test_evidence_leaf_index_resolves_short_id_and_exact_digest_alias():

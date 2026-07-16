@@ -87,6 +87,7 @@ def _build_rules() -> list[tuple[re.Pattern[str], str, dict[str, Any]]]:
     add(r"\b(?:aide|aide-?moi|help\s+me)\s+(?:[àa]|pour|to)\s+" + _TARGET, "help_start")
 
     # --- vision handlers ---
+    add(r"\b(?:qui\s+est\s+(?:cette|la)\s+personne|qui\s+est[- ]?ce|who\s+is\s+(?:this|that)\s+person)\b", "who_is")
     add(r"\b(?:c'?est\s+quoi|qu'?est-?ce\s+que\s+c'?est|what\s+is\s+(?:this|that))\b", "what_is")
     add(r"\b(?:lis|lire|ocr|read|d[ée]chiffre)\b(?:\s+(?:le\s+)?texte)?", "ocr")
     add(r"\b(?:trouve|cherche|find|where\s+(?:is|are)|o[ùu]\s+(?:est|sont)|o[ùu]\s+se\s+trouv(?:e|ent))\b\s+" + _TARGET, "find")
@@ -99,6 +100,10 @@ def _build_rules() -> list[tuple[re.Pattern[str], str, dict[str, Any]]]:
 
     # --- translate ---
     add(r"\b(?:traduis|traduire|translate)\b(?:[- ](?:le|la|ça|ca|it|this))?\s*(?:en\s+([\w]+))?", "translate")
+
+    # --- explicit memory / current-scene queries ---
+    add(r"\b(?:retiens|m[ée]morise|remember)\b\s*[:,]?\s+(.+)", "remember_fact")
+    add(r"\b(?:qu'?est[- ]?ce\s+qui|quoi)\s+a\s+chang[ée]\b(?:\s+dans\s+(?:la\s+)?pi[èe]ce)?", "scene_changes")
 
     # --- replay ---
     add(r"\b(?:rejoue|replay|revois|montre[- ]moi)\b.*?(\d{1,2}\s*[h:]\s*\d{0,2}|\d{1,2}\s*heures?)", "replay")
@@ -172,6 +177,10 @@ _HIGH_CONFIDENCE: list[tuple[re.Pattern[str], str]] = [
         (r"arr[êe]te\s+la\s+traduction\b", "translate_live"),
         (r"mode\s+aide\b", "help_start"),
         (r"help\s+mode\b", "help_start"),
+        (r"retiens\b", "remember_fact"),
+        (r"m[ée]morise\b", "remember_fact"),
+        (r"qui\s+est\s+(?:cette|la)\s+personne\b", "who_is"),
+        (r"qu'?est[- ]?ce\s+qui\s+a\s+chang[ée]\b", "scene_changes"),
     ]
 ]
 
@@ -281,6 +290,9 @@ class IntentRouter:
         vision_focus: Callable[[dict[str, Any]], Any] | None = None,
         on_device_command: Callable[[dict[str, Any]], Any] | None = None,
         ask_memory: Callable[[str], dict[str, Any]] | None = None,
+        remember_fact: Callable[[str], dict[str, Any]] | None = None,
+        who_is: Callable[[], dict[str, Any]] | None = None,
+        scene_changes: Callable[[], dict[str, Any]] | None = None,
         llm_router: Any = None,
         enrollment: Any = None,
         emit_ui_intent: Callable[[dict[str, Any]], Any] | None = None,
@@ -292,6 +304,9 @@ class IntentRouter:
         self.vision_focus = vision_focus
         self.on_device_command = on_device_command
         self.ask_memory = ask_memory
+        self.remember_fact = remember_fact
+        self.who_is = who_is
+        self.scene_changes = scene_changes
         self.llm_router = llm_router
         self.enrollment = enrollment
         # E37 §3: owner voice enrolment ("configure ma voix"). Arms the wearer capture.
@@ -497,6 +512,8 @@ class IntentRouter:
             elif intent == "ask_memory":
                 q = _clean_target(m.group(1)) if m.groups() else None
                 out["question"] = q or text
+            elif intent == "remember_fact":
+                out["fact"] = _clean_target(m.group(1)) if m.groups() else text
             elif intent == "help_start":
                 # "mode aide" (no group) → empty desc (multi-turn ask); "aide-moi à X"
                 # → the task description in group 1.
@@ -528,8 +545,9 @@ class IntentRouter:
         if self.llm_router is None:
             return None
         schema = {
-            "intent": "one of: what_is|find|ocr|translate|translate_live|zoom|set_ui_mode|privacy_pause|"
-                      "open_app|paid_mode|local_mode|menu|replay|ask_memory|owner_enroll|help_start|unknown",
+            "intent": "one of: what_is|who_is|find|ocr|translate|translate_live|zoom|set_ui_mode|privacy_pause|"
+                      "open_app|paid_mode|local_mode|menu|replay|ask_memory|remember_fact|scene_changes|"
+                      "owner_enroll|help_start|unknown",
             "help_desc": "string (help_start: the task the user wants help with, e.g. 'monter l'étagère'; '' if none given)",
             "on": "bool (translate_live: true='traduis en direct', false='stop traduction')",
             "query": "string (target for find, or search text for open_app youtube)",
@@ -541,6 +559,7 @@ class IntentRouter:
             "provider": "openai|gemini (for paid_mode)",
             "time": "string, an hour like '14h' or '14h30' (for replay)",
             "question": "string (the memory question for ask_memory)",
+            "fact": "string (the fact explicitly requested to remember)",
         }
         system = (
             "Tu es le routeur d'intentions de lunettes AR. L'utilisateur parle NATURELLEMENT, "
@@ -566,7 +585,7 @@ class IntentRouter:
         if intent in ("", "unknown"):
             return None
         out: dict[str, Any] = {"intent": intent, "llm": True}
-        for k in ("query", "ui_mode", "app", "language", "provider", "question", "package", "destination", "time"):
+        for k in ("query", "ui_mode", "app", "language", "provider", "question", "fact", "package", "destination", "time"):
             if data.get(k):
                 out[k] = data[k]
         # E53: help_start carries a free description that may legitimately be empty
@@ -579,6 +598,8 @@ class IntentRouter:
             out["on"] = bool(data["on"])
         if intent == "ask_memory" and "question" not in out:
             out["question"] = text
+        if intent == "remember_fact" and "fact" not in out:
+            out["fact"] = text
         return out
 
     # ---- dispatch (route to existing handlers only) -------------------------
@@ -589,6 +610,21 @@ class IntentRouter:
 
         if intent in ("what_is", "find", "ocr", "zoom", "translate"):
             return self._do_vision(routed, text)
+        if intent == "who_is":
+            return self._do_context_query(intent, self.who_is)
+        if intent == "scene_changes":
+            return self._do_context_query(intent, self.scene_changes)
+        if intent == "remember_fact":
+            fact = str(routed.get("fact") or text).strip()
+            if self.remember_fact is None:
+                return self._unavailable(intent, "Mémoire indisponible.")
+            try:
+                result = self.remember_fact(fact)
+            except Exception:
+                return self._unavailable(intent, "Je n'ai pas pu enregistrer ce souvenir.")
+            if isinstance(result, dict):
+                self._ui(result)
+            return RoutedIntent(intent=intent, result=result, handled=bool(result))
         if intent == "set_ui_mode":
             return self._do_device({"type": "device_command", "action": "set_ui_mode", "ui_mode": routed["ui_mode"]}, intent)
         if intent == "privacy_pause":
@@ -628,6 +664,19 @@ class IntentRouter:
         except Exception:
             return self._unavailable("owner_enroll", "Impossible de démarrer la configuration de ta voix.")
         return RoutedIntent(intent="owner_enroll", result=res, handled=True)
+
+    def _do_context_query(
+        self, intent: str, handler: Callable[[], dict[str, Any]] | None,
+    ) -> RoutedIntent:
+        if handler is None:
+            return self._unavailable(intent, "Contexte visuel indisponible.")
+        try:
+            result = handler()
+        except Exception:
+            return self._unavailable(intent, "Contexte visuel indisponible.")
+        if isinstance(result, dict):
+            self._ui(result)
+        return RoutedIntent(intent=intent, ui_intent=result, handled=bool(result))
 
     # ---- help mode (E53) ----------------------------------------------------
     def _match_help(self, text: str) -> RoutedIntent | None:
@@ -688,7 +737,12 @@ class IntentRouter:
     def _do_vision(self, routed: dict[str, Any], text: str) -> RoutedIntent:
         intent = routed["intent"]
         request: dict[str, Any] = {
-            "kind": "what_is" if intent in ("zoom", "translate", "what_is") else intent,
+            # A one-shot visual translation starts with OCR.  Treating it as
+            # ``what_is`` used to return an object label while silently ignoring
+            # the translate flag.
+            "kind": "ocr" if intent == "translate" else (
+                "what_is" if intent in ("zoom", "what_is") else intent
+            ),
             "track_id": routed.get("track_id") or self.context.last_track_id,
             "bbox": routed.get("bbox") or self.context.last_bbox,
         }

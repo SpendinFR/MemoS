@@ -460,6 +460,13 @@ def identity_ambiguity_reasons(conversation_data: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
     by_label: dict[str, set[str]] = {}
     for turn in turns:
+        metadata = _safe_json(turn.get("metadata_json"), {})
+        if (
+            isinstance(metadata, dict)
+            and metadata.get("evidence_role")
+            == "system_observation_not_user_speech"
+        ):
+            continue
         label = str(turn.get("speaker_label") or "").strip()
         person_id = str(turn.get("person_id") or "").strip()
         unresolved = not person_id or person_id.lower().startswith((

@@ -75,12 +75,14 @@ namespace MLOmega.XR.Reflex
         {
             if (_asrBridge != null) _asrBridge.Transcript += OnTranscript;
             if (_commands != null) _commands.TranslateLiveRequested += OnTranslateLiveRequested;
+            if (_commands != null) _commands.TranslateTextRequested += OnTranslateTextRequested;
         }
 
         private void OnDisable()
         {
             if (_asrBridge != null) _asrBridge.Transcript -= OnTranscript;
             if (_commands != null) _commands.TranslateLiveRequested -= OnTranslateLiveRequested;
+            if (_commands != null) _commands.TranslateTextRequested -= OnTranslateTextRequested;
         }
 
         /// <summary>The translate_live device command (menu flip / voice on-off).</summary>
@@ -89,6 +91,16 @@ namespace MLOmega.XR.Reflex
             bool target = on ?? !TranslateLive;
             SetTranslateLive(target);
             if (_statusBar != null) _statusBar.TranslateLive = target;
+        }
+
+        private void OnTranslateTextRequested(string text, string source, string target)
+        {
+            if (_subtitle == null || string.IsNullOrWhiteSpace(text)) return;
+            source = string.IsNullOrWhiteSpace(source) ? (TargetLang == "fr" ? "en" : "fr") : source;
+            target = string.IsNullOrWhiteSpace(target) ? TargetLang : target;
+            _subtitle.OnTranscript(text, true, source);
+            long token = Interlocked.Increment(ref _translationSeq);
+            RunTranslation(text, source, target, token);
         }
 
         private void Update()

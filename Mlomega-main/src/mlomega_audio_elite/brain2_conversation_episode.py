@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
 
 from .brain2_episode_windowing import (
@@ -303,9 +304,9 @@ _MISSION = (
 
 SEGMENTATION_STAGE_NAME = "brain2_conversation_segmentation"
 DETAIL_STAGE_NAME = "brain2_conversation_detail"
-CONVERSATION_ADAPTER_VERSION = "e64i-conversation-window-v1"
+CONVERSATION_ADAPTER_VERSION = "e64i-conversation-window-v4"
 SEGMENTATION_PROMPT_VERSION = "v6-segmentation-boundaries-unchanged-v1"
-DETAIL_PROMPT_VERSION = "v6-detail-locked-segments-unchanged-v1"
+DETAIL_PROMPT_VERSION = "v6-detail-locked-segments-unchanged-v4"
 
 
 class ConversationEpisodeContractError(RuntimeError):
@@ -390,6 +391,67 @@ def normalize_segmentation(
     return segments
 
 
+def split_segments_on_silence(
+    segments: Sequence[Mapping[str, Any]],
+    turns_by_id: Mapping[str, Mapping[str, Any]],
+    *,
+    threshold_s: float | None = None,
+) -> list[dict[str, Any]]:
+    """Refine semantic segments at proven long acquisition gaps.
+
+    A model cannot honestly summarize two interactions separated by tens of
+    seconds as one continuous subtheme merely because the recorder kept the
+    same conversation row open.  This refinement is lossless and semantic-free:
+    it uses only adjacent source timestamps and preserves every turn once.
+    """
+    if threshold_s is None:
+        try:
+            threshold_s = float(
+                os.environ.get("MLOMEGA_CONVERSATION_SILENCE_SPLIT_S", "15")
+            )
+        except ValueError:
+            threshold_s = 15.0
+    threshold_s = max(5.0, float(threshold_s))
+
+    refined: list[dict[str, Any]] = []
+    for source in segments:
+        source_ids = [str(item) for item in source.get("turn_ids") or []]
+        if not source_ids:
+            continue
+        groups: list[list[str]] = [[source_ids[0]]]
+        gaps: list[float] = [0.0]
+        for turn_id in source_ids[1:]:
+            previous = turns_by_id.get(groups[-1][-1], {})
+            current = turns_by_id.get(turn_id, {})
+            try:
+                gap = float(current.get("start_s")) - float(previous.get("end_s"))
+            except (TypeError, ValueError):
+                gap = 0.0
+            if gap >= threshold_s:
+                groups.append([turn_id])
+                gaps.append(gap)
+            else:
+                groups[-1].append(turn_id)
+
+        for part_index, group in enumerate(groups):
+            title = str(source.get("title_hint") or "Conversation")
+            reason = str(source.get("boundary_reason") or "conversation_start")
+            if part_index:
+                title = f"Reprise après silence ({gaps[part_index]:.1f} s)"
+                reason = "temporal_gap"
+            refined.append({
+                "ordinal": len(refined),
+                "title_hint": title,
+                "boundary_reason": reason,
+                "start_turn_id": group[0],
+                "end_turn_id": group[-1],
+                "turn_ids": group,
+                "source_ordinal": int(source.get("ordinal", len(refined))),
+                "temporal_gap_s": gaps[part_index] if part_index else None,
+            })
+    return refined
+
+
 def combine_segment_details(
     output: Any,
     segments: Sequence[Mapping[str, Any]],
@@ -429,6 +491,205 @@ def combine_segment_details(
         "conversation_episode": parent,
         "missing_context": list(output.get("missing_context") or []),
         "confidence": output.get("confidence", parent.get("confidence", 0.0)),
+    }
+
+
+def normalize_detail_window_output(
+    output: Any,
+    segments: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Bind a detail batch to its immutable planned segments.
+
+    Small models commonly number a one-segment response from zero even when the
+    locked source segment has a global ordinal greater than zero.  The window
+    planner is the authority for membership, so a one-item response is safely
+    rebound to that one planned ordinal.  A detail pass may also discover that
+    one coarse segment contains several real subjects.  We accept that split
+    only when its cited evidence is an exact, contiguous and ordered partition
+    of every source turn; otherwise no membership is guessed.  Multi-segment
+    batches remain strict because remapping several results could swap topics.
+    """
+    if not isinstance(output, Mapping) or not isinstance(
+        output.get("conversation_episode"), Mapping
+    ):
+        return None
+    batch = list(segments)
+    if not batch:
+        return None
+    parent = output["conversation_episode"]
+    details = parent.get("subthemes")
+    if not isinstance(details, list) or not details:
+        return None
+
+    expected_ordinals = [int(segment["ordinal"]) for segment in batch]
+    kept: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    if len(batch) == 1 and len(details) > 1:
+        source_segment = batch[0]
+        source_turn_ids = [str(item) for item in source_segment.get("turn_ids") or []]
+        cited_partition: list[str] = []
+        for detail in details:
+            if not isinstance(detail, Mapping):
+                return None
+            evidence = _unique_strings(detail.get("evidence_turn_ids"))
+            if not evidence:
+                return None
+            cited_partition.extend(evidence)
+        # This is proof, not a heuristic: every source turn is cited exactly
+        # once, in source order.  Filler/gap assignment is deliberately refused.
+        if cited_partition != source_turn_ids:
+            return None
+    elif len(details) != len(batch):
+        return None
+
+    for index, detail in enumerate(details):
+        if not isinstance(detail, Mapping):
+            return None
+        normalized = dict(detail)
+        if len(batch) == 1:
+            source_segment = batch[0]
+            ordinal = expected_ordinals[0]
+            normalized["ordinal"] = ordinal
+            normalized["source_ordinal"] = ordinal
+            normalized["part_index"] = index
+            normalized["turn_ids"] = (
+                _unique_strings(detail.get("evidence_turn_ids"))
+                if len(details) > 1
+                else [str(item) for item in source_segment.get("turn_ids") or []]
+            )
+            normalized["boundary_reason"] = (
+                str(source_segment.get("boundary_reason") or "")
+                if index == 0
+                else "semantic_split_complete_evidence"
+            )
+        else:
+            try:
+                ordinal = int(detail.get("ordinal"))
+            except (TypeError, ValueError):
+                return None
+            if ordinal not in expected_ordinals or ordinal in seen:
+                return None
+            source_segment = next(
+                segment for segment in batch if int(segment["ordinal"]) == ordinal
+            )
+            normalized["source_ordinal"] = ordinal
+            normalized["part_index"] = 0
+            normalized["turn_ids"] = [
+                str(item) for item in source_segment.get("turn_ids") or []
+            ]
+            normalized["boundary_reason"] = str(
+                source_segment.get("boundary_reason") or ""
+            )
+        seen.add(ordinal)
+        kept.append(normalized)
+
+    return {
+        "min_ordinal": min(expected_ordinals),
+        "parent": {
+            key: parent.get(key)
+            for key in (
+                "title", "situation_summary", "participants", "location",
+                "channel", "confidence",
+            )
+        },
+        "subthemes": kept,
+        "missing_context": list(output.get("missing_context") or []),
+    }
+
+
+def assemble_detail_window_outputs(
+    persisted: Sequence[Mapping[str, Any]],
+    segments: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Reassemble validated detail parts and prove full source-turn coverage."""
+    parts: list[dict[str, Any]] = []
+    parents: list[tuple[int, dict[str, Any]]] = []
+    participants: list[str] = []
+    missing: list[str] = []
+    for row in persisted:
+        envelope = row.get("output") if isinstance(row, Mapping) else None
+        if not isinstance(envelope, Mapping):
+            continue
+        batch_min = envelope.get("min_ordinal")
+        try:
+            min_ordinal = int(batch_min)
+        except (TypeError, ValueError):
+            min_ordinal = 10**9
+        parent = envelope.get("parent")
+        if isinstance(parent, Mapping):
+            parents.append((min_ordinal, dict(parent)))
+            participants.extend(_unique_strings(parent.get("participants")))
+        for raw in envelope.get("subthemes") or []:
+            if not isinstance(raw, Mapping):
+                continue
+            detail = dict(raw)
+            try:
+                source_ordinal = int(
+                    detail.get("source_ordinal", detail.get("ordinal"))
+                )
+                part_index = int(detail.get("part_index", 0))
+            except (TypeError, ValueError):
+                raise ConversationEpisodeContractError("detail_provenance_invalid")
+            detail["source_ordinal"] = source_ordinal
+            detail["part_index"] = part_index
+            parts.append(detail)
+        missing.extend(
+            str(item) for item in envelope.get("missing_context") or []
+            if item is not None
+        )
+
+    parts.sort(key=lambda item: (int(item["source_ordinal"]), int(item["part_index"])))
+    expected_turn_ids = [
+        str(turn_id)
+        for segment in segments
+        for turn_id in segment.get("turn_ids") or []
+    ]
+    actual_turn_ids = [
+        str(turn_id)
+        for detail in parts
+        for turn_id in detail.get("turn_ids") or []
+    ]
+    if actual_turn_ids != expected_turn_ids:
+        raise ConversationEpisodeContractError(
+            "detail_window_membership_not_lossless"
+        )
+    if not parts:
+        raise ConversationEpisodeContractError("detail_window_outputs_missing")
+
+    for ordinal, detail in enumerate(parts):
+        detail["ordinal"] = ordinal
+        detail.pop("source_ordinal", None)
+        detail.pop("part_index", None)
+        participants.extend(_unique_strings(detail.get("participants")))
+
+    parents.sort(key=lambda item: item[0])
+    anchor = parents[0][1] if parents else {}
+    titles = [str(item.get("title") or "").strip() for item in parts]
+    summaries = [str(item.get("summary") or "").strip() for item in parts]
+    title = " / ".join(item for item in titles if item)[:120]
+    situation_summary = " ".join(item for item in summaries if item)
+    confidence_values = [_confidence(item.get("confidence")) for item in parts]
+    confidence = min(confidence_values) if confidence_values else 0.0
+    return {
+        "conversation_episode": {
+            "title": title or str(anchor.get("title") or "Conversation"),
+            "situation_summary": situation_summary or str(
+                anchor.get("situation_summary") or ""
+            ),
+            "participants": list(dict.fromkeys(participants)),
+            "location": next(
+                (parent.get("location") for _, parent in parents if parent.get("location")),
+                None,
+            ),
+            "channel": next(
+                (parent.get("channel") for _, parent in parents if parent.get("channel")),
+                None,
+            ),
+            "confidence": confidence,
+            "subthemes": parts,
+        },
+        "missing_context": list(dict.fromkeys(missing)),
+        "confidence": confidence,
     }
 
 
@@ -570,6 +831,138 @@ def _source_quality_gaps(cognitive_turns: Sequence[Mapping[str, Any]]) -> list[s
             unknown_speakers = True
             break
     return ["speaker_identity_unenrolled"] if unknown_speakers else []
+
+
+def _sensor_kind(turn: Mapping[str, Any]) -> str:
+    metadata = turn.get("metadata_json")
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except (TypeError, ValueError):
+            metadata = {}
+    return str(metadata.get("kind") or "") if isinstance(metadata, Mapping) else ""
+
+
+def _preferred_sensor_context(
+    sensor_context: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """Use Deep Vision for visual semantics once it exists, without data loss.
+
+    Raw VisionRT change atoms remain durable inputs to selection, Silent Life and
+    the independent coverage manifest. Recopying all of them beside the richer
+    VLM descriptions in every conversation-detail prompt added no information and
+    hid the actual Deep Vision output. Non-visual sensor evidence is always kept.
+    """
+
+    deep = [turn for turn in sensor_context if _sensor_kind(turn) == "deep_vision_context"]
+    if not deep:
+        return list(sensor_context)
+    return [
+        turn
+        for turn in sensor_context
+        if _sensor_kind(turn) != "vision_context"
+    ]
+
+
+def _context_addenda_as_sensor(bundle: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Project V18 context addenda into the explicit sensor lane, never dialogue."""
+
+    envelope = bundle.get("context_addenda")
+    entries = envelope.get("entries") if isinstance(envelope, Mapping) else None
+    if not isinstance(entries, list):
+        return []
+    conversation = bundle.get("conversation")
+    started_raw = conversation.get("started_at") if isinstance(conversation, Mapping) else None
+
+    def parse(value: Any) -> datetime | None:
+        try:
+            parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    started = parse(started_raw)
+    projected: list[dict[str, Any]] = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, Mapping) or not entry.get("text"):
+            continue
+        event_time = parse(entry.get("event_time"))
+        relative_s = (
+            max(0.0, (event_time - started).total_seconds())
+            if event_time is not None and started is not None else None
+        )
+        source_table = str(entry.get("source_table") or "")
+        kind = (
+            "deep_vision_context"
+            if source_table == "brainlive_deep_vision_observations_v161"
+            else "context_addendum"
+        )
+        projected.append({
+            "turn_id": str(entry.get("addendum_id") or f"context-addendum-{index}"),
+            "idx": None,
+            "speaker_label": "system_context",
+            "person_id": None,
+            "start_s": relative_s,
+            "end_s": relative_s,
+            "text": str(entry.get("text")),
+            "metadata_json": json.dumps({
+                "kind": kind,
+                "evidence_role": "system_observation_not_user_speech",
+                "time": entry.get("event_time"),
+                "source_table": source_table,
+                "source_id": entry.get("source_id"),
+                "addendum_id": entry.get("addendum_id"),
+                "scope": entry.get("scope"),
+            }, ensure_ascii=False, sort_keys=True),
+        })
+    return projected
+
+
+def _sensor_context_for_segments(
+    sensor_context: Sequence[Mapping[str, Any]],
+    segments: Sequence[Mapping[str, Any]],
+    by_id: Mapping[str, Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """Route system evidence only to conversation segments it temporally touches."""
+
+    try:
+        margin = max(0.0, float(os.environ.get("MLOMEGA_E64_SENSOR_CONTEXT_MARGIN_S", "5")))
+    except (TypeError, ValueError):
+        margin = 5.0
+    ranges: list[tuple[float, float]] = []
+    for segment in segments:
+        starts: list[float] = []
+        ends: list[float] = []
+        for turn_id in segment.get("turn_ids") or []:
+            turn = by_id.get(str(turn_id)) or {}
+            try:
+                start = float(turn.get("start_s"))
+                end = float(turn.get("end_s") if turn.get("end_s") is not None else start)
+            except (TypeError, ValueError):
+                continue
+            starts.append(start)
+            ends.append(max(start, end))
+        if starts:
+            ranges.append((min(starts) - margin, max(ends) + margin))
+    if not ranges:
+        return list(sensor_context)
+
+    routed: list[Mapping[str, Any]] = []
+    for sensor in sensor_context:
+        try:
+            start = float(sensor.get("start_s"))
+            end = float(sensor.get("end_s") if sensor.get("end_s") is not None else start)
+        except (TypeError, ValueError):
+            # Evidence without a temporal coordinate cannot be safely assigned to
+            # one subtheme, so keep it visible rather than silently discarding it.
+            routed.append(sensor)
+            continue
+        end = max(start, end)
+        if any(start <= upper and end >= lower for lower, upper in ranges):
+            routed.append(sensor)
+    return routed
 
 
 def _render_lossless_prompt(
@@ -945,12 +1338,19 @@ def _segmentation_prompt_overhead(safe_prompt: Callable[[dict[str, Any]], str]) 
 def _detail_units(
     segments: Sequence[Mapping[str, Any]],
     by_id: Mapping[str, Mapping[str, Any]],
+    sensor_context: Sequence[Mapping[str, Any]] = (),
 ) -> list[PlanUnit]:
     """One PlanUnit per LOCKED segment - a segment is never split across a batch."""
     units: list[PlanUnit] = []
     for segment in segments:
         turns = [by_id[turn_id] for turn_id in segment["turn_ids"]]
-        payload = {**dict(segment), "turns": turns}
+        payload = {
+            **dict(segment),
+            "turns": turns,
+            "sensor_context": _sensor_context_for_segments(
+                sensor_context, [segment], by_id
+            ),
+        }
         tokens = estimate_tokens_for_text(
             json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
         ) + 32
@@ -1005,7 +1405,9 @@ def _run_detail_windows(
                 }
                 for segment in batch
             ],
-            "sensor_context": list(sensor_context),
+            "sensor_context": _sensor_context_for_segments(
+                sensor_context, batch, by_id
+            ),
             "schema": SUBTHEME_DETAIL_SCHEMA,
         }
         return {
@@ -1021,38 +1423,8 @@ def _run_detail_windows(
         # ``combine_segment_details`` over ALL locked segments. The per-batch
         # parent fields are carried through so the conversation-opening batch can
         # anchor the single parent (never a text merge across batches).
-        if not isinstance(output, Mapping) or not isinstance(
-            output.get("conversation_episode"), Mapping
-        ):
-            return None
         batch = _batch_segments(window)
-        parent = output["conversation_episode"]
-        details = parent.get("subthemes")
-        if not isinstance(details, list) or len(details) != len(batch):
-            return None
-        expected_ordinals = {int(seg["ordinal"]) for seg in batch}
-        seen: set[int] = set()
-        kept: list[dict[str, Any]] = []
-        for detail in details:
-            if not isinstance(detail, Mapping):
-                return None
-            try:
-                ordinal = int(detail.get("ordinal"))
-            except (TypeError, ValueError):
-                return None
-            if ordinal not in expected_ordinals or ordinal in seen:
-                return None
-            seen.add(ordinal)
-            kept.append(dict(detail))
-        return {
-            "min_ordinal": min(expected_ordinals),
-            "parent": {
-                key: parent.get(key)
-                for key in ("title", "situation_summary", "participants", "location", "channel", "confidence")
-            },
-            "subthemes": kept,
-            "missing_context": list(output.get("missing_context") or []),
-        }
+        return normalize_detail_window_output(output, batch)
 
     def _validate(output: Any) -> bool:
         return (
@@ -1087,10 +1459,12 @@ def _run_detail_windows(
         validate=_validate,
         normalize_window_output=_normalize,
         decorate_output=_decorate,
-        # One segment per unit; batches close on the token budget, never a fixed
-        # count, and a single oversized segment gets its own (possibly quarantined)
-        # window rather than being split.
-        target_units=max(1, len(detail_units)),
+        # Exactly one locked segment per detail call.  Small JSON models reset
+        # ordinals inside a local response; mixing seg6+seg7 in one batch made
+        # that harmless local numbering ambiguous.  A mono-segment window is
+        # rebound by immutable planner provenance and still fails closed on any
+        # incomplete evidence split.
+        target_units=1,
         overlap=0,
         prompt_overhead_tokens=_detail_prompt_overhead(safe_prompt, conversation),
         subdivide_on_length=True,
@@ -1109,49 +1483,7 @@ def _run_detail_windows(
         stage_name=DETAIL_STAGE_NAME,
         window_keys=window_keys,
     )
-    subthemes_by_ordinal: dict[int, Mapping[str, Any]] = {}
-    anchor_parent: dict[str, Any] | None = None
-    anchor_min = None
-    participants_union: list[str] = []
-    missing_union: list[Any] = []
-    for row in persisted:
-        envelope = row.get("output") if isinstance(row, dict) else None
-        if not isinstance(envelope, dict):
-            continue
-        batch_subthemes = envelope.get("subthemes")
-        if isinstance(batch_subthemes, list):
-            for detail in batch_subthemes:
-                if isinstance(detail, Mapping) and "ordinal" in detail:
-                    subthemes_by_ordinal[int(detail["ordinal"])] = detail
-        parent = envelope.get("parent")
-        if isinstance(parent, Mapping):
-            participants_union.extend(_unique_strings(parent.get("participants")))
-            # Anchor the single parent on the batch that opens the conversation
-            # (lowest ordinal, i.e. contains segment 0), by provenance not text.
-            batch_min = envelope.get("min_ordinal")
-            if isinstance(batch_min, int) and (anchor_min is None or batch_min < anchor_min):
-                anchor_min = batch_min
-                anchor_parent = dict(parent)
-        missing_union.extend(list(envelope.get("missing_context") or []))
-    ordered_details = [
-        subthemes_by_ordinal[int(segment["ordinal"])]
-        for segment in segments
-        if int(segment["ordinal"]) in subthemes_by_ordinal
-    ]
-    parent_fields = anchor_parent or {}
-    detail_output = {
-        "conversation_episode": {
-            "title": parent_fields.get("title") or "",
-            "situation_summary": parent_fields.get("situation_summary") or "",
-            "participants": list(dict.fromkeys(participants_union)),
-            "location": parent_fields.get("location"),
-            "channel": parent_fields.get("channel"),
-            "confidence": parent_fields.get("confidence", 0.0),
-            "subthemes": ordered_details,
-        },
-        "missing_context": list(dict.fromkeys([str(m) for m in missing_union if m is not None])),
-    }
-    return combine_segment_details(detail_output, segments)
+    return assemble_detail_window_outputs(persisted, segments)
 
 
 def _detail_prompt_overhead(
@@ -1203,7 +1535,10 @@ def build_conversation_episode_v6(
             "input_tokens": 0, "elapsed_seconds": 0.0,
         }
     projected_turns = [_prompt_turn(turn) for turn in cognitive_turns]
-    sensor_context = [_prompt_turn(turn) for turn in sensor_turns]
+    sensor_context = _preferred_sensor_context([
+        *[_prompt_turn(turn) for turn in sensor_turns],
+        *_context_addenda_as_sensor(bundle),
+    ])
     segmentation_payload = {
         "mission": _SEGMENTATION_MISSION,
         "contract": {
@@ -1321,6 +1656,11 @@ def build_conversation_episode_v6(
         )
         segmentation_calls = windowed_segmentation
 
+    # The semantic pass may leave several physically separate interactions in
+    # one coarse tail segment.  Refine only on an objective long silence before
+    # asking the detail model; membership stays exact and source-ordered.
+    segments = split_segments_on_silence(segments, by_id)
+
     # ---- Pass 2: detail (single call if it fits, else batched) ----
     detail_payload = {
         "mission": _DETAIL_MISSION,
@@ -1332,7 +1672,9 @@ def build_conversation_episode_v6(
             }
             for segment in segments
         ],
-        "sensor_context": sensor_context,
+        "sensor_context": _sensor_context_for_segments(
+            sensor_context, segments, by_id
+        ),
         "schema": SUBTHEME_DETAIL_SCHEMA,
     }
     detail_prompt = _render_lossless_prompt(safe_prompt, detail_payload)
@@ -1376,7 +1718,7 @@ def build_conversation_episode_v6(
         )
         combined = _run_detail_windows(
             con,
-            detail_units=_detail_units(segments, by_id),
+            detail_units=_detail_units(segments, by_id, sensor_context),
             segments=segments,
             by_id=by_id,
             conversation=dict(bundle.get("conversation") or {}),
@@ -1391,7 +1733,7 @@ def build_conversation_episode_v6(
         )
         # Batch count is not re-derivable without the planner; report the number
         # of durable detail windows for the current run's checkpoint scope.
-        windowed_detail = len(_detail_units(segments, by_id))
+        windowed_detail = len(_detail_units(segments, by_id, sensor_context))
         detail_calls = windowed_detail
 
     elapsed = time.perf_counter() - started

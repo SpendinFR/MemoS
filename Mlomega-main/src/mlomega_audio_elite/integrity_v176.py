@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import math
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -26,6 +27,7 @@ from .utils import json_dumps, now_iso
 
 
 INTEGRITY_SCHEMA_VERSION = "17.6.0"
+_INTEGRITY_SCHEMA_LOCK = threading.RLock()
 
 
 class IntegrityError(RuntimeError):
@@ -547,6 +549,12 @@ def _reconcile_legacy_forecast_lifecycle(con: sqlite3.Connection) -> None:
 
 
 def ensure_integrity_schema() -> None:
+    """Install the schema once at a time inside a live multi-thread process."""
+    with _INTEGRITY_SCHEMA_LOCK:
+        _ensure_integrity_schema_unlocked()
+
+
+def _ensure_integrity_schema_unlocked() -> None:
     """Install V17.6 additive migrations and compatibility protections.
 
     This function deliberately does not delete legacy data.  Rows that cannot be

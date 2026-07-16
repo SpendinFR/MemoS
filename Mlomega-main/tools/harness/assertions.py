@@ -89,6 +89,8 @@ def run_assertions(
 ) -> Result:
     res = Result()
     report = report or {}
+    active = report.get("server_metrics_active") or {}
+    live_session_id = str(active.get("live_session_id") or "").strip() or None
     if not db.exists():
         res.add("db_exists", False, f"no DB at {db}")
         return res
@@ -98,7 +100,11 @@ def run_assertions(
         # --- session recorded --------------------------------------------
         has_sessions = _table_exists(con, "brainlive_sessions")
         n_sessions = _count(
-            con, "SELECT COUNT(*) FROM brainlive_sessions WHERE person_id=?", (person_id,)
+            con,
+            "SELECT COUNT(*) FROM brainlive_sessions WHERE person_id=? AND live_session_id=?"
+            if live_session_id else
+            "SELECT COUNT(*) FROM brainlive_sessions WHERE person_id=?",
+            (person_id, live_session_id) if live_session_id else (person_id,),
         ) if has_sessions else 0
         res.add("brainlive_session_recorded", n_sessions >= 1,
                 f"{n_sessions} brainlive_sessions row(s) for person_id={person_id}")
@@ -106,8 +112,10 @@ def run_assertions(
         # --- session ended cleanly ---------------------------------------
         n_ended = _count(
             con,
+            "SELECT COUNT(*) FROM brainlive_sessions WHERE person_id=? AND live_session_id=? AND status='ended'"
+            if live_session_id else
             "SELECT COUNT(*) FROM brainlive_sessions WHERE person_id=? AND status='ended'",
-            (person_id,),
+            (person_id, live_session_id) if live_session_id else (person_id,),
         ) if has_sessions else 0
         res.add("session_ended", n_ended >= 1, f"{n_ended} ended session(s)")
 
@@ -119,15 +127,33 @@ def run_assertions(
         # pipeline ran end to end is a persisted speech segment. We PASS if EITHER
         # brainlive turns OR an archived speech segment (from the report/metrics)
         # exists, so a real-speech MP4 and synthetic media both validate.
-        turn_buffer = _count(con, "SELECT COUNT(*) FROM brainlive_turn_buffer") if _table_exists(con, "brainlive_turn_buffer") else 0
-        turns = _count(con, "SELECT COUNT(*) FROM turns") if _table_exists(con, "turns") else 0
-        metrics = (report.get("server_metrics_active") or {})
+        turn_buffer = _count(
+            con,
+            "SELECT COUNT(*) FROM brainlive_turn_buffer WHERE live_session_id=?"
+            if live_session_id else "SELECT COUNT(*) FROM brainlive_turn_buffer",
+            (live_session_id,) if live_session_id else (),
+        ) if _table_exists(con, "brainlive_turn_buffer") else 0
+        if _table_exists(con, "turns") and _table_exists(con, "v18_conversation_scopes"):
+            # Deep Audio supersedes the first assembled conversation but retains
+            # both immutable versions. Counting every row made 33 live turns look
+            # like 329 by adding 148 old + 148 active nightly turns.
+            turns = _count(
+                con,
+                """SELECT COUNT(*) FROM turns t
+                     JOIN v18_conversation_scopes s ON s.conversation_id=t.conversation_id
+                    WHERE s.person_id=? AND s.active=1""",
+                (person_id,),
+            )
+        else:
+            turns = _count(con, "SELECT COUNT(*) FROM turns") if _table_exists(con, "turns") else 0
+        metrics = active
         speech_archived = int(metrics.get("speech_segments_archived", 0) or 0)
         audio_chunks = int(metrics.get("audio_chunks_received", 0) or 0)
         res.add(
             "audio_pipeline_ran",
             (turn_buffer + turns) >= 1 or speech_archived >= 1 or audio_chunks >= 1,
-            f"brainlive_turns={turn_buffer + turns}, speech_segments_archived={speech_archived}, "
+            f"live_turn_buffer={turn_buffer}, active_night_turns={turns}, "
+            f"speech_segments_archived={speech_archived}, "
             f"audio_chunks_received={audio_chunks}",
         )
 
@@ -157,8 +183,10 @@ def run_assertions(
             if _table_exists(con, "v18_close_day_runs"):
                 n_done = _count(
                     con,
+                    "SELECT COUNT(*) FROM v18_close_day_runs WHERE person_id=? AND live_session_id=? AND status='completed'"
+                    if live_session_id else
                     "SELECT COUNT(*) FROM v18_close_day_runs WHERE person_id=? AND status='completed'",
-                    (person_id,),
+                    (person_id, live_session_id) if live_session_id else (person_id,),
                 )
                 res.add("close_day_completed", n_done >= 1, f"{n_done} completed run(s)")
             else:
@@ -167,8 +195,10 @@ def run_assertions(
             if _table_exists(con, "phoneonly_session_recovery_v19"):
                 n_rec = _count(
                     con,
+                    "SELECT COUNT(*) FROM phoneonly_session_recovery_v19 WHERE person_id=? AND live_session_id=? AND state='completed'"
+                    if live_session_id else
                     "SELECT COUNT(*) FROM phoneonly_session_recovery_v19 WHERE person_id=? AND state='completed'",
-                    (person_id,),
+                    (person_id, live_session_id) if live_session_id else (person_id,),
                 )
                 res.add("recovery_completed", n_rec >= 1, f"{n_rec} completed recovery job(s)")
             else:

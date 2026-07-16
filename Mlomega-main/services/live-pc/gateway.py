@@ -276,6 +276,7 @@ class AiortcIngress:
         standalone_signaling: bool = True,
         clip_recorder: Any | None = None,
         audio_queue_max_chunks: int = 3000,
+        audio_batch_max_chunks: int = 8,
     ) -> None:
         if not AIORTC_AVAILABLE:
             raise RuntimeError("aiortc is not installed; AiortcIngress is unavailable")
@@ -327,6 +328,9 @@ class AiortcIngress:
         self.audio_chunks_dropped = 0
         self.audio_errors = 0
         self.audio_queue_peak = 0
+        self.audio_batches_processed = 0
+        self.audio_batch_chunks_peak = 0
+        self._audio_batch_max_chunks = max(1, int(audio_batch_max_chunks))
         self.video_frames_dropped = 0
         self.peer_state = "new"
         self._audio_worker: asyncio.Task[Any] | None = None
@@ -670,14 +674,50 @@ class AiortcIngress:
         }
 
     async def _drain_audio(self) -> None:
+        pending: tuple[Any, int, dict[str, Any] | None] | None = None
         while True:
-            item = await self._audio.get()
+            item = pending if pending is not None else await self._audio.get()
+            pending = None
             if item is None:
                 self._audio.task_done()
                 return
             callback = self.on_audio_chunk
-            pcm, rate = item[0], item[1]
-            timing = item[2] if len(item) >= 3 else None
+            batch = [item]
+            stop_after_batch = False
+            # PC subtitles/BrainLive do not need one thread-pool crossing per RTP
+            # packet. Coalesce only adjacent packets already waiting, never skip
+            # samples, and never cross a sample-rate boundary. At 30 ms/chunk the
+            # default caps added latency below 240 ms while removing the per-frame
+            # scheduling/resampling overhead that made a real 5-minute stream fall
+            # behind by more than a minute.
+            while len(batch) < self._audio_batch_max_chunks:
+                try:
+                    nxt = self._audio.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if nxt is None:
+                    self._audio.task_done()
+                    stop_after_batch = True
+                    break
+                if int(nxt[1]) != int(batch[0][1]):
+                    pending = nxt
+                    break
+                batch.append(nxt)
+
+            import numpy as np
+
+            pcm = batch[0][0] if len(batch) == 1 else np.concatenate(
+                [np.asarray(part[0]) for part in batch]
+            )
+            rate = int(batch[0][1])
+            timings = [part[2] for part in batch if len(part) >= 3 and part[2]]
+            timing = None
+            if timings:
+                timing = dict(timings[-1])
+                timing["absolute_start"] = timings[0].get("absolute_start")
+                timing["duration_s"] = sum(float(t.get("duration_s") or 0.0) for t in timings)
+                sources = {str(t.get("clock_source") or "") for t in timings}
+                timing["clock_source"] = sources.pop() if len(sources) == 1 else "mixed_source_clock"
             self._audio_inflight += 1
             self._audio_idle.clear()
             try:
@@ -696,9 +736,14 @@ class AiortcIngress:
                 self.audio_errors += 1
             finally:
                 self._audio_inflight -= 1
-                self._audio.task_done()
+                self.audio_batches_processed += 1
+                self.audio_batch_chunks_peak = max(self.audio_batch_chunks_peak, len(batch))
+                for _ in batch:
+                    self._audio.task_done()
                 if self._audio_inflight == 0:
                     self._audio_idle.set()
+            if stop_after_batch:
+                return
 
     async def stop_accepting_media(self) -> None:
         """Freeze this ingress and stop all current peer producers."""
@@ -713,7 +758,14 @@ class AiortcIngress:
         async def _wait() -> None:
             await self._audio.join()
             await self._audio_idle.wait()
-        await asyncio.wait_for(_wait(), timeout=timeout_s)
+        try:
+            await asyncio.wait_for(_wait(), timeout=timeout_s)
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                "audio drain timed out after "
+                f"{float(timeout_s):.1f}s (queued={self._audio.qsize()}, "
+                f"inflight={self._audio_inflight}, dropped={self.audio_chunks_dropped})"
+            ) from exc
 
     async def _replace_latest(self, queue: Any, item: Any, *, count_drop: bool = False) -> None:
         if queue.full():
@@ -735,6 +787,8 @@ class AiortcIngress:
             "audio_errors": self.audio_errors,
             "audio_queue_depth": self._audio.qsize(),
             "audio_queue_peak": self.audio_queue_peak,
+            "audio_batches_processed": self.audio_batches_processed,
+            "audio_batch_chunks_peak": self.audio_batch_chunks_peak,
             "audio_inflight": self._audio_inflight,
             "accepting_media": self._accepting_media,
             "media_idle_seconds": max(0.0, time.monotonic() - self.last_media_monotonic),

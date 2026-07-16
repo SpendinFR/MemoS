@@ -44,7 +44,10 @@ for _p in (_ROOT, _ROOT / "src"):
 _NAME = r"([A-Za-zÀ-ÖØ-öø-ÿ][\wÀ-ÖØ-öø-ÿ'\-]{1,30})"
 _ENROLL_PATTERNS = [
     re.compile(r"\bretiens\b[\s,:]*\b(?:c'?est|ç?a\s+c'?est)\b\s+" + _NAME, re.IGNORECASE),
-    re.compile(r"\bretiens\b[\s,:]+" + _NAME, re.IGNORECASE),
+    # Bare ``retiens Karim`` remains valid, but it must consume the whole
+    # utterance. The old prefix match enrolled "demain" from a general memory
+    # command such as ``retiens demain je dois acheter des piles``.
+    re.compile(r"^\s*retiens\b[\s,:]+" + _NAME + r"\s*[.!?]?\s*$", re.IGNORECASE),
     re.compile(r"\bsouviens[\s-]?toi\b\s+(?:de\s+|d')" + _NAME, re.IGNORECASE),
     re.compile(r"\bremember\b\s+(?:this\s+is\s+|that'?s\s+)?" + _NAME, re.IGNORECASE),
 ]
