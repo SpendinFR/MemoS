@@ -457,7 +457,9 @@ def select_keyframes_for_bundle(bundle: dict[str, Any], *, max_keyframes: int = 
     a silent ``rows[:N]``.
     """
     from .night_orchestrator.deep_vision_selection import (
+        load_frame_dimensions,
         load_visionrt_frame_positions,
+        normalize_frame_positions,
         persist_frame_coverage,
         select_keyframes_with_coverage,
     )
@@ -469,18 +471,37 @@ def select_keyframes_for_bundle(bundle: dict[str, Any], *, max_keyframes: int = 
     requested = _collect_requested_frame_ids(bundle)
     # E64-I4.3: reuse the VisionRT live positions (bbox recorded in
     # visual_events_v19) so a major displacement at constant labels opens a
-    # keyframe. This closes the documented I4.2 no-position limitation without
-    # any new detection/VLM. A read failure degrades to the label-set-only signal.
+    # keyframe. VisionRT bboxes are PIXEL [x1,y1,x2,y2]; they are normalised by
+    # the frame's REAL dimensions (vision_frames width/height, its metadata, or
+    # the stored keyframe file's own header - the same buffer the detector saw).
+    # A frame whose dimensions cannot be resolved is SKIPPED with an explicit
+    # phase event, never clamped silently; the label-set-only signal remains.
     frame_positions: dict[str, Any] = {}
     frame_ids = [str(c.get("frame_id") or "").strip() for c in all_candidates if c.get("frame_id")]
     try:
         with connect() as con:
-            frame_positions = load_visionrt_frame_positions(
+            raw_positions = load_visionrt_frame_positions(
                 con,
                 person_id=str(bundle.get("person_id") or "me"),
                 live_session_id=bundle.get("live_session_id"),
                 frame_ids=frame_ids,
             )
+            if raw_positions:
+                paths_by_frame = {
+                    str(c.get("frame_id") or "").strip(): str(c.get("image_path") or "")
+                    for c in all_candidates
+                    if c.get("frame_id") and c.get("image_path")
+                }
+                dims = load_frame_dimensions(
+                    con, frame_ids=list(raw_positions.keys()), image_paths_by_frame=paths_by_frame
+                )
+                frame_positions, skipped = normalize_frame_positions(raw_positions, dims)
+                for fid in skipped:
+                    record_phase_event(
+                        "deep_vision_position_dims_unavailable",
+                        bundle_id=bundle.get("bundle_id"),
+                        frame_id=fid,
+                    )
     except Exception:
         frame_positions = {}
     result = select_keyframes_with_coverage(

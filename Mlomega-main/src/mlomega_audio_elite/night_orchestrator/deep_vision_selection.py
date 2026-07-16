@@ -278,6 +278,32 @@ def frame_signature(
 # injected -> the documented safe fallback (frame stays covered by its rep).
 
 
+def frame_id_from_evidence(refs: Any) -> str | None:
+    """Recover the ``frame_id`` a VisionRT event points at, from its evidence.
+
+    Worldbrain writes evidence refs as STRINGS ``"frame:<frame_id>"`` (the real
+    live format); some callers pass mappings carrying ``frame_id``. Both are
+    honoured; nothing else is guessed.
+    """
+    import json as _json
+
+    if isinstance(refs, str):
+        try:
+            refs = _json.loads(refs)
+        except (TypeError, ValueError):
+            refs = []
+    for ref in refs or []:
+        if isinstance(ref, str) and ref.startswith("frame:"):
+            fid = ref[len("frame:"):].strip()
+            if fid:
+                return fid
+        elif isinstance(ref, Mapping):
+            fid = str(ref.get("frame_id") or "").strip()
+            if fid:
+                return fid
+    return None
+
+
 def load_visionrt_frame_positions(
     con: Any,
     *,
@@ -285,12 +311,17 @@ def load_visionrt_frame_positions(
     live_session_id: str | None = None,
     frame_ids: Iterable[str] = (),
 ) -> dict[str, list[dict[str, Any]]]:
-    """Map ``frame_id -> [{label, bbox:[x,y,w,h]}]`` from VisionRT ``visual_events_v19``.
+    """Map ``frame_id -> [{label, bbox:[x1,y1,x2,y2]}]`` from ``visual_events_v19``.
 
-    Reads only positions VisionRT actually emitted live; nothing is fabricated.
-    A row with no usable bbox or no ``frame_id`` (via its evidence asset) is
-    skipped. Returns an empty map on any error or when the table is absent -
-    the caller then degrades to the label-set-only signal (documented fallback).
+    The bbox is returned AS RECORDED by VisionRT - i.e. in PIXELS of the frame
+    it was detected on (visionrt emits detector boxes ``[x1,y1,x2,y2]`` in image
+    coordinates). Callers MUST normalise via :func:`normalize_frame_positions`
+    before feeding the spatial signature. ALL detections of a frame are kept
+    (several objects on one image are all returned). Frame identity comes from
+    the event's evidence refs (worldbrain's real ``"frame:<id>"`` strings) or,
+    for mapping-evidence writers, the linked evidence asset. Returns an empty
+    map on any error or when the table is absent - the caller then degrades to
+    the label-set-only signal (documented fallback).
     """
     import json as _json
 
@@ -302,10 +333,9 @@ def load_visionrt_frame_positions(
         ).fetchone()
         if not exists:
             return {}
-        # Join to the asset table to recover the frame_id VisionRT captured; the
-        # event row itself does not store frame_id, but its evidence asset does.
         sql = (
-            "SELECT e.entity_json, e.observation_json, a.frame_id AS asset_frame_id "
+            "SELECT e.entity_json, e.observation_json, e.evidence_refs_json, "
+            "a.frame_id AS asset_frame_id "
             "FROM visual_events_v19 e "
             "LEFT JOIN visual_evidence_assets_v19 a ON a.visual_asset_id = e.asset_id "
             "WHERE e.person_id=? AND e.truth_level='observed' "
@@ -323,7 +353,10 @@ def load_visionrt_frame_positions(
         try:
             data = dict(row) if not isinstance(row, dict) else row
         except Exception:
-            data = {"entity_json": row[0], "observation_json": row[1], "asset_frame_id": row[2]}
+            data = {
+                "entity_json": row[0], "observation_json": row[1],
+                "evidence_refs_json": row[2], "asset_frame_id": row[3],
+            }
         obs_raw = data.get("observation_json")
         try:
             obs = _json.loads(obs_raw) if isinstance(obs_raw, str) else (obs_raw or {})
@@ -344,7 +377,11 @@ def load_visionrt_frame_positions(
         except (TypeError, ValueError):
             ent = {}
         label = str((ent or {}).get("label") or "").strip()
-        frame_id = str(data.get("asset_frame_id") or obs.get("frame_id") or "").strip()
+        frame_id = (
+            frame_id_from_evidence(data.get("evidence_refs_json"))
+            or str(data.get("asset_frame_id") or obs.get("frame_id") or "").strip()
+            or None
+        )
         if not frame_id:
             continue
         if wanted and frame_id not in wanted:
@@ -353,6 +390,173 @@ def load_visionrt_frame_positions(
             {"label": label, "bbox": [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])]}
         )
     return positions
+
+
+def _image_dimensions(path: str | None) -> tuple[int, int] | None:
+    """(width, height) read from a PNG/JPEG file header, pure Python.
+
+    The stored keyframe is the SAME ``frame_bgr`` buffer VisionRT ran detection
+    on (visionrt records keyframes from the detection frame), so the file's own
+    pixel dimensions are the correct normaliser for its bboxes. Returns ``None``
+    for a missing/unreadable/unknown-format file - never guesses.
+    """
+    if not path:
+        return None
+    try:
+        from pathlib import Path as _Path
+
+        p = _Path(path).expanduser()
+        with p.open("rb") as fh:
+            head = fh.read(26)
+            # PNG: 8-byte signature then IHDR with big-endian width/height.
+            if head[:8] == b"\x89PNG\r\n\x1a\n" and len(head) >= 24:
+                w = int.from_bytes(head[16:20], "big")
+                h = int.from_bytes(head[20:24], "big")
+                return (w, h) if w > 0 and h > 0 else None
+            # JPEG: scan segments for a SOFn marker carrying height/width.
+            if head[:2] == b"\xff\xd8":
+                fh.seek(2)
+                while True:
+                    marker = fh.read(2)
+                    if len(marker) < 2 or marker[0] != 0xFF:
+                        return None
+                    code = marker[1]
+                    if code in (0xD8, 0xD9) or 0xD0 <= code <= 0xD7:
+                        continue
+                    seg_len_raw = fh.read(2)
+                    if len(seg_len_raw) < 2:
+                        return None
+                    seg_len = int.from_bytes(seg_len_raw, "big")
+                    if 0xC0 <= code <= 0xCF and code not in (0xC4, 0xC8, 0xCC):
+                        body = fh.read(5)
+                        if len(body) < 5:
+                            return None
+                        h = int.from_bytes(body[1:3], "big")
+                        w = int.from_bytes(body[3:5], "big")
+                        return (w, h) if w > 0 and h > 0 else None
+                    fh.seek(seg_len - 2, 1)
+    except Exception:
+        return None
+    return None
+
+
+def load_frame_dimensions(
+    con: Any,
+    *,
+    frame_ids: Iterable[str],
+    image_paths_by_frame: Mapping[str, str] | None = None,
+) -> dict[str, tuple[int, int]]:
+    """Resolve each frame's REAL pixel dimensions, from real sources only.
+
+    Priority (documented, no magic):
+    1. ``vision_frames.width/height`` when set (the schema's authoritative slot -
+       currently every writer leaves them NULL, hence the fallbacks);
+    2. ``vision_frames.metadata_json`` ``width``/``height`` (or
+       ``frame_width``/``frame_height``) when a capture client recorded them;
+    3. the stored keyframe file's own header (PNG/JPEG probe) - VisionRT detects
+       on the same buffer the keyframe recorder stores, so the file's dimensions
+       ARE the bbox coordinate space.
+
+    The live ``target_video_height`` (480/540/720 depending on network profile)
+    is deliberately NOT used: it is a client hint, not a per-frame fact. A frame
+    with no resolvable dimensions is simply ABSENT from the returned map - the
+    caller must then skip position injection for it (explicit fallback), never
+    clamp pixel values silently.
+    """
+    import json as _json
+
+    ids = [str(f).strip() for f in frame_ids if str(f).strip()]
+    dims: dict[str, tuple[int, int]] = {}
+    paths: dict[str, str] = dict(image_paths_by_frame or {})
+    if ids:
+        try:
+            placeholders = ",".join("?" for _ in ids)
+            rows = con.execute(
+                f"SELECT frame_id, width, height, metadata_json, image_path "
+                f"FROM vision_frames WHERE frame_id IN ({placeholders})",
+                tuple(ids),
+            ).fetchall()
+        except Exception:
+            rows = []
+        for row in rows:
+            data = dict(row)
+            fid = str(data.get("frame_id") or "").strip()
+            if not fid:
+                continue
+            w, h = data.get("width"), data.get("height")
+            try:
+                if w and h and int(w) > 0 and int(h) > 0:
+                    dims[fid] = (int(w), int(h))
+                    continue
+            except (TypeError, ValueError):
+                pass
+            meta_raw = data.get("metadata_json")
+            try:
+                meta = _json.loads(meta_raw) if isinstance(meta_raw, str) else (meta_raw or {})
+            except (TypeError, ValueError):
+                meta = {}
+            if isinstance(meta, Mapping):
+                mw = meta.get("width") or meta.get("frame_width")
+                mh = meta.get("height") or meta.get("frame_height")
+                try:
+                    if mw and mh and int(mw) > 0 and int(mh) > 0:
+                        dims[fid] = (int(mw), int(mh))
+                        continue
+                except (TypeError, ValueError):
+                    pass
+            if data.get("image_path") and fid not in paths:
+                paths[fid] = str(data.get("image_path"))
+    for fid, path in paths.items():
+        if fid in dims:
+            continue
+        probed = _image_dimensions(path)
+        if probed:
+            dims[fid] = probed
+    return dims
+
+
+def normalize_frame_positions(
+    positions: Mapping[str, list[dict[str, Any]]],
+    dims: Mapping[str, tuple[int, int]],
+) -> tuple[dict[str, list[dict[str, Any]]], tuple[str, ...]]:
+    """Convert VisionRT PIXEL bboxes to normalised 0..1 frame coordinates.
+
+    ``_spatial_signature`` buckets centroids on a 0..1 grid, so raw pixel input
+    would be clamped to a single cell and every real displacement would be
+    invisible. A bbox whose four values already lie in [0, 1] is treated as
+    normalised and passed through (dimensionless writers). Anything else is
+    pixel data and REQUIRES the frame's real dimensions; a frame with positions
+    but no known dimensions is dropped from the result and returned in
+    ``skipped`` so the caller can trace the explicit fallback - it is NEVER
+    silently clamped.
+    """
+    normalized: dict[str, list[dict[str, Any]]] = {}
+    skipped: list[str] = []
+    for fid, dets in positions.items():
+        wh = dims.get(fid)
+        out: list[dict[str, Any]] = []
+        frame_skipped = False
+        for det in dets:
+            bbox = det.get("bbox")
+            if not isinstance(bbox, (list, tuple)) or len(bbox) < 4:
+                continue
+            try:
+                vals = [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])]
+            except (TypeError, ValueError):
+                continue
+            if all(0.0 <= v <= 1.0 for v in vals):
+                out.append({**det, "bbox": vals})
+                continue
+            if not wh or wh[0] <= 0 or wh[1] <= 0:
+                frame_skipped = True
+                continue
+            w, h = float(wh[0]), float(wh[1])
+            out.append({**det, "bbox": [vals[0] / w, vals[1] / h, vals[2] / w, vals[3] / h]})
+        if out:
+            normalized[fid] = out
+        if frame_skipped:
+            skipped.append(fid)
+    return normalized, tuple(skipped)
 
 
 def _inject_positions(

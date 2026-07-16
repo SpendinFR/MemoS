@@ -249,6 +249,135 @@ def test_fallback_when_analysis_has_no_visionrt_position_is_explicit(monkeypatch
 
 
 # --------------------------------------------------------------------------- #
+# Codex counter-audit (2026-07-16): the three real raccords                    #
+# --------------------------------------------------------------------------- #
+
+def test_pixel_bboxes_normalised_by_real_dimensions_open_keyframe():
+    """VisionRT bboxes are PIXELS; unnormalised they'd clamp to one cell and every
+    real move would be invisible. Normalising by the frame's REAL dimensions makes
+    a major displacement open a keyframe; a frame with no known dimensions is
+    SKIPPED explicitly (returned in ``skipped``), never silently clamped."""
+    from mlomega_audio_elite.night_orchestrator.deep_vision_selection import (
+        REASON_SCENE_CHANGE,
+        normalize_frame_positions,
+        select_keyframes_with_coverage,
+    )
+
+    # Realistic 1280x720 pixel boxes: cup jumps top-left -> bottom-right.
+    raw = {
+        "frame_0": [{"label": "cup", "bbox": [64.0, 36.0, 128.0, 72.0]}],
+        "frame_1": [{"label": "cup", "bbox": [77.0, 43.0, 141.0, 79.0]}],
+        "frame_2": [{"label": "cup", "bbox": [1088.0, 612.0, 1152.0, 684.0]}],
+    }
+    dims = {"frame_0": (1280, 720), "frame_1": (1280, 720), "frame_2": (1280, 720)}
+    normalized, skipped = normalize_frame_positions(raw, dims)
+    assert skipped == ()
+    assert all(0.0 <= v <= 1.0 for dets in normalized.values() for v in dets[0]["bbox"])
+
+    def _ts(s):
+        return f"2026-07-14T08:29:{s:02d}+00:00"
+
+    items = [
+        {"source_table": "vision_scene_observations", "source_id": f"o{i}", "frame_id": f"frame_{i}",
+         "time": _ts(i * 4), "objects": [{"label": "cup", "track_id": "t1"}], "people_count": 0, "summary": "s"}
+        for i in range(3)
+    ]
+    cands = [
+        {"bundle_id": "b1", "frame_id": f"frame_{i}", "image_path": f"/f{i}.jpg",
+         "frame_time": _ts(i * 4), "exists": True}
+        for i in range(3)
+    ]
+    bundle = {"bundle_id": "b1", "person_id": PERSON, "package_date": DATE,
+              "live_session_id": SESSION, "vision_timeline_json": items}
+    moved = select_keyframes_with_coverage(
+        bundle, cands, safety_interval_s=999, micro_transition_window_s=0,
+        frame_positions=normalized,
+    )
+    assert moved.selected_count == 2  # the pixel move survived normalisation
+    assert REASON_SCENE_CHANGE in moved.reasons_by_frame["frame_2"]
+
+    # No dimensions for a pixel frame -> explicit skip, never a clamp.
+    _, skipped2 = normalize_frame_positions(raw, {})
+    assert set(skipped2) == {"frame_0", "frame_1", "frame_2"}
+
+
+def test_multi_object_frame_keeps_all_visionrt_detections(monkeypatch, tmp_path):
+    """Several objects on ONE image are ALL reused (vrt_by_frame kept only one row)."""
+    _env(monkeypatch, tmp_path)
+    init_db()
+    from mlomega_audio_elite import v19_visual_store as store
+    from mlomega_audio_elite.v19_visual_consolidation import (
+        DEEP_VISION_REUSE_TABLE,
+        run_visual_consolidation,
+    )
+
+    store.ensure_v19_visual_schema()
+    with connect() as con, write_transaction(con):
+        _seed_deep_observation(con, obs_id="obsM", bundle_id="b1", frame_id="frame_m")
+    ev1 = _seed_visionrt_event(
+        store, frame_id="frame_m", label="cup", bbox=[10.0, 10.0, 20.0, 20.0],
+        occurred_at="2026-07-14T09:00:00+00:00", db_path=None,
+    )
+    ev2 = _seed_visionrt_event(
+        store, frame_id="frame_m", label="person", bbox=[300.0, 40.0, 500.0, 700.0],
+        occurred_at="2026-07-14T09:00:01+00:00", db_path=None,
+    )
+
+    run_visual_consolidation(person_id=PERSON, package_date=DATE, live_session_id=SESSION)
+    with connect() as con:
+        row = con.execute(
+            f"SELECT source_refs_json FROM {DEEP_VISION_REUSE_TABLE} WHERE deep_observation_id='obsM'"
+        ).fetchone()
+    refs = row["source_refs_json"]
+    # BOTH detections of the frame are in the provenance, not just the first.
+    n_vrt_refs = refs.count("visionrt_detection_track_bbox")
+    assert n_vrt_refs == 2, refs
+
+
+def test_deep_semantics_feed_summary_and_routines(monkeypatch, tmp_path):
+    """The validated VLM semantics actually FEED the historic writers: the scene
+    summary carries activities/locations with provenance, and a routine can form
+    on a Deep Vision location when VisionRT recorded no place."""
+    _env(monkeypatch, tmp_path)
+    init_db()
+    from mlomega_audio_elite import v19_visual_store as store
+    from mlomega_audio_elite.v19_visual_consolidation import run_visual_consolidation
+
+    store.ensure_v19_visual_schema()
+    with connect() as con, write_transaction(con):
+        _seed_deep_observation(
+            con, obs_id="obsK", bundle_id="b1", frame_id="frame_k", activity="cooking"
+        )
+    # Three VisionRT sightings of the same entity, same local time slot, NO place
+    # recorded live - only the Deep Vision location_hint ("office") can place them.
+    for i in range(3):
+        _seed_visionrt_event(
+            store, frame_id="frame_k", label="cup", bbox=[10.0, 10.0, 20.0, 20.0],
+            occurred_at=f"2026-07-14T09:0{i}:00+00:00", db_path=None,
+        )
+
+    out = run_visual_consolidation(person_id=PERSON, package_date=DATE, live_session_id=SESSION)
+    assert out["status"] == "completed"
+
+    with connect() as con:
+        # 1) Historic summary consumes the semantics (not just counters).
+        summary = con.execute(
+            "SELECT * FROM scene_session_summaries_v19 ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        summary_blob = " ".join(str(v) for v in dict(summary).values())
+        assert "cooking" in summary_blob  # observed_activities fed the summary
+        assert "office" in summary_blob  # deep_vision_locations fed the summary
+        assert "obsK" in summary_blob  # provenance to the origin analysis
+        # 2) Historic routines consume the Deep Vision place (3 sightings, no live place).
+        routine = con.execute(
+            "SELECT place_key, evidence_refs_json FROM brain2_spatial_routine_models"
+        ).fetchone()
+        assert routine is not None
+        assert routine["place_key"] == "office"
+        assert "deep_vision_location_hint" in routine["evidence_refs_json"]
+
+
+# --------------------------------------------------------------------------- #
 # 4. No duplicate at rejeu (idempotence)                                       #
 # --------------------------------------------------------------------------- #
 
