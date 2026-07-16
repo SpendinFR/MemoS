@@ -35,6 +35,7 @@ live_pipeline = _load("v19_live_pipeline", "live_pipeline.py")
 delivery_adapter = _load("v19_delivery_adapter", "delivery_adapter.py")
 clip_recorder_mod = _load("v19_clip_recorder_runtime", "clip_recorder.py")
 gpu_arbiter_mod = _load("v19_gpu_arbiter_runtime", "gpu_arbiter.py")
+deferred_fine_intel = _load("v19_deferred_fine_intel_runtime", "deferred_fine_intel.py")
 
 
 def _completed_close_day_exists(
@@ -305,6 +306,32 @@ def recover_abandoned_phoneonly_sessions(
                     (started, live_id),
                 )
             try:
+                # E64-i: a crash after the fast /session/end ACK leaves the
+                # DURABLE fine-intel queue with pending jobs that the live
+                # background finalize never processed. Recovery must REPLAY that
+                # drain before CloseDay, exactly as run_close_day gates on it —
+                # never mark the day complete over an unprocessed backlog.
+                with connect(path) as con:
+                    backlog_pending = 0
+                    if con.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_fine_intel_queue_v19'"
+                    ).fetchone():
+                        backlog_pending = int(con.execute(
+                            """SELECT COUNT(*) FROM live_fine_intel_queue_v19
+                               WHERE person_id=? AND live_session_id=? AND status<>'completed'""",
+                            (person_id, live_id),
+                        ).fetchone()[0])
+                if backlog_pending:
+                    backlog = deferred_fine_intel.process_deferred_fine_intel_backlog(
+                        person_id=person_id,
+                        live_session_id=live_id,
+                        db_path=path,
+                    )
+                    backlog_status = str((backlog or {}).get("status") or "completed")
+                    if backlog_status not in {"completed", "not_applicable", "empty"}:
+                        raise RuntimeError(
+                            f"recovery fine-intel backlog incomplete: {backlog}"
+                        )
                 result = runner(
                     person_id=person_id,
                     live_session_id=live_id,
@@ -827,10 +854,11 @@ class PhoneOnlyRuntime:
                 return self.fine_intel_drain_result
             except Exception as exc:
                 self.fine_intel_drain_status = "error"
-                if self.end_status == "finalizing":
+                if self.end_status in ("completed", "finalizing"):
                     # The phone was already released (fast path answered
                     # "completed"); the observable runtime state must still say
-                    # the truth: finalization failed, CloseDay stays gated.
+                    # the truth whatever step failed (drain_receipts fails BEFORE
+                    # "finalizing" is set): finalization failed, CloseDay gated.
                     self.end_status = "error"
                 self.recent_errors.append(("fine_intel_drain: " + str(exc))[:500])
                 raise

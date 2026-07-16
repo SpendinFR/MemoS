@@ -196,6 +196,117 @@ def test_session_end_returns_fast_with_fine_intel_still_pending_and_close_day_ga
     asyncio.run(scenario())
 
 
+def test_receipts_drain_failure_flips_end_status_to_error():
+    """Codex contre-audit: drain_receipts fails BEFORE the finalize step sets
+    'finalizing' — end_status must still flip to error (never a false completed
+    while CloseDay is gated on a failed background finalization)."""
+
+    class ReceiptFailIngress(FakeIngress):
+        async def drain_receipts(self, *, timeout_s: float = 0.0):
+            raise RuntimeError("receipt worker still busy: did not drain receipts")
+
+        async def stop_accepting_media(self):
+            return None
+
+        async def drain_audio(self, *, timeout_s: float = 0.0):
+            return None
+
+    async def scenario():
+        rt = runtime_mod.PhoneOnlyRuntime(
+            "transport-receipt-fail",
+            ingress_factory=ReceiptFailIngress,
+            pipeline_factory=FakePipeline,
+            close_day=lambda **_: {"status": "completed"},
+        )
+        await rt.start()
+        ended = await rt.end_session_only()
+        # Fast path answered (the phone is released)...
+        assert ended["end_session"] == "completed"
+        assert rt.ended is True
+        # ...but the background finalization fails and the state says so.
+        try:
+            await rt.fine_intel_drain_task
+        except Exception:
+            pass
+        else:  # pragma: no cover - the drain MUST fail in this scenario
+            raise AssertionError("background finalization should have failed")
+        assert rt.fine_intel_drain_status == "error"
+        assert rt.end_status == "error"
+
+    asyncio.run(scenario())
+
+
+def test_recovery_replays_pending_fine_intel_backlog_before_close_day(tmp_path, monkeypatch):
+    """Codex contre-audit: a crash after the fast ACK leaves durable pending
+    fine-intel jobs; recovery must replay that drain BEFORE CloseDay and fail
+    loudly if the backlog stays incomplete."""
+    db_path = tmp_path / "recovery-backlog.db"
+    live_id = "blsess_backlog_1"
+    import sqlite3
+
+    con = sqlite3.connect(db_path)
+    con.executescript(
+        """CREATE TABLE brainlive_sessions(
+             live_session_id TEXT PRIMARY KEY, person_id TEXT, status TEXT,
+             current_mode TEXT, started_at TEXT, ended_at TEXT, updated_at TEXT);
+           CREATE TABLE live_fine_intel_queue_v19(
+             job_id TEXT PRIMARY KEY, person_id TEXT, live_session_id TEXT,
+             status TEXT, turn_id TEXT);"""
+    )
+    con.execute(
+        "INSERT INTO brainlive_sessions VALUES(?,?,?,?,?,?,?)",
+        (live_id, "owner", "active", "live_xr", "2026-07-16T10:00:00+00:00", None, None),
+    )
+    con.execute(
+        "INSERT INTO live_fine_intel_queue_v19 VALUES(?,?,?,?,?)",
+        ("job1", "owner", live_id, "pending", "turn1"),
+    )
+    con.commit()
+    con.close()
+
+    calls: list[dict] = []
+    processed: list[dict] = []
+
+    def fake_backlog(**kwargs):
+        processed.append(kwargs)
+        return {"status": "completed", "remaining": 0}
+
+    monkeypatch.setattr(
+        runtime_mod.deferred_fine_intel,
+        "process_deferred_fine_intel_backlog",
+        fake_backlog,
+    )
+    report = runtime_mod.recover_abandoned_phoneonly_sessions(
+        person_id="owner", db_path=db_path,
+        close_day_runner=lambda **kw: calls.append(kw) or {"status": "completed"},
+    )
+    # The durable backlog was replayed BEFORE the close-day runner.
+    assert processed and processed[0]["live_session_id"] == live_id
+    assert calls and calls[0]["live_session_id"] == live_id
+    assert live_id in report["recovered"]
+
+    # Incomplete backlog -> recovery fails loudly, close-day never runs.
+    con = sqlite3.connect(db_path)
+    con.execute(
+        "UPDATE phoneonly_session_recovery_v19 SET state='pending', completed_at=NULL"
+    )
+    con.execute("UPDATE brainlive_sessions SET status='active'")
+    con.commit()
+    con.close()
+    calls.clear()
+    monkeypatch.setattr(
+        runtime_mod.deferred_fine_intel,
+        "process_deferred_fine_intel_backlog",
+        lambda **k: {"status": "pending", "remaining": 1},
+    )
+    report2 = runtime_mod.recover_abandoned_phoneonly_sessions(
+        person_id="owner", db_path=db_path,
+        close_day_runner=lambda **kw: calls.append(kw) or {"status": "completed"},
+    )
+    assert calls == []  # close-day never overtook the unprocessed backlog
+    assert report2["errors"] and "backlog" in str(report2["errors"][0])
+
+
 def test_recovery_job_durable_before_fast_end_returns(tmp_path, monkeypatch):
     """The durable recovery boundary exists the moment /session/end returns.
 
