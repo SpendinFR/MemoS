@@ -48,8 +48,13 @@ class FakeProc:
         return 0
 
 
-def _make(*, props_ok=True, probe_finish="stop", unloads=None, released=None):
+def _make(*, props_ok=True, probe_finish="stop", unloads=None, released=None,
+          resident=("qwen3.5:4b",)):
     spawned: list[FakeProc] = []
+    # enter_text now reads /api/ps and evicts EVERY resident model, then re-reads
+    # to prove Ollama is empty. Model the eviction: after any unload, /api/ps
+    # returns nothing (the models really left).
+    state = {"resident": list(resident), "unloaded_all": False}
 
     def spawn(_command):
         proc = FakeProc()
@@ -66,6 +71,13 @@ def _make(*, props_ok=True, probe_finish="stop", unloads=None, released=None):
 
     def ollama_unload(*, model):
         (unloads if unloads is not None else []).append(model)
+        try:
+            state["resident"].remove(model)
+        except ValueError:
+            pass
+
+    def ollama_ps():
+        return [{"name": m} for m in state["resident"]]
 
     def release_live_models():
         if released is not None:
@@ -76,6 +88,7 @@ def _make(*, props_ok=True, probe_finish="stop", unloads=None, released=None):
         props_probe=props_probe,
         anti_thinking_probe=anti_thinking_probe,
         ollama_unload=ollama_unload,
+        ollama_ps=ollama_ps,
         release_live_models=release_live_models,
         ready_timeout_s=2.0,
         poll_interval_s=0.01,
@@ -124,6 +137,43 @@ def test_full_phase_sequence_keeps_p1_off_during_live_and_vision():
 
     orch.stop_p1()
     assert orch.p1_running is False
+
+
+def test_enter_text_evicts_every_ollama_model_including_9b_before_p1():
+    """Point 4: enter_text must evict ALL resident Ollama models (not a static
+    list) — in particular a stray ``qwen3.5:9b`` — prove Ollama empty, then P1."""
+    unloads: list[str] = []
+    orch, _ = _make(unloads=unloads, resident=["qwen3.5:4b", "qwen3-vl:8b", "qwen3.5:9b"])
+    result = orch.enter_text()
+    assert orch.p1_running is True
+    assert set(unloads) == {"qwen3.5:4b", "qwen3-vl:8b", "qwen3.5:9b"}
+    assert result["resident_after"] == []
+    assert result["vram_before"] and result["vram_after"]
+
+
+def test_enter_text_fails_if_an_ollama_model_resists_eviction(monkeypatch):
+    """A model Ollama refuses to unload must abort the text phase before P1 — a
+    9B coexisting with the 7 GB P1 on 8 GB VRAM is exactly the leak to prevent."""
+    def spawn(_c):
+        return FakeProc()
+
+    def ollama_ps():
+        # Always reports the 9B resident: the unload never takes effect.
+        return [{"name": "qwen3.5:9b"}]
+
+    orch = GpuPhaseOrchestrator(
+        spawn=spawn,
+        props_probe=lambda: {"alias": p1_alias(), "n_ctx": p1_ctx()},
+        anti_thinking_probe=lambda: {"choices": [{"finish_reason": "stop"}]},
+        ollama_unload=lambda *, model: None,  # no-op: the model resists
+        ollama_ps=ollama_ps,
+        release_live_models=lambda: None,
+        ready_timeout_s=2.0,
+        poll_interval_s=0.01,
+    )
+    with pytest.raises(LiveGpuResidencyError, match="qwen3.5:9b"):
+        orch.enter_text()
+    assert orch.p1_running is False  # P1 never started with a resident 9B
 
 
 def test_anti_thinking_probe_runs_at_startup_and_rejects_reasoning():
@@ -234,7 +284,7 @@ def test_prepare_live_gpu_fails_on_foreign_p1_still_answering():
 
 def test_prepare_live_gpu_stops_p1_first():
     orch, _calls = _make_live_prep(ps_sequence=[["qwen3.5:4b"], ["qwen3.5:4b"]])
-    orch.enter_text()  # starts P1
+    orch.start_p1()  # P1 up before the live frontier (enter_text needs empty Ollama)
     assert orch.p1_running is True
     orch.prepare_live_gpu()
     assert orch.p1_running is False  # P1 never resident during live capture

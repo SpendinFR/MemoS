@@ -165,6 +165,8 @@ def run_windows(
     render_window: Callable[[PlannedWindow], Mapping[str, Any]] | None = None,
     normalize_window_output: Callable[[Any, PlannedWindow], Any] | None = None,
     decorate_output: Callable[[Any, Sequence[PlanUnit]], Any] | None = None,
+    describe_contract_violation: Callable[[Any, PlannedWindow], Mapping[str, Any]] | None = None,
+    resolve_contract_rejection: Callable[..., bool] | None = None,
     target_units: int = 45,
     overlap: int = 4,
     prompt_overhead_tokens: int = 512,
@@ -238,6 +240,67 @@ def run_windows(
             )
         )
 
+    def _resolve_rejection(
+        window: PlannedWindow,
+        key: str,
+        attempt: int,
+        input_digest: str,
+        violations: Mapping[str, Any],
+    ) -> bool:
+        """Run the stage's deterministic alternative strategy for a rejected window.
+
+        The stage owns the escalation (local JSON repair, a targeted repair prompt
+        that quotes the precise violations, or a split-into-two-sub-windows + merge
+        + lossless re-verification). The callback receives a context carrying the
+        live checkpoint connection, scope, budget, the shared ``StageResult`` and a
+        ``drive`` hook that runs a child ``PlannedWindow`` through this very executor
+        (so every child is budgeted/validated/checkpointed identically and appended
+        to the parent result). It returns True only when it has durably produced and
+        validated ALL of the window's replacement child output(s); the parent is
+        then recorded SUBDIVIDED (its work lives in the children, exactly like the
+        length-subdivision path) and never re-driven on resume. On any incomplete
+        coverage the callback fails closed and returns False, and we quarantine.
+        """
+        context = {
+            "con": con,
+            "scope": scope,
+            "budget": budget,
+            "llm": llm,
+            "window": window,
+            "window_key": key,
+            "attempt": attempt,
+            "input_digest": input_digest,
+            "violations": dict(violations),
+            "result": result,
+            "drive": _process,
+        }
+        try:
+            handled = bool(resolve_contract_rejection(window, context))
+        except Exception as exc:
+            cp.record_call_telemetry(
+                con, window_key=key, attempt=attempt,
+                person_id=scope.person_id, package_date=scope.package_date,
+                stage_name=scope.stage_name, model=scope.model,
+                why_called=_stage_call_reason(scope.stage_name),
+                facts_read={}, facts_produced={"resolve_error": str(exc)[:200]},
+                cache_hit=False, estimated_input_tokens=None,
+                provider_input_tokens=None, provider_output_tokens=None,
+                output_budget=budget.output_reserve, latency_ms=0,
+                outcome="contract_resolution_failed", error_kind="contract",
+            )
+            con.commit()
+            return False
+        if not handled:
+            return False
+        # The alternative strategy durably produced the replacement child outputs
+        # (appended to ``result`` via the drive hook). Mark the parent subdivided so
+        # a resume re-reads the children, never the parent, and does NOT count the
+        # parent as a leaf for ``all_completed``.
+        cp.mark_state(con, key, cp.STATE_SUBDIVIDED,
+                      error_text="contract_rejection_resolved_by_split")
+        con.commit()
+        return True
+
     def _process(window: PlannedWindow) -> None:
         # The plan digest covers per-unit content, but adapters also carry shared
         # context (bundle, rules, schemas, prior outputs) in the rendered prompt.
@@ -297,11 +360,30 @@ def run_windows(
             return
         # Resume: a subdivided parent re-drives its children, no LLM call for it.
         if state == cp.STATE_SUBDIVIDED:
-            if not subdivide_on_length and str(existing.get("error_text") or "").startswith("llm_error:length"):
+            resume_error = str(existing.get("error_text") or "")
+            if resume_error.startswith("contract_rejection_resolved_by_split"):
+                # This parent was resolved by the stage's contract-split strategy,
+                # whose child windows carry the strategy's own keys (not the length
+                # subdivision's). Re-run the same deterministic strategy: it is
+                # idempotent — every checkpointed child window resumes as COMPLETED
+                # and no LLM call is repaid. Nothing else can reconstruct those
+                # children (their indexes/refs are the strategy's), so this is the
+                # only resume path that keeps the resolved window lossless.
+                if resolve_contract_rejection is not None and _resolve_rejection(
+                    window, key, int(existing.get("attempts") or 0),
+                    effective_input_digest, {"rule": "resume_resolved_split"},
+                ):
+                    return
+                _quarantine(
+                    window, key, int(existing.get("attempts") or 0),
+                    "invalid output (contract)",
+                )
+                return
+            if not subdivide_on_length and resume_error.startswith("llm_error:length"):
                 # A higher-level adapter may need to split OUTPUT schemas rather
                 # than input evidence. Convert an older/resumed subdivision into
                 # an explicit terminal signal and do not re-drive its children.
-                _quarantine(window, key, int(existing.get("attempts") or 0), str(existing.get("error_text") or "llm_error:length"))
+                _quarantine(window, key, int(existing.get("attempts") or 0), resume_error or "llm_error:length")
                 return
             subs = subdivide(window, stage_name=scope.stage_name)
             for sub in subs:
@@ -326,6 +408,31 @@ def run_windows(
 
         last_error = ""
         for attempt in range(1, max_attempts + 1):
+            # Refuse a PROVEN-identical retry before spending it. When the stage
+            # provides a deterministic alternative strategy it also guarantees a
+            # deterministic model (temperature 0) and an UNCHANGED prompt for this
+            # window (same effective_input_digest), so once a contract rejection
+            # exists for this exact input a strict retry is guaranteed to reproduce
+            # it. Skip the call and hand over to the alternative strategy (or
+            # quarantine): the 2nd strictly-identical request never leaves the host.
+            # Without a strategy the historic bounded repair (one distinct extra
+            # attempt) is preserved for callers that rely on it.
+            if (
+                attempt > 1
+                and resolve_contract_rejection is not None
+                and cp.window_has_contract_rejection(
+                    con, window_key=key, input_digest=effective_input_digest
+                )
+            ):
+                last_error = "invalid output (contract)"
+                if _resolve_rejection(
+                    window, key, attempt - 1, effective_input_digest,
+                    {"rule": "identical_retry_refused"},
+                ):
+                    return
+                _quarantine(window, key, attempt - 1, last_error)
+                return
+
             cp.bump_attempt(con, key)
             con.commit()
             call = llm.generate(prompt, output_budget=budget.output_reserve)
@@ -368,14 +475,51 @@ def run_windows(
                 return
 
             if call.ok and not validate(candidate):
-                # Bounded repair: one more try, then quarantine. Never apply it.
+                # A contract rejection is never lost: persist the raw model output,
+                # the parsed candidate, the precise violations and the digests so
+                # the audit shows WHICH rule failed on WHICH value, and so a
+                # byte-identical retry can be detected and REFUSED.
                 last_error = "invalid output (contract)"
+                strategy = "initial" if attempt == 1 else "repeat"
+                try:
+                    violations = (
+                        dict(describe_contract_violation(candidate, window))
+                        if describe_contract_violation is not None
+                        else {"rule": "contract_validate_false"}
+                    )
+                except Exception as exc:
+                    violations = {"rule": "contract_validate_false",
+                                  "describe_error": str(exc)[:200]}
+                # Compute the raw-output digest and check it against PRIOR rejections
+                # of this window BEFORE persisting the current one. If this exact
+                # (window, input, output) triplet already appeared, the model just
+                # produced a strictly identical rejected answer: a retry is proven
+                # pointless (temperature 0) and is FORBIDDEN — we escalate/quarantine
+                # instead of paying another identical call (economy + honesty).
+                output_digest = cp.content_output_digest(call.data)
+                identical_retry = cp.contract_rejection_seen(
+                    con, window_key=key, input_digest=effective_input_digest,
+                    output_digest=output_digest,
+                )
+                cp.record_contract_rejection(
+                    con, window_key=key, attempt=attempt,
+                    person_id=scope.person_id, package_date=scope.package_date,
+                    stage_name=scope.stage_name, model=scope.model,
+                    strategy=strategy, input_digest=effective_input_digest,
+                    raw_output=call.data, parsed_output=candidate,
+                    violations=violations, finish_reason=call.finish_reason,
+                    prompt_tokens=call.prompt_tokens,
+                    completion_tokens=call.completion_tokens,
+                )
                 cp.record_call_telemetry(
                     con, window_key=key, attempt=attempt,
                     person_id=scope.person_id, package_date=scope.package_date,
                     stage_name=scope.stage_name, model=scope.model,
                     why_called=why_called, facts_read=facts_read,
-                    facts_produced={}, cache_hit=False,
+                    facts_produced={"rejection_output_digest": output_digest,
+                                    "violations": violations, "strategy": strategy,
+                                    "identical_retry": identical_retry},
+                    cache_hit=False,
                     estimated_input_tokens=input_tokens,
                     provider_input_tokens=call.prompt_tokens,
                     provider_output_tokens=call.completion_tokens,
@@ -384,7 +528,19 @@ def run_windows(
                     error_kind="contract",
                 )
                 con.commit()
-                if attempt >= 2:
+                # Escalate to the stage's deterministic alternative strategy either
+                # when a retry is proven identical, or once the bounded repair budget
+                # (one distinct extra attempt) is exhausted. Never apply a partial.
+                exhausted = identical_retry or attempt >= 2
+                if exhausted and resolve_contract_rejection is not None:
+                    handled = _resolve_rejection(
+                        window, key, attempt, effective_input_digest, violations
+                    )
+                    if handled:
+                        return
+                    _quarantine(window, key, attempt, last_error)
+                    return
+                if exhausted:
                     _quarantine(window, key, attempt, last_error)
                     return
                 continue

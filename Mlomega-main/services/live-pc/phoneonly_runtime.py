@@ -885,10 +885,11 @@ class PhoneOnlyRuntime:
         2. On grace expiry, split the commands STILL in flight by their routed
            intent (durable vs interactive, from ``pipeline.pending_commands()``):
              * INTERACTIVE (help/next-step/ask_memory/one-shot VLM): abandon them.
-               A durable ``cancelled_session_end`` trace is written AND a
+               A durable NON-TERMINAL ``cancel_requested`` trace is written AND a
                ``cancel_event`` token is SET so any effect the orphan worker still
                attempts (UIIntent/TTS via ``_push_intent``) is refused — the phone
                is already disconnected and its reply is undeliverable. Never silent.
+               The terminal phase stays completed/failed with response_suppressed=1.
              * DURABLE (enrollment/identity/remember/owner-voice): NEVER cancelled.
                We keep awaiting them up to the existing budget
                (``MLOMEGA_FINAL_DRAIN_TIMEOUT_S``, default 300 s, unchanged).
@@ -930,12 +931,12 @@ class PhoneOnlyRuntime:
             if hasattr(pipeline, "mark_command_cancelled_session_end"):
                 try:
                     # Sets the cancel_event token (effect chokepoint) + persists the
-                    # durable cancelled_session_end trace.
+                    # durable NON-TERMINAL cancel_requested trace.
                     pipeline.mark_command_cancelled_session_end(seg)
                 except Exception as exc:
                     self.recent_errors.append(("cancel_command: " + str(exc))[:500])
             self.recent_errors.append(
-                ("command_cancelled_session_end: " + seg)[:500]
+                ("command_cancel_requested: " + seg)[:500]
             )
         remaining_s = max(0.1, budget_s - grace_s)
         deadline = time.monotonic() + remaining_s
@@ -998,8 +999,8 @@ class PhoneOnlyRuntime:
                 # sealed. Awaited here (async), no longer on the HTTP path.
                 # E64-i grâce: a bounded grace for ALL in-flight commands, then an
                 # honest split — interactive commands (help/next-step/memory
-                # question/one-shot VLM) are abandoned with a durable
-                # ``cancelled_session_end`` trace, while durable commands
+                # question/one-shot VLM) are abandoned with a durable non-terminal
+                # ``cancel_requested`` trace, while durable commands
                 # (enrollment/identity/remember/owner-voice) keep being awaited up
                 # to the existing budget and NEVER cancelled.
                 if hasattr(self.ingress, "drain_receipts"):

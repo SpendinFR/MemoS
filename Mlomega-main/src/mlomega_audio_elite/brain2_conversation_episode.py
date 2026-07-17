@@ -26,6 +26,7 @@ from .night_orchestrator import (
     PlanUnit,
     PlannedWindow,
     StageScope,
+    WindowSpec,
     estimate_tokens_for_text,
     run_windows,
 )
@@ -549,9 +550,19 @@ def normalize_detail_window_output(
         if len(batch) == 1:
             source_segment = batch[0]
             ordinal = expected_ordinals[0]
+            # A sub-segment produced by the deterministic contract-rejection split
+            # carries its parent's ``_source_ordinal`` and a ``_part_base`` so the
+            # halves of ONE locked segment reassemble in order (part_index unique
+            # across the whole segment), never colliding at part_index 0.
+            split_source = source_segment.get("_source_ordinal")
+            part_base = source_segment.get("_part_base")
             normalized["ordinal"] = ordinal
-            normalized["source_ordinal"] = ordinal
-            normalized["part_index"] = index
+            normalized["source_ordinal"] = (
+                int(split_source) if split_source is not None else ordinal
+            )
+            normalized["part_index"] = (
+                int(part_base) + index if part_base is not None else index
+            )
             normalized["turn_ids"] = (
                 _unique_strings(detail.get("evidence_turn_ids"))
                 if len(details) > 1
@@ -1400,7 +1411,7 @@ def _run_detail_windows(
             "conversation": dict(conversation or {}),
             "segments": [
                 {
-                    **dict(segment),
+                    **{k: v for k, v in segment.items() if not k.startswith("_")},
                     "turns": [by_id[turn_id] for turn_id in segment["turn_ids"]],
                 }
                 for segment in batch
@@ -1440,6 +1451,105 @@ def _run_detail_windows(
             **output,
         }
 
+    def _describe_violation(candidate: Any, window: PlannedWindow) -> Mapping[str, Any]:
+        """Explain WHY normalize_detail_window_output rejected this batch's output.
+
+        The night executor persists this beside the raw output so the audit shows
+        the exact contract that failed (coverage / cardinality / evidence), which
+        is also the signal that a segment must be split rather than re-asked."""
+        batch = _batch_segments(window)
+        if not isinstance(candidate, Mapping):
+            episode = candidate if isinstance(candidate, Mapping) else None
+            return {
+                "rule": "detail_normalized_output_none",
+                "reason": "normalize_detail_window_output returned None",
+                "batch_ordinals": [int(s["ordinal"]) for s in batch],
+            }
+        return {
+            "rule": "detail_contract_rejected",
+            "batch_ordinals": [int(s["ordinal"]) for s in batch],
+        }
+
+    def _resolve_rejection(window: PlannedWindow, ctx: Mapping[str, Any]) -> bool:
+        """Deterministic escalation: split ONE locked detail segment into two
+        contiguous halves, detail each, and let the executor + assembly re-verify
+        lossless coverage.  No temperature/seed change, no invented evidence: the
+        two halves partition the segment's turn_ids exactly once, so the final
+        ``assemble_detail_window_outputs`` still proves full source-turn coverage.
+        A segment with a single turn cannot be split and is left to quarantine."""
+        batch = _batch_segments(window)
+        if len(batch) != 1:
+            return False  # only mono-segment detail windows are split here
+        segment = batch[0]
+        turn_ids = [str(t) for t in segment.get("turn_ids") or []]
+        if len(turn_ids) < 2:
+            return False  # irreducible: one turn cannot be halved
+        source_ordinal = int(segment.get("_source_ordinal", segment["ordinal"]))
+        part_base = int(segment.get("_part_base", 0))
+        mid = len(turn_ids) // 2
+        halves = [turn_ids[:mid], turn_ids[mid:]]
+        drive = ctx["drive"]
+        base_index = int(window.spec.window_index)
+        for half_index, half_turns in enumerate(halves):
+            child_ref = f"{segment.get('_ref', 'seg' + str(segment['ordinal']))}#h{part_base + half_index}"
+            child_segment = {
+                **{k: v for k, v in segment.items()
+                   if k not in ("turn_ids", "_ref", "_source_ordinal", "_part_base")},
+                "ordinal": int(segment["ordinal"]),
+                "turn_ids": half_turns,
+                "start_turn_id": half_turns[0],
+                "end_turn_id": half_turns[-1],
+                "_ref": child_ref,
+                "_source_ordinal": source_ordinal,
+                "_part_base": part_base + half_index,
+            }
+            seg_by_ref[child_ref] = child_segment
+            child_payload = {
+                **{k: v for k, v in child_segment.items() if not k.startswith("_")},
+                "turns": [by_id[t] for t in half_turns],
+                "sensor_context": _sensor_context_for_segments(
+                    sensor_context, [child_segment], by_id
+                ),
+            }
+            child_tokens = estimate_tokens_for_text(
+                json.dumps(child_payload, ensure_ascii=False, sort_keys=True, default=str)
+            ) + 32
+            child_unit = PlanUnit(
+                ref_id=child_ref,
+                tokens=child_tokens,
+                ts=f"{source_ordinal}.{part_base + half_index}",
+                content_digest=content_digest(child_payload),
+            )
+            child_spec = WindowSpec(
+                stage_name=DETAIL_STAGE_NAME,
+                # A stable, collision-free child index derived from the parent's.
+                window_index=base_index * 1000 + part_base + half_index + 1,
+                primary_refs=(child_ref,),
+                overlap_refs=(),
+                input_digest=content_digest([
+                    {"ref_id": child_ref, "content_digest": child_unit.content_digest}
+                ]),
+            )
+            child_window = PlannedWindow(
+                spec=child_spec,
+                primary_units=(child_unit,),
+                overlap_units=(),
+                input_tokens=child_tokens,
+            )
+            drive(child_window)
+        # Coverage proof is enforced downstream by assemble_detail_window_outputs;
+        # here we only require that every child window reached a durable COMPLETED
+        # state (never a partial). Any other state fails closed.
+        result = ctx["result"]
+        child_indexes = {
+            base_index * 1000 + part_base + h + 1 for h in range(len(halves))
+        }
+        completed = [
+            w for w in result.windows
+            if w.window_index in child_indexes and w.state == cp.STATE_COMPLETED
+        ]
+        return len(completed) == len(halves)
+
     scope = StageScope(
         person_id=scope_person,
         package_date=scope_date,
@@ -1459,6 +1569,8 @@ def _run_detail_windows(
         validate=_validate,
         normalize_window_output=_normalize,
         decorate_output=_decorate,
+        describe_contract_violation=_describe_violation,
+        resolve_contract_rejection=_resolve_rejection,
         # Exactly one locked segment per detail call.  Small JSON models reset
         # ordinals inside a local response; mixing seg6+seg7 in one batch made
         # that harmless local numbering ambiguous.  A mono-segment window is

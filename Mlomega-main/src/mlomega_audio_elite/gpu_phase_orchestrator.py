@@ -467,15 +467,58 @@ class GpuPhaseOrchestrator:
         return names
 
     def enter_text(self) -> dict[str, Any]:
-        """Nightly text phase: release live Ollama models, then start P1."""
+        """Nightly text phase: EVICT EVERY resident Ollama model, prove Ollama is
+        empty, THEN start P1 (the 9B llama.cpp server).
+
+        Gate B (Point 4): the previous version only unloaded a static list
+        (``_live_ollama_models``). A Qwen3-VL, a stray 4B, or — the exact leak we
+        chased — a ``qwen3.5:9b`` loaded into Ollama by a mis-phased caller would
+        survive and coexist with the 7 GB llama.cpp P1 on the same 8 GB GPU. This
+        boundary now reads ``/api/ps``, asks Ollama to evict EVERY resident model
+        (``keep_alive=0``, one call per model), re-reads ``/api/ps`` and FAILS
+        explicitly if anything resists — only then does it start P1. VRAM and the
+        resident list are journalled BEFORE and AFTER, same style as
+        ``prepare_live_gpu``."""
         self._release_live_models()
-        for model in self._live_ollama_models():
+        before_models = self._resident_model_names()
+        vram_before = self._vram_snapshot()
+        record_phase_event(
+            "enter_text_started",
+            resident_models=before_models,
+            vram=vram_before,
+        )
+        unloaded: list[str] = []
+        for model in before_models:
             try:
                 self._ollama_unload(model=model)
+                unloaded.append(model)
             except Exception as exc:
                 record_phase_event("ollama_unload_failed", model=model, error=str(exc)[:200])
+        after_models = self._resident_model_names()
+        vram_after = self._vram_snapshot()
+        record_phase_event(
+            "enter_text_ollama_drained",
+            unloaded=unloaded,
+            resident_after=after_models,
+            vram=vram_after,
+        )
+        if after_models:
+            # A model that refuses to leave would coexist with P1 on the GPU.
+            raise LiveGpuResidencyError(
+                "Ollama model(s) still resident before starting the text-phase P1: "
+                + ", ".join(sorted(after_models))
+            )
         started = self.start_p1()
-        return {"phase": "text", "p1": started, "released_live": True}
+        return {
+            "phase": "text",
+            "p1": started,
+            "released_live": True,
+            "unloaded": unloaded,
+            "resident_before": before_models,
+            "resident_after": after_models,
+            "vram_before": vram_before,
+            "vram_after": vram_after,
+        }
 
     def enter_vision(self) -> dict[str, Any]:
         """Deep Vision phase: STOP P1 so Qwen3-VL (Ollama) owns the GPU."""

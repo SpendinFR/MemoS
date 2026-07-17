@@ -207,8 +207,24 @@ class OllamaProvider(LLMProvider):
             # llama.cpp backend even when MLOMEGA_LLM_BACKEND=llamacpp is set
             # process-wide for the post-stop phase (live must stay on Ollama;
             # the P1 alias against Ollama 404s - Gate B 20260717-115157).
+            #
+            # Gate B #6 (Point 4): pin the LIVE 4B model explicitly. The ollama
+            # config carries no model (``model=None``); a None model lets
+            # OllamaJsonClient pick by PHASE, and during ``post_stop*`` finalize it
+            # would select ``settings.ollama_model`` (the 9B) — loading a 7 GB 9B
+            # INTO Ollama beside the llama.cpp P1. This live-tier provider must
+            # always run the 4B: resolve the live model here and never fall through
+            # to the phase-based post-stop 9B.
+            model = self.model
+            if not model:
+                try:
+                    from mlomega_audio_elite.config import get_settings  # type: ignore
+
+                    model = str(get_settings().ollama_live_model or "").strip() or None
+                except Exception:
+                    model = None
             return OllamaJsonClient(
-                base_url=self.base_url, model=self.model, backend="ollama"
+                base_url=self.base_url, model=model, backend="ollama"
             )
         except Exception:
             return None

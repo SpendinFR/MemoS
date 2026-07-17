@@ -192,8 +192,9 @@ def _command_intent_is_durable(intent: Any) -> bool:
 
 # Durable, additive trace of EVERY command phase, written even when the device
 # DataChannel is already closed (which is exactly the Gate B situation). This is
-# what makes the 13/13 command correlation and the honest ``cancelled_session_end``
-# verdict verifiable from the DB rather than from an undelivered channel message.
+# what makes the command correlation and the honest ``cancel_requested`` /
+# ``response_suppressed`` verdict verifiable from the DB rather than from an
+# undelivered channel message.
 _COMMAND_TRACE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS command_execution_traces_v19(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -205,6 +206,7 @@ CREATE TABLE IF NOT EXISTS command_execution_traces_v19(
   phase TEXT NOT NULL,
   status TEXT NOT NULL,
   text TEXT,
+  response_suppressed INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_command_traces_session
@@ -862,7 +864,7 @@ class LivePipeline:
         # effect — the reply would target an already-closed DataChannel and the
         # cancellation must be observable (never a late, orphaned write). The
         # command_execution_trace path does NOT go through here, so the durable
-        # ``cancelled_session_end`` trace is unaffected.
+        # ``cancel_requested`` trace is unaffected.
         segment_id = getattr(self._current_command_tls, "segment_id", None)
         if self._command_is_cancelled(segment_id):
             self.wake_word_metrics["command_effects_suppressed"] = (
@@ -1021,6 +1023,13 @@ class LivePipeline:
             compact = {"value": str(effect)[:300]}
         handled = bool(data.get("handled", effect is not None))
         intent = data.get("intent")
+        # Gate B #6 (Point 5): if this command was cancel-requested during the
+        # end-of-session grace, its terminal status is STILL completed/failed (a
+        # command has exactly one terminal state), but its reply was refused at the
+        # effect chokepoint. Record that on the terminal trace (response_suppressed)
+        # so the suppressed effect stays observable instead of a second,
+        # contradictory "cancelled" terminal.
+        suppressed = self._command_is_cancelled(segment_id)
         # Resolve the registry entry with the real routed intent so the drain can
         # classify durable vs interactive, then persist the terminal trace.
         self._resolve_command_registry(segment_id, intent=intent)
@@ -1030,6 +1039,7 @@ class LivePipeline:
             phase="completed" if handled else "failed",
             status="completed" if handled else "failed",
             text=text,
+            response_suppressed=suppressed,
         )
         self._push_intent({
             "type": "command_execution_trace", "segment_id": segment_id,
@@ -1037,6 +1047,7 @@ class LivePipeline:
             "status": "completed" if handled else "failed",
             "text": text, "intent": intent,
             "handled": handled,
+            "response_suppressed": suppressed,
             "request": data.get("request"),
             "device_command": data.get("device_command"),
             "effect": compact,
@@ -1119,13 +1130,21 @@ class LivePipeline:
         return bool(event is not None and event.is_set())
 
     def mark_command_cancelled_session_end(self, segment_id: str) -> None:
-        """Abandon an interactive in-flight command after the grace window.
+        """Request cancellation of an interactive in-flight command after the grace.
 
-        The command's worker thread cannot be killed (asyncio.to_thread); we
-        merely CEASE TO WAIT for it and record a durable ``cancelled_session_end``
-        trace. The orphan thread finishes with no observable effect (its reply
-        would target an already-closed DataChannel and is undeliverable). The
-        cancellation is never silent — it is persisted for the 13/13 correlation.
+        Gate B #6 (Point 5): this is a NON-TERMINAL ``cancel_requested`` phase — a
+        request to stop waiting plus an effect-suppression token, NOT a terminal
+        status. Run #6 produced ``13 completed + 1 cancelled_session_end``, i.e. one
+        command carrying TWO contradictory terminal statuses (cancelled AND then
+        completed). The only terminal phases remain ``completed``/``failed``; the
+        suppressed effect stays observable through the ``command_effects_suppressed``
+        counter and the ``response_suppressed`` marker on the terminal trace.
+
+        The command's worker thread cannot be killed (asyncio.to_thread); we merely
+        CEASE TO WAIT for it and set the cancel token so any later effect is refused
+        (its reply would target an already-closed DataChannel). The request is never
+        silent — it is persisted for the command correlation. (The public API name
+        is kept for callers; only the persisted PHASE changed.)
         """
         with self._command_registry_lock:
             entry = self._command_registry.get(segment_id)
@@ -1133,8 +1152,8 @@ class LivePipeline:
             text = entry["text"] if entry is not None else None
             # SET the cancel token BEFORE tracing so any effect the orphan worker
             # attempts from now on (via ``_push_intent``) is refused. The worker
-            # cannot be killed; this is what makes "cancelled" honest rather than a
-            # thread that keeps writing after we stopped waiting for it.
+            # cannot be killed; this is what makes the cancellation honest rather
+            # than a thread that keeps writing after we stopped waiting for it.
             if entry is not None:
                 event = entry.get("cancel_event")
                 if event is not None:
@@ -1142,19 +1161,23 @@ class LivePipeline:
         self._persist_command_trace(
             segment_id,
             intent=intent,
-            phase="cancelled_session_end",
-            status="cancelled",
+            phase="cancel_requested",
+            status="cancel_requested",
             text=text,
         )
 
     def _persist_command_trace(
-        self, segment_id: str, *, intent: Any, phase: str, status: str, text: Any
+        self, segment_id: str, *, intent: Any, phase: str, status: str, text: Any,
+        response_suppressed: bool = False,
     ) -> None:
         """Additively persist one command phase. Best-effort, never raises.
 
-        Written for EVERY phase (accepted/completed/failed/cancelled_session_end)
-        from this single emitter path so the Gate B command correlation and the
-        1.3 verdict are verifiable in the DB even when the DataChannel is closed.
+        Written for EVERY phase (accepted/completed/failed/cancel_requested) from
+        this single emitter path so the Gate B command correlation and the 1.3
+        verdict are verifiable in the DB even when the DataChannel is closed. Only
+        ``completed``/``failed`` are terminal; ``cancel_requested`` is a non-terminal
+        request marker. A terminal trace whose effect was refused carries
+        ``response_suppressed=1`` so the suppressed reply stays observable.
         """
         try:
             from mlomega_audio_elite.db import connect, write_transaction
@@ -1164,11 +1187,25 @@ class LivePipeline:
             durable = 1 if _command_intent_is_durable(intent) else 0
             with connect(path) as con, write_transaction(con):
                 con.executescript(_COMMAND_TRACE_SCHEMA)
+                # Additive migration for a DB created before the column existed:
+                # the persisted PROOFS are never rewritten, but a live DB may add
+                # the column so new terminal traces can record suppression.
+                cols = {
+                    row[1]
+                    for row in con.execute(
+                        "PRAGMA table_info(command_execution_traces_v19)"
+                    ).fetchall()
+                }
+                if "response_suppressed" not in cols:
+                    con.execute(
+                        "ALTER TABLE command_execution_traces_v19 "
+                        "ADD COLUMN response_suppressed INTEGER NOT NULL DEFAULT 0"
+                    )
                 con.execute(
                     """INSERT INTO command_execution_traces_v19(
                           person_id,live_session_id,segment_id,intent,durable,
-                          phase,status,text,created_at)
-                       VALUES(?,?,?,?,?,?,?,?,?)""",
+                          phase,status,text,response_suppressed,created_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?)""",
                     (
                         str(self.person_id or "me"),
                         str(self.live_session_id or ""),
@@ -1178,6 +1215,7 @@ class LivePipeline:
                         str(phase),
                         str(status),
                         None if text is None else str(text)[:2000],
+                        1 if response_suppressed else 0,
                         now_iso(),
                     ),
                 )

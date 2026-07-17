@@ -23,6 +23,7 @@ from ..utils import now_iso, sha256_bytes
 WINDOWS_TABLE = "night_llm_windows_v19"
 OUTPUTS_TABLE = "night_llm_window_outputs_v19"
 CALLS_TABLE = "night_llm_call_telemetry_v19"
+REJECTIONS_TABLE = "night_llm_contract_rejections_v19"
 
 # Terminal-ish states. Only "completed" and "quarantined" are durable end states
 # the executor skips on resume; "planned"/"running"/"error" are re-attempted.
@@ -90,6 +91,29 @@ CREATE TABLE IF NOT EXISTS {CALLS_TABLE}(
 );
 CREATE INDEX IF NOT EXISTS idx_{CALLS_TABLE}_scope
   ON {CALLS_TABLE}(person_id, package_date, stage_name, created_at);
+CREATE TABLE IF NOT EXISTS {REJECTIONS_TABLE}(
+  rejection_id TEXT PRIMARY KEY,
+  window_key TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  person_id TEXT NOT NULL,
+  package_date TEXT NOT NULL,
+  stage_name TEXT NOT NULL,
+  model TEXT NOT NULL,
+  strategy TEXT NOT NULL,
+  input_digest TEXT NOT NULL,
+  output_digest TEXT NOT NULL,
+  raw_output TEXT,
+  parsed_output_json TEXT,
+  violations_json TEXT NOT NULL,
+  finish_reason TEXT,
+  prompt_tokens INTEGER,
+  completion_tokens INTEGER,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_{REJECTIONS_TABLE}_window
+  ON {REJECTIONS_TABLE}(window_key, created_at);
+CREATE INDEX IF NOT EXISTS idx_{REJECTIONS_TABLE}_digests
+  ON {REJECTIONS_TABLE}(window_key, input_digest, output_digest);
 """
 
 
@@ -275,6 +299,111 @@ def record_call_telemetry(
         ),
     )
     return call_id
+
+
+def _raw_output_text(raw_output: Any) -> str:
+    if isinstance(raw_output, str):
+        return raw_output
+    if raw_output is None:
+        return ""
+    return json.dumps(raw_output, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def content_output_digest(raw_output: Any) -> str:
+    """Stable digest of a model's RAW output, used to detect an identical retry.
+
+    Deterministic and canonical (sorted keys) so the same logical answer always
+    produces the same digest regardless of dict ordering."""
+    from .evidence_ref import content_digest
+
+    return content_digest({"raw": _raw_output_text(raw_output)})
+
+
+def record_contract_rejection(
+    con: Any,
+    *,
+    window_key: str,
+    attempt: int,
+    person_id: str,
+    package_date: str,
+    stage_name: str,
+    model: str,
+    strategy: str,
+    input_digest: str,
+    raw_output: Any,
+    parsed_output: Any,
+    violations: Any,
+    finish_reason: str | None = None,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
+) -> tuple[str, str]:
+    """Durably persist ONE contract rejection so no rule/output/value is lost.
+
+    Returns ``(rejection_id, output_digest)``. The digest is computed on the raw
+    model output so the executor can detect and refuse a byte-identical retry.
+    A rejection row is additive audit evidence: it is never overwritten and never
+    consulted as a validated output.
+    """
+    from .evidence_ref import content_digest
+
+    raw_text = _raw_output_text(raw_output)
+    output_digest = content_output_digest(raw_output)
+    rejection_id = "nlrej_" + content_digest({
+        "window_key": window_key,
+        "attempt": int(attempt),
+        "output_digest": output_digest,
+    })[:24]
+    parsed_json = (
+        json.dumps(parsed_output, ensure_ascii=False, sort_keys=True, default=str)
+        if parsed_output is not None else None
+    )
+    con.execute(
+        f"""INSERT OR IGNORE INTO {REJECTIONS_TABLE}(
+              rejection_id,window_key,attempt,person_id,package_date,stage_name,
+              model,strategy,input_digest,output_digest,raw_output,
+              parsed_output_json,violations_json,finish_reason,prompt_tokens,
+              completion_tokens,created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            rejection_id, window_key, int(attempt), person_id, package_date,
+            stage_name, model, strategy, input_digest, output_digest, raw_text,
+            parsed_json,
+            json.dumps(violations, ensure_ascii=False, sort_keys=True, default=str),
+            finish_reason, prompt_tokens, completion_tokens, now_iso(),
+        ),
+    )
+    return rejection_id, output_digest
+
+
+def window_has_contract_rejection(
+    con: Any, *, window_key: str, input_digest: str
+) -> bool:
+    """True when this window already has a persisted rejection for this input.
+
+    The prompt is a pure function of ``input_digest``; a temperature-0 retry with
+    the same input is therefore proven identical, so an existing rejection is
+    enough to forbid the retry before it is spent."""
+    row = con.execute(
+        f"""SELECT 1 FROM {REJECTIONS_TABLE}
+             WHERE window_key=? AND input_digest=? LIMIT 1""",
+        (window_key, input_digest),
+    ).fetchone()
+    return row is not None
+
+
+def contract_rejection_seen(
+    con: Any, *, window_key: str, input_digest: str, output_digest: str
+) -> bool:
+    """True when this exact (window, input, output) triplet was already rejected.
+
+    Used to forbid a byte-identical retry: a second strictly-identical model call
+    must never leave the host (economy + honesty)."""
+    row = con.execute(
+        f"""SELECT 1 FROM {REJECTIONS_TABLE}
+             WHERE window_key=? AND input_digest=? AND output_digest=? LIMIT 1""",
+        (window_key, input_digest, output_digest),
+    ).fetchone()
+    return row is not None
 
 
 def load_outputs(

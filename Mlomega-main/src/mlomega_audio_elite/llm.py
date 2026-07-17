@@ -49,6 +49,29 @@ def _is_post_stop_phase() -> bool:
     return runtime_phase().startswith("post_stop")
 
 
+def _short_caller(*, skip: int = 2, depth: int = 4) -> str:
+    """A compact caller signature (module:function@line chain) for load tracing.
+
+    Point 4 (Gate B): we must never again GUESS which module loads which model in
+    which phase. Every Ollama/llama.cpp request records the short call stack of the
+    site that triggered it, so a resident 9B in a live/post-stop phase is instantly
+    attributable to its caller."""
+    import inspect
+
+    frames: list[str] = []
+    try:
+        stack = inspect.stack()
+    except Exception:
+        return "unknown"
+    try:
+        for frame_info in stack[skip: skip + depth]:
+            module = frame_info.frame.f_globals.get("__name__", "?")
+            frames.append(f"{module}:{frame_info.function}@{frame_info.lineno}")
+    finally:
+        del stack
+    return " <- ".join(frames) if frames else "unknown"
+
+
 def effective_ollama_timeout(requested: float, *, poststop_min_timeout_s: float | None = None) -> float:
     settings = get_settings()
     requested = max(1.0, float(requested))
@@ -393,6 +416,19 @@ class OllamaJsonClient:
                 ),
             },
         }
+        # Point 4 (Gate B): make every model load attributable. Journal the exact
+        # phase, the model that will REALLY be used, the backend, and the caller
+        # chain BEFORE the request leaves — so a resident 9B in a live/post-stop
+        # phase can never again be a mystery to be guessed from side effects.
+        record_phase_event(
+            "llm_client_generate",
+            component="ollama_json_client",
+            backend=self.backend,
+            model=self.model,
+            post_stop=_is_post_stop_phase(),
+            output_budget=budget,
+            caller=_short_caller(),
+        )
         raw_outer = ""
         response_text = ""
         finish_reason: str | None = None

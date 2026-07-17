@@ -7,17 +7,19 @@ After the fast /session/end ACK, the background drain grants a SHORT grace
 them by their ROUTED intent:
 
   * INTERACTIVE (help/next-step/ask_memory/one-shot VLM): abandoned after the
-    grace with a durable ``cancelled_session_end`` trace — never silent. The
-    drain then WAITS for the worker's real termination; a worker still alive
+    grace with a durable NON-TERMINAL ``cancel_requested`` trace — never silent.
+    The drain then WAITS for the worker's real termination; a worker still alive
     after the full budget raises and BLOCKS CloseDay (Codex post-#5).
   * DURABLE (enrollment/identity/remember/owner-voice): NEVER cancelled; awaited
     up to the existing budget (``MLOMEGA_FINAL_DRAIN_TIMEOUT_S``). A durable
     command that overruns the budget raises a noisy TimeoutError (retryable),
     exactly as before.
 
-Every phase (accepted/completed/failed/cancelled_session_end) is persisted to
-``command_execution_traces_v19`` so the Gate B 13/13 correlation and verdict 1.3
-are verifiable from the DB even with the DataChannel closed.
+Every phase (accepted/completed/failed and the non-terminal cancel_requested) is
+persisted to ``command_execution_traces_v19`` so the Gate B correlation and
+verdict 1.3 are verifiable from the DB even with the DataChannel closed. A command
+has exactly ONE terminal status; a cancel-requested one that still finishes marks
+its terminal trace ``response_suppressed=1`` (Gate B #6, Point 5).
 
 All fakes; no real LLM.
 """
@@ -219,12 +221,15 @@ def test_interactive_worker_still_alive_after_budget_blocks_close_day(tmp_path, 
 
     phases = [t["phase"] for t in _traces(db, seg)]
     assert "accepted" in phases
-    assert "cancelled_session_end" in phases
-    row = [t for t in _traces(db, seg) if t["phase"] == "cancelled_session_end"][0]
-    assert row["status"] == "cancelled"
+    # Gate B #6 (Point 5): the cancellation is a NON-TERMINAL request marker, never
+    # a second terminal status. The old ``cancelled_session_end`` terminal is gone.
+    assert "cancel_requested" in phases
+    assert "cancelled_session_end" not in phases
+    row = [t for t in _traces(db, seg) if t["phase"] == "cancel_requested"][0]
+    assert row["status"] == "cancel_requested"
     assert row["durable"] == 0
     # Honest cancellation must be recorded on the runtime (never silent).
-    assert any("cancelled_session_end" in e for e in rt.recent_errors)
+    assert any("cancel_requested" in e for e in rt.recent_errors)
 
 
 # --------------------------------------------------------------------------- #
@@ -301,9 +306,16 @@ def test_cancelled_interactive_effect_is_suppressed_and_drain_waits_real_end(tmp
     # The late effect was suppressed — nothing reached the (closed) device channel.
     assert sent == []
     # Command_execution traces are additive and DO go out (not through _push_intent
-    # suppression): the cancellation is recorded, never silent.
-    phases = [t["phase"] for t in _traces(db, seg)]
-    assert "cancelled_session_end" in phases
+    # suppression): the cancellation REQUEST is recorded, never silent, and it is
+    # non-terminal. The worker still reached its ONE terminal status (completed),
+    # which now carries response_suppressed=1 so the refused reply stays observable.
+    traces = _traces(db, seg)
+    phases = [t["phase"] for t in traces]
+    assert "cancel_requested" in phases
+    assert "cancelled_session_end" not in phases
+    terminal = [t for t in traces if t["phase"] in ("completed", "failed")]
+    assert terminal, "the worker reached exactly one terminal status"
+    assert all(t["response_suppressed"] == 1 for t in terminal)
 
 
 # --------------------------------------------------------------------------- #
