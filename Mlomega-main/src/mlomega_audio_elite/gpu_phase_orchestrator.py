@@ -121,6 +121,34 @@ class P1UnavailableError(RuntimeError):
     """Raised when P1 could not start, expose /props, or pass the anti-thinking probe."""
 
 
+class LiveGpuResidencyError(RuntimeError):
+    """Raised when a heavyweight VLM/9B model stays resident before live capture."""
+
+
+def _model_base_name(name: Any) -> str:
+    """Ollama reports ``qwen3-vl:8b`` etc.; compare on the tag-stripped base name."""
+    return str(name or "").split(":")[0].strip().lower()
+
+
+def _is_live_model(name: Any, live_model: str) -> bool:
+    """True only for the configured live model.
+
+    Match on the FULL tagged name (``qwen3.5:4b``) so a same-family but different
+    variant (``qwen3.5:9b`` — the post-stop model) is NOT mistaken for live and is
+    correctly evicted. A tag-less resident name (rare) falls back to the base name.
+    """
+    text = str(name or "").strip().lower()
+    live = str(live_model or "").strip().lower()
+    if not live or not text:
+        return False
+    if text == live:
+        return True
+    # Only when the resident entry carries no explicit tag do we compare bases.
+    if ":" not in text:
+        return _model_base_name(text) == _model_base_name(live)
+    return False
+
+
 class GpuPhaseOrchestrator:
     """Owns the single P1 subprocess and the serial GPU phase transitions."""
 
@@ -132,6 +160,8 @@ class GpuPhaseOrchestrator:
         anti_thinking_probe: Callable[[], dict[str, Any]] | None = None,
         ollama_unload: Callable[..., None] | None = None,
         release_live_models: Callable[[], None] | None = None,
+        ollama_ps: Callable[[], list[dict[str, Any]]] | None = None,
+        vram_snapshot: Callable[[], dict[str, Any]] | None = None,
         ready_timeout_s: float = 120.0,
         poll_interval_s: float = 0.5,
     ) -> None:
@@ -140,6 +170,8 @@ class GpuPhaseOrchestrator:
         self._anti_thinking_probe = anti_thinking_probe or self._default_anti_thinking_probe
         self._ollama_unload = ollama_unload or self._default_ollama_unload
         self._release_live_models = release_live_models or self._default_release_live_models
+        self._ollama_ps = ollama_ps or self._default_ollama_ps
+        self._vram_snapshot = vram_snapshot or self._default_vram_snapshot
         self.ready_timeout_s = max(1.0, float(ready_timeout_s))
         self.poll_interval_s = max(0.01, float(poll_interval_s))
         self._proc: Any | None = None
@@ -172,6 +204,54 @@ class GpuPhaseOrchestrator:
         from .runtime_v18_7 import release_live_model_caches
 
         release_live_model_caches()
+
+    @staticmethod
+    def _ollama_base_url() -> str:
+        from .config import get_settings
+
+        try:
+            return str(get_settings().ollama_base_url or "http://127.0.0.1:11434")
+        except Exception:
+            return "http://127.0.0.1:11434"
+
+    def _default_ollama_ps(self) -> list[dict[str, Any]]:
+        url = self._ollama_base_url().rstrip("/") + "/api/ps"
+        try:
+            payload = _http_get_json(url, timeout=8.0)
+        except Exception:
+            return []
+        models = payload.get("models") if isinstance(payload, dict) else None
+        return list(models) if isinstance(models, list) else []
+
+    @staticmethod
+    def _default_vram_snapshot() -> dict[str, Any]:
+        # Prefer pynvml (matches gpu_arbiter); fall back to a best-effort
+        # nvidia-smi query. Observability must never mask the boundary itself.
+        try:
+            import pynvml  # type: ignore
+
+            pynvml.nvmlInit()
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            return {
+                "source": "pynvml",
+                "total_mb": int(mem.total / 1048576),
+                "used_mb": int(mem.used / 1048576),
+                "free_mb": int(mem.free / 1048576),
+            }
+        except Exception:
+            pass
+        try:
+            out = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.total,memory.used,memory.free",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=8.0, check=False,
+            )
+            first = (out.stdout or "").strip().splitlines()[0]
+            total, used, free = (int(x.strip()) for x in first.split(",")[:3])
+            return {"source": "nvidia-smi", "total_mb": total, "used_mb": used, "free_mb": free}
+        except Exception as exc:
+            return {"source": "unavailable", "error": str(exc)[:200]}
 
     # -- P1 lifecycle -------------------------------------------------------
     @property
@@ -278,6 +358,89 @@ class GpuPhaseOrchestrator:
         assert not self.p1_running, "P1 must never be active during live capture"
         return {"phase": "live", "p1_stopped": stopped}
 
+    def prepare_live_gpu(self) -> dict[str, Any]:
+        """Real frontier that HANDS the GPU to the live 4B model, exclusively.
+
+        Gate B #5 proved that ``enter_live`` (P1-only) was never enough and never
+        wired in production: a Qwen3-VL / 9B model left resident by a previous
+        run (or a preflight) starves the live audio callback, filling the file
+        and dropping ~1965 chunks. This boundary:
+
+          1. STOPS P1 (never resident during capture).
+          2. Reads Ollama ``/api/ps`` and, for every resident model that is NOT
+             the configured live 4B (``settings.ollama_live_model``), asks Ollama
+             to evict it (generate/chat with ``keep_alive=0``, one call per model).
+          3. RE-READS ``/api/ps`` and FAILS (:class:`LiveGpuResidencyError`) if any
+             non-live model — in particular Qwen3-VL/9B — is still resident.
+          4. Journals resident models + VRAM (nvidia-smi/pynvml) BEFORE and AFTER.
+
+        Injectable transports keep it fully testable without a real GPU/Ollama.
+        """
+        from .config import get_settings
+
+        try:
+            live_model = str(get_settings().ollama_live_model or "").strip()
+        except Exception:
+            live_model = ""
+
+        stopped = self.stop_p1() if self.p1_running else {"status": "not_running"}
+        assert not self.p1_running, "P1 must never be active during live capture"
+
+        before_models = self._resident_model_names()
+        vram_before = self._vram_snapshot()
+        record_phase_event(
+            "prepare_live_gpu_started",
+            live_model=live_model,
+            resident_models=before_models,
+            vram=vram_before,
+        )
+
+        to_evict = [m for m in before_models if not _is_live_model(m, live_model)]
+        unloaded: list[str] = []
+        for model in to_evict:
+            try:
+                self._ollama_unload(model=model)
+                unloaded.append(model)
+            except Exception as exc:
+                record_phase_event("ollama_unload_failed", model=model, error=str(exc)[:200])
+
+        after_models = self._resident_model_names()
+        vram_after = self._vram_snapshot()
+        still_resident = [m for m in after_models if not _is_live_model(m, live_model)]
+        record_phase_event(
+            "prepare_live_gpu_finished",
+            live_model=live_model,
+            unloaded=unloaded,
+            resident_after=after_models,
+            still_resident=still_resident,
+            vram=vram_after,
+        )
+        if still_resident:
+            raise LiveGpuResidencyError(
+                "non-live model(s) still resident before live capture: "
+                + ", ".join(sorted(still_resident))
+            )
+        return {
+            "phase": "live_gpu_ready",
+            "p1_stopped": stopped,
+            "live_model": live_model,
+            "unloaded": unloaded,
+            "resident_before": before_models,
+            "resident_after": after_models,
+            "vram_before": vram_before,
+            "vram_after": vram_after,
+        }
+
+    def _resident_model_names(self) -> list[str]:
+        names: list[str] = []
+        for entry in self._ollama_ps() or []:
+            name = ""
+            if isinstance(entry, dict):
+                name = str(entry.get("name") or entry.get("model") or "").strip()
+            if name:
+                names.append(name)
+        return names
+
     def enter_text(self) -> dict[str, Any]:
         """Nightly text phase: release live Ollama models, then start P1."""
         self._release_live_models()
@@ -317,6 +480,7 @@ class GpuPhaseOrchestrator:
 __all__ = [
     "GpuPhaseOrchestrator",
     "P1UnavailableError",
+    "LiveGpuResidencyError",
     "p1_command",
     "p1_base_url",
     "p1_server_exe",

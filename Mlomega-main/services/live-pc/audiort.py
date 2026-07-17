@@ -265,6 +265,26 @@ class AudioMetrics:
     partials: int = 0
     finals: int = 0
     translations: int = 0
+    # E64-i Gate B #5 telemetry: exactly WHERE the single audio callback is right
+    # now, and for HOW LONG. Gate B saw audio_inflight=1 with a full file and 1965
+    # drops: one callback froze somewhere. These two fields make the freeze point
+    # visible in /metrics and the device report instead of an opaque "inflight=1".
+    current_stage: str = "idle"
+    _stage_started_monotonic: float | None = None
+
+    def enter_stage(self, stage: str) -> None:
+        self.current_stage = stage
+        self._stage_started_monotonic = time.monotonic() if stage != "idle" else None
+
+    def leave_stage(self) -> None:
+        self.current_stage = "idle"
+        self._stage_started_monotonic = None
+
+    def inflight_seconds(self) -> float:
+        started = self._stage_started_monotonic
+        if started is None:
+            return 0.0
+        return max(0.0, time.monotonic() - started)
 
     def snapshot(self) -> dict[str, Any]:
         s = sorted(self.asr_ms)
@@ -275,6 +295,8 @@ class AudioMetrics:
             "partials_emitted": self.partials,
             "finals_emitted": self.finals,
             "translations": self.translations,
+            "current_stage": self.current_stage,
+            "inflight_seconds": round(self.inflight_seconds(), 3),
         }
 
 
@@ -365,16 +387,29 @@ class AudioRT:
         """Feed a chunk of raw audio. Returns the list of subtitle intents emitted."""
         if source_timing:
             self._latest_source_timing = dict(source_timing)
-        mono = to_mono_16k(samples, src_rate)
-        segments = self.vad.push(mono)
-        emitted: list[dict[str, Any]] = []
-        for seg in segments:
-            emitted.extend(self._handle_segment(seg, source_timing=self._latest_source_timing))
-        return emitted
+        # E64-i Gate B #5: mark the current stage for the single audio callback so a
+        # frozen callback is pinpointed (resample / vad / asr / archive) instead of
+        # showing an opaque audio_inflight=1.
+        self.metrics.enter_stage("resample")
+        try:
+            mono = to_mono_16k(samples, src_rate)
+            self.metrics.enter_stage("vad")
+            segments = self.vad.push(mono)
+            emitted: list[dict[str, Any]] = []
+            for seg in segments:
+                emitted.extend(self._handle_segment(seg, source_timing=self._latest_source_timing))
+            return emitted
+        finally:
+            self.metrics.leave_stage()
 
     def flush(self) -> list[dict[str, Any]]:
-        seg = self.vad.flush()
-        return self._handle_segment(seg, source_timing=self._latest_source_timing) if seg is not None else []
+        try:
+            seg = self.vad.flush()
+            if seg is None:
+                return []
+            return self._handle_segment(seg, source_timing=self._latest_source_timing)
+        finally:
+            self.metrics.leave_stage()
 
     def _segment_window(
         self, seg: np.ndarray, source_timing: Mapping[str, Any] | None
@@ -413,6 +448,7 @@ class AudioRT:
                 duration_s=duration_s, clock_source=clock_source,
             )
             return [intent]
+        self.metrics.enter_stage("asr")
         try:
             result = self.transcriber.transcribe(seg)
         except Exception:
@@ -468,6 +504,7 @@ class AudioRT:
         # subtitle is out. Duration derives from the sample count (16 kHz mono); the
         # window ends "now" (finalisation time). Never blocks / raises the reflex path.
         if self.on_segment is not None:
+            self.metrics.enter_stage("archive")
             try:
                 self.on_segment(seg, {
                     "ui_intent_id": final.get("ui_intent_id"),

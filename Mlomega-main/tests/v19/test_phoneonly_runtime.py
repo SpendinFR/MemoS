@@ -361,6 +361,72 @@ def test_recovery_job_durable_before_fast_end_returns(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
 
+def test_recovery_job_exists_even_when_raw_audio_drain_times_out(tmp_path, monkeypatch):
+    """Gate B #5: the durable recovery job must be committed BEFORE the raw audio
+    drain. A drain timeout (a slow/blocked audio callback) must therefore leave a
+    recoverable CloseDay boundary — the exact failure mode of Gate B #5 where the
+    brute 30 s drain fired before any recovery row existed."""
+    db_path = tmp_path / "drain-timeout-recovery.db"
+    monkeypatch.setenv("MLOMEGA_DB", str(db_path))
+    from mlomega_audio_elite.brainlive_v15 import ensure_brainlive_schema, start_live_session
+    from mlomega_audio_elite.db import connect
+
+    ensure_brainlive_schema()
+
+    class RealSessionConversation(FakeConversation):
+        def __init__(self, live_id):
+            self.live_session_id = live_id
+
+    class ProductLikePipeline(FakePipeline):
+        def __init__(self, *, ingress, **kwargs):
+            super().__init__(ingress=ingress, **kwargs)
+            live = start_live_session(person_id="owner", mode="live_xr", title="drain-timeout")
+            self.conversation = RealSessionConversation(live["live_session_id"])
+
+        def drain_deferred_semantics(self):
+            return {"status": "completed", "remaining": 0}
+
+    order = []
+
+    class DrainTimesOutIngress(FakeIngress):
+        async def stop_accepting_media(self):
+            order.append("stop_media")
+
+        async def drain_audio(self, *, timeout_s: float = 0.0):
+            # A blocked audio callback: the raw drain never completes in time.
+            order.append("drain_audio")
+            raise asyncio.TimeoutError("raw audio drain timed out (blocked callback)")
+
+    async def scenario():
+        rt = runtime_mod.PhoneOnlyRuntime(
+            "transport-drain-timeout",
+            person_id="owner",
+            db_path=db_path,
+            ingress_factory=DrainTimesOutIngress,
+            pipeline_factory=ProductLikePipeline,
+            close_day=lambda **_: {"status": "completed"},
+        )
+        rt._product_pipeline = True
+        await rt.start()
+        await rt.end_session_only()
+        live_id = rt.live_session_id
+        with connect(db_path) as con:
+            row = con.execute(
+                "SELECT state FROM phoneonly_session_recovery_v19 WHERE live_session_id=?",
+                (live_id,),
+            ).fetchone()
+        # The recovery row EXISTS despite the drain timeout, because it is created
+        # immediately after stop_accepting_media and BEFORE the raw drain.
+        assert row is not None and row["state"] == "pending"
+        # Ordering proof: recovery boundary precedes the (failing) audio drain.
+        assert order == ["stop_media", "drain_audio"]
+        assert rt.end_status == "error"  # honest: the drain failed
+        if rt.fine_intel_drain_task is not None:
+            await asyncio.gather(rt.fine_intel_drain_task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
 class DrainTimeoutPipeline(FakePipeline):
     """Pipeline whose final worker is still busy when shutdown is requested."""
 

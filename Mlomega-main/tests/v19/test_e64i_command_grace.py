@@ -224,6 +224,85 @@ def test_interactive_command_past_grace_is_cancelled_and_drain_returns(tmp_path,
 
 
 # --------------------------------------------------------------------------- #
+# Gate B #5: a cancelled interactive worker's effect is REFUSED at the token   #
+# and the drain WAITS for the worker to really finish before returning.        #
+# --------------------------------------------------------------------------- #
+def test_cancelled_interactive_effect_is_suppressed_and_drain_waits_real_end(tmp_path, monkeypatch):
+    monkeypatch.setenv("MLOMEGA_COMMAND_GRACE_S", "0.3")
+    monkeypatch.setenv("MLOMEGA_FINAL_DRAIN_TIMEOUT_S", "5")
+    db = tmp_path / "memory.db"
+    gate = threading.Event()
+    released = threading.Event()
+
+    class _EffectAfterCancel:
+        """An interactive handler that, once released, tries to push a device effect
+        THROUGH the pipeline — exactly what an orphaned VLM/ask_memory reply would do.
+        The cancel token must make that effect a no-op."""
+
+        metrics = {"intents_routed": 0}
+
+        def __init__(self, pipe):
+            self.context = _Context()
+            self._pipe = pipe
+
+        def on_transcript(self, _text):
+            self.context.note("ask_memory")   # interactive intent, decided up-front
+            gate.wait(timeout=30.0)           # blocked past the grace → cancelled
+            # The worker resumes AFTER cancellation and attempts an effect:
+            self._pipe._push_intent({"type": "ui_intent", "content": {"text": "late reply"}})
+            released.set()
+            return {"intent": "ask_memory", "handled": True, "result": {"status": "ok"}}
+
+    sent: list = []
+
+    class _RecordingIngress(_ReceiptIngress):
+        def send_ui_intent(self, payload):
+            sent.append(payload)
+            return 0
+
+    async def scenario():
+        pipe_holder = {}
+
+        def _factory(**_k):
+            p = _pipeline(db, None)
+            handler = _EffectAfterCancel(p)
+            p.intents = handler
+            ctx = handler.context
+            ctx.on_intent_resolved = p._on_intent_resolved_for_current_command
+            pipe_holder["pipe"] = p
+            return p
+
+        rt = runtime_mod.PhoneOnlyRuntime(
+            "transport-effect-suppress",
+            person_id="owner", db_path=db,
+            ingress_factory=_RecordingIngress,
+            pipeline_factory=_factory,
+            close_day=lambda **_k: {"status": "completed"},
+        )
+        seg = "seg-effect"
+        rt.ingress.dispatch_transcript(rt.pipeline, _command_payload(seg, "interroge ma mémoire"))
+        await asyncio.sleep(0.05)
+
+        async def _release_after_cancel():
+            await asyncio.sleep(0.6)  # let the grace expire + cancel land
+            gate.set()
+
+        releaser = asyncio.create_task(_release_after_cancel())
+        await rt._drain_commands_with_grace()   # waits for the real end of the worker
+        await releaser
+        return seg, rt
+
+    seg, rt = asyncio.run(scenario())
+    assert released.is_set()  # the worker really finished (drain awaited it)
+    # The late effect was suppressed — nothing reached the (closed) device channel.
+    assert sent == []
+    # Command_execution traces are additive and DO go out (not through _push_intent
+    # suppression): the cancellation is recorded, never silent.
+    phases = [t["phase"] for t in _traces(db, seg)]
+    assert "cancelled_session_end" in phases
+
+
+# --------------------------------------------------------------------------- #
 # Durable command in-flight past the grace → awaited, finishes → completed     #
 # --------------------------------------------------------------------------- #
 def test_durable_command_past_grace_is_awaited_not_cancelled(tmp_path, monkeypatch):

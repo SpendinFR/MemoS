@@ -19,6 +19,7 @@ if str(ROOT / "src") not in sys.path:
 
 from mlomega_audio_elite.gpu_phase_orchestrator import (  # noqa: E402
     GpuPhaseOrchestrator,
+    LiveGpuResidencyError,
     P1UnavailableError,
     p1_alias,
     p1_command,
@@ -149,6 +150,127 @@ def test_context_manager_never_leaks_p1():
         assert orch.p1_running is True
     assert orch.p1_running is False
     assert spawned[-1].terminated
+
+
+def _make_live_prep(*, ps_sequence, live_model="qwen3.5:4b"):
+    """Build an orchestrator whose /api/ps returns each list in ps_sequence in turn.
+
+    ps_sequence[0] = models resident BEFORE unload; ps_sequence[1] = AFTER. Unload
+    calls are recorded. VRAM snapshot is a fake (no real GPU)."""
+    import os as _os
+
+    _os.environ["MLOMEGA_OLLAMA_LIVE_MODEL"] = live_model
+    calls = {"unloaded": [], "ps": 0, "vram": 0}
+    seq = list(ps_sequence)
+
+    def ollama_ps():
+        idx = min(calls["ps"], len(seq) - 1)
+        calls["ps"] += 1
+        return [{"name": m} for m in seq[idx]]
+
+    def ollama_unload(*, model):
+        calls["unloaded"].append(model)
+
+    def vram_snapshot():
+        calls["vram"] += 1
+        return {"source": "fake", "total_mb": 24000, "used_mb": 7000, "free_mb": 17000}
+
+    orch = GpuPhaseOrchestrator(
+        spawn=lambda _c: FakeProc(),
+        props_probe=lambda: {"alias": p1_alias(), "n_ctx": p1_ctx()},
+        anti_thinking_probe=lambda: {"choices": [{"finish_reason": "stop"}]},
+        ollama_unload=ollama_unload,
+        ollama_ps=ollama_ps,
+        vram_snapshot=vram_snapshot,
+        ready_timeout_s=2.0,
+        poll_interval_s=0.01,
+    )
+    return orch, calls
+
+
+def test_prepare_live_gpu_evicts_everything_but_the_live_4b():
+    # Before: the live 4B plus a resident Qwen3-VL and the 9B. After: only the 4B.
+    orch, calls = _make_live_prep(
+        ps_sequence=[
+            ["qwen3.5:4b", "qwen3-vl:8b", "qwen3.5:9b"],
+            ["qwen3.5:4b"],
+        ]
+    )
+    result = orch.prepare_live_gpu()
+    assert orch.p1_running is False
+    assert set(calls["unloaded"]) == {"qwen3-vl:8b", "qwen3.5:9b"}
+    assert "qwen3.5:4b" not in calls["unloaded"]  # the live model is kept
+    assert result["resident_after"] == ["qwen3.5:4b"]
+    # VRAM journalled before AND after.
+    assert calls["vram"] >= 2
+    assert result["vram_before"]["source"] == "fake"
+    assert result["vram_after"]["source"] == "fake"
+
+
+def test_prepare_live_gpu_fails_if_vlm_or_9b_resists():
+    # The VLM refuses to leave (still resident on the second /api/ps).
+    orch, _calls = _make_live_prep(
+        ps_sequence=[
+            ["qwen3.5:4b", "qwen3-vl:8b"],
+            ["qwen3.5:4b", "qwen3-vl:8b"],  # VLM STILL resident
+        ]
+    )
+    with pytest.raises(LiveGpuResidencyError, match="qwen3-vl"):
+        orch.prepare_live_gpu()
+
+
+def test_prepare_live_gpu_stops_p1_first():
+    orch, _calls = _make_live_prep(ps_sequence=[["qwen3.5:4b"], ["qwen3.5:4b"]])
+    orch.enter_text()  # starts P1
+    assert orch.p1_running is True
+    orch.prepare_live_gpu()
+    assert orch.p1_running is False  # P1 never resident during live capture
+
+
+def test_prepare_live_gpu_called_in_preflight_finally_even_on_failure(monkeypatch):
+    """The readiness command runs prepare_live_gpu in ``finally`` even when the
+    preflight sequence raised, so no VLM is left squatting VRAM."""
+    import importlib.util
+
+    monkeypatch.setenv("MLOMEGA_GPU_PHASE_ORCHESTRATION", "1")
+    prepared = {"count": 0}
+
+    class SpyOrch:
+        p1_running = False
+        probe_calls = 1
+
+        def enter_preflight(self):
+            raise RuntimeError("preflight boom")  # the sequence fails
+
+        def prepare_live_gpu(self):
+            prepared["count"] += 1
+            return {"live_model": "qwen3.5:4b", "unloaded": ["qwen3-vl:8b"],
+                    "resident_after": ["qwen3.5:4b"], "vram_after": {}}
+
+    script = ROOT / "scripts" / "check_phoneonly_readiness.py"
+    spec = importlib.util.spec_from_file_location("readiness_finally_test", script)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["readiness_finally_test"] = mod
+    spec.loader.exec_module(mod)
+
+    import mlomega_audio_elite.gpu_phase_orchestrator as gpo
+    monkeypatch.setattr(gpo, "GpuPhaseOrchestrator", lambda: SpyOrch())
+
+    # Stub the AI-chain probe so run() reaches the orchestrator block without a
+    # real model chain; delegate every OTHER _load to the real loader.
+    real_load = mod._load
+
+    def fake_load(name, path):
+        if "sessionhub_http" in str(path):
+            return type("H", (), {"_probe_ai_chain": staticmethod(lambda *, person_id: {"checks": {}})})
+        return real_load(name, path)
+
+    monkeypatch.setattr(mod, "_load", fake_load)
+    report = mod.run(person_id="me", deep=False)
+    assert prepared["count"] == 1
+    # The preflight sequence failed but the frontier still ran and reported.
+    assert "prepare_live_gpu" in report["checks"]
+    assert report["checks"]["p1_sequential"]["ok"] is False
 
 
 def test_poststop_flow_gates_orchestrator_on_env_flag(monkeypatch):

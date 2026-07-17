@@ -125,6 +125,50 @@ def test_optional_translation_provider_is_not_on_phoneonly_critical_path():
     assert finals[0]["content"]["target_language"] == "en"
 
 
+def test_metrics_snapshot_exposes_current_stage_and_inflight_seconds():
+    """E64-i Gate B #5: /metrics and the device report must show WHERE the single
+    audio callback is (current_stage) and for HOW LONG (inflight_seconds)."""
+    m = audiort.AudioMetrics()
+    snap = m.snapshot()
+    assert snap["current_stage"] == "idle"
+    assert snap["inflight_seconds"] == 0.0
+    m.enter_stage("asr")
+    assert m.current_stage == "asr"
+    assert m.inflight_seconds() >= 0.0
+    m.leave_stage()
+    assert m.snapshot()["current_stage"] == "idle"
+    assert m.snapshot()["inflight_seconds"] == 0.0
+
+
+def test_current_stage_tracks_the_asr_call_of_the_single_callback():
+    """A callback frozen inside ASR must be visible as current_stage='asr'."""
+    observed = {}
+
+    class _ObservingTranscriber:
+        last_infer_ms = 1.0
+
+        def __init__(self, rt_ref):
+            self._rt_ref = rt_ref
+
+        def transcribe(self, _segment):
+            # Capture the stage the metrics report WHILE the ASR call is in flight.
+            observed["stage_during_asr"] = self._rt_ref["rt"].metrics.current_stage
+            observed["inflight_during_asr"] = self._rt_ref["rt"].metrics.inflight_seconds()
+            return {"status": "ok", "text": "bonjour", "language": "fr"}
+
+    rt_ref = {}
+    rt = audiort.AudioRT(session_id="t", target_language="fr",
+                         transcriber=_ObservingTranscriber(rt_ref))
+    rt_ref["rt"] = rt
+    rt._handle_segment(np.zeros(16000, dtype=np.float32))
+    assert observed["stage_during_asr"] == "asr"
+    assert observed["inflight_during_asr"] >= 0.0
+    # The public callback entry point (push_audio/flush) always returns the stage
+    # to idle in its finally, so a completed callback is never reported as stuck.
+    rt.flush()
+    assert rt.metrics.snapshot()["current_stage"] == "idle"
+
+
 def test_degraded_asr_refused_by_arbiter():
     class _DenyArbiter:
         def request(self, job_class):

@@ -60,6 +60,7 @@ def run(*, person_id: str, deep: bool) -> dict[str, Any]:
     # anti-thinking probe -> stop) instead of demanding it coexist with the live
     # Ollama/vision stack. It must finish with P1 STOPPED.
     if os.environ.get("MLOMEGA_GPU_PHASE_ORCHESTRATION", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        orchestrator = None
         try:
             from mlomega_audio_elite.gpu_phase_orchestrator import GpuPhaseOrchestrator
 
@@ -78,6 +79,34 @@ def run(*, person_id: str, deep: bool) -> dict[str, Any]:
                 "ok": False,
                 "detail": f"{type(exc).__name__}: {str(exc)[:300]}",
             }
+        finally:
+            # E64-i Gate B #5: the preflight loads P1 (and may leave a VLM/9B
+            # resident from an earlier close). Before the live session can start,
+            # the GPU MUST be handed to the 4B live model exclusively — run the
+            # real frontier here in ``finally`` even when the preflight failed, so
+            # the readiness command never returns with a VLM squatting VRAM.
+            if orchestrator is not None:
+                try:
+                    prep = orchestrator.prepare_live_gpu()
+                    checks["prepare_live_gpu"] = {
+                        "ok": not prep.get("resident_after")
+                        or all(
+                            str(m).split(":")[0].strip().lower()
+                            == str(prep.get("live_model") or "").split(":")[0].strip().lower()
+                            for m in prep.get("resident_after") or []
+                        ),
+                        "detail": {
+                            "live_model": prep.get("live_model"),
+                            "unloaded": prep.get("unloaded"),
+                            "resident_after": prep.get("resident_after"),
+                            "vram_after": prep.get("vram_after"),
+                        },
+                    }
+                except Exception as exc:
+                    checks["prepare_live_gpu"] = {
+                        "ok": False,
+                        "detail": f"{type(exc).__name__}: {str(exc)[:300]}",
+                    }
 
     detector_path = ROOT / "models" / "yolox_nano.onnx"
     if detector_path.exists():

@@ -340,13 +340,23 @@ def process_deferred_fine_intel_backlog(
 
     class _CoreClientAdapter:
         def __init__(self) -> None:
+            from mlomega_audio_elite.config import get_settings
             from mlomega_audio_elite.llm import OllamaJsonClient
 
             # Fine-intel is LIVE-tier semantics (Ollama 4B). Under the
             # process-wide llamacpp backend a default client would target the
             # stopped P1 server, or 404 the P1 alias against Ollama (proven on
-            # Gate B 20260717-115157). Force the Ollama backend explicitly.
-            self.client = OllamaJsonClient(backend="ollama")
+            # Gate B 20260717-115157). Force the Ollama backend explicitly AND
+            # pin the base URL (11434) + the LIVE 4B model. Gate B #5: recovery
+            # runs inside the ``post_stop_fine_intel`` phase wrapper, so without an
+            # explicit model the client would otherwise pick the post-stop 9B by
+            # phase — the live batch must stay on the 4B it was enqueued for.
+            settings = get_settings()
+            self.client = OllamaJsonClient(
+                base_url=settings.ollama_base_url,
+                model=settings.ollama_live_model,
+                backend="ollama",
+            )
 
         def complete_json(
             self,

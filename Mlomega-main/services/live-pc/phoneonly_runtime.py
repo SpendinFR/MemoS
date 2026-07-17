@@ -554,11 +554,41 @@ class PhoneOnlyRuntime:
 
     async def start(self) -> None:
         if self.video_task is None:
+            # E64-i Gate B #5: BEFORE any capture task consumes the audio callback,
+            # hand the GPU to the live 4B model exclusively. A Qwen3-VL/9B model
+            # left resident by the preflight or a previous close starves the single
+            # audio callback (proven: 1965 dropped chunks, file pic 3000). The real
+            # frontier stops P1, evicts every non-live Ollama model (keep_alive=0)
+            # and FAILS if a VLM/9B resists — never silently degrading capture.
+            await asyncio.to_thread(self._prepare_live_gpu_boundary)
             # Iteration starts the ingress without opening its legacy aiohttp
             # listener; signaling itself remains on SessionHub port 8710.
             self.video_task = asyncio.create_task(self.pipeline.run_video())
             self.delivery_task = asyncio.create_task(self._delivery_loop())
             await asyncio.sleep(0)
+
+    def _prepare_live_gpu_boundary(self) -> None:
+        """Run the real prepare_live_gpu frontier at the runtime start (product only).
+
+        Opt-in via ``MLOMEGA_GPU_PHASE_ORCHESTRATION`` (same flag as the preflight).
+        Injected/legacy test pipelines never trigger it. A residency failure is a
+        hard error: a live session must not start over a squatting VLM/9B."""
+        if not self._product_pipeline:
+            return
+        if os.environ.get("MLOMEGA_GPU_PHASE_ORCHESTRATION", "0").strip().lower() not in {
+            "1", "true", "yes", "on",
+        }:
+            return
+        src = ROOT / "src"
+        if str(src) not in sys.path:
+            sys.path.insert(0, str(src))
+        from mlomega_audio_elite.gpu_phase_orchestrator import GpuPhaseOrchestrator
+
+        orchestrator = GpuPhaseOrchestrator()
+        result = orchestrator.prepare_live_gpu()
+        self._record_pipeline_error(
+            "prepare_live_gpu: unloaded=" + ",".join(result.get("unloaded") or ["none"])
+        )
 
     async def _delivery_loop(self) -> None:
         while not self.ended:
@@ -743,15 +773,12 @@ class PhoneOnlyRuntime:
                 #    already in flight, not by new media.
                 if hasattr(self.ingress, "stop_accepting_media"):
                     await self.ingress.stop_accepting_media()
-                # 2. RAW audio drain only (chunks -> durable turns). Short cap:
-                #    with media stopped this is pure backlog, not model work.
-                if hasattr(self.ingress, "drain_audio"):
-                    audio_timeout_s = max(
-                        float(drain_timeout_s),
-                        float(os.getenv("MLOMEGA_RAW_DRAIN_TIMEOUT_S", "30")),
-                    )
-                    await self.ingress.drain_audio(timeout_s=audio_timeout_s)
-                # 3. Durable recovery job BEFORE anything can seal BrainLive.
+                # 2. Durable recovery job IMMEDIATELY after media stop — BEFORE the
+                #    raw audio drain. Gate B #5: the brute drain timeout (30 s) fired
+                #    BEFORE the recovery job existed, so a slow/blocked audio callback
+                #    left NOTHING recoverable. The live_session_id comes from
+                #    pipeline.conversation and is available here, before any drain,
+                #    so even a drain timeout now leaves a durable CloseDay boundary.
                 conversation = getattr(self.pipeline, "conversation", None)
                 self.live_session_id = self.live_session_id or getattr(
                     conversation, "live_session_id", None
@@ -765,6 +792,15 @@ class PhoneOnlyRuntime:
                         live_session_id=self.live_session_id,
                         db_path=self.db_path,
                     )
+                # 3. RAW audio drain only (chunks -> durable turns). Short cap:
+                #    with media stopped this is pure backlog, not model work. The
+                #    recovery job already exists, so a timeout here stays recoverable.
+                if hasattr(self.ingress, "drain_audio"):
+                    audio_timeout_s = max(
+                        float(drain_timeout_s),
+                        float(os.getenv("MLOMEGA_RAW_DRAIN_TIMEOUT_S", "30")),
+                    )
+                    await self.ingress.drain_audio(timeout_s=audio_timeout_s)
                 await self.close_transport()
                 self.ended = True
                 self.end_status = "completed"
@@ -842,21 +878,26 @@ class PhoneOnlyRuntime:
         2. On grace expiry, split the commands STILL in flight by their routed
            intent (durable vs interactive, from ``pipeline.pending_commands()``):
              * INTERACTIVE (help/next-step/ask_memory/one-shot VLM): abandon them.
-               A durable ``cancelled_session_end`` trace is written and we CEASE TO
-               WAIT. The worker thread cannot be killed (``asyncio.to_thread``); it
-               finishes orphaned with no observable effect — the phone is already
-               disconnected and its reply is undeliverable. Never silent.
+               A durable ``cancelled_session_end`` trace is written AND a
+               ``cancel_event`` token is SET so any effect the orphan worker still
+               attempts (UIIntent/TTS via ``_push_intent``) is refused — the phone
+               is already disconnected and its reply is undeliverable. Never silent.
              * DURABLE (enrollment/identity/remember/owner-voice): NEVER cancelled.
                We keep awaiting them up to the existing budget
                (``MLOMEGA_FINAL_DRAIN_TIMEOUT_S``, default 300 s, unchanged).
-        3. A durable command that exceeds the full budget raises a noisy
+        3. Gate B #5 fix: after marking interactive commands cancelled we do NOT
+           return immediately. CloseDay must never start while a "cancelled" thread
+           can still be running (and would race the finalize/DB writes). We WAIT for
+           the interactive workers to REALLY terminate — bounded because every
+           handler LLM/VLM call now has a FINITE timeout — before letting the caller
+           proceed. Their late effects are already refused by the cancel token, so
+           this wait has no observable product; it only guarantees quiescence.
+        4. A durable command that exceeds the full budget raises a noisy
            ``TimeoutError`` exactly as before — retryable via the durable recovery
            job. A durable command is never abandoned after its entry was accepted.
 
         The grace lives here, in the BACKGROUND drain task — never on the
-        ``/session/end`` HTTP path — so the fast end boundary is untouched. The
-        finalize/CloseDay continue after interactive cancellations: they never
-        block CloseDay.
+        ``/session/end`` HTTP path — so the fast end boundary is untouched.
         """
         grace_s = max(0.1, float(os.getenv("MLOMEGA_COMMAND_GRACE_S", "60")))
         budget_s = max(
@@ -881,22 +922,40 @@ class PhoneOnlyRuntime:
             seg = str(cmd.get("segment_id") or "")
             if hasattr(pipeline, "mark_command_cancelled_session_end"):
                 try:
+                    # Sets the cancel_event token (effect chokepoint) + persists the
+                    # durable cancelled_session_end trace.
                     pipeline.mark_command_cancelled_session_end(seg)
                 except Exception as exc:
                     self.recent_errors.append(("cancel_command: " + str(exc))[:500])
             self.recent_errors.append(
                 ("command_cancelled_session_end: " + seg)[:500]
             )
-        if not durable:
-            # Nothing durable is left; the abandoned interactive commands must not
-            # block CloseDay. Finalize proceeds. (Plain receipts, if any remained,
-            # are the fast reflex path with no lasting effect.)
-            return
-        # Phase 3 — wait for the DURABLE commands up to the remaining budget. Their
-        # completion is signalled by the pipeline registry ``done`` Event, set at
-        # the terminal trace inside the receipt worker thread.
         remaining_s = max(0.1, budget_s - grace_s)
         deadline = time.monotonic() + remaining_s
+        # Phase 3 — WAIT for the cancelled interactive workers to actually finish
+        # before letting finalization/CloseDay continue. Bounded by the remaining
+        # budget, which is finite because handler LLM/VLM timeouts are finite. Their
+        # effects are already suppressed by the cancel token; on a rare overrun we
+        # do NOT block CloseDay for an interactive command (it is abandoned by
+        # design), but we record it. The cancel token keeps a straggler harmless.
+        for cmd in interactive:
+            done = cmd.get("done")
+            if done is None:
+                continue
+            wait_s = deadline - time.monotonic()
+            if wait_s <= 0 or not await asyncio.to_thread(done.wait, max(0.0, wait_s)):
+                seg = str(cmd.get("segment_id") or "")
+                self.recent_errors.append(
+                    ("cancelled_command_still_running(effect_suppressed): " + seg)[:500]
+                )
+        if not durable:
+            # Interactive workers are quiesced (or provably effect-suppressed).
+            # CloseDay can proceed. (Plain receipts, if any remained, are the fast
+            # reflex path with no lasting effect.)
+            return
+        # Phase 4 — wait for the DURABLE commands up to the remaining budget. Their
+        # completion is signalled by the pipeline registry ``done`` Event, set at
+        # the terminal trace inside the receipt worker thread.
         for cmd in durable:
             done = cmd.get("done")
             if done is None:

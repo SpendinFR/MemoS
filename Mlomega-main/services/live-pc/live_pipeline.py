@@ -857,6 +857,18 @@ class LivePipeline:
         return result.to_dict()
 
     def _push_intent(self, intent: dict[str, Any]) -> None:
+        # E64-i Gate B #5: honest cancellation. If this call runs inside a command
+        # worker whose command has been abandoned after the grace, refuse the
+        # effect — the reply would target an already-closed DataChannel and the
+        # cancellation must be observable (never a late, orphaned write). The
+        # command_execution_trace path does NOT go through here, so the durable
+        # ``cancelled_session_end`` trace is unaffected.
+        segment_id = getattr(self._current_command_tls, "segment_id", None)
+        if self._command_is_cancelled(segment_id):
+            self.wake_word_metrics["command_effects_suppressed"] = (
+                self.wake_word_metrics.get("command_effects_suppressed", 0) + 1
+            )
+            return
         if self.ingress is not None and hasattr(self.ingress, "send_ui_intent"):
             try:
                 self.ingress.send_ui_intent(json.dumps(intent))
@@ -1028,6 +1040,12 @@ class LivePipeline:
             "durable": True,  # unknown-until-routed => treated as durable
             "text": text,
             "done": threading.Event(),
+            # E64-i Gate B #5: an honest cancellation token. When an interactive
+            # command is abandoned after the grace, the drain SETS this event; the
+            # worker thread (which cannot be killed) then checks it at every effect
+            # chokepoint (``_push_intent``) and refuses to write anything — no
+            # UIIntent, no TTS reaches a device that is already gone.
+            "cancel_event": threading.Event(),
         }
         with self._command_registry_lock:
             self._command_registry[segment_id] = entry
@@ -1078,8 +1096,18 @@ class LivePipeline:
                         "durable": bool(entry["durable"]),
                         "text": entry["text"],
                         "done": entry["done"],
+                        "cancel_event": entry.get("cancel_event"),
                     })
             return out
+
+    def _command_is_cancelled(self, segment_id: str | None) -> bool:
+        """True when the drain has abandoned this in-flight command (effect chokepoint)."""
+        if not segment_id:
+            return False
+        with self._command_registry_lock:
+            entry = self._command_registry.get(segment_id)
+            event = entry.get("cancel_event") if entry is not None else None
+        return bool(event is not None and event.is_set())
 
     def mark_command_cancelled_session_end(self, segment_id: str) -> None:
         """Abandon an interactive in-flight command after the grace window.
@@ -1094,6 +1122,14 @@ class LivePipeline:
             entry = self._command_registry.get(segment_id)
             intent = entry["intent"] if entry is not None else None
             text = entry["text"] if entry is not None else None
+            # SET the cancel token BEFORE tracing so any effect the orphan worker
+            # attempts from now on (via ``_push_intent``) is refused. The worker
+            # cannot be killed; this is what makes "cancelled" honest rather than a
+            # thread that keeps writing after we stopped waiting for it.
+            if entry is not None:
+                event = entry.get("cancel_event")
+                if event is not None:
+                    event.set()
         self._persist_command_trace(
             segment_id,
             intent=intent,
