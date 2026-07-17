@@ -152,7 +152,7 @@ def test_context_manager_never_leaks_p1():
     assert spawned[-1].terminated
 
 
-def _make_live_prep(*, ps_sequence, live_model="qwen3.5:4b"):
+def _make_live_prep(*, ps_sequence, live_model="qwen3.5:4b", foreign_p1=False):
     """Build an orchestrator whose /api/ps returns each list in ps_sequence in turn.
 
     ps_sequence[0] = models resident BEFORE unload; ps_sequence[1] = AFTER. Unload
@@ -182,6 +182,7 @@ def _make_live_prep(*, ps_sequence, live_model="qwen3.5:4b"):
         ollama_unload=ollama_unload,
         ollama_ps=ollama_ps,
         vram_snapshot=vram_snapshot,
+        foreign_p1_probe=lambda: foreign_p1,
         ready_timeout_s=2.0,
         poll_interval_s=0.01,
     )
@@ -217,6 +218,18 @@ def test_prepare_live_gpu_fails_if_vlm_or_9b_resists():
     )
     with pytest.raises(LiveGpuResidencyError, match="qwen3-vl"):
         orch.prepare_live_gpu()
+
+
+def test_prepare_live_gpu_fails_on_foreign_p1_still_answering():
+    """stop_p1 only kills OUR process: a llama-server started elsewhere that still
+    answers on the P1 port must abort the live boundary explicitly (Codex)."""
+    orch, calls = _make_live_prep(
+        ps_sequence=[["qwen3.5:4b"], ["qwen3.5:4b"]], foreign_p1=True
+    )
+    with pytest.raises(LiveGpuResidencyError, match="not owned by this runtime"):
+        orch.prepare_live_gpu()
+    # Failed BEFORE any Ollama traffic: the foreign server owns the VRAM anyway.
+    assert calls["ps"] == 0 and calls["unloaded"] == []
 
 
 def test_prepare_live_gpu_stops_p1_first():

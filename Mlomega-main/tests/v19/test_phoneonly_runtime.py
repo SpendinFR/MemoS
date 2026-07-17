@@ -523,7 +523,15 @@ class FakeManager:
         return asyncio.create_task(self.runtime.run_close_day())
 
 
-def test_offer_creates_runtime_and_end_is_authenticated():
+def test_offer_creates_runtime_and_end_is_authenticated(monkeypatch):
+    # This test validates HTTP/auth and the async end->close-day ordering with
+    # fully fake ingress/pipeline. The real Ollama cache release (HTTP unloads)
+    # does not belong here and makes the 0.5 s close-day poll flaky on a machine
+    # where Ollama answers slowly: neutralize it for hermeticity.
+    monkeypatch.setattr(
+        runtime_mod.PhoneOnlyRuntime, "_release_core_live_caches",
+        staticmethod(lambda: None),
+    )
     manager = FakeManager()
     app = http_mod.create_app(enable_signaling=True, runtime_manager=manager)
     with TestClient(app) as client:

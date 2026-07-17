@@ -548,6 +548,8 @@ class PhoneOnlyRuntime:
         self.live_session_id: str | None = live_session_id
         self._last_frame_drops = 0
         self.privacy_paused = False
+        # Telemetry of the prepare_live_gpu frontier (never in recent_errors).
+        self.prepare_live_gpu_result: dict[str, Any] | None = None
 
     def _record_pipeline_error(self, message: str) -> None:
         self.recent_errors.append(str(message)[:500])
@@ -586,9 +588,14 @@ class PhoneOnlyRuntime:
 
         orchestrator = GpuPhaseOrchestrator()
         result = orchestrator.prepare_live_gpu()
-        self._record_pipeline_error(
-            "prepare_live_gpu: unloaded=" + ",".join(result.get("unloaded") or ["none"])
-        )
+        # Success is telemetry, never an error: recent_errors must stay a clean
+        # failure signal (Codex). The full result is already journaled durably by
+        # record_phase_event inside prepare_live_gpu; keep the summary here too.
+        self.prepare_live_gpu_result = {
+            "unloaded": list(result.get("unloaded") or []),
+            "resident_after": list(result.get("resident_after") or []),
+            "vram_after": dict(result.get("vram_after") or {}),
+        }
 
     async def _delivery_loop(self) -> None:
         while not self.ended:
@@ -934,10 +941,12 @@ class PhoneOnlyRuntime:
         deadline = time.monotonic() + remaining_s
         # Phase 3 — WAIT for the cancelled interactive workers to actually finish
         # before letting finalization/CloseDay continue. Bounded by the remaining
-        # budget, which is finite because handler LLM/VLM timeouts are finite. Their
-        # effects are already suppressed by the cancel token; on a rare overrun we
-        # do NOT block CloseDay for an interactive command (it is abandoned by
-        # design), but we record it. The cancel token keeps a straggler harmless.
+        # budget, which is finite because handler LLM/VLM timeouts are finite.
+        # Codex (post-#5): a worker STILL alive after the full budget is a HARD
+        # error that blocks CloseDay — the cancel token only covers the intent/
+        # device chokepoints, not every DB writer, so a live thread may still
+        # write during finalize. Waiting for real termination is the only safe
+        # boundary; the cooperative cancellation of every writer can come later.
         for cmd in interactive:
             done = cmd.get("done")
             if done is None:
@@ -945,8 +954,10 @@ class PhoneOnlyRuntime:
             wait_s = deadline - time.monotonic()
             if wait_s <= 0 or not await asyncio.to_thread(done.wait, max(0.0, wait_s)):
                 seg = str(cmd.get("segment_id") or "")
-                self.recent_errors.append(
-                    ("cancelled_command_still_running(effect_suppressed): " + seg)[:500]
+                raise TimeoutError(
+                    "cancelled interactive command worker still running after the "
+                    f"full drain budget ({budget_s:.0f}s): {seg} "
+                    f"(intent={cmd.get('intent')}) — CloseDay stays gated"
                 )
         if not durable:
             # Interactive workers are quiesced (or provably effect-suppressed).

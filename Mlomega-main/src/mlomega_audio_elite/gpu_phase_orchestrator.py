@@ -162,6 +162,7 @@ class GpuPhaseOrchestrator:
         release_live_models: Callable[[], None] | None = None,
         ollama_ps: Callable[[], list[dict[str, Any]]] | None = None,
         vram_snapshot: Callable[[], dict[str, Any]] | None = None,
+        foreign_p1_probe: Callable[[], bool] | None = None,
         ready_timeout_s: float = 120.0,
         poll_interval_s: float = 0.5,
     ) -> None:
@@ -172,6 +173,7 @@ class GpuPhaseOrchestrator:
         self._release_live_models = release_live_models or self._default_release_live_models
         self._ollama_ps = ollama_ps or self._default_ollama_ps
         self._vram_snapshot = vram_snapshot or self._default_vram_snapshot
+        self._foreign_p1_probe = foreign_p1_probe or self._default_foreign_p1_probe
         self.ready_timeout_s = max(1.0, float(ready_timeout_s))
         self.poll_interval_s = max(0.01, float(poll_interval_s))
         self._proc: Any | None = None
@@ -213,6 +215,20 @@ class GpuPhaseOrchestrator:
             return str(get_settings().ollama_base_url or "http://127.0.0.1:11434")
         except Exception:
             return "http://127.0.0.1:11434"
+
+    @staticmethod
+    def _default_foreign_p1_probe() -> bool:
+        """True when SOMETHING still answers on the P1 port (foreign llama-server).
+
+        ``stop_p1`` can only terminate the process THIS instance spawned; a P1
+        started by another process (previous run, manual console) survives it and
+        would squat the VRAM through the whole live capture. Any HTTP answer on
+        the P1 base URL after our own stop is therefore a hard residency failure."""
+        try:
+            _http_get_json(p1_base_url() + "/props", timeout=3.0)
+            return True
+        except Exception:
+            return False
 
     def _default_ollama_ps(self) -> list[dict[str, Any]]:
         url = self._ollama_base_url().rstrip("/") + "/api/ps"
@@ -385,6 +401,15 @@ class GpuPhaseOrchestrator:
 
         stopped = self.stop_p1() if self.p1_running else {"status": "not_running"}
         assert not self.p1_running, "P1 must never be active during live capture"
+        # stop_p1 only terminates OUR process. A foreign llama-server (previous
+        # run, manual console) still answering on the P1 port would keep ~7 GB
+        # VRAM through the whole capture: explicit failure BEFORE capture starts.
+        if self._foreign_p1_probe():
+            record_phase_event("prepare_live_gpu_foreign_p1", base_url=p1_base_url())
+            raise LiveGpuResidencyError(
+                f"a llama-server not owned by this runtime still answers on "
+                f"{p1_base_url()} — stop it before live capture"
+            )
 
         before_models = self._resident_model_names()
         vram_before = self._vram_snapshot()

@@ -880,6 +880,15 @@ class LivePipeline:
 
         E35 §1: a ``set_tts`` command is a LOCAL toggle (voice on/off) — applied here
         and still forwarded so the device StatusBar can reflect the state."""
+        # Same honest-cancellation chokepoint as ``_push_intent``: a worker whose
+        # command was abandoned after the grace must not reach the device NOR
+        # toggle local state (set_tts) — its effect is refused, visibly.
+        segment_id = getattr(self._current_command_tls, "segment_id", None)
+        if self._command_is_cancelled(segment_id):
+            self.wake_word_metrics["command_effects_suppressed"] = (
+                self.wake_word_metrics.get("command_effects_suppressed", 0) + 1
+            )
+            return False
         if isinstance(cmd, dict) and cmd.get("action") == "set_tts":
             self.set_tts(bool(cmd.get("tts")))
         if self.ingress is not None and hasattr(self.ingress, "send_ui_intent"):

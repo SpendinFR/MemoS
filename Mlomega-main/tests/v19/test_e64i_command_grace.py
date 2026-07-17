@@ -7,8 +7,9 @@ After the fast /session/end ACK, the background drain grants a SHORT grace
 them by their ROUTED intent:
 
   * INTERACTIVE (help/next-step/ask_memory/one-shot VLM): abandoned after the
-    grace with a durable ``cancelled_session_end`` trace — never silent, never
-    blocking CloseDay.
+    grace with a durable ``cancelled_session_end`` trace — never silent. The
+    drain then WAITS for the worker's real termination; a worker still alive
+    after the full budget raises and BLOCKS CloseDay (Codex post-#5).
   * DURABLE (enrollment/identity/remember/owner-voice): NEVER cancelled; awaited
     up to the existing budget (``MLOMEGA_FINAL_DRAIN_TIMEOUT_S``). A durable
     command that overruns the budget raises a noisy TimeoutError (retryable),
@@ -187,11 +188,15 @@ def test_intent_classification_matches_the_router_vocabulary():
 # --------------------------------------------------------------------------- #
 # Interactive command in-flight past the grace → cancelled_session_end        #
 # --------------------------------------------------------------------------- #
-def test_interactive_command_past_grace_is_cancelled_and_drain_returns(tmp_path, monkeypatch):
+def test_interactive_worker_still_alive_after_budget_blocks_close_day(tmp_path, monkeypatch):
+    """Codex (post-#5): a cancelled interactive worker that is STILL running after
+    the full drain budget must raise — CloseDay can never start while a thread
+    that writes directly to the DB may still be alive. The durable
+    ``cancelled_session_end`` trace is written regardless (never silent)."""
     monkeypatch.setenv("MLOMEGA_COMMAND_GRACE_S", "0.3")
-    monkeypatch.setenv("MLOMEGA_FINAL_DRAIN_TIMEOUT_S", "5")
+    monkeypatch.setenv("MLOMEGA_FINAL_DRAIN_TIMEOUT_S", "1")
     db = tmp_path / "memory.db"
-    gate = threading.Event()  # never released → command stays in flight
+    gate = threading.Event()  # never released → the worker outlives the budget
     intents = _BlockingIntents(intent="ask_memory", gate=gate)
 
     async def scenario():
@@ -205,9 +210,8 @@ def test_interactive_command_past_grace_is_cancelled_and_drain_returns(tmp_path,
         seg = "seg-interactive"
         rt.ingress.dispatch_transcript(rt.pipeline, _command_payload(seg, "interroge ma mémoire"))
         await asyncio.sleep(0.05)  # let accepted trace land + routing start
-        # The grace drain must RETURN (not raise) once the interactive command is
-        # abandoned after the grace.
-        await rt._drain_commands_with_grace()
+        with pytest.raises(TimeoutError, match="still running"):
+            await rt._drain_commands_with_grace()
         return seg, rt
 
     seg, rt = asyncio.run(scenario())
