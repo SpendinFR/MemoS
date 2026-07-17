@@ -816,10 +816,21 @@ class PhoneOnlyRuntime:
         self.end_status = "completed"
 
     def _drain_deferred_semantics_blocking(self) -> dict[str, Any]:
-        """Synchronous fine-intel backlog drain (runs in a worker thread)."""
+        """Synchronous fine-intel backlog drain (runs in a worker thread).
+
+        The session is over: this batch work is POST-STOP by nature. Without the
+        phase marker the LLM client stays on the live profile (num_ctx 4096) and
+        a batched request with a 4096-token output budget truncates by
+        construction (proven on Gate B run 20260717-121607, finish_reason=length,
+        38 jobs stuck pending)."""
         if not hasattr(self.pipeline, "drain_deferred_semantics"):
             return {"status": "not_applicable"}
-        return dict(self.pipeline.drain_deferred_semantics() or {})
+        try:
+            from mlomega_audio_elite.runtime_v18_7 import phase
+        except Exception:
+            return dict(self.pipeline.drain_deferred_semantics() or {})
+        with phase("post_stop_fine_intel"):
+            return dict(self.pipeline.drain_deferred_semantics() or {})
 
     async def _drain_commands_with_grace(self) -> None:
         """E64-i grâce: bounded, honest drain of in-flight device commands.

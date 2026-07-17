@@ -400,7 +400,14 @@ def process_deferred_fine_intel_backlog(
             __import__("os").environ.get("MLOMEGA_LIVE_FINE_INTEL_MAX_OUTPUT_TOKENS", "4096")
         ),
     )
-    return processor.process_pending()
+    # Recovery drain is post-stop work: without the phase marker the client
+    # would use the live num_ctx (4096) and truncate the batched request.
+    try:
+        from mlomega_audio_elite.runtime_v18_7 import phase
+    except Exception:
+        return processor.process_pending()
+    with phase("post_stop_fine_intel"):
+        return processor.process_pending()
 
 
 __all__.append("process_deferred_fine_intel_backlog")
