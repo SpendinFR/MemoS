@@ -309,11 +309,25 @@ class OllamaJsonClient:
     responses without silently treating them as an empty success.
     """
 
-    def __init__(self, base_url: str | None = None, model: str | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str | None = None,
+        model: str | None = None,
+        *,
+        backend: str | None = None,
+    ) -> None:
         settings = get_settings()
         if not settings.enable_ollama:
             raise EliteLLMError("MLOMEGA_ENABLE_OLLAMA=false refusé: l'analyse élite exige Ollama/Qwen.")
-        self.backend = os.environ.get("MLOMEGA_LLM_BACKEND", "ollama").strip().lower()
+        # ``backend=`` is an EXPLICIT override for callers that are Ollama by
+        # construction (live providers, fine-intel). Under the process-wide
+        # MLOMEGA_LLM_BACKEND=llamacpp, a caller passing an Ollama base_url but
+        # no model would otherwise fall back to the llama.cpp P1 alias and hit
+        # Ollama's OpenAI endpoint with an unknown model -> HTTP 404 (proven on
+        # Gate B run 20260717-115157).
+        self.backend = (
+            backend or os.environ.get("MLOMEGA_LLM_BACKEND", "ollama")
+        ).strip().lower()
         if self.backend == "llamacpp":
             self.base_url = (
                 base_url

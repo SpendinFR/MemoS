@@ -342,7 +342,11 @@ def process_deferred_fine_intel_backlog(
         def __init__(self) -> None:
             from mlomega_audio_elite.llm import OllamaJsonClient
 
-            self.client = OllamaJsonClient()
+            # Fine-intel is LIVE-tier semantics (Ollama 4B). Under the
+            # process-wide llamacpp backend a default client would target the
+            # stopped P1 server, or 404 the P1 alias against Ollama (proven on
+            # Gate B 20260717-115157). Force the Ollama backend explicitly.
+            self.client = OllamaJsonClient(backend="ollama")
 
         def complete_json(
             self,

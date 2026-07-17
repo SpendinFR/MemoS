@@ -203,7 +203,13 @@ class OllamaProvider(LLMProvider):
         except Exception:
             return None
         try:
-            return OllamaJsonClient(base_url=self.base_url, model=self.model)
+            # This provider IS Ollama by construction: never route through the
+            # llama.cpp backend even when MLOMEGA_LLM_BACKEND=llamacpp is set
+            # process-wide for the post-stop phase (live must stay on Ollama;
+            # the P1 alias against Ollama 404s - Gate B 20260717-115157).
+            return OllamaJsonClient(
+                base_url=self.base_url, model=self.model, backend="ollama"
+            )
         except Exception:
             return None
 
