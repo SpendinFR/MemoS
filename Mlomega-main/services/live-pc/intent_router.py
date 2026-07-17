@@ -250,10 +250,19 @@ class IntentContext:
         self.last_bbox: Any = None
         self.last_text: str | None = None
         self.updated_at: float = 0.0
+        # E64-i grâce: fired the MOMENT an intent label is resolved (before the
+        # slow handler runs). Lets the live pipeline classify an in-flight command
+        # as durable/interactive at ROUTING time, not only at its terminal trace.
+        self.on_intent_resolved: Callable[[str], None] | None = None
 
     def note(self, *, intent: str | None = None, track_id: str | None = None, entity_id: str | None = None, bbox: Any = None, text: str | None = None) -> None:
         if intent:
             self.last_intent = intent
+            if self.on_intent_resolved is not None:
+                try:
+                    self.on_intent_resolved(intent)
+                except Exception:
+                    pass
         if track_id is not None:
             self.last_track_id = track_id
         if entity_id is not None:

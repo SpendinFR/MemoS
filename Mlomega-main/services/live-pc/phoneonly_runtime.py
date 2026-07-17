@@ -821,6 +821,83 @@ class PhoneOnlyRuntime:
             return {"status": "not_applicable"}
         return dict(self.pipeline.drain_deferred_semantics() or {})
 
+    async def _drain_commands_with_grace(self) -> None:
+        """E64-i grâce: bounded, honest drain of in-flight device commands.
+
+        Semantics (Codex decision b after Gate B #2):
+
+        1. Grant a SHORT grace (``MLOMEGA_COMMAND_GRACE_S``, default 60 s) for ALL
+           still-executing receipts/commands to finish naturally.
+        2. On grace expiry, split the commands STILL in flight by their routed
+           intent (durable vs interactive, from ``pipeline.pending_commands()``):
+             * INTERACTIVE (help/next-step/ask_memory/one-shot VLM): abandon them.
+               A durable ``cancelled_session_end`` trace is written and we CEASE TO
+               WAIT. The worker thread cannot be killed (``asyncio.to_thread``); it
+               finishes orphaned with no observable effect — the phone is already
+               disconnected and its reply is undeliverable. Never silent.
+             * DURABLE (enrollment/identity/remember/owner-voice): NEVER cancelled.
+               We keep awaiting them up to the existing budget
+               (``MLOMEGA_FINAL_DRAIN_TIMEOUT_S``, default 300 s, unchanged).
+        3. A durable command that exceeds the full budget raises a noisy
+           ``TimeoutError`` exactly as before — retryable via the durable recovery
+           job. A durable command is never abandoned after its entry was accepted.
+
+        The grace lives here, in the BACKGROUND drain task — never on the
+        ``/session/end`` HTTP path — so the fast end boundary is untouched. The
+        finalize/CloseDay continue after interactive cancellations: they never
+        block CloseDay.
+        """
+        grace_s = max(0.1, float(os.getenv("MLOMEGA_COMMAND_GRACE_S", "60")))
+        budget_s = max(
+            grace_s, float(os.getenv("MLOMEGA_FINAL_DRAIN_TIMEOUT_S", "300"))
+        )
+        # Phase 1 — grace for everything in flight (commands AND plain receipts).
+        try:
+            await self.ingress.drain_receipts(timeout_s=grace_s)
+            return
+        except asyncio.TimeoutError:
+            pass
+        # Phase 2 — grace expired. Classify what is still in flight by routed intent.
+        pipeline = self.pipeline
+        pending = (
+            pipeline.pending_commands()
+            if hasattr(pipeline, "pending_commands")
+            else []
+        )
+        durable = [cmd for cmd in pending if cmd.get("durable")]
+        interactive = [cmd for cmd in pending if not cmd.get("durable")]
+        for cmd in interactive:
+            seg = str(cmd.get("segment_id") or "")
+            if hasattr(pipeline, "mark_command_cancelled_session_end"):
+                try:
+                    pipeline.mark_command_cancelled_session_end(seg)
+                except Exception as exc:
+                    self.recent_errors.append(("cancel_command: " + str(exc))[:500])
+            self.recent_errors.append(
+                ("command_cancelled_session_end: " + seg)[:500]
+            )
+        if not durable:
+            # Nothing durable is left; the abandoned interactive commands must not
+            # block CloseDay. Finalize proceeds. (Plain receipts, if any remained,
+            # are the fast reflex path with no lasting effect.)
+            return
+        # Phase 3 — wait for the DURABLE commands up to the remaining budget. Their
+        # completion is signalled by the pipeline registry ``done`` Event, set at
+        # the terminal trace inside the receipt worker thread.
+        remaining_s = max(0.1, budget_s - grace_s)
+        deadline = time.monotonic() + remaining_s
+        for cmd in durable:
+            done = cmd.get("done")
+            if done is None:
+                continue
+            wait_s = deadline - time.monotonic()
+            if wait_s <= 0 or not await asyncio.to_thread(done.wait, max(0.0, wait_s)):
+                seg = str(cmd.get("segment_id") or "")
+                raise TimeoutError(
+                    f"durable command did not finalize within budget: {seg} "
+                    f"(intent={cmd.get('intent')})"
+                )
+
     def _start_background_fine_intel_drain(self) -> asyncio.Task[Any] | None:
         """Launch (once) the background FINALIZE + fine-intel drain task.
 
@@ -838,11 +915,14 @@ class PhoneOnlyRuntime:
                 # In-flight receipts may still be executing an intent/VLM call
                 # off the WebRTC loop; they must finish before BrainLive is
                 # sealed. Awaited here (async), no longer on the HTTP path.
+                # E64-i grâce: a bounded grace for ALL in-flight commands, then an
+                # honest split — interactive commands (help/next-step/memory
+                # question/one-shot VLM) are abandoned with a durable
+                # ``cancelled_session_end`` trace, while durable commands
+                # (enrollment/identity/remember/owner-voice) keep being awaited up
+                # to the existing budget and NEVER cancelled.
                 if hasattr(self.ingress, "drain_receipts"):
-                    receipt_timeout_s = float(
-                        os.getenv("MLOMEGA_FINAL_DRAIN_TIMEOUT_S", "300")
-                    )
-                    await self.ingress.drain_receipts(timeout_s=receipt_timeout_s)
+                    await self._drain_commands_with_grace()
                 # Semantic finalization (final worker flush, discourse/summary,
                 # BrainLive seal, resource release) then the fine-intel backlog.
                 await asyncio.to_thread(self._finalize_session_blocking)

@@ -152,6 +152,66 @@ def deorient_frame(frame_bgr: np.ndarray, rotation: int) -> np.ndarray:
     return np.ascontiguousarray(np.rot90(frame_bgr, k=k))
 
 
+# ---- E64-i chantier "grâce": durable vs interactive command classification ----
+# A command is DURABLE when it has a lasting side-effect on the owner's memory or
+# identity model (an enrollment, an explicit fact to remember, a correction, an
+# owner-voice setup). Such a command MUST finish (or be replayable) once its
+# device entry has been accepted — it is NEVER cancelled just because the phone
+# disconnected. Every other command (help, next-step, a memory question, a
+# one-shot VLM look) is INTERACTIVE: its only product is a reply pushed to a
+# device that is already gone, so after the grace window it may be abandoned.
+#
+# Classification is ALWAYS by the ROUTED intent (never by raw text), taken from
+# the vocabulary of ``intent_router``/``enrollment_watcher``:
+#   enroll / correct                 (enrollment_watcher: identity add + correction)
+#   correct_object / correct_place   (enrollment_watcher: durable memory correction)
+#   remember_fact                    (intent_router: explicit "retiens …")
+#   owner_enroll                     (intent_router: owner-voice capture)
+_DURABLE_COMMAND_INTENTS: frozenset[str] = frozenset({
+    "enroll",
+    "correct",
+    "correct_object",
+    "correct_place",
+    "remember_fact",
+    "owner_enroll",
+})
+
+
+def _command_intent_is_durable(intent: Any) -> bool:
+    """True when the routed intent has a lasting memory/identity side-effect.
+
+    Unknown/None intents (routing still in flight, or an unrecognised label) are
+    treated as durable: it is always safe to WAIT for a possibly-durable command
+    and never safe to abandon one — the invariant is that a durable command is
+    never cancelled after its device entry was accepted.
+    """
+    if intent is None:
+        return True
+    return str(intent).strip().lower() in _DURABLE_COMMAND_INTENTS
+
+
+# Durable, additive trace of EVERY command phase, written even when the device
+# DataChannel is already closed (which is exactly the Gate B situation). This is
+# what makes the 13/13 command correlation and the honest ``cancelled_session_end``
+# verdict verifiable from the DB rather than from an undelivered channel message.
+_COMMAND_TRACE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS command_execution_traces_v19(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  person_id TEXT NOT NULL,
+  live_session_id TEXT NOT NULL,
+  segment_id TEXT NOT NULL,
+  intent TEXT,
+  durable INTEGER NOT NULL DEFAULT 0,
+  phase TEXT NOT NULL,
+  status TEXT NOT NULL,
+  text TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_command_traces_session
+  ON command_execution_traces_v19(person_id, live_session_id, segment_id);
+"""
+
+
 class LivePipeline:
     def __init__(
         self,
@@ -535,6 +595,16 @@ class LivePipeline:
         self._device_gate_authoritative = False
         self._routed_device_segments: set[str] = set()
         self._routed_device_segment_order: list[str] = []
+        # E64-i grâce: runtime registry of commands accepted for routing but not
+        # yet terminal. segment_id -> {intent, durable, text, done: threading.Event}.
+        # Filled at the ``accepted`` trace, resolved at the terminal trace. The
+        # background drain reads it to know which in-flight commands are durable
+        # (must be waited for) vs interactive (may be abandoned after the grace).
+        self._command_registry: dict[str, dict[str, Any]] = {}
+        self._command_registry_lock = threading.Lock()
+        # Which command segment the current receipt-worker thread is routing, so
+        # the IntentContext.on_intent_resolved hook can classify the right entry.
+        self._current_command_tls = threading.local()
         # How long a wake-word arm stays valid for the following command turn.
         self._command_window_s = 8.0
         self.wake_word_metrics: dict[str, int] = {
@@ -623,6 +693,12 @@ class LivePipeline:
                 help_engine=self.help_engine,
                 person_id=self.person_id,
             )
+            # E64-i grâce: learn the routed intent the MOMENT it is decided (before
+            # the slow handler runs), so the background drain can classify an
+            # in-flight command as durable/interactive at routing time.
+            context = getattr(self.intents, "context", None)
+            if context is not None:
+                context.on_intent_resolved = self._on_intent_resolved_for_current_command
 
         # ---- AudioArchive (E37 §1): live VAD segments → WAV + night speech_segment --
         # Rebuilds the nightly deep-audio input for V19 sessions. Bound + never on the
@@ -867,6 +943,7 @@ class LivePipeline:
         # therefore always leaves at least its accepted trace plus a terminal
         # failed trace instead of disappearing entirely from the device report.
         self._push_command_accepted_trace(segment_id, text)
+        self._current_command_tls.segment_id = segment_id
         try:
             routed = self.intents.on_transcript(text)
             self.wake_word_metrics["turns_routed"] += 1
@@ -874,6 +951,11 @@ class LivePipeline:
             self._push_command_execution_trace(segment_id, text, routed)
             return routed
         except Exception as exc:
+            intent = None
+            self._resolve_command_registry(segment_id, intent=intent)
+            self._persist_command_trace(
+                segment_id, intent=intent, phase="failed", status="failed", text=text
+            )
             self._push_intent({
                 "type": "command_execution_trace", "segment_id": segment_id,
                 "phase": "failed", "status": "failed",
@@ -881,9 +963,19 @@ class LivePipeline:
                 "effect": {"status": "error", "error": type(exc).__name__},
             })
             return None
+        finally:
+            self._current_command_tls.segment_id = None
 
     def _push_command_accepted_trace(self, segment_id: str, text: str) -> None:
         """Immediate pre-execution trace so a blocked command is never invisible."""
+        # Register the in-flight command BEFORE the handler runs. Its intent (and
+        # therefore durability) is unknown at this point — routing has not
+        # returned yet — so it is registered as durable-by-default (never abandon
+        # a possibly-durable command). The terminal trace resolves the real intent.
+        self._register_command(segment_id, text)
+        self._persist_command_trace(
+            segment_id, intent=None, phase="accepted", status="accepted", text=text
+        )
         self._push_intent({
             "type": "command_execution_trace", "segment_id": segment_id,
             "phase": "accepted", "status": "accepted",
@@ -907,16 +999,145 @@ class LivePipeline:
         elif effect is not None:
             compact = {"value": str(effect)[:300]}
         handled = bool(data.get("handled", effect is not None))
+        intent = data.get("intent")
+        # Resolve the registry entry with the real routed intent so the drain can
+        # classify durable vs interactive, then persist the terminal trace.
+        self._resolve_command_registry(segment_id, intent=intent)
+        self._persist_command_trace(
+            segment_id,
+            intent=intent,
+            phase="completed" if handled else "failed",
+            status="completed" if handled else "failed",
+            text=text,
+        )
         self._push_intent({
             "type": "command_execution_trace", "segment_id": segment_id,
             "phase": "completed" if handled else "failed",
             "status": "completed" if handled else "failed",
-            "text": text, "intent": data.get("intent"),
+            "text": text, "intent": intent,
             "handled": handled,
             "request": data.get("request"),
             "device_command": data.get("device_command"),
             "effect": compact,
         })
+
+    # ---- E64-i grâce: command registry + durable trace persistence ----------
+    def _register_command(self, segment_id: str, text: str) -> None:
+        entry = {
+            "intent": None,
+            "durable": True,  # unknown-until-routed => treated as durable
+            "text": text,
+            "done": threading.Event(),
+        }
+        with self._command_registry_lock:
+            self._command_registry[segment_id] = entry
+
+    def _on_intent_resolved_for_current_command(self, intent: str) -> None:
+        """Classify the in-flight command AT ROUTING time (before the slow handler).
+
+        Fired by ``IntentContext.on_intent_resolved`` inside the receipt worker
+        thread that is running ``on_device_transcript`` for one segment. It records
+        the real routed intent/durability on the still-running registry entry
+        WITHOUT marking it done, so the background drain can tell a durable command
+        (keep waiting) from an interactive one (abandon after grace) even while the
+        handler is still blocked in a VLM/LLM call."""
+        segment_id = getattr(self._current_command_tls, "segment_id", None)
+        if not segment_id:
+            return
+        with self._command_registry_lock:
+            entry = self._command_registry.get(segment_id)
+            if entry is None or entry["done"].is_set():
+                return
+            entry["intent"] = intent
+            entry["durable"] = _command_intent_is_durable(intent)
+
+    def _resolve_command_registry(self, segment_id: str, *, intent: Any) -> None:
+        """Mark a command terminal: record its real intent/durability, set done."""
+        with self._command_registry_lock:
+            entry = self._command_registry.get(segment_id)
+            if entry is None:
+                return
+            entry["intent"] = intent
+            entry["durable"] = _command_intent_is_durable(intent)
+            entry["done"].set()
+
+    def pending_commands(self) -> list[dict[str, Any]]:
+        """Snapshot of in-flight commands (accepted, not yet terminal).
+
+        Returns dicts {segment_id, intent, durable, text, done} for entries whose
+        ``done`` Event is not set — the drain uses this to decide, after the grace
+        window, which commands to keep waiting for (durable) vs abandon (interactive).
+        """
+        with self._command_registry_lock:
+            out: list[dict[str, Any]] = []
+            for segment_id, entry in self._command_registry.items():
+                if not entry["done"].is_set():
+                    out.append({
+                        "segment_id": segment_id,
+                        "intent": entry["intent"],
+                        "durable": bool(entry["durable"]),
+                        "text": entry["text"],
+                        "done": entry["done"],
+                    })
+            return out
+
+    def mark_command_cancelled_session_end(self, segment_id: str) -> None:
+        """Abandon an interactive in-flight command after the grace window.
+
+        The command's worker thread cannot be killed (asyncio.to_thread); we
+        merely CEASE TO WAIT for it and record a durable ``cancelled_session_end``
+        trace. The orphan thread finishes with no observable effect (its reply
+        would target an already-closed DataChannel and is undeliverable). The
+        cancellation is never silent — it is persisted for the 13/13 correlation.
+        """
+        with self._command_registry_lock:
+            entry = self._command_registry.get(segment_id)
+            intent = entry["intent"] if entry is not None else None
+            text = entry["text"] if entry is not None else None
+        self._persist_command_trace(
+            segment_id,
+            intent=intent,
+            phase="cancelled_session_end",
+            status="cancelled",
+            text=text,
+        )
+
+    def _persist_command_trace(
+        self, segment_id: str, *, intent: Any, phase: str, status: str, text: Any
+    ) -> None:
+        """Additively persist one command phase. Best-effort, never raises.
+
+        Written for EVERY phase (accepted/completed/failed/cancelled_session_end)
+        from this single emitter path so the Gate B command correlation and the
+        1.3 verdict are verifiable in the DB even when the DataChannel is closed.
+        """
+        try:
+            from mlomega_audio_elite.db import connect, write_transaction
+            from mlomega_audio_elite.utils import now_iso
+
+            path = Path(self.db_path) if self.db_path is not None else None
+            durable = 1 if _command_intent_is_durable(intent) else 0
+            with connect(path) as con, write_transaction(con):
+                con.executescript(_COMMAND_TRACE_SCHEMA)
+                con.execute(
+                    """INSERT INTO command_execution_traces_v19(
+                          person_id,live_session_id,segment_id,intent,durable,
+                          phase,status,text,created_at)
+                       VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (
+                        str(self.person_id or "me"),
+                        str(self.live_session_id or ""),
+                        str(segment_id),
+                        None if intent is None else str(intent),
+                        durable,
+                        str(phase),
+                        str(status),
+                        None if text is None else str(text)[:2000],
+                        now_iso(),
+                    ),
+                )
+        except Exception as exc:  # pragma: no cover - durability is best-effort
+            self._report_error("command_trace.persist", exc)
 
     def _remember_explicit_fact(self, fact: str) -> dict[str, Any]:
         text = str(fact or "").strip()

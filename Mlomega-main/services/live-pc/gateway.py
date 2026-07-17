@@ -531,11 +531,26 @@ class AiortcIngress:
                 self.receipt_errors += 1
 
     async def drain_receipts(self, *, timeout_s: float = 5.0) -> None:
+        """Await in-flight receipt/command workers, up to ``timeout_s``.
+
+        On timeout this raises ``asyncio.TimeoutError`` but — unlike an
+        ``asyncio.wait_for`` around ``gather`` — it does NOT cancel the still-
+        running receipt tasks. A receipt worker runs a command in a thread
+        (``asyncio.to_thread``, OBS-5) that cannot be killed anyway; more
+        importantly the E64-i grace drain must be able to KEEP awaiting a durable
+        command (enrollment/identity/remember) after this grace timeout fires,
+        so its underlying worker must survive. ``asyncio.wait`` leaves the pending
+        tasks running and merely tells us the deadline passed.
+        """
         pending = list(self._receipt_tasks)
-        if pending:
-            await asyncio.wait_for(
-                asyncio.gather(*pending, return_exceptions=True),
-                timeout=max(0.1, float(timeout_s)),
+        if not pending:
+            return
+        _done, still_pending = await asyncio.wait(
+            pending, timeout=max(0.1, float(timeout_s))
+        )
+        if still_pending:
+            raise asyncio.TimeoutError(
+                f"{len(still_pending)} receipt task(s) still in flight"
             )
 
     async def _consume_track(self, track: Any, pc: Any) -> None:

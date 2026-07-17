@@ -205,7 +205,14 @@ class GpuPhaseOrchestrator:
                 last_error = f"{type(exc).__name__}: {str(exc)[:200]}"
                 time.sleep(self.poll_interval_s)
                 continue
-            alias = str(props.get("alias") or (props.get("default_generation_settings") or {}).get("alias") or "")
+            # The real llama-server exposes the alias as top-level ``model_alias``
+            # (verified on this build); older/other fields are kept as fallbacks.
+            alias = str(
+                props.get("model_alias")
+                or props.get("alias")
+                or (props.get("default_generation_settings") or {}).get("alias")
+                or ""
+            )
             n_ctx = props.get("n_ctx") or (props.get("default_generation_settings") or {}).get("n_ctx")
             if alias and alias == p1_alias() and int(n_ctx or 0) >= p1_ctx():
                 return dict(props)
