@@ -1278,142 +1278,249 @@ réduction statique de JSON comme une validation modèle.
   Life Model, prédictions/outcomes, preuves et absence de doublons. Conserver captures et
   jugement humain dans le rapport Gate B; le dashboard ne doit jamais écrire la DB.
 
-#### Étape finale 2 — gate qualité « propriétaire = William » — shadow conservé, activation produit retirée
+#### Étape finale 2 — cloud optionnel (DeepSeek texte + Together Vision) et auditeur shadow borné
 
-- [x] **2.1 Séparer identité vocale et qualité sémantique.** Sur un clone de la DB Gate B,
-  fournir une vérité d'évaluation qui mappe les tours du porteur vers `person_id=me`, alias
-  `William`, et l'autre voix vers une personne distincte. Ce mapping est une fixture de
-  test, jamais un patch de la DB source ni un nom codé en dur dans les prompts. L'enrôlement
-  vocal réel qui doit produire ce mapping reste réservé à l'étape S25 n°4.
+> **Principe non négociable.** Le chemin local validé reste le défaut et le rollback :
+> Ollama 4B pour le live, llama.cpp/P1 pour le texte nocturne et Qwen3-VL 8B pour Deep
+> Vision. Rien ne change sans flag explicite. DeepSeek V4 Pro/Flash est officiellement
+> **text-only** : `--deepseek` ne remplace jamais le VLM. Le candidat VLM cloud économique
+> est Together Serverless avec `Qwen/Qwen3.5-9B`, réellement multimodal; Gemini 3.1
+> Flash-Lite sert de contrôle prix/latence tant qu'un gate ne les a pas départagés. Ce choix
+> reste séparé sous `--cloud-vlm-provider together|gemini`. `--cloud` pourra être un alias
+> explicite de `--deepseek --cloud-vlm-provider <provider-validé>`,
+> jamais une bascule implicite. La génération d'images Together n'est pas pertinente ici :
+> MLOmega paie l'analyse image→JSON, pas la création d'une image.
 
-- [x] **2.2 Outil à créer avant exécution** :
-  `tools/harness/owner_quality_gate.py` +
-  `tools/harness/scenarios/owner_quality_truth.json`. Le script prend une DB source en
-  lecture seule, fabrique son propre clone, relance uniquement les consommateurs
-  sémantiques nécessaires et écrit un JSON de comparaison. Interface obligatoire :
+- [ ] **2.1 Providers cloud sélectionnables, sans perdre le local.** Ajouter
+  `--deepseek` à `run_harness.py` et aux commandes CloseDay, plus le switch PowerShell
+  équivalent `-DeepSeek` dans `RUN_MLOMEGA_V19.ps1`. Ajouter séparément
+  `--cloud-vlm-provider together|gemini` / `-CloudVlmProvider`; `--together-vlm` peut rester
+  un raccourci explicite. `--cloud` / `-Cloud` n'est qu'un alias visible pour le texte et
+  le provider VLM validé. Sans flag, comportement, variables et orchestration GPU locale
+  restent identiques.
+
+  **Texte DeepSeek :**
+
+  - préflight obligatoire de `DEEPSEEK_API_KEY`, endpoint, modèle, JSON strict, contexte,
+    latence et solde/budget; jamais écrire la clé dans DB/log/rapport;
+  - adapter V4 à l'interface `WindowLLM` et à l'orchestrateur existant : mêmes prompts,
+    schémas, fenêtres, merge, checkpoints, couverture et writers; aucune version parallèle
+    des moteurs V13/V14/V17/V18/Life;
+  - `deepseek-v4-flash` candidat par défaut pour extraction/segmentation/champs structurés;
+    `deepseek-v4-pro` réservé aux synthèses transversales réellement complexes. La liste
+    des stages Pro est explicite, versionnée et comparée; pas de routage « intelligent »
+    opaque qui rendrait une nuit non reproductible;
+  - le live/Ultralive reste sur Ollama 4B local. Une panne cloud pendant une nuit marquée
+    `--deepseek` est `blocked/retryable`; aucun mélange silencieux cloud/local. Un fallback
+    local éventuel exige un flag distinct et doit être inscrit dans le capability manifest;
+  - ne jamais créer un faux `--deepseek-vlm` tant que l'API officielle reste text-only.
+
+  **Vision Together optionnelle :**
+
+  - adapter l'endpoint OpenAI-compatible Together à l'interface Deep Vision existante,
+    modèle initial `Qwen/Qwen3.5-9B`, reasoning désactivé, même prompt, même JSON Schema,
+    mêmes keyframes, mêmes writers et même gate `selected=readable=analyzed`; aucune
+    seconde chaîne visuelle;
+  - `--together-vlm` remplace uniquement l'inférence Qwen3-VL nocturne. VisionRT live,
+    sélection déterministe, clips E55, matérialisation, couverture et cache de résultats
+    restent locaux. Une panne cloud est `blocked/retryable`, jamais une analyse vide;
+  - préflight obligatoire de `TOGETHER_API_KEY`, modèle réellement image-capable, petite
+    image de probe, JSON strict, rate-limit courant et budget; clé absente ou modèle retiré
+    = refus avant capture. La clé ne va ni en DB, ni en log, ni dans le manifeste;
+  - tarification conservatrice au 19 juillet 2026 : 0,17 $/M tokens input et 0,25 $/M
+    output. Together facture une image par tuiles de 560 px, au plus 4 × 1 601 = 6 404
+    tokens. Avec ~665 tokens JSON observés, une keyframe coûte environ 0,00125 $ /
+    0,00110 € avant marge. Retenir **0,0013 €/image** dans la réservation avec marge 15 %;
+  - projection à vérifier, pas à vendre comme acquise : 7–15 keyframes/5 min donnent
+    84–180 appels/h et ~0,11–0,23 €/h; le walkthrough I4 dense (~208 images/h) donne
+    ~0,27 €/h. Une journée de dix heures peut donc dépasser 1 € rien qu'en vision : le
+    plafond doit arrêter avant envoi, jamais après facturation;
+  - ne pas déclarer Together « moins cher » sans mesure. Contrôle officiel à la même date :
+    Gemini 3.1 Flash-Lite facture 0,25 $/M input et 1,50 $/M output, mais seulement 258
+    tokens par tuile 768×768. Avec le JSON observé (~665 tokens), il vaut environ
+    0,00106–0,00126 $/frame en standard, donc proche ou légèrement moins cher que Together;
+    son batch publié divise ces tarifs par deux. Together garde l'avantage d'une sortie
+    six fois moins chère et d'un modèle Qwen proche du local. Le verdict porte sur
+    **€/JSON accepté**, qualité et latence murale, pas sur le prix input isolé;
+  - le cache Together n'est pas présumé : `Qwen/Qwen3.5-9B` ne présente pas actuellement
+    de tarif cached-input officiel et chaque image change. Persister les éventuels
+    `cached_tokens`, mais budgéter chaque keyframe comme un miss complet;
+  - l'appel standard est retenu pour la première intégration. Le Batch API peut finir de
+    petits lots en quelques minutes et offre jusqu'à 50 % seulement sur modèles éligibles;
+    ne pas compter cette remise ni sa latence avant confirmation que ce modèle précis est
+    éligible. Le mode batch, s'il est ajouté, conserve `custom_id=frame_id`, inspecte le
+    fichier d'erreurs et réassemble dans l'ordre déterministe des keyframes.
+
+  **Gestion du temps requête/retour :** avant activation, faire un shadow Together puis
+  Gemini sur les 20 vraies keyframes I4.4, puis seulement le gagnant sur toutes celles du
+  run 30 min. Mesurer séparément upload/base64,
+  time-to-first-byte, génération JSON, validation et latence bout-en-bout; publier p50,
+  p95, maximum, 429/5xx et retries. Tester concurrence 1/2/3/4 avec `AsyncTogether` : les
+  frames indépendantes peuvent partir en parallèle, mais les résultats sont persistés par
+  ordre `(timestamp, frame_id)`. Choisir la plus petite concurrence qui réduit le mur sans
+  429; timeout borné et deux retries jitter maximum. Gemini reçoit le même test de
+  concurrence et un test batch distinct; son batch ne devient pas le défaut si le retour
+  est trop tardif pour la fenêtre nocturne. Le GO exige : qualité ≥ Qwen3-VL 8B local sur
+  les 11 moments de vérité, 0 JSON vide, couverture 100 %, coût projeté sous le plafond et
+  temps total mesuré inférieur au local (p50 local observé ~16–17 s/image). Ne conserver
+  qu'un provider VLM cloud en production; l'autre reste un adaptateur shadow, pas une
+  troisième branche à maintenir.
+
+  **Gate A/B avant activation produit.** Sur des clones d'une même DB, comparer texte
+  local/Flash/Pro-hybride et vision locale/Together/Gemini, chacun isolément puis ensemble :
+  sorties champ par champ, preuves, abstentions, contradictions, promotions, nombre
+  d'appels, cache, tokens, latence et coût. GO seulement si toutes les capacités/manifests
+  restent complètes, aucune preuve n'est perdue, qualité humaine au moins égale et reprise
+  idempotente. Le provider doit persister dans
+  `night_llm_call_telemetry_v19` : backend, modèle, thinking, cache hit/miss tokens,
+  input/output, images/tuiles, latence détaillée, concurrence, retries, coût calculé et
+  snapshot de tarif.
+
+  **Plafond quotidien dur multi-provider.** Défaut
+  `MLOMEGA_CLOUD_DAILY_BUDGET_EUR=1.00` (alias de compatibilité temporaire
+  `MLOMEGA_DEEPSEEK_DAILY_BUDGET_EUR`), partagé par DeepSeek, Together/Gemini, CloseDay et outils
+  shadow. Avant chaque appel, réserver atomiquement le pire coût input+output+image; après
+  réponse, réconcilier avec l'usage réellement retourné. Le cache DeepSeek est un gain
+  mesuré, jamais supposé : premier appel miss,
+  hit uniquement sur préfixe strictement identique, sortie toujours payante. Si l'appel
+  dépasserait le plafond, arrêter avant envoi avec état explicite; ne jamais tronquer une
+  capacité pour tenir le budget. Baseline réelle cinq minutes : 18–20 appels,
+  118 802–147 072 tokens in, 19 338–29 216 out. Projection sans cache V4 Pro :
+  ~0,30–0,59 € pour une heure normale, ~0,72–0,94 € pour une heure aussi dense que la
+  vidéo, ~1,80–2,35 € pour 60 min de parole; Flash : ~0,10–0,19 €, ~0,23–0,30 € et
+  ~0,58–0,75 €. Ajouter une marge de tokenizer/tarif de 15 % au stop/go.
+
+- [ ] **2.2 Outil owner/qualité shadow : usage, coût et autorité strictement bornés.** Les
+  fichiers existants `owner_quality_gate.py`, `owner_quality_truth.json`,
+  `owner_context_v19` et `prediction_policy_v19` restent hors produit. Le précédent essai
+  de raccord aux writers/compilateurs a régressé Brain2 et a été restauré exactement au
+  parent `7d417be`; ne pas le réintroduire indirectement. Contrat :
+
+  - DB source ouverte en lecture seule, clone neuf obligatoire, rapport JSON seulement;
+    aucune correction, suppression, promotion, backfill ou « nettoyage » automatique de
+    `memory.db`;
+  - premier passage obligatoire `--plan-only`, **sans aucun appel** : inventorier par
+    stage moteur les items candidats, appels prévus, tokens input/output réservés,
+    keyframes et tuiles image, checkpoints/cache réutilisables, coût min/max par provider
+    et estimation murale. Afficher ce devis avant toute demande payante;
+  - exécution uniquement avec `--execute`, modes orthogonaux
+    `--text-backend local|deepseek` et `--vision-backend local|together|gemini`, même fixture et
+    même clone de départ pour A/B; pas de tâche planifiée chaque nuit et pas d'appel en
+    arrière-plan sans commande;
+  - journaliser chaque appel/retour : stage, digest sans donnée sensible, provider/modèle,
+    cache/checkpoint hit, tokens texte/image/output, heure départ, TTFB, heure retour,
+    validation JSON, retry, statut HTTP et coût. Le résumé rapproche **prévu vs réel** et
+    explique tout écart; une ligne sans réponse n'est jamais comptée comme succès;
+  - mesurer doublons, contradictions, faits sans preuve, confusion owner/autre,
+    promotions trop rapides et remplissage de schéma; montrer proposition+preuves sans
+    décider quelle table canonique doit être réécrite;
+  - partager le ledger/plafond cloud de 1 €/jour entre DeepSeek et le VLM cloud. Si le CloseDay
+    a consommé le budget, le shadow ne part pas; override manuel séparé avec estimation
+    affichée avant accord. La réservation est atomique avant chaque appel et libérée ou
+    réconciliée au retour, afin que des appels parallèles ne dépassent jamais ensemble le
+    plafond;
+  - preuve actuelle sur la fixture cinq minutes : **18 appels, 102 353 tokens in,
+    22 772 out, 436,6 s d'inférence et 518,4 s murales**. Coût V4 Pro sans cache
+    ≈0,056 € sur cette fixture; extrapolation : 0,28–0,42 € et 43–65 min de calcul local
+    pour une heure normale, ~0,67 € et ~1 h 44 pour une heure dense, ~1,69 € et ~4 h 20
+    pour 60 min de parole. Ce coût supplémentaire interdit son exécution quotidienne en
+    l'état; usage conseillé : audit ponctuel/hebdomadaire ou comparaison de modèle.
+
+  Interface cible, sans modifier l'ancienne commande locale :
 
   ```powershell
   .\.venv\Scripts\python.exe tools\harness\owner_quality_gate.py `
     --db $db --owner-id me --owner-name William `
     --truth tools\harness\scenarios\owner_quality_truth.json `
-    --out tools\harness\_run\owner-quality-$stamp.json
+    --plan-only --text-backend deepseek --deepseek-model deepseek-v4-pro `
+    --vision-backend together --together-model Qwen/Qwen3.5-9B `
+    --budget-eur 1.00 --out tools\harness\_run\owner-quality-$stamp.json
   ```
 
-  Tant que ce script/fixture n'existent pas et ne sont pas testés, la case reste ouverte;
-  ne pas remplacer ce gate par une inspection subjective de trois cartes dashboard.
+  Après lecture du devis, remplacer seulement `--plan-only` par `--execute`. Le rapport
+  d'audit compare qualité et coût; il ne devient jamais un writer de production.
 
-- [ ] **2.3 Contrat de perspective — différé, non actif en production.** La cible reste un
-  `owner_context` canonique (`person_id=me`, alias courant, IDs de voix/personne), mais son
-  injection dans le chemin Brain2 local a fait régresser le vrai Gate B. Les appels
-  production ont donc été restaurés exactement au parent stable `7d417be`. Le module
-  d'analyse peut servir à une future comparaison DeepSeek sur clone; il n'est pas une
-  preuve que le compilateur produit reçoit ce contexte.
+#### Étape finale 3 — Dashboard humain et spatial fiable, puis chaos réel 30 minutes
 
-- [ ] **2.4 Épistémologie et profondeur — contrat à réévaluer hors produit.** Une minute peut produire événements/états et
-  candidats `watch`, jamais un trait émotionnel/habitude à forte confiance. Promotion
-  durable seulement après répétitions ou sources indépendantes. Distinguer : observation,
-  état ponctuel, hypothèse, pattern longitudinal, prédiction. Une prédiction doit citer des
-  précédents comparables (`X occurrences`, contextes, émotions observables, personne,
-  issues) et rester probabiliste; aucune « prochaine pensée » présentée comme vérité.
+> **Remplace l'ancien Gate C synthétique d'une heure.** Ne pas construire une vidéo d'une
+> heure ni boucler douze fois la fixture cinq minutes. L'objectif est d'abord de rendre la
+> mémoire lisible sans écriture, fermer le trou bbox découvert, puis utiliser une vraie
+> vidéo de 30 min proche du S25 pour les seules frontières chaos encore non prouvées.
 
-- [ ] **2.5 Déduplication/responsabilité — mesure shadow uniquement.** Pour chaque sortie, comparer
-  claim canonique → writer → consommateur. Deux moteurs peuvent apporter des preuves ou
-  responsabilités différentes, mais ne doivent pas persister le même fait sous plusieurs
-  classes. Mesurer doublons sémantiques, contradictions, claims sans preuve, promotions
-  trop rapides, confusion owner/autre et remplissage de schéma. GO : 100 % des claims
-  relisibles, zéro attribution owner fausse, zéro trait durable mono-occurrence, capacités
-  intactes et qualité au moins égale à la référence humaine. Ce gate peut améliorer la
-  qualité tout en réduisant tokens et auto-confirmation; il ne doit pas être « verdi » en
-  supprimant les couches psychologie/Life utiles.
+- [ ] **3.1 Dashboard lecture seule réellement humain.** Conserver SQLite en mode `ro` et
+  supprimer/désactiver en production tout contrôle CLI d'écriture. Vérifier le SHA de la
+  DB avant/après une session Dashboard. Remplacer l'heuristique « nom de table contient
+  model/fact ⇒ fait sûr » par une whitelist sémantique et des adaptateurs par contrat :
 
-> **Verdict Étape finale 2 corrigé après test produit : GO shadow, activation produit
-> ANNULÉE.** La fixture
-> `owner_quality_truth.json` attribue explicitement 17 tours au propriétaire, 11 à une
-> autre personne et 5 mixtes/inconnus, sans modifier la DB source. Le gate clone la base,
-> exige un parent, couverture parole 100 %, Karim/Netflix séparés, claims owner prouvés par
-> des tours owner, zéro doublon canonique, zéro pattern confirmé mono-session et zéro
-> prédiction sans précédent. Ces résultats qualifient l'outil de comparaison sur clone;
-> ils ne qualifient plus les writers ni les prompts du CloseDay produit.
->
-> **Portée conservée.** `owner_quality_gate.py`, sa fixture, `owner_context_v19` et
-> `prediction_policy_v19` restent disponibles comme instruments shadow sans écriture dans
-> la DB source. Leurs raccords aux writers/compilateurs, le backfill vocal étendu et les
-> nouvelles contraintes EpisodeBuilder ont été retirés du chemin produit. La réparation
-> Deep Vision d'un JSON tronqué est indépendante, prouvée par 7=7=7, et reste active.
->
-> **Preuves et décision bénéfice/risque.** Le run réel `owner-quality-20260718-194727`
-> avait produit les couches langage/social riches avec le prompt V13 stable. Deux essais
-> imposant des citations textuelles/objets (`201435`, `203325`) ont abstentionné et le
-> second a fortement ralenti; l'essai structuré owner `204539` a gardé 19/19 faits cités
-> mais a encore abstentionné langage/social. Ces variantes ont été retirées. Le replay
-> reproductible sans LLM `owner-quality-20260718-210215-writer-replay` applique les writers
-> finaux à la vraie sortie riche : **GO, 33/33 faits cités**, couches requises
-> `language_signature_engine` et `social_model_engine`, zéro doublon/pattern confirmé/
-> prédiction non fondée. Le run complet neuf `owner-quality-20260718-210527-final`, après
-> retour exact à `episode-pack-v2`, confirme le même verdict avec le vrai Qwen : **exit 0,
-> GO en 518,4 s, 33/33 tours couverts, 17 owner/11 other/5 unknown, 33/33 faits cités**,
-> langage/social présents et tous les checks verts. Aucun appel production n'est ajouté.
-> Le Gate B produit suivant a toutefois exposé des quarantaines Brain2 absentes du chemin
-> stable. Le bénéfice shadow ne compensait donc pas le risque produit : rollback exact des
-> fichiers produit et de leurs tests au parent `7d417be`, puis 52 tests ciblés verts et
-> live frais 13/13. DeepSeek reste une comparaison A/B ultérieure sur clone, jamais une
-> migration implicite ni un nettoyeur automatique de mémoire.
+  - `artifact_lineage_v176`, checkpoints, consumed_sources, manifests et IDs techniques
+    vont dans un expander **Audit technique**, jamais dans « Sûr / hypothèse / prédiction »;
+  - Life watch affiche `identity_key`, `candidate_kind`, occurrences, sources datées,
+    statut/promotion et preuve; un `watch_id` reste un détail copiable, pas le titre;
+  - faits/hypothèses/prédictions affichent statement, perspective, confiance, précédents,
+    evidence refs et outcome. Ne jamais classer par défaut une ligne inconnue comme sûre;
+  - JSON brut, hashes et IDs restent disponibles sous expander pour audit, mais aucune
+    carte principale ne doit se réduire à un ID ou « Pas de résumé disponible » si un
+    champ sémantique existe.
 
-#### Étape finale 3 — Gate C, une heure synthétique réaliste (aucun tournage d'une heure)
+- [ ] **3.2 Vue visuelle utile, sans rappel VLM.** Joindre `visual_events_v19`, assets,
+  `brainlive_deep_vision_observations_v161` et réemploi/consolidation existants. Afficher
+  miniature, résumé détaillé, activité, lieu, personnes, objets, OCR, incertitude,
+  timestamp, raison de keyframe et provenance SHA. La DB actuelle prouve que **15/15**
+  observations possèdent déjà un résumé lisible : le Dashboard les ignore aujourd'hui.
+  Un événement bbox sans résumé est présenté comme géométrie technique liée à son résumé
+  Deep Vision, pas comme une carte mémoire vide.
 
-- [ ] **3.1 Fixture d'une heure à créer, pas une boucle ×12.** Créer
-  `tools/harness/build_gate_c_fixture.py` et `scenarios/gate_c_hour.json`. Le générateur
-  assemble la vidéo 5 min, des périodes statiques/silencieuses, des conversations audio
-  distinctes, déplacements/objets, OCR/écrans, personnes et tâche manuelle. Répartition de
-  référence : ~35 min calme/statique, 10 min conversations, 8 min mouvement/objets, 3 min
-  OCR/écran, 4 min personnes/tâche. Des clips réutilisés gardent leur provenance et ne
-  comptent jamais comme preuves indépendantes. Idéalement ajouter quelques clips courts
-  variés, mais **aucun besoin de filmer 60 minutes**.
+- [ ] **3.3 Fermer le bug spatial avant toute nouvelle preuve qualité.** Sur la DB
+  `gateb-rollback-20260718-215615`, 196 bbox sont affichables mais **66 sont inversées et
+  90 contiennent une coordonnée négative**; 85 valeurs invalides appartiennent à
+  `change_moved`. Ce n'est pas cosmétique et peut créer faux mouvements/keyframes.
 
-- [ ] **3.2 Résolution contrôlée.** Fixture principale = chemin produit 1280×720/30 fps;
-  Deep Vision reste piloté par changements/keyframes, pas par les 108 000 frames. Ajouter
-  un stress séparé 10 min en 1080p, jamais mélangé à la mesure SLA principale. Relever
-  débit/drops, CPU, disque et qualité OCR/détection. La résolution peut augmenter
-  décodage/transfert/stockage; elle ne doit pas multiplier les prompts LLM ni la
-  cardinalité sémantique à scène identique.
+  - à la frontière VisionRT, exiger valeurs finies, réordonner min/max, clamp aux vraies
+    dimensions du frame détecteur, rejeter aire nulle/dégénérée et conserver la bbox brute
+    dans un audit/quarantaine;
+  - transporter avec chaque SceneDelta `frame_width`, `frame_height`, orientation et espace
+    de coordonnées. WorldBrain ignore une bbox invalide pour mouvement/relations sans
+    supprimer le label/détection sourcé;
+  - la normalisation nocturne utilise les dimensions **du frame détecteur**, jamais celles
+    de la miniature matérialisée. Dans la preuve actuelle, les miniatures 304×540 ne sont
+    pas le même espace que les détections ~576×1024 malgré l'ancien commentaire;
+  - ne pas réécrire silencieusement les anciennes DB : le Dashboard les marque
+    `bbox_invalid_legacy`. Les nouvelles sessions doivent produire zéro bbox négative,
+    inversée ou hors cadre et zéro `change_moved` dérivé d'une bbox rejetée;
+  - tests portrait/paysage, rotation/mirror, tracker hors cadre, matériel 576×1024 puis
+    miniature 304×540, multi-objets et déplacement réel. Rejouer le sélecteur sur clone :
+    variation de keyframes expliquée par scènes réelles, pas par géométrie invalide.
 
-- [ ] **3.3 Interfaces à livrer/tester avant le run.** Le builder doit produire MP4,
-  scénario, vérité temporelle et SHA. Ajouter à `run_harness.py` un argument
-  `--close-day-timeout` (défaut historique inchangé) car 1 h de consolidation ne peut pas
-  être jugée par le timeout fixe 1 800 s. Commandes cibles :
+- [ ] **3.4 Gate Dashboard sans régression.** Sur un clone de la DB courante : 15 résumés
+  Deep Vision lisibles, lunettes/téléphone/table retrouvables, Life watch compréhensible,
+  lineage masqué par défaut, preuves ouvrables, aucune écriture et aucun appel LLM/VLM.
+  Tests de rendu sur tables présentes/vides/malformées et capture humaine. Corriger aussi
+  `RUN_DASHBOARD.ps1` pour Windows PowerShell UTF-8 : la commande documentée doit ouvrir
+  8720 sans passer par le lancement Python direct utilisé lors de l'audit.
 
-  ```powershell
-  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-  .\.venv-live\Scripts\python.exe tools\harness\build_gate_c_fixture.py `
-    --reference $video --duration 3600 --width 1280 --height 720 --fps 30 `
-    --out tools\harness\_run\gatec-$stamp.mp4 `
-    --manifest tools\harness\_run\gatec-$stamp-manifest.json
-  .\.venv-live\Scripts\python.exe tools\harness\run_harness.py `
-    --port 8740 --db tools\harness\_run\gatec-$stamp.db `
-    --media tools\harness\_run\gatec-$stamp.mp4 `
-    --scenario tools\harness\scenarios\gate_c_hour.json `
-    --duration 3605 --with-close-day --close-day-timeout 4200 `
-    --out tools\harness\_run\gatec-$stamp.json
-  ```
+- [ ] **3.5 Une seule vidéo réelle 30 min, proche de la sortie S25.** Utiliser un vrai
+  enregistrement continu, jamais un montage bouclé : conserver résolution, orientation,
+  fps, codec, audio et SHA; produire un `ffprobe` manifeste. Cible utile : 5–10 min de
+  conversation, plages statiques, déplacements, personne, objet déplacé et court OCR. Le
+  fake device conserve le même WebRTC/PC/CloseDay, mais ce run ne certifie toujours pas
+  caméra/micro/Kotlin Android (Étape 4). Mesurer capture, drops, parole réelle, appels,
+  tokens, cache, keyframes sélectionnées/lisibles/analysées, temps Deep Audio/Vision/texte,
+  coût DeepSeek éventuel et durée jusqu'à CloseDay.
 
-- [ ] **3.4 SLA/qualité.** Chronométrer séparément capture et post-stop. GO cible :
-  `1 h capturée ≤1 h consolidation` sur RTX 3070, ou écart précisément expliqué avant
-  toute promesse. Exiger couverture 100 %, manifests complets, mémoire/VRAM bornées,
-  aucune troncature/cap, reprise idempotente, aucune répétition synthétique promue comme
-  pattern indépendant. Spot-check humain aux transitions connues de la fixture et rapport
-  appels/tokens/images VLM/temps par stage.
+- [ ] **3.6 Chaos uniquement sur les frontières encore inconnues, sans empiler les runs.**
+  Dans ce même run 30 min, scénariser et horodater : coupure réseau puis reconnexion en
+  milieu de session; tentative mauvais token/second device pendant la session; après ACK
+  `/session/end`, arrêt brutal SessionHub/PC puis relance de RUN et recovery. Exiger même
+  BrainLive ID durable, nouveau peer unique, aucun chunk/tour/clip dupliqué, aucune commande
+  attribuée au mauvais appareil, un seul CloseDay, checkpoints repris, recovery et
+  manifests complets. Une panne disque se teste séparément par fault injection sur DB/
+  média temporaire — ne jamais remplir le vrai disque.
 
-- [ ] **3.5 Chaos séparé, DB fraîche par faute.** Ne pas injecter toutes les pannes dans
-  le run SLA (mesure illisible). Après le GO nominal :
-
-  ```powershell
-  .\.venv-live\Scripts\python.exe tools\harness\chaos.py --port 8742 `
-    --scenarios net_drop_reconnect,double_end,ollama_down,kill_before_close_day `
-    --with-recovery-close-day
-  ```
-
-  Vérifier reconnexion sans double peer/tour, BrainLive ID stable, double end idempotent,
-  Ollama down dégradé honnête, kill/recovery reprenant checkpoints sans double écriture.
+  Ne pas repayer les chaos déjà prouvés par les runs Gate B : backend 404, P1/VLM résident
+  et famine VRAM, proxy/HF/cuDNN préflight, sortie LLM tronquée/contrat rejeté, JSON VLM
+  invalide, commandes en vol à la fermeture, drain différé, quarantaine/requeue,
+  checkpoints et CloseDay bloqué puis repris. Le rapport final distingue temps actif,
+  durée de panne et reprise; il ne transforme pas un run chaos en benchmark nominal.
 
 #### Étape finale 4 — vrai Samsung S25, APK fraîche et identité owner réelle
 
