@@ -1515,3 +1515,34 @@ Le même run reste globalement rouge pour une cause indépendante : une des sept
 Qwen3-VL était un JSON tronqué. La politique lossless reste inchangée : quarantaine et
 CloseDay bloqué. La prochaine correction doit réparer ou retenter ce seul `invalid_json`
 de façon bornée/auditée; jamais jeter la frame ni baisser le quota pour obtenir un vert.
+
+## 2026-07-18 — Le gate owner reste un instrument shadow tant qu'il régresse le chemin produit (ADR)
+
+Le verdict d'un clone qualité ne suffit pas à activer de nouveaux contrats dans Brain2.
+L'activation owner du commit `ff0657d` a passé ses tests ciblés mais le Gate B frais a
+régressé sur la segmentation puis sur les fenêtres de détail. Les appels production,
+writers et tests associés ont donc été restaurés exactement au parent stable `7d417be`.
+Les modules `owner_context_v19`, `prediction_policy_v19`, la fixture et
+`owner_quality_gate.py` restent des outils hors chaîne : lecture d'une DB source, travail
+sur clone, rapport seulement. Ils ne nettoient ni ne réécrivent la mémoire et pourront
+servir à un A/B DeepSeek ultérieur. Aucun modèle plus puissant ne justifie une mutation
+automatique de la base sans contrat, provenance et gate produit distincts.
+
+La réparation Deep Vision du JSON tronqué est indépendante du chantier owner et reste
+active : elle conserve toutes les keyframes et a rétabli l'égalité sélectionné=lisible=
+analysé. À l'inverse, aucune règle owner/déduplication/promotion shadow ne doit être
+présentée comme active dans CloseDay après ce rollback.
+
+## 2026-07-18 — Un tour WhisperX posé uniquement sur du silence synthétique est une preuve quarantinée (ADR)
+
+Le tape Deep Audio préserve les trous d'acquisition par du silence afin de conserver une
+horloge locale lossless. WhisperX peut halluciner un court texte entièrement dans ce
+silence. Ce tour n'a aucune preuve audio : il est retiré de l'entrée Brain2 et conservé
+verbatim dans `metadata.source_audio_quarantine` avec sa raison et sa ligne brute. Les
+tours chevauchant un vrai morceau audio ne sont ni tronqués ni dédupliqués. Si toute la
+transcription utile est non sourcée, le validateur continue de bloquer le CloseDay.
+
+Le run `gateb-rollback-20260718-215615` a prouvé cette frontière : live frais 13/13,
+reprise nocturne complète, Deep Vision 15=15=15, manifests complets et recovery produit
+reconciliée sans nouveau calcul. Le CLI force par ailleurs UTF-8 sur stdout Windows afin
+qu'un résultat durablement réussi ne sorte plus avec code 1 uniquement à cause de CP1252.

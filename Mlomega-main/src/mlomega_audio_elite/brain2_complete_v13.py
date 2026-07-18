@@ -20,7 +20,6 @@ from typing import Any
 from .db import connect, init_db, upsert
 from .llm import EliteLLMError, OllamaJsonClient
 from .utils import json_dumps, json_loads, now_iso, sha256_bytes, stable_id, tokenize, normalize_text
-from .prediction_policy_v19 import durable_prediction_allowed
 
 COMPLETE_VERSION = "13.1.0-brain2-complete-final"
 
@@ -566,7 +565,6 @@ def _materialize_predictions_from_outputs(con, episode_id: str | None, person_id
     intervention_engine = outputs.get("intervention_engine") or {}
     for i, p in enumerate(_as_list(pred_engine.get("predictions"))):
         if not isinstance(p, dict): continue
-        if not durable_prediction_allowed(con, p, person_id=person_id): continue
         target = str(p.get("prediction_target") or "next_action")
         if target not in COMPLETE_TARGETS: target = "next_action"
         value = str(p.get("predicted_value") or p.get("prediction") or "").strip()

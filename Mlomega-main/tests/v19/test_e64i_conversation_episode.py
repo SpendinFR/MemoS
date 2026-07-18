@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import sqlite3
 
 import pytest
 
@@ -391,100 +390,6 @@ def test_shadow_builder_uses_one_call_and_never_assigns_sensor_turn():
     assert segmentation_prompt["contract"]["human_turn_ids"] == [f"t{i}" for i in range(8)]
     assert [turn["turn_id"] for turn in detail_prompt["sensor_context"]] == ["vision-1"]
     assert "vision-1" not in written["output"]["episodes"][0]["evidence_turn_ids"]
-
-
-def test_detail_cardinality_violation_falls_back_to_lossless_locked_segments():
-    class CardinalityFake:
-        model = "fake-cardinality"
-
-        def __init__(self):
-            self.detail_calls = 0
-
-        def generate(self, payload, *, output_budget):
-            prompt = json.loads(payload["prompt"])
-            if "turns" in prompt and "segments" not in prompt:
-                return LLMCallResult(ok=True, data=_segmentation_output())
-            self.detail_calls += 1
-            segments = prompt["segments"]
-            details = []
-            for segment in segments:
-                ids = [str(turn["turn_id"]) for turn in segment["turns"]]
-                details.append({
-                    "ordinal": int(segment["ordinal"]),
-                    "subtheme_type": "other",
-                    "title": f"Segment {segment['ordinal']}",
-                    "summary": "Résumé cité du segment verrouillé.",
-                    "participants": ["me"],
-                    "evidence_turn_ids": ids,
-                    "outcome": None,
-                    "unresolved_tension": None,
-                    "confidence": 0.7,
-                })
-            if self.detail_calls == 1:
-                details = details[:1]  # violates expected_subtheme_count
-            return LLMCallResult(ok=True, data={
-                "conversation_episode": {
-                    "title": "Conversation",
-                    "situation_summary": "Plusieurs sujets séparés.",
-                    "participants": ["me"],
-                    "location": None,
-                    "channel": "phoneonly",
-                    "confidence": 0.7,
-                    "subthemes": details,
-                },
-                "missing_context": [],
-            })
-
-    con = sqlite3.connect(":memory:")
-    con.row_factory = sqlite3.Row
-    written = {}
-    try:
-        stats = build_conversation_episode_v6(
-            con,
-            "conv1",
-            bundle={"conversation": {"conversation_id": "conv1"}, "turns": _turns()},
-            safe_prompt=lambda payload: json.dumps(payload, ensure_ascii=False),
-            materialize=lambda _c, _cid, output: written.setdefault("output", output) and 1,
-            system="strict",
-            window_llm=CardinalityFake(),
-            input_budget=50_000,
-            output_budget=4096,
-            person_id="me",
-            package_date="2026-07-18",
-        )
-    finally:
-        con.close()
-    assert stats["windowed_detail"] == 4
-    assert stats["detail_calls"] == 5  # rejected monolith + four locked segments
-    covered = [
-        turn_id
-        for subtheme in written["output"]["episodes"][0]["subthemes"]
-        for turn_id in subtheme["turn_ids"]
-    ]
-    assert covered == [f"t{i}" for i in range(8)]
-
-
-def test_detail_window_rejects_foreign_evidence_id():
-    segments = [{
-        "ordinal": 3,
-        "turn_ids": ["t6", "t7"],
-        "boundary_reason": "new_goal",
-    }]
-    output = {
-        "conversation_episode": {
-            "title": "Sujet",
-            "situation_summary": "Résumé",
-            "participants": ["me"],
-            "subthemes": [{
-                "ordinal": 3,
-                "title": "Sujet",
-                "summary": "Résumé",
-                "evidence_turn_ids": ["t6", "foreign-turn"],
-                "confidence": 0.5,
-            }],
-        }
-    }
-    assert normalize_detail_window_output(output, segments) is None
 
 
 def test_shadow_builder_fails_before_call_when_input_is_oversized():

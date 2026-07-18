@@ -200,6 +200,41 @@ def test_core_deep_audio_consumes_archived_event(tmp_path, monkeypatch):
     assert piece.live_speaker.get("source_kind") == "vad_chunk_fallback"
 
 
+def test_deep_audio_quarantines_only_turns_without_source_audio():
+    from mlomega_audio_elite import brainlive_offline_deep_audio_v18_5 as deep
+
+    time_map = [
+        {
+            "kind": "audio_piece", "event_id": "audio-1",
+            "local_start_s": 0.0, "local_end_s": 1.0,
+        },
+        {
+            "kind": "preserved_silence",
+            "local_start_s": 1.0, "local_end_s": 3.0,
+        },
+        {
+            "kind": "audio_piece", "event_id": "audio-2",
+            "local_start_s": 3.0, "local_end_s": 4.0,
+        },
+    ]
+    transcript = {
+        "metadata": {"speaker_map": {"SPEAKER_00": "UNKNOWN_VOICE_001"}},
+        "turns": [
+            {"text": "preuve réelle", "start": 0.1, "end": 0.9, "speaker": "SPEAKER_00"},
+            {"text": "hallucination silence", "start": 1.2, "end": 2.1, "speaker": "SPEAKER_00"},
+            {"text": "autre preuve", "start": 3.1, "end": 3.8, "speaker": "SPEAKER_00"},
+        ],
+    }
+
+    rejected = deep._quarantine_silence_only_turns(transcript, time_map=time_map)
+
+    assert rejected == 1
+    assert [turn["text"] for turn in transcript["turns"]] == ["preuve réelle", "autre preuve"]
+    quarantine = transcript["metadata"]["source_audio_quarantine"]
+    assert quarantine[0]["reason"] == "no_source_audio_overlap"
+    assert quarantine[0]["raw_turn"]["text"] == "hallucination silence"
+
+
 # ============================================================ 2. complementarity
 def test_audio_vision_complementarity_one_bundle_requires_deep_audio(tmp_path, monkeypatch):
     _env(tmp_path, monkeypatch)

@@ -591,11 +591,6 @@ def normalize_detail_window_output(
             normalized["boundary_reason"] = str(
                 source_segment.get("boundary_reason") or ""
             )
-        evidence = _unique_strings(normalized.get("evidence_turn_ids"))
-        allowed_turn_ids = set(str(item) for item in normalized.get("turn_ids") or [])
-        if not evidence or any(turn_id not in allowed_turn_ids for turn_id in evidence):
-            return None
-        normalized["evidence_turn_ids"] = evidence
         seen.add(ordinal)
         kept.append(normalized)
 
@@ -1781,12 +1776,6 @@ def build_conversation_episode_v6(
     # ---- Pass 2: detail (single call if it fits, else batched) ----
     detail_payload = {
         "mission": _DETAIL_MISSION,
-        "contract": {
-            "expected_subtheme_count": len(segments),
-            "required_segment_ordinals": [int(segment["ordinal"]) for segment in segments],
-            "membership_rule": "exactly_one_output_per_locked_segment",
-            "segment_boundaries_are_immutable": True,
-        },
         "conversation": dict(bundle.get("conversation") or {}),
         "segments": [
             {
@@ -1826,32 +1815,8 @@ def build_conversation_episode_v6(
                 f"{getattr(detail_result, 'error_kind', None)}:"
                 f"{getattr(detail_result, 'finish_reason', None)}"
             )
-        try:
-            combined = combine_segment_details(detail_result.data, segments)
-            detail_calls = 1
-        except ConversationEpisodeContractError:
-            if not can_window:
-                raise
-            # The model ignored the explicit output cardinality. Do not invent or
-            # drop a subtheme: retry as independently checkpointed locked
-            # segments, then reassemble and prove membership by code.
-            combined = _run_detail_windows(
-                con,
-                detail_units=_detail_units(segments, by_id, sensor_context),
-                segments=segments,
-                by_id=by_id,
-                conversation=dict(bundle.get("conversation") or {}),
-                sensor_context=sensor_context,
-                safe_prompt=safe_prompt,
-                window_llm=detail_llm,
-                model_budget=model_budget,
-                scope_person=scope_person,
-                scope_date=scope_date,
-                model_name=model_name,
-                output_budget=int(output_budget),
-            )
-            windowed_detail = len(_detail_units(segments, by_id, sensor_context))
-            detail_calls = 1 + windowed_detail
+        combined = combine_segment_details(detail_result.data, segments)
+        detail_calls = 1
     elif not can_window:
         raise ConversationEpisodeContractError(
             f"input_budget_exceeded:{detail_tokens}>{int(input_budget)}"
@@ -1884,38 +1849,7 @@ def build_conversation_episode_v6(
         detail_calls = windowed_detail
 
     elapsed = time.perf_counter() - started
-    try:
-        normalized = normalize_conversation_episode(combined, cognitive_turns)
-    except ConversationEpisodeContractError:
-        if not can_window or detail_calls != 1:
-            raise
-        # Cardinality may be correct while a citation crosses a locked segment.
-        # Retry the already-supported per-segment path; its validator rejects
-        # every foreign evidence id before anything reaches the writer.
-        detail_llm = injected_llm or OllamaWindowLLM(
-            system=system,
-            schema_hint=SUBTHEME_DETAIL_SCHEMA,
-            format_schema=SUBTHEME_DETAIL_FORMAT_SCHEMA,
-            timeout=timeout,
-        )
-        combined = _run_detail_windows(
-            con,
-            detail_units=_detail_units(segments, by_id, sensor_context),
-            segments=segments,
-            by_id=by_id,
-            conversation=dict(bundle.get("conversation") or {}),
-            sensor_context=sensor_context,
-            safe_prompt=safe_prompt,
-            window_llm=detail_llm,
-            model_budget=model_budget,
-            scope_person=scope_person,
-            scope_date=scope_date,
-            model_name=model_name,
-            output_budget=int(output_budget),
-        )
-        windowed_detail = len(_detail_units(segments, by_id, sensor_context))
-        detail_calls = 1 + windowed_detail
-        normalized = normalize_conversation_episode(combined, cognitive_turns)
+    normalized = normalize_conversation_episode(combined, cognitive_turns)
     normalized["missing_context"] = list(dict.fromkeys([
         *normalized.get("missing_context", []),
         *_source_quality_gaps(cognitive_turns),

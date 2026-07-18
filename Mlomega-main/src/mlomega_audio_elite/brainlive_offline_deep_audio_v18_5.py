@@ -657,6 +657,52 @@ def _piece_refs_for_range(time_map: list[dict[str, Any]], start: float, end: flo
     return refs
 
 
+def _quarantine_silence_only_turns(
+    transcript: dict[str, Any], *, time_map: list[dict[str, Any]]
+) -> int:
+    """Remove WhisperX hallucinations that have no source-audio overlap.
+
+    The stitched tape deliberately preserves short acquisition gaps as silence
+    so its local timestamps remain mappable to wall time. WhisperX can
+    occasionally emit text entirely inside such a synthetic gap. That text has
+    no audio evidence and must never reach Brain2, but one ungrounded turn must
+    not discard every other grounded turn in the bundle. The raw rejected row
+    stays embedded in transcript metadata for audit.
+    """
+    if not isinstance(transcript, dict) or not isinstance(transcript.get("turns"), list):
+        return 0
+    kept: list[Any] = []
+    rejected: list[dict[str, Any]] = []
+    for index, row in enumerate(transcript["turns"]):
+        if not isinstance(row, dict) or not str(row.get("text") or "").strip():
+            kept.append(row)
+            continue
+        try:
+            start, end = float(row["start"]), float(row["end"])
+        except (KeyError, TypeError, ValueError):
+            kept.append(row)
+            continue
+        if _piece_refs_for_range(time_map, start, end):
+            kept.append(row)
+            continue
+        rejected.append({
+            "turn_index": index,
+            "reason": "no_source_audio_overlap",
+            "raw_turn": dict(row),
+        })
+    if not rejected:
+        return 0
+    metadata = dict(transcript.get("metadata") or {})
+    prior = metadata.get("source_audio_quarantine")
+    metadata["source_audio_quarantine"] = [
+        *([dict(item) for item in prior if isinstance(item, dict)] if isinstance(prior, list) else []),
+        *rejected,
+    ]
+    transcript["metadata"] = metadata
+    transcript["turns"] = kept
+    return len(rejected)
+
+
 def _validate_transcript_for_brain2(transcript: dict[str, Any], *, time_map: list[dict[str, Any]], person_id: str) -> None:
     """Reject parseable but semantically unusable offline output before Brain2."""
     if not isinstance(transcript, dict):
@@ -1271,6 +1317,7 @@ def run_offline_deep_audio_for_bundles(
                             "deep_audio_retry", bundle_id=bundle["bundle_id"], attempt=attempt, error_code=failure.code, delay_s=delay
                         ),
                     )
+                    _quarantine_silence_only_turns(transcript, time_map=time_map)
                     speaker_reconciliation = _speaker_reconciliation(transcript, source_manifest=manifest, person_id=person_id)
                     _validate_transcript_for_brain2(transcript, time_map=time_map, person_id=person_id)
                     conversation_id, previous_ids = _export_refined_bundle(

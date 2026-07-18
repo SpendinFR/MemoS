@@ -914,35 +914,30 @@ réparation compacte auditée; seules les sorties sémantiques valides entrent e
 reprise de la copie du run rouge restaure `selected=readable=analyzed` à 7/7/7 et permet
 au CloseDay de terminer, sans modifier la sélection. Tests ciblés Deep Vision verts.
 
-## OBS-62 — Le registre canonique acceptait des conclusions sans preuve exacte (CORRIGÉ — 2026-07-18)
+## OBS-62 — Le registre canonique acceptait des conclusions sans preuve exacte (SHADOW, NON ACTIF EN PRODUIT)
 
 Les sections moteur conservaient correctement la sortie complète, mais le writer pouvait
 promouvoir en fait un champ seulement soutenu par une justification en prose. Sur le gate
 William, 35 faits sur 49 n'avaient initialement aucun lien de preuve explicite; le modèle
 remplissait notamment émotion, causalité et prédiction sur une seule minute.
 
-Correction : la section lossless reste disponible pour audit, mais le registre durable
-n'accepte qu'un `turn_id` réel ou la portée d'un unique sous-thème EpisodeBuilder validé
-avec correspondance sémantique forte. Le rôle `validated_subtheme_scope` distingue cette
-provenance d'une citation directe. Ambiguïté ou absence de recouvrement = pas de fait
-canonique. Preuve finale : 33/33 faits cités, aucun doublon exact.
+La correction a été évaluée sur clone (33/33 faits cités), mais son raccord au writer a
+été retiré après régression du Gate B produit. Le rapport shadow reste utile pour un futur
+A/B; ce garde-fou ne doit pas être annoncé comme actif dans CloseDay.
 
-## OBS-63 — Prédictions nocturnes sans précédent comparable (CORRIGÉ — 2026-07-18)
+## OBS-63 — Prédictions nocturnes sans précédent comparable (SHADOW, NON ACTIF EN PRODUIT)
 
-Une probabilité ou un texte `why` suffisait à matérialiser une prédiction, même si aucun
-cas antérieur n'existait. `prediction_policy_v19` exige désormais la référence d'une ligne
-`prediction_cases.usable_for_prediction=1`, owner-compatible. Tous les writers V13
-utilisent cette politique. Les suggestions transitoires BrainLive/Ultralive restent
-inchangées. Gate minute : delta prédictions durable = 0.
+Une probabilité ou un texte `why` pouvait suffire à matérialiser une prédiction sans cas
+antérieur. `prediction_policy_v19` sait mesurer ce problème sur clone, mais ses appels
+depuis les writers V13 ont été retirés avec le rollback produit. Les suggestions live
+restent inchangées; ce point demeure ouvert pour une future activation mieux validée.
 
-## OBS-64 — Promotion d'une voix sans backfill sémantique complet (CORRIGÉ — 2026-07-18)
+## OBS-64 — Promotion d'une voix sans backfill sémantique complet (ROLLBACK PRODUIT)
 
-Nommer un cluster mettait à jour la galerie, mais pouvait laisser ses anciens faits,
-relations, épisodes, patterns et prédictions sous l'identité inconnue. Le backfill est
-maintenant générique (aucun nom Maxime codé en dur), relabellise toutes les tables
-dérivées owner/person-scopées et conserve les labels audio/audits bruts. Plusieurs clusters
-peuvent converger vers la même personne; le centroid promu est réutilisé aux sessions
-suivantes. Tests : deux clusters vers une même personne et références dérivées réécrites.
+Nommer un cluster met à jour la galerie, mais le backfill étendu des tables dérivées qui
+avait été ajouté en Étape 2 a été retiré afin de restaurer exactement le chemin stable.
+Les tests shadow ont prouvé la faisabilité multi-cluster; ils ne prouvent plus un raccord
+produit. L'enrôlement et le comportement historique réel restent à vérifier sur S25.
 
 ## OBS-65 — Enrichir le prompt owner faisait régresser Qwen 9B (CORRIGÉ PAR ROLLBACK MESURÉ — 2026-07-18)
 
@@ -950,7 +945,29 @@ L'injection de `owner_context`/rôles par tour puis d'un schéma de citation exp
 transformé une sortie réelle riche (langage/social) en abstention complète et a augmenté
 le temps. Ce n'était pas une panne des moteurs : `stack_status=ok`, faits restants tous
 cités. La surcharge a été retirée et `episode-pack-v2`, déjà prouvé par les runs longs,
-reste le chemin local. Le centrage owner est appliqué par la fixture, les identités des
-tours, le compilateur et le gate; aucune nouvelle complexité n'est imposée à Qwen. Une
+reste le chemin local. Le centrage owner n'est plus appliqué au compilateur produit : il
+reste uniquement dans la fixture et le gate shadow, sans écriture de la DB source. Une
 future comparaison DeepSeek doit être A/B sur le même payload et ne change pas ce choix
 sans gain qualité/temps mesuré.
+
+## OBS-66 — WhisperX pouvait créer un tour sans aucune preuve audio (CORRIGÉ — 2026-07-18)
+
+Le tape Deep Audio insère du silence pour préserver l'axe temporel entre des morceaux
+audio durables. Sur `gateb-rollback-20260718-215615`, WhisperX a halluciné un tour situé
+entièrement dans un de ces trous; le validateur rejetait alors tout le bundle bien que les
+autres tours soient sourcés.
+
+Correction lossless : seul le tour dont l'intervalle ne chevauche aucun `audio_piece` est
+retiré de l'entrée Brain2 et conservé verbatim dans
+`metadata.source_audio_quarantine` (`reason=no_source_audio_overlap`, index et ligne
+brute). Aucun doublon textuel n'est supprimé et tout tour chevauchant un vrai morceau est
+conservé. Une transcription entièrement non sourcée reste une erreur. La reprise du run
+a terminé Deep Audio, Deep Vision 15=15=15, Brain2, Life, manifests et recovery.
+
+## OBS-67 — Le CLI pouvait annoncer un échec après un CloseDay réussi (CORRIGÉ — 2026-07-18)
+
+Sous PowerShell/CP1252, l'impression finale d'un résultat Unicode levait
+`UnicodeEncodeError` après les commits DB : processus exit 1 alors que CloseDay était
+`completed`. `mlomega_audio_elite.cli` reconfigure stdout en UTF-8 avec échappement de
+secours. `brainlive-close-day-status` imprime désormais le résultat complet et conserve
+le bon code de sortie.

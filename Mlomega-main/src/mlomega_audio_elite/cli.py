@@ -4,6 +4,7 @@ import argparse
 import importlib
 import json
 import os
+import sys
 from pathlib import Path
 
 from .config import get_settings
@@ -1290,6 +1291,11 @@ def cmd_brainlive_post_stop_flow_audit_v1515(args) -> None:
     print(json.dumps(post_stop_deep_flow_audit(_require_person_id(args), package_date=args.package_date), ensure_ascii=False, indent=2))
 
 def main(argv: list[str] | None = None) -> None:
+    # Windows PowerShell commonly exposes a legacy CP1252 stdout even though
+    # memory payloads legitimately contain Unicode. Keep every CLI command
+    # printable without requiring callers to export PYTHONUTF8 manually.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser=argparse.ArgumentParser(prog="mlomega-audio", description="MemoryLight Omega Audio Elite V14.5 Brain 2.0 People + Open Loops Final")
     sub=parser.add_subparsers(required=True)
     p=sub.add_parser("init-db"); p.set_defaults(func=cmd_init_db)

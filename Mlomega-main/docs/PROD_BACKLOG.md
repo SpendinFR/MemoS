@@ -1231,6 +1231,24 @@ réduction statique de JSON comme une validation modèle.
 > - `gateb-clean-20260718-174037` a fermé toute la nuit (18 appels validés, 118 802 tokens entrée, 19 338 sortie, 774,6 s, zéro rejet, Deep Vision 15=15=15, 433/433 couvertes), mais a exposé un faux vert outillage : 13 terminaux durables en DB contre seulement 12 effets reçus par le device. La commande mémoire tardive avait pris 83 s et terminé après fermeture (`response_suppressed=1`). Cause : le Brain2 live héritait du backend global nocturne `llamacpp` et chargeait P1 pendant la capture. Correction : override `ContextVar` limité au worker live, tout Brain2 live reste sur le 4B Ollama chaud; jamais de mutation process-wide. Mini-gate réel : Brain2 11,6 s, `fast_person_routes=1`, source Brain2. Le harnais exige désormais, pour la matrice complète, 13 accepted + 13 terminaux visibles/completed/handled, zéro suppressed/unknown. Tests : 83 live + 40 core verts.
 > - `gateb-clean-20260718-181143` prouve la correction : 13/13 effets visibles avant fermeture, aucun `cancel_requested`, 11 706 chunks, zéro drop, pic 348, Aide plan+advance, mémoire Brain2 terminée. **Verdict fonctionnel 1.3 = GO.** Le Gate B global reste STOP : Deep Vision a sélectionné/lisait 7/7 mais analysé 6; une réponse `qwen3-vl:8b` était un JSON tronqué (`Unterminated string ... char 2946`), observation quarantinée, post-stop/CloseDay bloqués honnêtement et recovery en erreur. Prochaine reprise : ajouter une réparation/retry VLM bornée et auditée pour `invalid_json` (jamais réduire la couverture), reprendre cette DB seulement comme preuve de correction, puis faire un one-shot neuf pour le GO global et 1.5 Dashboard.
 
+> **Suivi Gate B après retrait de l'activation qualité owner — 2026-07-18 21:56.**
+> Le run frais `tools/harness/_run/gateb-rollback-20260718-215615.db` confirme le chemin
+> produit restauré : 10 429 chunks audio, zéro drop, 63 segments, 3 clips et 13/13
+> commandes terminées. Le premier post-stop a bloqué avant Brain2 sur un cas latent :
+> WhisperX avait émis un tour entièrement situé dans une plage de silence synthétique du
+> tape Deep Audio. Le tour sans aucun chevauchement avec un morceau audio source est
+> désormais exclu de Brain2 mais conservé intégralement dans
+> `metadata.source_audio_quarantine`; les tours réellement sourcés restent inchangés et
+> une transcription entièrement non sourcée reste bloquante. La reprise du même
+> `live_session_id=blsess_9386c1ee6906b2a5` a ensuite terminé Deep Audio, Deep Vision
+> **15=15=15**, Brain2 V13/V14, coordination, longitudinal, Life Model, maintenance et les
+> deux manifests (`complete=1`, `cleanup_eligible=1`). La recovery produit a reconnu ce
+> CloseDay déjà couvert en 1,5 s et est passée `completed`, sans rejouer les moteurs.
+> Le statut CLI Windows est maintenant imprimable en UTF-8; l'ancien exit 1 provenait
+> uniquement de CP1252 après la réussite durable. Cette preuve est volontairement qualifiée
+> **live frais + reprise nocturne**, pas nouveau benchmark one-shot; la mesure autoritaire
+> de performance reste le one-shot vert `gateb-clean-20260718-141124`.
+
 - [x] **1.3 Verdict fonctionnel.** Exiger dans le rapport : 13 événements envoyés, 13
   `command_execution_trace` corrélées aux textes exacts, `handled=true`, zéro `unknown`,
   aucun effet `error`; vérifier les payloads, pas seulement `intents_routed=13`. Exiger
@@ -1260,7 +1278,7 @@ réduction statique de JSON comme une validation modèle.
   Life Model, prédictions/outcomes, preuves et absence de doublons. Conserver captures et
   jugement humain dans le rapport Gate B; le dashboard ne doit jamais écrire la DB.
 
-#### Étape finale 2 — gate qualité « propriétaire = William », avant le volume d'une heure
+#### Étape finale 2 — gate qualité « propriétaire = William » — shadow conservé, activation produit retirée
 
 - [x] **2.1 Séparer identité vocale et qualité sémantique.** Sur un clone de la DB Gate B,
   fournir une vérité d'évaluation qui mappe les tours du porteur vers `person_id=me`, alias
@@ -1284,23 +1302,21 @@ réduction statique de JSON comme une validation modèle.
   Tant que ce script/fixture n'existent pas et ne sont pas testés, la case reste ouverte;
   ne pas remplacer ce gate par une inspection subjective de trois cartes dashboard.
 
-- [x] **2.3 Contrat de perspective.** Le compilateur et le gate reçoivent un
-  `owner_context` canonique (`person_id=me`, alias courant, IDs de voix/personne). Le petit
-  modèle local conserve volontairement son prompt V13 stable explicitant « William » :
-  l'injection structurée dans ce prompt a été mesurée puis rejetée car elle faisait
-  abstentionner Qwen 9B sur langage/social. Chaque claim personnel répond à : que
-  fait/dit William, dans quel contexte, avec qui, réaction/issue, preuves exactes. Les
-  moteurs relationnels peuvent analyser Karim/Max/etc., mais leur modèle reste distinct et
-  leur lien avec William est explicite. Une voix inconnue ne devient jamais William.
+- [ ] **2.3 Contrat de perspective — différé, non actif en production.** La cible reste un
+  `owner_context` canonique (`person_id=me`, alias courant, IDs de voix/personne), mais son
+  injection dans le chemin Brain2 local a fait régresser le vrai Gate B. Les appels
+  production ont donc été restaurés exactement au parent stable `7d417be`. Le module
+  d'analyse peut servir à une future comparaison DeepSeek sur clone; il n'est pas une
+  preuve que le compilateur produit reçoit ce contexte.
 
-- [x] **2.4 Épistémologie et profondeur.** Une minute peut produire événements/états et
+- [ ] **2.4 Épistémologie et profondeur — contrat à réévaluer hors produit.** Une minute peut produire événements/états et
   candidats `watch`, jamais un trait émotionnel/habitude à forte confiance. Promotion
   durable seulement après répétitions ou sources indépendantes. Distinguer : observation,
   état ponctuel, hypothèse, pattern longitudinal, prédiction. Une prédiction doit citer des
   précédents comparables (`X occurrences`, contextes, émotions observables, personne,
   issues) et rester probabiliste; aucune « prochaine pensée » présentée comme vérité.
 
-- [x] **2.5 Déduplication/responsabilité.** Pour chaque sortie, comparer
+- [ ] **2.5 Déduplication/responsabilité — mesure shadow uniquement.** Pour chaque sortie, comparer
   claim canonique → writer → consommateur. Deux moteurs peuvent apporter des preuves ou
   responsabilités différentes, mais ne doivent pas persister le même fait sous plusieurs
   classes. Mesurer doublons sémantiques, contradictions, claims sans preuve, promotions
@@ -1310,23 +1326,20 @@ réduction statique de JSON comme une validation modèle.
   qualité tout en réduisant tokens et auto-confirmation; il ne doit pas être « verdi » en
   supprimant les couches psychologie/Life utiles.
 
-> **Verdict Étape finale 2 — GO réel, 2026-07-18.** La fixture
+> **Verdict Étape finale 2 corrigé après test produit : GO shadow, activation produit
+> ANNULÉE.** La fixture
 > `owner_quality_truth.json` attribue explicitement 17 tours au propriétaire, 11 à une
 > autre personne et 5 mixtes/inconnus, sans modifier la DB source. Le gate clone la base,
 > exige un parent, couverture parole 100 %, Karim/Netflix séparés, claims owner prouvés par
 > des tours owner, zéro doublon canonique, zéro pattern confirmé mono-session et zéro
-> prédiction sans précédent. `owner_context_v19` centralise alias/voix/perspective dans le
-> compilateur; la promotion d'une voix relabellise génériquement toutes les tables dérivées
-> concernées et conserve les preuves/audits bruts.
+> prédiction sans précédent. Ces résultats qualifient l'outil de comparaison sur clone;
+> ils ne qualifient plus les writers ni les prompts du CloseDay produit.
 >
-> **Garde-fous livrés.** Les sorties moteur restent lossless dans leur section, mais un
-> fait durable exige un vrai `turn_id` ou une correspondance forte et unique avec un
-> sous-thème EpisodeBuilder validé (`citation_role=validated_subtheme_scope`). Une
-> correspondance ambiguë n'est pas promue. Les prédictions durables exigent un cas
-> antérieur `usable_for_prediction=1`; les interventions live ne sont pas concernées.
-> EpisodeBuilder refuse cardinalité/preuves étrangères et reprend son split lossless.
-> Deep Vision répare/retente une sortie JSON tronquée de façon bornée et auditée, sans
-> jeter de keyframe.
+> **Portée conservée.** `owner_quality_gate.py`, sa fixture, `owner_context_v19` et
+> `prediction_policy_v19` restent disponibles comme instruments shadow sans écriture dans
+> la DB source. Leurs raccords aux writers/compilateurs, le backfill vocal étendu et les
+> nouvelles contraintes EpisodeBuilder ont été retirés du chemin produit. La réparation
+> Deep Vision d'un JSON tronqué est indépendante, prouvée par 7=7=7, et reste active.
 >
 > **Preuves et décision bénéfice/risque.** Le run réel `owner-quality-20260718-194727`
 > avait produit les couches langage/social riches avec le prompt V13 stable. Deux essais
@@ -1340,8 +1353,11 @@ réduction statique de JSON comme une validation modèle.
 > retour exact à `episode-pack-v2`, confirme le même verdict avec le vrai Qwen : **exit 0,
 > GO en 518,4 s, 33/33 tours couverts, 17 owner/11 other/5 unknown, 33/33 faits cités**,
 > langage/social présents et tous les checks verts. Aucun appel production n'est ajouté.
-> DeepSeek reste une comparaison A/B ultérieure, jamais une migration implicite. Tests
-> ciblés finaux : 58 puis 52 verts, zéro échec.
+> Le Gate B produit suivant a toutefois exposé des quarantaines Brain2 absentes du chemin
+> stable. Le bénéfice shadow ne compensait donc pas le risque produit : rollback exact des
+> fichiers produit et de leurs tests au parent `7d417be`, puis 52 tests ciblés verts et
+> live frais 13/13. DeepSeek reste une comparaison A/B ultérieure sur clone, jamais une
+> migration implicite ni un nettoyeur automatique de mémoire.
 
 #### Étape finale 3 — Gate C, une heure synthétique réaliste (aucun tournage d'une heure)
 

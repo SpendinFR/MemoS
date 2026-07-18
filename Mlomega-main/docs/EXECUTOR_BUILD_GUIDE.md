@@ -1425,3 +1425,36 @@ relancer ni toute la capture ni une ancienne DB avant correction. Prochaine acti
 ajouter une réparation/retry bornée et auditée pour `invalid_json` dans Deep Vision, tester
 ciblé, reprendre `gateb-clean-20260718-181143.db` pour prouver 7=7=7, puis seulement un
 nouveau one-shot complet. Dashboard 1.5 attend ce GO global.
+
+### PASSATION 2026-07-18 — chemin produit restauré, Gate B réconcilié
+
+Le chantier qualité owner de `ff0657d` ne doit pas être repris comme une activation
+produit. Malgré un gate shadow vert, ses nouveaux raccords ont fait régresser le Gate B
+frais (segmentation puis détail Brain2). Les six fichiers produit et leurs tests associés
+ont été restaurés exactement au parent stable `7d417be`; le backfill vocal étendu a aussi
+été retiré. `owner_quality_gate.py`, sa fixture et les modules owner/prédiction restent
+des instruments shadow sur clone, sans écriture dans la DB source. Une future évaluation
+DeepSeek part de ces outils; elle ne modifie pas CloseDay.
+
+La réparation Deep Vision `invalid_json` reste active et indépendante. Le run frais
+`tools/harness/_run/gateb-rollback-20260718-215615.db` prouve le live restauré : 10 429
+chunks, zéro drop, 63 segments, 3 clips et 13/13 commandes. Son premier post-stop a
+exposé un ancien edge Deep Audio : un tour WhisperX entièrement posé sur le silence
+synthétique du tape. Ce tour est désormais conservé dans
+`metadata.source_audio_quarantine` et exclu de Brain2; aucune parole sourcée n'est
+supprimée. La reprise ciblée du même `live_session_id=blsess_9386c1ee6906b2a5` a terminé
+toute la nuit, Deep Vision 15=15=15, manifests complets, cleanup éligible. Puis
+`recover_abandoned_phoneonly_sessions` a reconnu le CloseDay déjà couvert et marqué la
+recovery `completed` sans relancer les moteurs. Le CLI utilise UTF-8 sous Windows; ne pas
+confondre l'ancien crash d'impression CP1252 avec un échec durable.
+
+Tests courts déjà exécutés, ne pas les repayer sans modifier ces zones : 52 tests
+conversation/shared-facts/Deep-Vision/owner-shadow verts, puis 14 tests Deep Audio/nuit
+verts. Le rollback a été vérifié par `git diff --exit-code ff0657d^ -- <fichiers>` : match
+exact. Les deux fichiers Unity locaux, XML, `_run/`, `_audit/`, logs et conversations ne
+font pas partie du commit.
+
+**Prochaine action utile :** ouvrir le Dashboard en lecture seule sur cette DB pour le
+jugement humain 1.5, puis Gate C synthétique si le résultat est acceptable. Ne réactiver
+ni les prompts owner ni un nettoyeur LLM dans le hot path. L'enrôlement réel et les ponts
+matériels restent le Gate S25; Gate C/D restent nécessaires pour la capacité 1 h/8 h.
