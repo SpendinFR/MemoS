@@ -60,6 +60,37 @@ def _count(con: sqlite3.Connection, sql: str, params: tuple = ()) -> int:
     return int(row[0]) if row else 0
 
 
+def _command_effect_proof(report: dict[str, Any]) -> tuple[bool, str]:
+    """Require every scripted Gate-B command to reach a visible terminal effect."""
+    expected = int(report.get("scenario_events_sent", 0) or 0)
+    accepted = report.get("command_accepted_traces") or []
+    terminal = report.get("command_execution_traces") or []
+    accepted_ids = {
+        str(item.get("segment_id") or "") for item in accepted if isinstance(item, dict)
+    } - {""}
+    terminal_by_id = {
+        str(item.get("segment_id") or ""): item
+        for item in terminal if isinstance(item, dict) and item.get("segment_id")
+    }
+    bad = [
+        sid for sid, item in terminal_by_id.items()
+        if str(item.get("status") or "") != "completed"
+        or not bool(item.get("handled"))
+        or bool(item.get("response_suppressed"))
+        or str(item.get("intent") or "") in {"", "unknown"}
+    ]
+    ok = (
+        expected > 0
+        and len(accepted_ids) == expected
+        and len(terminal_by_id) == expected
+        and not bad
+    )
+    return ok, (
+        f"expected={expected}, accepted={len(accepted_ids)}, "
+        f"visible_terminal={len(terminal_by_id)}, bad={bad}"
+    )
+
+
 class Result:
     def __init__(self) -> None:
         self.checks: list[dict[str, Any]] = []
@@ -177,6 +208,14 @@ def run_assertions(
         # least drove the scripted intents onto the wire.
         res.add("scenario_intents_driven", scenario_sent >= 1,
                 f"scenario_events_sent={scenario_sent}, ui_intents_delivered={delivered}")
+        # The complete Gate-B scenario contains thirteen executable commands.
+        # Earlier assertions passed on "events sent" alone and hid a late memory
+        # answer that completed only after the transport closed.  Minimal/chaos
+        # scenarios keep their historical gate; the full matrix must prove every
+        # visible effect, not merely routing or a durable accepted row.
+        if scenario_sent >= 13:
+            effects_ok, effects_detail = _command_effect_proof(report)
+            res.add("scenario_command_effects_proven", effects_ok, effects_detail)
 
         # --- close-day (optional) ----------------------------------------
         if with_close_day:

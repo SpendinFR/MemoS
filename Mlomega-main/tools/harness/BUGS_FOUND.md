@@ -891,3 +891,20 @@ confiance et manque de contexte. Les questions complexes gardent le Brain2 compl
 Preuve réelle sur la DB Gate B : réponse Brain2 valide en 7,95 s à chaud au lieu de
 83–87 s; la réponse ne prétend que rendez-vous le 14 et réparation probable. Les refs
 présentes dans `direct_facts|inferences` sont maintenant également exposées au ContextCard.
+
+## OBS-60 — Brain2 live chargeait le backend nocturne P1 (CORRIGÉ — 2026-07-18)
+
+Le one-shot `gateb-clean-20260718-174037` a reproduit 83 s sur la commande mémoire :
+la route bornée était bien utilisée, mais ses `OllamaJsonClient()` imbriqués héritaient de
+`MLOMEGA_LLM_BACKEND=llamacpp`. P1 se chargeait donc pendant le live au lieu d'utiliser
+le 4B Ollama déjà chaud. Un override par `ContextVar`, limité au worker `MemoryQuery`,
+force tous les clients imbriqués sur le modèle live sans muter l'environnement global.
+Preuve réelle sur clone : 11,6 s, source Brain2, fast route active. Le harnais refusait
+aussi désormais un Gate B à 12 effets visibles sur 13.
+
+## OBS-61 — Un JSON VLM tronqué bloque encore le one-shot Gate B (OUVERT)
+
+`gateb-clean-20260718-181143` ferme le live 13/13 mais Deep Vision finit 7 sélectionnées,
+7 lisibles, 6 analysées : une réponse `qwen3-vl:8b` est non-JSON (`Unterminated string`,
+char 2946). La quarantaine et le blocage CloseDay sont corrects; il manque une réparation
+ou un retry VLM borné, distinct et audité. Interdit de réduire la sélection pour verdir.

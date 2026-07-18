@@ -21,6 +21,7 @@ This module is the thin live adapter:
   retrieval fallback) and ``evidence_refs`` from the answer's evidence.
 """
 
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -124,16 +125,26 @@ class MemoryQuery:
     # ---- core call (kept identical to the CLI's cmd_v14_ask) ----------------
     def _ask_brain2(self, question: str) -> dict[str, Any]:
         from mlomega_audio_elite.brain2_router_v14_2 import ask_brain2  # type: ignore
+        from mlomega_audio_elite.llm import llm_client_override  # type: ignore
 
         route_payload = _explicit_person_route(question, self.person_id)
-        if route_payload is not None:
-            self.metrics["fast_person_routes"] += 1
-            return ask_brain2(
-                question,
-                person_id=self.person_id,
-                route_payload=route_payload,
-            )
-        return ask_brain2(question, person_id=self.person_id)
+        # This adapter is live by construction.  The process-wide backend may be
+        # llama.cpp for CloseDay, but loading P1 during capture costs ~75 seconds
+        # and contends with Whisper/YOLOX.  Keep every nested Brain2 client on the
+        # already-warm live 4B without mutating the environment for other threads.
+        with llm_client_override(
+            backend="ollama",
+            model=os.environ.get("MLOMEGA_OLLAMA_LIVE_MODEL", "qwen3.5:4b"),
+            base_url=os.environ.get("MLOMEGA_OLLAMA_BASE_URL") or None,
+        ):
+            if route_payload is not None:
+                self.metrics["fast_person_routes"] += 1
+                return ask_brain2(
+                    question,
+                    person_id=self.person_id,
+                    route_payload=route_payload,
+                )
+            return ask_brain2(question, person_id=self.person_id)
 
     def _retrieval_only(self, question: str) -> dict[str, Any] | None:
         """LLM-free fallback: vector hits (no answer synthesis). ADR §E33."""

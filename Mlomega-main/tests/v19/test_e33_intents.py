@@ -406,6 +406,31 @@ def test_explicit_person_memory_query_skips_only_redundant_planners(monkeypatch)
     assert mq.metrics["fast_person_routes"] == 1
 
 
+def test_live_memory_forces_nested_clients_to_warm_ollama(monkeypatch):
+    """The nocturnal llama.cpp default must never load P1 during a live query."""
+    calls = {}
+    import mlomega_audio_elite.brain2_router_v14_2 as b2
+    from mlomega_audio_elite.llm import OllamaJsonClient
+
+    def _fake_ask(question, *, person_id=None, limit=80, route_payload=None):
+        client = OllamaJsonClient()
+        calls.update(backend=client.backend, model=client.model, question=question)
+        return {"status": "ok", "answer": "Karim est connu.", "evidence": []}
+
+    monkeypatch.setenv("MLOMEGA_LLM_BACKEND", "llamacpp")
+    monkeypatch.setenv("MLOMEGA_LLAMACPP_MODEL", "qwen9b-p1-24k-mlomega")
+    monkeypatch.setenv("MLOMEGA_OLLAMA_LIVE_MODEL", "qwen3.5:4b")
+    monkeypatch.setattr(b2, "ask_brain2", _fake_ask)
+
+    mq = memory_query.MemoryQuery(person_id="me")
+    card = mq.ask("qui est Karim")
+
+    assert calls == {
+        "backend": "ollama", "model": "qwen3.5:4b", "question": "qui est Karim",
+    }
+    assert card["content"]["source"] == "brain2"
+
+
 def test_live_person_candidate_projection_is_bounded_and_keeps_provenance():
     import mlomega_audio_elite.brain2_router_v14_2 as b2
 

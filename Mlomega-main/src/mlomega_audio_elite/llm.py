@@ -5,11 +5,41 @@ import math
 import os
 import urllib.request
 import urllib.error
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
 from .config import get_settings
 from .runtime_v18_7 import classify_failure, record_phase_event, retry_operation, runtime_phase
+
+
+_CLIENT_OVERRIDE: ContextVar[dict[str, str] | None] = ContextVar(
+    "mlomega_llm_client_override", default=None
+)
+
+
+@contextmanager
+def llm_client_override(
+    *, backend: str, model: str | None = None, base_url: str | None = None
+):
+    """Override default clients inside one execution context, never process-wide.
+
+    Live Brain2 queries run while the process-wide nocturnal backend is llama.cpp.
+    Mutating ``os.environ`` there is unsafe across command/night workers; a context
+    variable keeps every nested default ``OllamaJsonClient()`` on the live Ollama
+    model without changing explicit callers or another thread.
+    """
+    value = {"backend": str(backend)}
+    if model:
+        value["model"] = str(model)
+    if base_url:
+        value["base_url"] = str(base_url)
+    token = _CLIENT_OVERRIDE.set(value)
+    try:
+        yield
+    finally:
+        _CLIENT_OVERRIDE.reset(token)
 
 
 class EliteLLMError(RuntimeError):
@@ -358,23 +388,29 @@ class OllamaJsonClient:
         # no model would otherwise fall back to the llama.cpp P1 alias and hit
         # Ollama's OpenAI endpoint with an unknown model -> HTTP 404 (proven on
         # Gate B run 20260717-115157).
+        override = _CLIENT_OVERRIDE.get() or {}
         self.backend = (
-            backend or os.environ.get("MLOMEGA_LLM_BACKEND", "ollama")
+            backend or override.get("backend")
+            or os.environ.get("MLOMEGA_LLM_BACKEND", "ollama")
         ).strip().lower()
         if self.backend == "llamacpp":
             self.base_url = (
                 base_url
+                or override.get("base_url")
                 or os.environ.get("MLOMEGA_LLAMACPP_BASE_URL")
                 or "http://127.0.0.1:8080"
             ).rstrip("/")
             self.model = (
                 model
+                or override.get("model")
                 or os.environ.get("MLOMEGA_LLAMACPP_MODEL")
                 or "qwen9b-p3-mlomega"
             )
         elif self.backend == "ollama":
-            self.base_url = (base_url or settings.ollama_base_url).rstrip("/")
-            self.model = model or (
+            self.base_url = (
+                base_url or override.get("base_url") or settings.ollama_base_url
+            ).rstrip("/")
+            self.model = model or override.get("model") or (
                 settings.ollama_model if _is_post_stop_phase() else settings.ollama_live_model
             )
         else:

@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = ROOT / "tools" / "harness" / "fake_xr_device.py"
+ASSERTIONS = ROOT / "tools" / "harness" / "assertions.py"
 
 
 def _load():
@@ -75,3 +76,38 @@ def test_end_timeout_stored_on_device_instance():
         scenario=[], device_id="d", end_timeout=123.0,
     )
     assert device.end_timeout == 123.0
+
+
+def test_full_gate_requires_thirteen_visible_terminal_effects():
+    spec = importlib.util.spec_from_file_location("e64i_harness_assertions", ASSERTIONS)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    accepted = [
+        {"segment_id": f"s{i}", "status": "accepted"} for i in range(13)
+    ]
+    terminal = [
+        {
+            "segment_id": f"s{i}", "status": "completed", "handled": True,
+            "intent": "ask_memory" if i == 12 else "what_is",
+            "response_suppressed": False,
+        }
+        for i in range(13)
+    ]
+    report = {
+        "scenario_events_sent": 13,
+        "command_accepted_traces": accepted,
+        "command_execution_traces": terminal,
+    }
+    assert module._command_effect_proof(report)[0] is True
+
+    report["command_execution_traces"] = terminal[:-1]
+    ok, detail = module._command_effect_proof(report)
+    assert ok is False
+    assert "visible_terminal=12" in detail
+
+    report["command_execution_traces"] = terminal
+    terminal[-1]["response_suppressed"] = True
+    assert module._command_effect_proof(report)[0] is False

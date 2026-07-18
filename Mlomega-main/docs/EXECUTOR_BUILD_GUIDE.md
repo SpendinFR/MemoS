@@ -1367,3 +1367,22 @@ Remove-Item Env:OPENAI_API_KEY,Env:HTTP_PROXY,Env:HTTPS_PROXY,Env:ALL_PROXY -Err
 
 Résultat actuel : **109 passed**. Ne relancer ni Unity ni le CloseDay uniquement pour ces
 trois fichiers; le prochain verdict utile est le one-shot exact décrit ci-dessus.
+
+### PASSATION 2026-07-18 — Gate B fonctionnel GO, Gate global bloqué par un JSON VLM
+
+Commits précédents jusqu'à `8c7cd59`, puis lot courant. Preuves à conserver sans les
+committer : `gateb-clean-20260718-174037.*` et `gateb-clean-20260718-181143.*`.
+
+Le premier run a une nuit entièrement verte (18 appels, 118 802 tokens in, 774,6 s,
+Deep Vision 15=15=15) mais seulement 12 effets device : la mémoire finissait en 83 s après
+avoir chargé P1 pendant le live. Correction produit : `llm_client_override` contextuel et
+`MemoryQuery` épinglé au 4B live; assertion harnais 13/13 visible. Tests 83 live + 40 core
+verts, mini-gate Brain2 réel 11,6 s.
+
+Le second run valide le fonctionnel : 13 accepted/13 completed visibles, aucun suppressed,
+zéro drop, Aide advance et mémoire avant fermeture. Il bloque ensuite honnêtement : Deep
+Vision 7/7/6, une observation `quarantined_vlm_error` sur JSON `qwen3-vl:8b` tronqué. Ne
+relancer ni toute la capture ni une ancienne DB avant correction. Prochaine action unique :
+ajouter une réparation/retry bornée et auditée pour `invalid_json` dans Deep Vision, tester
+ciblé, reprendre `gateb-clean-20260718-181143.db` pour prouver 7=7=7, puis seulement un
+nouveau one-shot complet. Dashboard 1.5 attend ce GO global.

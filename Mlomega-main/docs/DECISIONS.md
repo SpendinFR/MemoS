@@ -1466,3 +1466,18 @@ Deep Vision 7=7=7 et gain chaîne >×5. Les correctifs Aide/Mémoire ont été p
 en réel et par 109 tests courts. Un dernier one-shot sur le HEAD exact reste exigé pour
 regrouper les treize effets corrigés et la nuit dans le même rapport; ensuite Dashboard,
 Gate qualité William, Gate C synthétique, S25 puis Gate D.
+
+## 2026-07-18 — Le backend LLM live est une frontière de phase, pas une variable globale (ADR)
+
+`MemoryQuery` peut appeler tout Brain2 mais reste un consommateur live. Ses clients LLM
+imbriqués doivent donc utiliser explicitement Ollama 4B, même si le backend process-wide
+du CloseDay est llama.cpp/P1. L'override est porté par `ContextVar` dans le seul contexte
+d'exécution de la commande; aucune mutation d'environnement ni fuite inter-thread. Le
+harnais complet exige en outre un effet terminal visible par événement, pas seulement une
+trace durable après fermeture. Preuves : 83 s/suppressed avant, 11,6 s mini-gate puis
+13/13 visibles sur `gateb-clean-20260718-181143`.
+
+Le même run reste globalement rouge pour une cause indépendante : une des sept sorties
+Qwen3-VL était un JSON tronqué. La politique lossless reste inchangée : quarantaine et
+CloseDay bloqué. La prochaine correction doit réparer ou retenter ce seul `invalid_json`
+de façon bornée/auditée; jamais jeter la frame ni baisser le quota pour obtenir un vert.
