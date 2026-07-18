@@ -330,6 +330,22 @@ def run_windows(
         why_called = _stage_call_reason(scope.stage_name)
 
         # Resume: a leaf that already reached a durable end state is not redone.
+        # EXCEPTION (Codex post-#6): a window quarantined for a CONTRACT rejection
+        # BEFORE the deterministic alternative strategy existed (proof: no row in
+        # night_llm_contract_rejections_v19 for this exact input) never exhausted
+        # that strategy — its quarantine is not final. When the stage now provides
+        # one, re-drive the window: the first call captures the rejection with its
+        # full audit detail, the identical-retry ban then hands over to the
+        # alternative strategy. A quarantine that already went through the ladder
+        # (rejection rows exist) stays terminal.
+        if state == cp.STATE_QUARANTINED and (
+            resolve_contract_rejection is not None
+            and str(existing.get("error_text") or "") == "invalid output (contract)"
+            and not cp.window_has_contract_rejection(
+                con, window_key=key, input_digest=effective_input_digest
+            )
+        ):
+            state = None
         if state in (cp.STATE_COMPLETED, cp.STATE_QUARANTINED):
             if state == cp.STATE_COMPLETED:
                 cp.record_call_telemetry(

@@ -288,3 +288,82 @@ def test_resume_does_not_replay_resolved_children(tmp_path):
     second = run_windows(_units(4), llm=NeverCalled(), **kwargs)
     covered = sorted(u for o in second.outputs for u in o["units"])
     assert covered == ["u0", "u1", "u2", "u3"]
+
+
+# --------------------------------------------------------------------------- #
+# Codex post-#6 resume: a window quarantined BEFORE the alternative strategy   #
+# existed (no rejection rows — exactly the Gate B #6 DB) is re-driven on       #
+# resume; a quarantine that already went through the ladder stays terminal.    #
+# --------------------------------------------------------------------------- #
+def test_resume_requeues_legacy_contract_quarantine_and_resolves(tmp_path):
+    path = tmp_path / "legacy.db"
+    con = sqlite3.connect(path)
+    cp.ensure_schema(con)
+    scope = _scope("legacy_requeue")
+
+    def describe(candidate, window):
+        return {"rule": "coverage_incomplete", "json_path": "units",
+                "expected": "full", "received": "batch"}
+
+    base_kwargs = dict(
+        con=con, scope=scope,
+        budget=ModelBudget(context_window=100000, output_reserve=200),
+        render=_render, validate=lambda d: not d.get("bad"),
+        describe_contract_violation=describe,
+        target_units=4, overlap=0, prompt_overhead_tokens=0, max_attempts=3,
+    )
+
+    # Run 1 — NO alternative strategy: the window ends quarantined.
+    first = run_windows(_units(4), llm=SameInvalidTwice(), **base_kwargs)
+    assert len(first.quarantined) == 1
+    # Simulate the pre-ladder Gate B #6 DB: the quarantine exists but the
+    # rejection audit table does not have its rows yet.
+    con.execute(f"DELETE FROM {cp.REJECTIONS_TABLE}")
+    con.commit()
+
+    def resolve(window, ctx):
+        primary = list(window.primary_units)
+        if len(primary) < 2:
+            return False
+        mid = len(primary) // 2
+        drive = ctx["drive"]
+        base = int(window.spec.window_index)
+        idxs = []
+        for i, half in enumerate([primary[:mid], primary[mid:]]):
+            refs = tuple(u.ref_id for u in half)
+            idx = base * 1000 + i + 1
+            idxs.append(idx)
+            spec = WindowSpec(stage_name=scope.stage_name, window_index=idx,
+                              primary_refs=refs, overlap_refs=(),
+                              input_digest=content_digest(list(refs)))
+            drive(PlannedWindow(spec=spec, primary_units=tuple(half),
+                                overlap_units=(), input_tokens=sum(u.tokens for u in half)))
+        result = ctx["result"]
+        return len([w for w in result.windows
+                    if w.window_index in idxs and w.state == cp.STATE_COMPLETED]) == 2
+
+    # Run 2 — resume WITH the strategy: the legacy quarantine is re-driven.
+    # One whole-batch call captures the rejection audit, the identical-retry ban
+    # then hands over to the split strategy (two half calls), coverage lossless.
+    llm2 = RejectWholeAcceptHalves()
+    second = run_windows(
+        _units(4), llm=llm2, resolve_contract_rejection=resolve, **base_kwargs
+    )
+    assert second.quarantined == []
+    assert llm2.calls == 3  # 1 batch (audited rejection) + 2 halves; no repeat
+    covered = sorted(u for o in second.outputs for u in o["units"])
+    assert covered == ["u0", "u1", "u2", "u3"]
+    # The rejection audit was rebuilt durably for the requeued window.
+    assert con.execute(f"SELECT COUNT(*) FROM {cp.REJECTIONS_TABLE}").fetchone()[0] >= 1
+
+    # Run 3 — a POST-ladder quarantine (rejection rows present) stays terminal:
+    # if the strategy fails now, resume must not re-drive it again.
+    class NeverCalled:
+        def generate(self, prompt, *, output_budget):
+            raise AssertionError("terminal resolved window must not call the LLM")
+
+    third = run_windows(
+        _units(4), llm=NeverCalled(), resolve_contract_rejection=resolve, **base_kwargs
+    )
+    covered3 = sorted(u for o in third.outputs for u in o["units"])
+    assert covered3 == ["u0", "u1", "u2", "u3"]
