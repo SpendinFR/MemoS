@@ -97,7 +97,43 @@ def test_invalid_empty_json_is_explicit_failure_not_cached(monkeypatch, tmp_path
     # A second attempt must still hit the network (nothing invalid was cached).
     with pytest.raises(base.EliteLLMError):
         base._deep_vlm_json(str(img), model=None, timeout=5.0)
-    assert calls["n"] == 2
+    assert calls["n"] == 4
+
+
+def test_truncated_json_gets_one_distinct_compact_retry(monkeypatch, tmp_path, img):
+    _install_env(monkeypatch, tmp_path)
+    payloads = []
+
+    def fake_generate(payload, **kwargs):
+        payloads.append(payload)
+        if len(payloads) == 1:
+            return {
+                "response": '{"scene_summary_detailed":"truncated',
+                "eval_count": 900,
+                "done_reason": "length",
+            }
+        return {
+            "response": json.dumps(_valid_vlm_response()),
+            "eval_count": 220,
+            "done_reason": "stop",
+        }
+
+    monkeypatch.setattr(base, "ollama_generate", fake_generate)
+    data = base._deep_vlm_json(str(img), model=None, timeout=5.0)
+
+    assert len(payloads) == 2
+    assert payloads[0]["prompt"] != payloads[1]["prompt"]
+    assert "RECOVERY:" in payloads[1]["prompt"]
+    assert payloads[1]["options"]["num_predict"] >= 1200
+    assert data["observed_activity"] == "computer_work"
+    assert data["_vlm_attempt_count"] == 2
+    assert data["_vlm_recovery_strategy"] == "compact_retry"
+    assert data["_vlm_attempt_audit"][0]["done_reason"] == "length"
+    assert data["_output_tokens"] == 1120
+
+    cached = base._deep_vlm_json(str(img), model=None, timeout=5.0)
+    assert cached["_cache_hit"] is True
+    assert len(payloads) == 2
 
 
 def test_cache_hit_makes_zero_network_calls(monkeypatch, tmp_path, img):

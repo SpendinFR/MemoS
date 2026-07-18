@@ -24,7 +24,8 @@ from .evidence_quality_v19 import (
     owner_attribution_allowed,
     turn_evidence_quality,
 )
-from .utils import json_dumps, json_loads, now_iso, sha256_bytes, stable_id
+from .utils import json_dumps, json_loads, now_iso, sha256_bytes, stable_id, tokenize
+from .owner_context_v19 import build_owner_context, perspective_role
 
 
 SHARED_FACT_VERSION = "e64-i2-shared-facts-v2-sensor-routing"
@@ -411,10 +412,13 @@ def _candidate_refs(value: Any) -> list[str]:
             for key, child in item.items():
                 key_context = evidence_context or key in {
                     "turn_id", "evidence_turn_id", "evidence_turn_ids", "evidence",
-                    "evidence_ids", "source_turn_id",
+                    "evidence_ids", "source_turn_id", "context",
                 }
-                if key_context:
-                    visit(child, evidence_context=True)
+                # Always descend so a turn_id nested below examples/signals is
+                # discoverable. Primitive values are collected only once an
+                # evidence key has opened the context, then filtered against the
+                # real turns of this conversation.
+                visit(child, evidence_context=key_context)
         elif isinstance(item, Sequence) and not isinstance(item, (str, bytes, bytearray)):
             for child in item:
                 visit(child, evidence_context=evidence_context)
@@ -422,6 +426,85 @@ def _candidate_refs(value: Any) -> list[str]:
             refs.append(str(item).strip())
 
     visit(value)
+    return list(dict.fromkeys(refs))
+
+
+_PROVENANCE_STOPWORDS = {
+    "avec", "avoir", "comme", "dans", "elle", "elles", "entre", "faire",
+    "fait", "fois", "pour", "sans", "sont", "tout", "tous", "toute",
+    "mais", "donc", "alors", "apres", "avant", "cela", "cette", "leurs",
+    "plus", "moins", "meme", "ainsi", "quand", "quel", "quelle", "dont",
+    "where", "when", "with", "from", "that", "this", "have", "into",
+    "about", "owner", "person", "conversation", "episode", "unknown",
+    "confidence", "evidence", "summary", "context", "value", "type",
+}
+
+
+def _semantic_terms(value: Any) -> set[str]:
+    """Return conservative content terms used only to recover provenance scope."""
+
+    raw = value if isinstance(value, str) else json_dumps(value)
+    terms: set[str] = set()
+    for token in tokenize(raw):
+        term = str(token).strip("_'\"").lower()
+        if len(term) < 4 or term in _PROVENANCE_STOPWORDS or term.isdigit():
+            continue
+        if term.startswith(("turn_", "episode_", "subtheme_", "fact_")):
+            continue
+        # A six-character signature joins ordinary French inflections while
+        # remaining much stricter than fuzzy whole-sentence matching.
+        terms.add(term[:6] if len(term) > 7 else term)
+    return terms
+
+
+def _validated_subtheme_refs(
+    con: Any, *, episode_id: str, item: Any, common_evidence: Any
+) -> list[str]:
+    """Recover citations only from one strong, unique validated subtheme.
+
+    This never invents a cognitive fact: it links an already produced engine
+    item to the primary citations of an EpisodeBuilder subtheme. Ambiguous or
+    weak matches deliberately return no evidence and stay outside the durable
+    fact registry.
+    """
+
+    if not con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='episode_subthemes_v19'"
+    ).fetchone():
+        return []
+    item_terms = _semantic_terms(item)
+    if len(item_terms) < 2:
+        return []
+    common_terms = _semantic_terms(common_evidence)
+    scored: list[tuple[int, float, str]] = []
+    for row in con.execute(
+        "SELECT subtheme_id,title,summary FROM episode_subthemes_v19 WHERE episode_id=? ORDER BY ordinal",
+        (episode_id,),
+    ):
+        theme_terms = _semantic_terms({"title": row["title"], "summary": row["summary"]})
+        overlap = item_terms & theme_terms
+        # Common engine evidence can reinforce an item match, never create one.
+        reinforced = overlap | (item_terms & common_terms & theme_terms)
+        count = len(reinforced)
+        coverage = count / max(1, min(len(item_terms), len(theme_terms)))
+        if count >= 2 and coverage >= 0.20:
+            scored.append((count, coverage, str(row["subtheme_id"])))
+    if not scored:
+        return []
+    scored.sort(key=lambda candidate: (candidate[0], candidate[1]), reverse=True)
+    best = scored[0]
+    if len(scored) > 1:
+        runner = scored[1]
+        if best[0] == runner[0] and best[1] - runner[1] < 0.15:
+            return []
+    refs = [
+        str(row["turn_id"]) for row in con.execute(
+            """SELECT turn_id FROM episode_subtheme_evidence_v19
+               WHERE subtheme_id=? AND evidence_role='primary_citation'
+               ORDER BY turn_id""",
+            (best[2],),
+        ) if row["turn_id"]
+    ]
     return list(dict.fromkeys(refs))
 
 
@@ -557,6 +640,21 @@ def record_engine_output(
             confidence = item_confidence if item_confidence else engine_confidence
             refs = list(dict.fromkeys([*_candidate_refs(item), *common_refs]))
             cited = [ref for ref in refs if ref in valid_turn_ids]
+            citation_role = "model_citation"
+            if not cited:
+                cited = [
+                    ref for ref in _validated_subtheme_refs(
+                        con,
+                        episode_id=episode_id,
+                        item=item,
+                        common_evidence={
+                            "evidence": canonical.get("evidence"),
+                            "counter_evidence": canonical.get("counter_evidence"),
+                        },
+                    ) if ref in valid_turn_ids
+                ]
+                if cited:
+                    citation_role = "validated_subtheme_scope"
             evidence_status = "cited" if cited else "uncited_model_output"
             subject_ref = _subject_ref(item)
             if engine_name == "capture_engine" and field_name == "capture_quality":
@@ -601,6 +699,12 @@ def record_engine_output(
             else:
                 ceiling = confidence if cited else min(confidence, 0.49)
 
+            # The complete engine section is the lossless audit record. The
+            # canonical fact registry is stricter: prose rationale or model
+            # confidence alone cannot become a durable fact.
+            if not cited:
+                continue
+
             upsert(con, "brain2_shared_facts_v19", {
                 "fact_id": fact_id,
                 "run_id": run_id,
@@ -625,11 +729,11 @@ def record_engine_output(
             for ref in cited:
                 upsert(con, "brain2_shared_fact_evidence_v19", {
                     "evidence_link_id": stable_id(
-                        "shared-fact-evidence-v19", fact_id, ref, "model_citation"
+                        "shared-fact-evidence-v19", fact_id, ref, citation_role
                     ),
                     "fact_id": fact_id,
                     "turn_id": ref,
-                    "citation_role": "model_citation",
+                    "citation_role": citation_role,
                     "created_at": now,
                 }, "evidence_link_id")
     row = con.execute(
@@ -744,6 +848,21 @@ def record_episode_structure(
             ))
             item["evidence_manifest"] = evidence_rows
             subthemes.append(item)
+    structural_evidence = [
+        str(row["turn_id"]) for row in con.execute(
+            "SELECT turn_id FROM episode_evidence WHERE episode_id=? ORDER BY created_at",
+            (episode_id,),
+        ) if row["turn_id"]
+    ]
+    if not structural_evidence:
+        structural_evidence = list(dict.fromkeys(
+            str(turn_id) for turn_id in (
+                episode.get("start_turn_id"), episode.get("end_turn_id")
+            ) if turn_id and con.execute(
+                "SELECT 1 FROM turns WHERE turn_id=? AND conversation_id=?",
+                (turn_id, conversation_id),
+            ).fetchone()
+        ))
     output = {
         "conversation_episode": {
             key: episode.get(key) for key in (
@@ -755,12 +874,7 @@ def record_episode_structure(
         },
         "subthemes": subthemes,
         "missing_context": episode_metadata.get("missing_context") or [],
-        "evidence": [
-            str(row["turn_id"]) for row in con.execute(
-                "SELECT turn_id FROM episode_evidence WHERE episode_id=? ORDER BY created_at",
-                (episode_id,),
-            ) if row["turn_id"]
-        ],
+        "evidence": structural_evidence,
         "counter_evidence": [],
         "confidence": _clamp(episode.get("confidence")),
     }
@@ -1087,6 +1201,9 @@ def compact_stage_input(
         }
         turns.append(turn)
 
+    owner_context = build_owner_context(con, person_id)
+    for turn in turns:
+        turn["perspective_role"] = perspective_role(turn.get("person_id"), owner_context)
     current_people = list(dict.fromkeys(
         str(turn.get("person_id")) for turn in turns if turn.get("person_id")
     ))
@@ -1235,6 +1352,7 @@ def compact_stage_input(
     result = {
         "projection_version": SHARED_FACT_VERSION,
         "purpose": purpose,
+        "owner_context": owner_context,
         "conversation": conversation,
         "turns": turns,
         "current_people_refs": current_people,

@@ -1,5 +1,39 @@
 # DECISIONS
 
+## 2026-07-18 — Perspective owner : compiler strict, prompt local stable (ADR)
+
+**Séparer identité et inférence.** `owner_context_v19` résout le propriétaire canonique,
+ses alias et clusters de voix. La projection partagée marque chaque tour
+`owner|other|unknown`; une preuve d'une voix non enrôlée ne peut pas soutenir un claim
+owner. La promotion d'un cluster backfille les tables sémantiques par identifiant, sans
+réécrire les labels audio ni l'historique d'audit. Le nom Maxime utilisé dans les tests
+n'est pas une règle produit.
+
+**Ne pas surcharger Qwen pour obtenir une preuve.** Le modèle local 9B produit une analyse
+langage/social exploitable avec le pack V13 historique. L'ajout de rôles owner répétés et
+de formes `{turn_id,claim}` l'a fait abstentionner, malgré une chaîne technique verte, et
+a augmenté la durée. Cette variante est rejetée : `episode-pack-v2` et son instruction
+explicite William restent inchangés sur la configuration mono-propriétaire actuelle. Le
+contrat owner est imposé après génération par le compilateur et le gate. Une migration
+DeepSeek ne supprimera cette exception qu'après A/B coût/latence/qualité sur le même
+payload.
+
+**Raw lossless, canonique prouvé.** Une sortie moteur valide est toujours conservée dans
+`brain2_shared_engine_sections_v19`. Sa projection canonique exige soit un vrai turn ID,
+soit une correspondance forte et unique avec un sous-thème EpisodeBuilder déjà validé;
+le lien porte alors `validated_subtheme_scope`. Aucun match ambigu n'est promu. Cette
+politique évite le remplissage de schéma sans supprimer les couches psychologiques. Le
+run réel final donne 33/33 faits cités, langage/social présents et zéro doublon.
+
+**Une prédiction durable n'est pas une suggestion live.** Les writers V13 exigent un cas
+`prediction_cases.usable_for_prediction=1` owner-compatible. BrainLive peut continuer à
+proposer transitoirement une aide; cela ne devient pas une croyance nocturne sans
+précédent. Sur la minute, zéro pattern est confirmé et zéro prédiction durable est créée.
+
+**VLM tronqué.** Deep Vision peut retirer un wrapper lossless puis effectuer une seule
+réparation compacte auditée. Une sortie encore invalide reste quarantinée et bloque le
+manifeste; aucune keyframe n'est sacrifiée. La reprise du run 7/7/6 a prouvé 7/7/7.
+
 ## 2026-07-11 — E61-F : APK téléphone vérifiée, SDK lunettes jamais redistribué (ADR)
 
 **Deux distributions, deux contraintes.** PhoneOnly est un artefact redistribuable : WELCOME le récupère depuis la dernière GitHub Release uniquement si le clone n'en possède pas, exige un sidecar SHA-256 et effectue une bascule atomique après vérification. L'APK publiée conserve le profil cible `192.168.1.199:8710`; une IP différente exige un build local explicitement injecté, elle n'est pas cachée derrière un pairing prétendument générique. XREAL embarque un SDK propriétaire et ne doit jamais être uploadée : WELCOME appelle un build local assisté en deux passes et restaure les artefacts projet sans dépendre de `git checkout`.

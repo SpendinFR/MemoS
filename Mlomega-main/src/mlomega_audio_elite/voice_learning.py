@@ -371,6 +371,94 @@ def pending_unknown_voices() -> dict[str, Any]:
     return {"unknown_clusters": clusters, "open_prompts": prompts}
 
 
+_IDENTITY_RELABEL_SPECS: tuple[tuple[str, str], ...] = (
+    # Evidence-bearing rows: keep text/audio labels immutable, relabel identity only.
+    ("turns", "person_id"),
+    ("source_spans", "person_id"),
+    ("source_items", "author_person_id"),
+    ("lifestream_segments", "speaker_person_id"),
+    ("memory_cards", "person_id"),
+    ("memory_evidence", "person_id"),
+    ("retrieval_chunks", "person_id"),
+    ("speaker_uncertainty_segments", "person_id"),
+    ("episodes", "target_person_id"),
+    ("interaction_episodes", "other_person_id"),
+    ("speech_acts", "speaker_person_id"),
+    ("speech_acts", "target_person_id"),
+    # Canonical semantic state derived from those proofs.
+    ("brain2_shared_facts_v19", "subject_ref"),
+    ("action_intentions", "person_id"),
+    ("action_outcomes", "person_id"),
+    ("choice_episodes", "person_id"),
+    ("emotion_evidence", "person_id"),
+    ("internal_state_snapshots", "person_id"),
+    ("state_transitions", "person_id"),
+    ("thought_hypotheses", "person_id"),
+    ("candidate_patterns", "person_id"),
+    ("confirmed_patterns", "person_id"),
+    ("prediction_cases", "person_id"),
+    ("predictions", "person_id"),
+    ("prediction_target_scores", "person_id"),
+    ("similar_case_retrieval_runs", "person_id"),
+    ("similar_case_scores", "person_id"),
+    ("future_scenarios", "person_id"),
+    ("trajectory_warnings", "person_id"),
+    ("recommended_actions", "person_id"),
+    ("self_model_dimensions", "person_id"),
+    ("self_schema_v19", "person_id"),
+    ("life_model_entries_v19", "person_id"),
+    ("brain2_contextual_self_models", "person_id"),
+    ("brain2_emotional_trajectory_models", "person_id"),
+    ("brain2_expression_state_models", "person_id"),
+    ("brain2_need_expectation_models", "person_id"),
+    ("brain2_personal_routine_models", "person_id"),
+    ("brain2_place_preference_models", "person_id"),
+    ("brain2_action_preference_models", "person_id"),
+    # Relationships can contain the unknown identity on either side.
+    ("relationship_models", "person_a"),
+    ("relationship_models", "person_b"),
+    ("person_reaction_patterns", "person_id"),
+    ("person_reaction_patterns", "other_person_id"),
+    ("conflict_loops", "person_a"),
+    ("conflict_loops", "person_b"),
+    ("repair_patterns", "person_a"),
+    ("repair_patterns", "person_b"),
+    ("trust_history", "person_a"),
+    ("trust_history", "person_b"),
+)
+
+
+def _relabel_identity_references(con: Any, old_person_id: str, new_person_id: str) -> dict[str, int]:
+    """Relabel canonical references while preserving raw labels and audit history."""
+
+    tables = {
+        str(row[0]) for row in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    rows_updated: dict[str, int] = {}
+    for table, column in _IDENTITY_RELABEL_SPECS:
+        key = f"{table}.{column}"
+        if table not in tables:
+            rows_updated[key] = 0
+            continue
+        columns = {str(row[1]) for row in con.execute(f'PRAGMA table_info("{table}")')}
+        if column not in columns:
+            rows_updated[key] = 0
+            continue
+        try:
+            cur = con.execute(
+                f'UPDATE "{table}" SET "{column}"=? WHERE "{column}"=?',
+                (new_person_id, old_person_id),
+            )
+            rows_updated[key] = int(cur.rowcount)
+        except Exception:
+            # A uniqueness collision is never resolved by deleting one side.  It
+            # remains visible in the revision audit for explicit reconciliation.
+            rows_updated[key] = -1
+    return rows_updated
+
+
 def name_unknown_voice(cluster_id: str, person_id: str, *, display_name: str | None = None, is_user: bool = False, reason: str = "user_named_unknown_voice") -> dict[str, Any]:
     """Name UNKNOWN_VOICE_xxx and relabel past source rows retroactively."""
     ensure_voice_learning_schema()
@@ -381,27 +469,7 @@ def name_unknown_voice(cluster_id: str, person_id: str, *, display_name: str | N
         if not cluster:
             raise VoiceLearningError(f"cluster introuvable: {cluster_id}")
         old_person_id = cluster_id
-        rows_updated: dict[str, int] = {}
-        # Main evidence-bearing tables. Raw text and speaker_label are preserved.
-        update_specs = [
-            ("turns", "person_id"),
-            ("source_spans", "person_id"),
-            ("source_items", "author_person_id"),
-            ("lifestream_segments", "speaker_person_id"),
-            ("memory_cards", "person_id"),
-            ("memory_evidence", "person_id"),
-            ("retrieval_chunks", "person_id"),
-            ("speaker_uncertainty_segments", "person_id"),
-            ("episodes", "target_person_id"),
-            ("interaction_episodes", "other_person_id"),
-            ("relationship_models", "person_b"),
-        ]
-        for table, col in update_specs:
-            try:
-                cur = con.execute(f"UPDATE {table} SET {col}=? WHERE {col}=?", (person_id, old_person_id))
-                rows_updated[f"{table}.{col}"] = cur.rowcount
-            except Exception:
-                rows_updated[f"{table}.{col}"] = -1
+        rows_updated = _relabel_identity_references(con, old_person_id, person_id)
         con.execute("UPDATE voice_clusters SET canonical_person_id=?, display_label=?, status='named', prompt_status='answered', updated_at=? WHERE cluster_id=?", (person_id, display_name or person_id, now, cluster_id))
         con.execute("UPDATE voice_pending_prompts SET status='answered', answered_at=? WHERE cluster_id=? AND status='open'", (now, cluster_id))
         # Promote centroid as a known embedding for next automatic recognition.

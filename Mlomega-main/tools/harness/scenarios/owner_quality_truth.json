@@ -1,0 +1,23 @@
+{
+  "version": "gate-b-owner-truth-v1",
+  "description": "Vérité d'évaluation sémantique sur la conversation Gate B. Elle corrige les tours, pas les clusters : WhisperX a fusionné/scindé plusieurs voix. Ce fichier ne prouve pas l'enrôlement réel.",
+  "source_conversation_prefix": "conv_blbundle_deep_audio_v185_",
+  "owner_turn_indices": [3, 4, 6, 7, 10, 14, 16, 18, 20, 21, 22, 24, 35, 37, 44, 68, 103],
+  "other_turns": {
+    "quality_maxime": [0, 2, 5, 8, 9, 11, 12, 13, 15, 17, 19]
+  },
+  "mixed_unknown_turn_indices": [100, 101, 102, 104, 105],
+  "people": {
+    "quality_maxime": "Maxime",
+    "quality_sarah": "Sarah"
+  },
+  "expected_separate_topics": [
+    ["karim", "rendez-vous"],
+    ["netflix", "documentaire", "grèce antique"]
+  ],
+  "minimum_owner_turns": 10,
+  "minimum_other_turns": 5,
+  "required_cited_cognitive_engines": ["language_signature_engine", "social_model_engine"],
+  "maximum_confirmed_patterns_delta": 0,
+  "maximum_predictions_without_precedents_delta": 0
+}

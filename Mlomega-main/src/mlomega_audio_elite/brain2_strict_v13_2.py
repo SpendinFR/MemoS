@@ -22,6 +22,7 @@ from .llm import (
 from .utils import json_dumps, json_loads, now_iso, sha256_bytes, stable_id
 from .brain2_complete_v13 import COMPLETE_TARGETS, ENGINE_ORDER, ENGINE_TABLES, PLAN_TABLES, ENGINE_SCHEMAS
 from .llm_contracts_v15_18 import normalize_outcome_tracker, normalize_similar_case_score, normalize_calibration_rows, normalize_intervention_plan
+from .prediction_policy_v19 import durable_prediction_allowed
 
 STRICT_VERSION = "13.2.0-brain2-strict-final"
 EPISODE_BUILD_VERSION = "13.2.0-e64-cognitive-routing-v5"
@@ -2360,7 +2361,11 @@ def _put_engine_payload(con, engine: str, episode_id: str, person_id: str, outpu
 
     elif engine == "prediction_engine":
         for p in _as_list(output.get("predictions")):
-            if isinstance(p, dict) and (p.get("predicted_value") or p.get("prediction")):
+            if (
+                isinstance(p, dict)
+                and (p.get("predicted_value") or p.get("prediction"))
+                and durable_prediction_allowed(con, p, person_id=person_id)
+            ):
                 target = p.get("prediction_target") if p.get("prediction_target") in COMPLETE_TARGETS else "next_action"
                 value = str(p.get("predicted_value") or p.get("prediction"))
                 pid = stable_id("prediction", STRICT_VERSION, person_id, episode_id, target, value[:160])
@@ -2796,7 +2801,11 @@ def predict_strict_v13(target: str, context: str, *, person_id: str | None = Non
         # Materialize without episode by creating prediction rows directly.
         now = now_iso(); pred_ids = []
         for p in _as_list(out.get("predictions")):
-            if isinstance(p, dict) and (p.get("predicted_value") or p.get("prediction")):
+            if (
+                isinstance(p, dict)
+                and (p.get("predicted_value") or p.get("prediction"))
+                and durable_prediction_allowed(con, p, person_id=person_id)
+            ):
                 pid = stable_id("prediction", STRICT_VERSION, person_id, target, context[:160], p.get("predicted_value") or p.get("prediction"))
                 value = str(p.get("predicted_value") or p.get("prediction"))
                 upsert(con, "predictions", {"prediction_id": pid, "created_at": now, "person_id": person_id, "prediction_target": p.get("prediction_target") or target, "horizon": p.get("horizon") or horizon, "current_context": context, "predicted_value": value, "probability": _clamp(p.get("probability")), "confidence": _clamp(p.get("confidence")), "alternatives_json": json_dumps(_as_list(p.get("alternatives"))), "evidence_cases_json": json_dumps(_as_list(p.get("similar_cases"))), "counter_evidence_json": json_dumps(_as_list(p.get("counter_evidence"))), "assumptions_json": json_dumps(_as_list(p.get("assumptions"))), "intervention_options_json": json_dumps(_as_list(p.get("interventions"))), "verification_due_at": p.get("verification_due_at"), "status": "open", "metadata_json": json_dumps({"strict_v13_2": True, "why": _as_list(p.get("why")), "engine_run_id": run_id}), "updated_at": now}, "prediction_id")

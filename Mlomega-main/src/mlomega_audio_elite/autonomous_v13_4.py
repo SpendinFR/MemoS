@@ -18,6 +18,7 @@ from .llm import OllamaJsonClient, EliteLLMError
 from .utils import json_dumps, json_loads, now_iso, stable_id, sha256_bytes
 from .brain2_complete_v13 import COMPLETE_TARGETS
 from .brain2_strict_v13_2 import ensure_strict_v13_schema
+from .prediction_policy_v19 import durable_prediction_allowed
 
 AUTONOMOUS_VERSION = "13.4.0-autonomous-insight-loop"
 
@@ -266,7 +267,10 @@ def run_autonomous_insights(conversation_id: str, *, trigger_type: str = "post_i
                 target = ins.get("prediction_target") if ins.get("prediction_target") in COMPLETE_TARGETS else None
                 predicted_value = str(ins.get("predicted_value") or "").strip()
                 prediction_id = None
-                if target and predicted_value and target != "none":
+                if (
+                    target and predicted_value and target != "none"
+                    and durable_prediction_allowed(con, ins, person_id=person_id)
+                ):
                     prediction_id = stable_id("autonpred", AUTONOMOUS_VERSION, person_id, conversation_id, target, predicted_value[:180])
                     upsert(con, "predictions", {
                         "prediction_id": prediction_id,

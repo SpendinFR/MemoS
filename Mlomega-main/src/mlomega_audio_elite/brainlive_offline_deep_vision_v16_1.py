@@ -209,6 +209,48 @@ def _deep_vision_cache_put(
         # Cache write must never break the analysis path.
         pass
 
+
+def _parse_deep_vision_body(body_text: str) -> tuple[dict[str, Any], str]:
+    """Parse JSON with lossless wrapper removal, never invented content."""
+    text = str(body_text or "").strip()
+    candidates: list[tuple[str, str]] = [("strict", text)]
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].strip().lower() in {"```", "```json"}:
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        candidates.append(("unwrap_json_fence", "\n".join(lines).strip()))
+    first = text.find("{")
+    last = text.rfind("}")
+    if first >= 0 and last > first:
+        candidates.append(("extract_complete_object", text[first:last + 1]))
+    last_error: Exception | None = None
+    seen: set[str] = set()
+    for strategy, candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            return _validate_deep_vision_json(json.loads(candidate)), strategy
+        except (TypeError, ValueError, EliteLLMError) as exc:
+            last_error = exc
+    raise EliteLLMError(f"Réponse VLM offline non-JSON: {last_error or 'empty output'}")
+
+
+def _vlm_attempt_audit(
+    outer: dict[str, Any], body_text: str, error: Exception | None
+) -> dict[str, Any]:
+    return {
+        "done_reason": outer.get("done_reason") or outer.get("finish_reason"),
+        "eval_count": outer.get("eval_count"),
+        "raw_chars": len(body_text),
+        "raw_sha256": hashlib.sha256(
+            body_text.encode("utf-8", errors="replace")
+        ).hexdigest(),
+        "error": str(error)[:500] if error is not None else None,
+    }
+
 SCHEMA = r"""
 CREATE TABLE IF NOT EXISTS brainlive_deep_vision_runs_v161(
   run_id TEXT PRIMARY KEY,
@@ -1049,16 +1091,14 @@ def _deep_vlm_json(image_path: str, *, model: str | None, timeout: float, person
         raise FileNotFoundError(p)
     chosen_model = _resolve_offline_vlm_model(model)
     image_sha = _image_sha256(p)
-    # CACHE READ (Codex I4.2 point 5): a validated result for this exact
-    # image+model+prompt_version is returned WITHOUT any network call. The cache
-    # is content-addressed, so the (bundle-specific) personal_context does not
-    # affect the visual analysis identity.
     if use_cache:
         cached = _deep_vision_cache_get(image_sha, chosen_model, DEEP_VISION_PROMPT_VERSION)
         if cached is not None:
             out = dict(cached)
             out["_model"] = chosen_model
             out["_cache_hit"] = True
+            out["_vlm_attempt_count"] = 0
+            out["_vlm_recovery_strategy"] = "validated_cache"
             return out
     image_b64 = base64.b64encode(p.read_bytes()).decode("ascii")
     system = (
@@ -1080,57 +1120,91 @@ def _deep_vlm_json(image_path: str, *, model: str | None, timeout: float, person
             "si doute: observed_activity=unknown ou confidence basse",
         ],
     })
-    payload = {
-        "model": chosen_model,
-        "prompt": f"SYSTEM:\n{system}\n\nUSER:\n{prompt}\n\nReturn strict JSON only.\n\nExpected shape:\n{json.dumps(DEEP_VISION_SCHEMA_HINT, ensure_ascii=False)}",
-        "images": [image_b64],
-        "stream": False,
-        "format": "json",
-        # Qwen3-VL trap (Codex I4.2 point 2): without think=false the model burns
-        # its whole output budget on hidden reasoning and returns empty JSON with
-        # finish_reason=length. ``ollama_generate`` also sets this by default; we
-        # set it explicitly here so the contract is visible at the call site.
-        "think": False,
-        "options": {"temperature": 0.0, "num_predict": int(num_predict or 900)},
-    }
-    started = time.time()
-    outer = ollama_generate(
-        payload,
-        timeout=max(float(timeout), settings.poststop_vlm_timeout_s),
-        component="post_stop_deep_vision",
-        poststop_min_timeout_s=settings.poststop_vlm_timeout_s,
+    base_prompt = (
+        f"SYSTEM:\n{system}\n\nUSER:\n{prompt}\n\nReturn strict JSON only."
+        f"\n\nExpected shape:\n{json.dumps(DEEP_VISION_SCHEMA_HINT, ensure_ascii=False)}"
     )
-    latency_ms = int((time.time() - started) * 1000)
-    # E64-I4.2: qwen3-vl:8b on this Ollama build returns the JSON in the separate
-    # ``thinking`` channel and leaves ``response`` EMPTY even with think=false and
-    # format=json. Treat a non-empty ``thinking`` as the answer when ``response``
-    # is blank, so the real analysis is never silently lost as "empty JSON".
-    body_text = str(outer.get("response") or "").strip()
-    if not body_text:
-        body_text = str(outer.get("thinking") or "").strip()
-    try:
-        data = json.loads(body_text or "{}")
-    except (TypeError, ValueError) as exc:
-        raise EliteLLMError(f"Réponse VLM offline non-JSON: {exc}") from exc
-    # STRICT validation (Codex I4.2 point 3): invalid/empty output is an explicit
-    # failure, never cached and never applied.
-    data = _validate_deep_vision_json(data)
-    # Measured output budget (point 4): Ollama returns eval_count = tokens the
-    # model actually generated for this image.
-    output_tokens = None
-    try:
-        output_tokens = int(outer.get("eval_count")) if outer.get("eval_count") is not None else None
-    except (TypeError, ValueError):
-        output_tokens = None
+    attempts: list[dict[str, Any]] = []
+    total_latency_ms = 0
+    total_output_tokens = 0
+    data: dict[str, Any] | None = None
+    parse_strategy = "strict"
+    for attempt_index in (1, 2):
+        compact_retry = attempt_index == 2
+        recovery = ""
+        if compact_retry:
+            recovery = (
+                "\n\nRECOVERY: la sortie précédente était tronquée ou invalide. "
+                "Retourne le MEME schéma, mais compact: chaque texte <=240 caractères; "
+                "objects/affordances/visible_text/exact_visual_evidence/uncertainty <=6 éléments; "
+                "utilise [] ou {} pour les champs sans preuve. Aucun commentaire hors JSON."
+            )
+        payload = {
+            "model": chosen_model,
+            "prompt": base_prompt + recovery,
+            "images": [image_b64],
+            "stream": False,
+            "format": "json",
+            "think": False,
+            "options": {
+                "temperature": 0.0,
+                "num_predict": max(1200, int(num_predict or 900)) if compact_retry else int(num_predict or 900),
+            },
+        }
+        started = time.time()
+        outer = ollama_generate(
+            payload,
+            timeout=max(float(timeout), settings.poststop_vlm_timeout_s),
+            component="post_stop_deep_vision",
+            poststop_min_timeout_s=settings.poststop_vlm_timeout_s,
+        )
+        latency_ms = int((time.time() - started) * 1000)
+        total_latency_ms += latency_ms
+        body_text = str(outer.get("response") or "").strip()
+        if not body_text:
+            body_text = str(outer.get("thinking") or "").strip()
+        try:
+            total_output_tokens += int(outer.get("eval_count") or 0)
+        except (TypeError, ValueError):
+            pass
+        try:
+            data, parse_strategy = _parse_deep_vision_body(body_text)
+        except EliteLLMError as exc:
+            audit = _vlm_attempt_audit(outer, body_text, exc)
+            audit.update({"attempt": attempt_index, "strategy": "compact_retry" if compact_retry else "primary"})
+            attempts.append(audit)
+            record_phase_event("deep_vision_vlm_output_invalid", **audit)
+            if attempt_index == 1:
+                continue
+            raise EliteLLMError(
+                "Réponse VLM offline non-JSON après retry compact; "
+                f"attempts={json_dumps(attempts)}"
+            ) from exc
+        audit = _vlm_attempt_audit(outer, body_text, None)
+        audit.update({
+            "attempt": attempt_index,
+            "strategy": "compact_retry" if compact_retry else "primary",
+            "parse_strategy": parse_strategy,
+        })
+        attempts.append(audit)
+        if compact_retry:
+            record_phase_event("deep_vision_vlm_compact_retry_recovered", **audit)
+        break
+    if data is None:
+        raise EliteLLMError("Réponse VLM offline absente après tentative bornée")
+    output_tokens = total_output_tokens or None
     data["_model"] = chosen_model
     data["_cache_hit"] = False
     data["_output_tokens"] = output_tokens
-    data["_latency_ms"] = latency_ms
+    data["_latency_ms"] = total_latency_ms
+    data["_vlm_attempt_count"] = len(attempts)
+    data["_vlm_recovery_strategy"] = "compact_retry" if len(attempts) > 1 else parse_strategy
+    data["_vlm_attempt_audit"] = attempts
     if use_cache:
         _deep_vision_cache_put(
             image_sha256=image_sha, model=chosen_model, prompt_version=DEEP_VISION_PROMPT_VERSION,
             data={k: v for k, v in data.items() if not k.startswith("_")},
-            output_tokens=output_tokens, latency_ms=latency_ms,
+            output_tokens=output_tokens, latency_ms=total_latency_ms,
         )
     return data
 

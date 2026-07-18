@@ -902,9 +902,55 @@ force tous les clients imbriqués sur le modèle live sans muter l'environnement
 Preuve réelle sur clone : 11,6 s, source Brain2, fast route active. Le harnais refusait
 aussi désormais un Gate B à 12 effets visibles sur 13.
 
-## OBS-61 — Un JSON VLM tronqué bloque encore le one-shot Gate B (OUVERT)
+## OBS-61 — Un JSON VLM tronqué bloquait le one-shot Gate B (CORRIGÉ — 2026-07-18)
 
 `gateb-clean-20260718-181143` ferme le live 13/13 mais Deep Vision finit 7 sélectionnées,
 7 lisibles, 6 analysées : une réponse `qwen3-vl:8b` est non-JSON (`Unterminated string`,
 char 2946). La quarantaine et le blocage CloseDay sont corrects; il manque une réparation
 ou un retry VLM borné, distinct et audité. Interdit de réduire la sélection pour verdir.
+
+Correction : parsing strict, retrait lossless des wrappers éventuels, puis une seule
+réparation compacte auditée; seules les sorties sémantiques valides entrent en cache. La
+reprise de la copie du run rouge restaure `selected=readable=analyzed` à 7/7/7 et permet
+au CloseDay de terminer, sans modifier la sélection. Tests ciblés Deep Vision verts.
+
+## OBS-62 — Le registre canonique acceptait des conclusions sans preuve exacte (CORRIGÉ — 2026-07-18)
+
+Les sections moteur conservaient correctement la sortie complète, mais le writer pouvait
+promouvoir en fait un champ seulement soutenu par une justification en prose. Sur le gate
+William, 35 faits sur 49 n'avaient initialement aucun lien de preuve explicite; le modèle
+remplissait notamment émotion, causalité et prédiction sur une seule minute.
+
+Correction : la section lossless reste disponible pour audit, mais le registre durable
+n'accepte qu'un `turn_id` réel ou la portée d'un unique sous-thème EpisodeBuilder validé
+avec correspondance sémantique forte. Le rôle `validated_subtheme_scope` distingue cette
+provenance d'une citation directe. Ambiguïté ou absence de recouvrement = pas de fait
+canonique. Preuve finale : 33/33 faits cités, aucun doublon exact.
+
+## OBS-63 — Prédictions nocturnes sans précédent comparable (CORRIGÉ — 2026-07-18)
+
+Une probabilité ou un texte `why` suffisait à matérialiser une prédiction, même si aucun
+cas antérieur n'existait. `prediction_policy_v19` exige désormais la référence d'une ligne
+`prediction_cases.usable_for_prediction=1`, owner-compatible. Tous les writers V13
+utilisent cette politique. Les suggestions transitoires BrainLive/Ultralive restent
+inchangées. Gate minute : delta prédictions durable = 0.
+
+## OBS-64 — Promotion d'une voix sans backfill sémantique complet (CORRIGÉ — 2026-07-18)
+
+Nommer un cluster mettait à jour la galerie, mais pouvait laisser ses anciens faits,
+relations, épisodes, patterns et prédictions sous l'identité inconnue. Le backfill est
+maintenant générique (aucun nom Maxime codé en dur), relabellise toutes les tables
+dérivées owner/person-scopées et conserve les labels audio/audits bruts. Plusieurs clusters
+peuvent converger vers la même personne; le centroid promu est réutilisé aux sessions
+suivantes. Tests : deux clusters vers une même personne et références dérivées réécrites.
+
+## OBS-65 — Enrichir le prompt owner faisait régresser Qwen 9B (CORRIGÉ PAR ROLLBACK MESURÉ — 2026-07-18)
+
+L'injection de `owner_context`/rôles par tour puis d'un schéma de citation explicite a
+transformé une sortie réelle riche (langage/social) en abstention complète et a augmenté
+le temps. Ce n'était pas une panne des moteurs : `stack_status=ok`, faits restants tous
+cités. La surcharge a été retirée et `episode-pack-v2`, déjà prouvé par les runs longs,
+reste le chemin local. Le centrage owner est appliqué par la fixture, les identités des
+tours, le compilateur et le gate; aucune nouvelle complexité n'est imposée à Qwen. Une
+future comparaison DeepSeek doit être A/B sur le même payload et ne change pas ce choix
+sans gain qualité/temps mesuré.

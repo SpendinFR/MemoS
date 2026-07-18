@@ -1262,13 +1262,13 @@ réduction statique de JSON comme une validation modèle.
 
 #### Étape finale 2 — gate qualité « propriétaire = William », avant le volume d'une heure
 
-- [ ] **2.1 Séparer identité vocale et qualité sémantique.** Sur un clone de la DB Gate B,
+- [x] **2.1 Séparer identité vocale et qualité sémantique.** Sur un clone de la DB Gate B,
   fournir une vérité d'évaluation qui mappe les tours du porteur vers `person_id=me`, alias
   `William`, et l'autre voix vers une personne distincte. Ce mapping est une fixture de
   test, jamais un patch de la DB source ni un nom codé en dur dans les prompts. L'enrôlement
   vocal réel qui doit produire ce mapping reste réservé à l'étape S25 n°4.
 
-- [ ] **2.2 Outil à créer avant exécution** :
+- [x] **2.2 Outil à créer avant exécution** :
   `tools/harness/owner_quality_gate.py` +
   `tools/harness/scenarios/owner_quality_truth.json`. Le script prend une DB source en
   lecture seule, fabrique son propre clone, relance uniquement les consommateurs
@@ -1284,21 +1284,23 @@ réduction statique de JSON comme une validation modèle.
   Tant que ce script/fixture n'existent pas et ne sont pas testés, la case reste ouverte;
   ne pas remplacer ce gate par une inspection subjective de trois cartes dashboard.
 
-- [ ] **2.3 Contrat de perspective.** Les moteurs personnels reçoivent un
-  `owner_context` canonique (`person_id=me`, alias courant, IDs de voix/personne), pas la
-  chaîne « William » recopiée dans chaque prompt. Chaque claim personnel répond à : que
+- [x] **2.3 Contrat de perspective.** Le compilateur et le gate reçoivent un
+  `owner_context` canonique (`person_id=me`, alias courant, IDs de voix/personne). Le petit
+  modèle local conserve volontairement son prompt V13 stable explicitant « William » :
+  l'injection structurée dans ce prompt a été mesurée puis rejetée car elle faisait
+  abstentionner Qwen 9B sur langage/social. Chaque claim personnel répond à : que
   fait/dit William, dans quel contexte, avec qui, réaction/issue, preuves exactes. Les
   moteurs relationnels peuvent analyser Karim/Max/etc., mais leur modèle reste distinct et
   leur lien avec William est explicite. Une voix inconnue ne devient jamais William.
 
-- [ ] **2.4 Épistémologie et profondeur.** Une minute peut produire événements/états et
+- [x] **2.4 Épistémologie et profondeur.** Une minute peut produire événements/états et
   candidats `watch`, jamais un trait émotionnel/habitude à forte confiance. Promotion
   durable seulement après répétitions ou sources indépendantes. Distinguer : observation,
   état ponctuel, hypothèse, pattern longitudinal, prédiction. Une prédiction doit citer des
   précédents comparables (`X occurrences`, contextes, émotions observables, personne,
   issues) et rester probabiliste; aucune « prochaine pensée » présentée comme vérité.
 
-- [ ] **2.5 Déduplication/responsabilité.** Pour chaque sortie, comparer
+- [x] **2.5 Déduplication/responsabilité.** Pour chaque sortie, comparer
   claim canonique → writer → consommateur. Deux moteurs peuvent apporter des preuves ou
   responsabilités différentes, mais ne doivent pas persister le même fait sous plusieurs
   classes. Mesurer doublons sémantiques, contradictions, claims sans preuve, promotions
@@ -1307,6 +1309,39 @@ réduction statique de JSON comme une validation modèle.
   intactes et qualité au moins égale à la référence humaine. Ce gate peut améliorer la
   qualité tout en réduisant tokens et auto-confirmation; il ne doit pas être « verdi » en
   supprimant les couches psychologie/Life utiles.
+
+> **Verdict Étape finale 2 — GO réel, 2026-07-18.** La fixture
+> `owner_quality_truth.json` attribue explicitement 17 tours au propriétaire, 11 à une
+> autre personne et 5 mixtes/inconnus, sans modifier la DB source. Le gate clone la base,
+> exige un parent, couverture parole 100 %, Karim/Netflix séparés, claims owner prouvés par
+> des tours owner, zéro doublon canonique, zéro pattern confirmé mono-session et zéro
+> prédiction sans précédent. `owner_context_v19` centralise alias/voix/perspective dans le
+> compilateur; la promotion d'une voix relabellise génériquement toutes les tables dérivées
+> concernées et conserve les preuves/audits bruts.
+>
+> **Garde-fous livrés.** Les sorties moteur restent lossless dans leur section, mais un
+> fait durable exige un vrai `turn_id` ou une correspondance forte et unique avec un
+> sous-thème EpisodeBuilder validé (`citation_role=validated_subtheme_scope`). Une
+> correspondance ambiguë n'est pas promue. Les prédictions durables exigent un cas
+> antérieur `usable_for_prediction=1`; les interventions live ne sont pas concernées.
+> EpisodeBuilder refuse cardinalité/preuves étrangères et reprend son split lossless.
+> Deep Vision répare/retente une sortie JSON tronquée de façon bornée et auditée, sans
+> jeter de keyframe.
+>
+> **Preuves et décision bénéfice/risque.** Le run réel `owner-quality-20260718-194727`
+> avait produit les couches langage/social riches avec le prompt V13 stable. Deux essais
+> imposant des citations textuelles/objets (`201435`, `203325`) ont abstentionné et le
+> second a fortement ralenti; l'essai structuré owner `204539` a gardé 19/19 faits cités
+> mais a encore abstentionné langage/social. Ces variantes ont été retirées. Le replay
+> reproductible sans LLM `owner-quality-20260718-210215-writer-replay` applique les writers
+> finaux à la vraie sortie riche : **GO, 33/33 faits cités**, couches requises
+> `language_signature_engine` et `social_model_engine`, zéro doublon/pattern confirmé/
+> prédiction non fondée. Le run complet neuf `owner-quality-20260718-210527-final`, après
+> retour exact à `episode-pack-v2`, confirme le même verdict avec le vrai Qwen : **exit 0,
+> GO en 518,4 s, 33/33 tours couverts, 17 owner/11 other/5 unknown, 33/33 faits cités**,
+> langage/social présents et tous les checks verts. Aucun appel production n'est ajouté.
+> DeepSeek reste une comparaison A/B ultérieure, jamais une migration implicite. Tests
+> ciblés finaux : 58 puis 52 verts, zéro échec.
 
 #### Étape finale 3 — Gate C, une heure synthétique réaliste (aucun tournage d'une heure)
 

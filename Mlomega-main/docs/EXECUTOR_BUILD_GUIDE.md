@@ -1,5 +1,44 @@
 # EXECUTOR_BUILD_GUIDE — MLOmega V19, construction pas à pas
 
+## PASSATION 2026-07-18 — Étape finale 2 qualité owner GO
+
+Le chemin Qwen de production reste **strictement** `episode-pack-v2`. Ne pas réintroduire
+`owner_context`, `perspective_role` ou un schéma `{turn_id,claim}` dans ce prompt : trois
+essais réels ont montré abstention langage/social et surcoût. Le centrage William est
+appliqué par les identités de tours, `owner_context_v19`, le compilateur de faits et le
+gate, sans nouvel appel LLM.
+
+Commande réelle validée, depuis la racine (la DB source n'est jamais écrite) :
+
+```powershell
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+Remove-Item Env:OPENAI_API_KEY,Env:HTTP_PROXY,Env:HTTPS_PROXY,Env:ALL_PROXY -ErrorAction SilentlyContinue
+$env:MLOMEGA_LLM_BACKEND = 'llamacpp'
+$env:MLOMEGA_LLAMACPP_BASE_URL = 'http://127.0.0.1:8080'
+$env:MLOMEGA_LLAMACPP_MODEL = 'qwen9b-p1-24k-mlomega'
+$env:MLOMEGA_OLLAMA_CONTEXT_POSTSTOP = '24576'
+.\.venv\Scripts\python.exe tools\harness\owner_quality_gate.py `
+  --db tools\harness\_run\gateb-clean-20260718-181143.db `
+  --owner-id me --owner-name William `
+  --truth tools\harness\scenarios\owner_quality_truth.json `
+  --out "tools\harness\_run\owner-quality-$stamp-final.json"
+```
+
+Preuve : `owner-quality-20260718-210527-final`, exit 0/GO en 518,4 s; 33/33 tours
+couverts, 17 owner/11 other/5 unknown, 33/33 faits cités, langage/social présents, zéro
+doublon exact, zéro pattern confirmé et zéro prédiction sans cas. Le mode
+`--replay-report <rapport.json>` rejoue seulement les writers sur une sortie modèle réelle
+pour contre-audit, sans LLM; preuve `210215-writer-replay`, GO identique.
+
+Les warnings d'écriture de fichiers `.no_exist` sous le cache Hugging Face n'ont pas
+affecté ce run (`stack_status=ok`). Ils sont du bruit de permissions hors workspace; les
+proxies morts doivent néanmoins être retirés avant lancement. Les artefacts `_run` ne sont
+jamais commités.
+
+Prochaine étape : commit/push de ce lot, puis un **Gate B exact-HEAD neuf** pour la preuve
+de non-régression bout-en-bout; ensuite seulement Étape finale 3 Gate C. Ne toucher ni aux
+deux fichiers Unity locaux de l'utilisateur ni au prompt V13 stable entre ces preuves.
+
 Complément d'exécution de `docs/EXECUTOR_HANDOFF.md`. Le handoff dit **quoi** construire et pourquoi ; ce guide dit **comment**, étape par étape, avec les signatures réelles du code existant (extraites du dépôt le 2026-07-03 — recopiées, pas paraphrasées). Les références « guide §x » (TTL SceneCache, skills, composants UI, chaînes de scénarios, gates, tests, règles de vérité) résolvent dans `docs/GUIDE_V19_REFERENCE.md`. En cas de divergence entre ce guide et le code réel, **le code réel fait foi** : lire le module, consigner la divergence dans `docs/DECISIONS.md`, continuer.
 
 Conventions : `E<n>` = étape ; chaque étape a Objectif / Créer / Brancher / Valider. Ne pas sauter d'étape. Chemins relatifs à la racine du monorepo V19 ; le cœur = `src/mlomega_audio_elite/`.
