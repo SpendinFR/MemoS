@@ -115,6 +115,49 @@ def _run_deferred_semantics(*, person_id: str, live_session_id: str) -> dict:
     )
 
 
+def _derive_session_package_date(live_session_id: str) -> str | None:
+    """Local calendar day of the SESSION, not of the moment the worker runs.
+
+    A close-day launched/resumed after local midnight (the nightly worker's
+    normal operating window) must target the day the session was captured;
+    defaulting to "today" silently points the whole run at an empty day.
+    Proven on the Gate B #6 resume at ~00:07 local: without --package-date the
+    reopen answered no_close_day_row for the 18th while every session/day row
+    was on the 17th. Same derivation as the runtime's _session_package_date."""
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    from mlomega_audio_elite.db import connect
+
+    try:
+        with connect() as con:
+            table = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='brainlive_sessions'"
+            ).fetchone()
+            if table is None:
+                return None
+            row = con.execute(
+                "SELECT started_at FROM brainlive_sessions WHERE live_session_id=?",
+                (live_session_id,),
+            ).fetchone()
+    except Exception:
+        return None
+    if row is None or not row["started_at"]:
+        return None
+    text = str(row["started_at"]).replace("Z", "+00:00")
+    try:
+        started = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    try:
+        local_tz = ZoneInfo(os.environ.get("MLOMEGA_LOCAL_TZ", "Europe/Paris"))
+    except Exception:
+        local_tz = timezone.utc
+    return started.astimezone(local_tz).date().isoformat()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Resume-safe PhoneOnly CloseDay worker")
     parser.add_argument("--person-id", required=True)
@@ -132,10 +175,14 @@ def main() -> int:
 
     from mlomega_audio_elite.v18_close_day import close_brainlive_day
 
+    # No explicit --package-date: the session's OWN local day wins over "today"
+    # (a worker crossing local midnight must not retarget an empty next day).
+    package_date = args.package_date or _derive_session_package_date(args.live_session_id)
+
     reopen_report = None
     if args.allow_rerun:
         reopen_report = _reopen_completed_close_day(
-            person_id=args.person_id, package_date=args.package_date
+            person_id=args.person_id, package_date=package_date
         )
 
     deferred_semantics = _run_deferred_semantics(
@@ -148,7 +195,7 @@ def main() -> int:
     result = close_brainlive_day(
         person_id=args.person_id,
         live_session_id=args.live_session_id,
-        package_date=args.package_date,
+        package_date=package_date,
         # force bypasses only a safety backoff; the reopen above is what actually
         # un-skips a completed day, so pair them for an explicit second session.
         force=bool(args.allow_rerun),
@@ -173,7 +220,7 @@ def main() -> int:
             maintenance = _record_maintenance_report(
                 run_id=str(result.get("run_id") or ""),
                 person_id=args.person_id,
-                package_date=str(result.get("package_date") or args.package_date or ""),
+                package_date=str(result.get("package_date") or package_date or ""),
                 live_session_id=args.live_session_id,
                 clip_tiering=clip_tiering,
                 media_retention=retention,

@@ -114,6 +114,36 @@ def test_reopen_flips_completed_day_to_reopened(tmp_path, monkeypatch):
     assert row["completed_at"] is None
 
 
+def test_package_date_derives_from_session_not_today(tmp_path, monkeypatch):
+    """Gate B #6 resume pitfall: a worker launched after LOCAL midnight without
+    --package-date must target the session's own local day, never 'today'."""
+    monkeypatch.setenv("MLOMEGA_HOME", str(tmp_path))
+    monkeypatch.setenv("MLOMEGA_DB", str(tmp_path / "memory.db"))
+    monkeypatch.setenv("MLOMEGA_LOCAL_TZ", "Europe/Paris")
+    from mlomega_audio_elite.db import connect, write_transaction
+
+    with connect() as con, write_transaction(con):
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS brainlive_sessions("
+            "live_session_id TEXT PRIMARY KEY, person_id TEXT, started_at TEXT)"
+        )
+        # 21:33 UTC = 23:33 Paris, still the 17th locally.
+        con.execute(
+            "INSERT INTO brainlive_sessions VALUES(?,?,?)",
+            ("blsess_evening", "owner", "2026-07-17T21:33:57.726+00:00"),
+        )
+        # 22:30 UTC = 00:30 Paris on the 18th: the session's local day IS the 18th.
+        con.execute(
+            "INSERT INTO brainlive_sessions VALUES(?,?,?)",
+            ("blsess_after_midnight", "owner", "2026-07-17T22:30:00+00:00"),
+        )
+
+    assert close_day_script._derive_session_package_date("blsess_evening") == "2026-07-17"
+    assert close_day_script._derive_session_package_date("blsess_after_midnight") == "2026-07-18"
+    # Unknown session → None (the historic 'today' default applies downstream).
+    assert close_day_script._derive_session_package_date("blsess_missing") is None
+
+
 def test_reopen_is_noop_when_absent_or_not_completed(tmp_path, monkeypatch):
     monkeypatch.setenv("MLOMEGA_HOME", str(tmp_path))
     monkeypatch.setenv("MLOMEGA_DB", str(tmp_path / "memory.db"))
