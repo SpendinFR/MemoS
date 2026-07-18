@@ -426,11 +426,28 @@ def run_brainlive_post_stop_deep_flow(
             # stop. Release real-time-only models before loading WhisperX
             # large-v3 so an 8–12 GB GPU does not carry both stacks.
             release_live_model_caches()
-            from .brainlive_offline_deep_audio_v18_5 import run_offline_deep_audio_for_bundles
-            deep_audio = stage("deep_audio", lambda: run_offline_deep_audio_for_bundles(
-                person_id=person_id, package_date=day, live_session_id=live_session_id,
-                language=deep_audio_language, max_bundle_audio_seconds=deep_audio_max_bundle_seconds,
-            ))
+            if os.environ.get("MLOMEGA_DEEP_AUDIO_SUBPROCESS", "1").strip().lower() not in {
+                "0", "false", "no", "off",
+            }:
+                # Native WhisperX/Pyannote allocations do not reliably return to
+                # the OS inside a long-lived Python process. Isolate the exact
+                # same V18.5 worker so process exit is the hard VRAM boundary
+                # before Deep Vision/P1. `=0` is the explicit rollback path.
+                from .deep_audio_subprocess import run_deep_audio_isolated
+
+                deep_audio = stage("deep_audio", lambda: run_deep_audio_isolated(
+                    person_id=person_id, package_date=day, live_session_id=live_session_id,
+                    language=deep_audio_language,
+                    max_bundle_audio_seconds=deep_audio_max_bundle_seconds,
+                ))
+            else:
+                from .brainlive_offline_deep_audio_v18_5 import run_offline_deep_audio_for_bundles
+
+                deep_audio = stage("deep_audio", lambda: run_offline_deep_audio_for_bundles(
+                    person_id=person_id, package_date=day, live_session_id=live_session_id,
+                    language=deep_audio_language,
+                    max_bundle_audio_seconds=deep_audio_max_bundle_seconds,
+                ))
             exported = _exported_bundle_conversations(person_id, day, live_session_id=live_session_id)
             if int(assembly.get("bundles", 0)) != len(exported):
                 raise StageGateError("deep-audio export cardinality mismatch")

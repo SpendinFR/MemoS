@@ -16,7 +16,9 @@ assert the HTTP path reproduces them byte-for-byte.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -74,7 +76,9 @@ def test_health_ok(client):
     assert live.json()["status"] == "alive"
 
 
-def test_health_distinguishes_pairing_from_full_ai_readiness():
+def test_health_distinguishes_pairing_from_full_ai_readiness(monkeypatch):
+    monkeypatch.setenv("MLOMEGA_REQUIRE_AI_READY_FOR_PAIRING", "0")
+    monkeypatch.setenv("MLOMEGA_GPU_PHASE_ORCHESTRATION", "0")
     class _Manager:
         recovery_state = "completed"
 
@@ -118,6 +122,129 @@ def test_health_blocks_pairing_while_startup_recovery_is_running():
         assert health.status_code == 503
         assert health.json()["startup_recovery"] == "running"
         assert health.json()["pairing_ready"] is False
+
+
+def test_production_gpu_mode_waits_for_deep_probe_before_pairing(monkeypatch):
+    """The in-process deep probe must not race live ASR/vision on an 8 GB GPU."""
+    monkeypatch.setenv("MLOMEGA_GPU_PHASE_ORCHESTRATION", "1")
+    monkeypatch.delenv("MLOMEGA_REQUIRE_AI_READY_FOR_PAIRING", raising=False)
+
+    class _Manager:
+        recovery_state = "completed"
+
+        def metrics(self):
+            return {}
+
+    app = sessionhub_http.create_app(
+        sessionhub.SessionHub(),
+        enable_signaling=True,
+        runtime_manager=_Manager(),
+        readiness_probe=lambda: {
+            "ready": False,
+            "checks": {"asr": {"ok": False}},
+            "failed": ["asr"],
+        },
+    )
+    with TestClient(app) as c:
+        health = c.get("/health")
+        for _ in range(50):
+            if health.json().get("chain", {}).get("failed") == ["asr"]:
+                break
+            time.sleep(0.01)
+            health = c.get("/health")
+        assert health.status_code == 503
+        assert health.json()["pairing_ready"] is False
+        assert health.json()["ai_ready"] is False
+
+
+def test_production_gpu_mode_opens_pairing_after_deep_probe(tmp_path, monkeypatch):
+    monkeypatch.setenv("MLOMEGA_REQUIRE_AI_READY_FOR_PAIRING", "1")
+    receipt = tmp_path / "phoneonly_readiness.json"
+    monkeypatch.setenv("MLOMEGA_PREFLIGHT_RECEIPT", str(receipt))
+    monkeypatch.setenv("MLOMEGA_LLM_BACKEND", "llamacpp")
+    monkeypatch.setenv("MLOMEGA_LLAMACPP_BASE_URL", "http://127.0.0.1:8080")
+    monkeypatch.setenv("MLOMEGA_LLAMACPP_MODEL", "qwen9b-p1-24k-mlomega")
+    monkeypatch.setenv("MLOMEGA_OLLAMA_CONTEXT_POSTSTOP", "24576")
+    monkeypatch.setenv("MLOMEGA_OLLAMA_LIVE_MODEL", "qwen3.5:4b")
+    monkeypatch.setenv("MLOMEGA_OFFLINE_VLM_MODEL", "qwen3-vl:8b")
+    monkeypatch.setenv("MLOMEGA_GPU_PHASE_ORCHESTRATION", "1")
+    receipt.write_text(json.dumps({
+        "ready": True,
+        "created_at_epoch": time.time(),
+        "mode": "deep",
+        "fingerprint": {
+            "person_id": "me",
+            "llm_backend": "llamacpp",
+            "llamacpp_base_url": "http://127.0.0.1:8080",
+            "llamacpp_model": "qwen9b-p1-24k-mlomega",
+            "poststop_context": "24576",
+            "live_model": "qwen3.5:4b",
+            "offline_vlm_model": "qwen3-vl:8b",
+            "gpu_phase_orchestration": "1",
+        },
+        "checks": {"live_llm_warm": True},
+    }), encoding="utf-8")
+
+    class _Manager:
+        recovery_state = "completed"
+
+        def metrics(self):
+            return {}
+
+    app = sessionhub_http.create_app(
+        sessionhub.SessionHub(),
+        enable_signaling=True,
+        runtime_manager=_Manager(),
+        readiness_probe=lambda: {"ready": True, "checks": {}, "failed": []},
+    )
+    with TestClient(app) as c:
+        health = c.get("/health")
+        for _ in range(50):
+            if health.status_code == 200:
+                break
+            time.sleep(0.01)
+            health = c.get("/health")
+        assert health.status_code == 200
+        assert health.json()["pairing_ready"] is True
+        assert health.json()["ai_ready"] is True
+
+
+def test_deep_preflight_receipt_requires_fresh_matching_environment(tmp_path, monkeypatch):
+    receipt = tmp_path / "phoneonly_readiness.json"
+    monkeypatch.setenv("MLOMEGA_PREFLIGHT_RECEIPT", str(receipt))
+    monkeypatch.setenv("MLOMEGA_LLM_BACKEND", "llamacpp")
+    monkeypatch.setenv("MLOMEGA_LLAMACPP_BASE_URL", "http://127.0.0.1:8080")
+    monkeypatch.setenv("MLOMEGA_LLAMACPP_MODEL", "qwen9b-p1-24k-mlomega")
+    monkeypatch.setenv("MLOMEGA_OLLAMA_CONTEXT_POSTSTOP", "24576")
+    monkeypatch.setenv("MLOMEGA_OLLAMA_LIVE_MODEL", "qwen3.5:4b")
+    monkeypatch.setenv("MLOMEGA_OFFLINE_VLM_MODEL", "qwen3-vl:8b")
+    monkeypatch.setenv("MLOMEGA_GPU_PHASE_ORCHESTRATION", "1")
+    fingerprint = {
+        "person_id": "me",
+        "llm_backend": "llamacpp",
+        "llamacpp_base_url": "http://127.0.0.1:8080",
+        "llamacpp_model": "qwen9b-p1-24k-mlomega",
+        "poststop_context": "24576",
+        "live_model": "qwen3.5:4b",
+        "offline_vlm_model": "qwen3-vl:8b",
+        "gpu_phase_orchestration": "1",
+    }
+    receipt.write_text(json.dumps({
+        "ready": True,
+        "created_at_epoch": time.time(),
+        "mode": "deep",
+        "fingerprint": fingerprint,
+        "checks": {"whisper_model": True, "p1_sequential": True},
+    }), encoding="utf-8")
+
+    ok, detail = sessionhub_http._preflight_receipt_check(person_id="me")
+    assert ok is True
+    assert detail["mismatches"] == {}
+
+    monkeypatch.setenv("MLOMEGA_LLAMACPP_MODEL", "wrong-alias")
+    ok2, detail2 = sessionhub_http._preflight_receipt_check(person_id="me")
+    assert ok2 is False
+    assert "llamacpp_model" in detail2["mismatches"]
 
 
 def test_create_returns_session_token_and_stamp(client):

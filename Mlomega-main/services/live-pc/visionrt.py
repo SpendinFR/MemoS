@@ -377,6 +377,10 @@ class VlmCrop:
         request_body: dict[str, Any] = {
             "model": self.model, "prompt": prompt, "images": [b64],
             "stream": False, "think": False,
+            # A live one-shot crop must not squat the 8 GB GPU after its reply and
+            # evict the 4B text model needed by help/memory. Offline Deep Vision has
+            # its own phase/cache path and is unaffected.
+            "keep_alive": os.environ.get("MLOMEGA_LIVE_VLM_KEEP_ALIVE", "0"),
             "options": {"temperature": 0.0, "num_predict": 512},
         }
         if format_schema is not None:

@@ -1313,3 +1313,57 @@ les treize commandes : c'est (a) S25 pour le Kotlin/offline/receipts et (b) un r
 minutes **one-shot sur DB fraîche** pour mesurer appels/tokens/temps et le seuil ×5. Ne
 benchmarkez pas `gateb_memory_v2.db` : ses 154 lignes de télémétrie cumulent les reprises
 et erreurs corrigées pendant le chantier.
+
+### PASSATION 2026-07-18 — run complet validé, deux correctifs live après run, pause avant dernier one-shot
+
+**HEAD de départ du lot : `96b57f1`.** Le working tree du lot contient un ensemble
+cohérent à committer/pousser en une fois : receipt de préflight, warmup 4B, release GPU,
+Deep Audio subprocess, compilation autonome/déterministe, fine-intel contractuel,
+interpersonnel partagé, routage explicite, Aide async et Brain2 live borné. Ne jamais
+ajouter les deux modifications Unity locales `PhoneOnly.unity` et
+`XRGeneralSettingsPerBuildTarget.asset`, ni `_run/`, `_audit/`, XML Unity, logs ou anciens
+dossiers de conversation.
+
+**Preuve one-shot à conserver.** `tools/harness/_run/gateb-clean-20260718-141124.db`,
+`.json`, `.device_report.json` et logs associés : harnais `ok=true`, 8/8 checks, 11 883
+chunks/0 drop/pic 282, 63 segments, 3 clips, 333 frames détecteur, 13 événements/intents,
+session terminée. CloseDay/recovery/maintenance/fine-intel `completed`; Deep Vision
+7/7/7, couverture 338/338; manifests complets. Télémétrie : 20 appels, 147 072 tokens in,
+29 216 out, CloseDay 841 s. Cette DB est le benchmark Gate B propre; ne pas la modifier ni
+la reprendre.
+
+**Pourquoi un dernier run reste nécessaire.** Ce run a exposé après coup trois familles :
+`what_is|ocr` explicites réinterprétés par le 4B, Aide synchrone qui retenait « étape
+suivante », et `ask_memory` à ~87 s. Le replay ciblé
+`gateb-live-proof-20260718-144532` confirme les routes corrigées et un live sans drop,
+mais son snapshot a précédé la treizième terminaison. Les preuves unitaires/réelles après
+correction sont : 109 tests courts verts; Aide retour 1 ms, plan réel 64,9 s et advance
+appliqué; mémoire réelle 7,95 s, source Brain2. La case 1.3 reste donc volontairement
+ouverte jusqu'à un rapport unique exécuté sur le HEAD final; 1.1/1.2/1.4 sont clos.
+
+**Prochaine action, une seule fois à la reprise.** Vérifier que les services ne sont pas
+dupliqués, puis lancer le préflight profond; il doit écrire
+`storage/runtime/phoneonly_readiness.json`, arrêter P1 après sa sonde, laisser uniquement
+`qwen3.5:4b` résident et rendre `ready=true`. Ensuite reprendre exactement la commande
+1.2 de `PROD_BACKLOG`, même MP4 et scénario, nouveau stamp/DB/rapport. Ne modifier ni la
+durée ni le scénario, ne relancer aucune ancienne DB. GO 1.3 seulement si treize accepted
+et treize terminaux corrélés, routes exactes, help plan+advance, mémoire Brain2 non
+supprimée, zéro drop, puis nuit/manifests verts. Une machine occupée peut rallonger les
+latences; relever le contexte sans changer les critères.
+
+**Dashboard puis ordre restant.** Après le one-shot final, poser `MLOMEGA_DB` sur sa DB et
+lancer `scripts\RUN_DASHBOARD.ps1`; faire le jugement humain 1.5 sans écriture. Continuer
+ensuite strictement : Étape finale 2 (qualité propriétaire William, pas le speaker inconnu
+du harnais) → Étape 3 (Gate C 1 h synthétique, pas un tournage) → Étape 4 (APK fraîche,
+vrai S25, voix owner) → Étape 5 (Gate D 8 h et décision production). Aucun test PC/fake ne
+certifie les permissions, modèles Kotlin, écran éteint ou receipts matériels.
+
+**Validation courte si le prochain agent touche seulement Aide/Mémoire :**
+
+```powershell
+Remove-Item Env:OPENAI_API_KEY,Env:HTTP_PROXY,Env:HTTPS_PROXY,Env:ALL_PROXY -ErrorAction SilentlyContinue
+& .\.venv-live\Scripts\python.exe -m pytest tests\v19\test_help_mode.py tests\v19\test_e33_intents.py tests\v19\test_phoneonly_runtime.py -q
+```
+
+Résultat actuel : **109 passed**. Ne relancer ni Unity ni le CloseDay uniquement pour ces
+trois fichiers; le prochain verdict utile est le one-shot exact décrit ci-dessus.

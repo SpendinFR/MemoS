@@ -1162,7 +1162,7 @@ réduction statique de JSON comme une validation modèle.
 
 #### Étape finale 1 — Gate B propre, one-shot, même vidéo cinq minutes
 
-- [ ] **1.1 Préflight sans capture.** Fermer toute ancienne instance SessionHub/Unity;
+- [x] **1.1 Préflight sans capture.** Fermer toute ancienne instance SessionHub/Unity;
   démarrer les services puis exiger `ready=true`. Depuis la racine :
 
   ```powershell
@@ -1180,7 +1180,7 @@ réduction statique de JSON comme une validation modèle.
 > - **Décision Codex appliquée (commit ci-dessous), 4 chantiers** : (1) `/session/end` répond VITE (médias + drain brut + job recovery durable) puis draine le fine-intel EN ARRIÈRE-PLAN, `run_close_day` gate sur cette tâche (`phoneonly_runtime.py`) ; (2) `gpu_phase_orchestrator.py` — P1 jamais chargé pendant le live : préflight teste P1 puis L'ARRÊTE (`check_phoneonly_readiness.py` check `p1_sequential`), texte nocturne = décharge Ollama→P1, Deep Vision = stop P1→Qwen3-VL, câblé dans `brainlive_poststop_deep_flow_v15_15.py`, **gated par `MLOMEGA_GPU_PHASE_ORCHESTRATION=1`** (défaut inchangé) ; (3) traces doubles `accepted` (au routage) puis `completed|failed` (après effet) dans `live_pipeline.py` — une commande bloquée n'est plus invisible ; (4) `--end-timeout` configurable (900 s) sur le POST /session/end du harnais.
 > - Tests : 41 verts `.venv-live` (dont 6 nouveaux) + orchestrateur GPU 7 + manifest 12 + close-day/multi-session/gpu_arbiter/backend verts `.venv`. **Le prochain one-shot doit poser `MLOMEGA_GPU_PHASE_ORCHESTRATION=1`** et le préflight finit avec P1 arrêté.
 
-- [ ] **1.2 Run neuf.** Retrouver le MP4 de référence réel; ne pas substituer une vidéo
+- [x] **1.2 Run neuf.** Retrouver le MP4 de référence réel; ne pas substituer une vidéo
   synthétique ni modifier `real_video_session.json`. Le timestamp rend DB/rapport uniques,
   donc aucune suppression de l'ancienne preuve :
 
@@ -1219,6 +1219,14 @@ réduction statique de JSON comme une validation modèle.
 > - **REPRISE RÉUSSIE sur la DB #6** (`gateb-clean-20260717-233354`, logs `-resume*.log/.exit` conservés) : les 6 fenêtres vertes reprises par checkpoint (6 `checkpoint_reuse`, zéro appel repayé), Deep Audio/Deep Vision réutilisés (même run post-stop `run_v18_5439b…`), la fenêtre 6 re-pilotée : 1 appel audité — **vraie règle violée enfin visible : `detail_normalized_output_none` (normalize_detail_window_output → None)** — puis interdiction du retry identique → split en enfants 6001/6002 tous deux `completed`, parent `subdivided contract_rejection_resolved_by_split`. Flow post-stop `ok`, **CloseDay `completed` (00:17:41), recovery `completed` (00:26:52, via `recover_abandoned_phoneonly_sessions` produit)**, manifests output/capability complets, maintenance `completed`. Ligne `blocked` résiduelle du 2026-07-18 = la 1re reprise sans `--package-date` (preuve conservée, inoffensive).
 > - Télémétrie nuit cumulée sur la DB : 22 `validated` + 2 rejets historiques ≈ 24 appels, ~227k tokens in / ~31k out — vs baseline 169 appels / 1,119 M tokens (≈×7 appels, ≈×5 tokens). Mesure formelle 1.4 réservée au prochain one-shot propre.
 
+> **Suivi Étape finale 1 — one-shot complet du 2026-07-18 14:11 + fermeture des deux latences live (preuve conservée, code final à rejouer une fois) :**
+> - **Run neuf réellement complet** : `tools/harness/_run/gateb-clean-20260718-141124.db/.json` et `device_report.json`, harnais `ok=true`, huit checks sur huit. Live : 11 883 chunks, zéro drop audio, pic file 282, 63 segments archivés, 3 clips E55, 333 frames détecteur, 13 événements, 13 intents, zéro `unknown`, session et peer fermés. Nuit : CloseDay/recovery/maintenance/fine-intel `completed`; Deep Vision **7 sélectionnées = 7 lisibles = 7 analysées**, 338 frames couvertes, zéro orpheline; manifests complets, aucune capacité obligatoire perdue.
+> - **Mesure autoritaire de ce one-shot** : CloseDay **841 s (14 min 01)**, 20 appels LLM validés, **147 072 tokens entrée / 29 216 sortie**, somme des inférences ~571 s. Contre baseline 169 appels / 1,119 M / 83 min : gain ×8,45 sur les appels, ×7,6 sur l'entrée et ×5,9 sur la durée. La case 1.4 est close; ce n'est pas encore une projection 1 h/8 h.
+> - Le rapport a révélé quatre libellés explicites laissés au classifieur 4B : deux `what_is` devenaient `replay`, `lis le texte` devenait Maps, et la mémoire tardive était annulée à la fermeture. La grammaire de haute confiance traite désormais uniquement les formes explicites `what_is|ocr|translate|ask_memory`; le langage indirect reste LLM-first. Le replay live ciblé `gateb-live-proof-20260718-144532` prouve les quatre routes corrigées, 11 796 chunks, zéro drop et 13 accepted; son snapshot précède la terminaison de la treizième commande, visible ensuite `completed` en DB.
+> - **Mode Aide** : le plan LLM synchrone retenait le DataChannel ordonné 60 s; `étape suivante` ne pouvait arriver qu'après le timeout. En produit seulement, génération désormais asynchrone, carte `help_planning` immédiate, contrôles reçus pendant le calcul mis en file, dernière étape comptée, et frontière GPU/fermeture attend le worker. Preuve réelle 4B : retour **1 ms**, plan valide en 64,9 s sur machine occupée, contrôle appliqué, index 1/2, zéro rejet. La latence du modèle reste visible mais l'Ultralive n'est plus gelé.
+> - **Requête mémoire explicite** : l'ancien `qui est Karim` payait cinq appels et envoyait 80 candidats/363 193 caractères au 4B, puis tronquait ou finissait en ~83–87 s. Le fast path n'est activé que pour une identité explicite : route relation/raw/vector déterministe, candidats complets persistés, projection prompt bornée (8 preuves avec IDs/temps/texte), puis **une synthèse Brain2** spécialisée fait/inférence/preuve. Preuve réelle sur la DB : **7,95 s à chaud**, réponse grounded sur le rendez-vous du 14, source Brain2; aucun moteur profond n'est supprimé pour les autres questions.
+> - Tests courts après corrections : **109 passed** (`test_help_mode.py`, `test_e33_intents.py`, `test_phoneonly_runtime.py`). Les deux fichiers Unity déjà modifiés localement restent hors de ce lot. **Seule réserve Gate B** : refaire à la reprise un unique one-shot avec ce HEAD pour obtenir les 13 effets et la nuit dans le même rapport final; ne pas repayer ce run maintenant. Puis ouvrir le Dashboard (1.5).
+
 - [ ] **1.3 Verdict fonctionnel.** Exiger dans le rapport : 13 événements envoyés, 13
   `command_execution_trace` corrélées aux textes exacts, `handled=true`, zéro `unknown`,
   aucun effet `error`; vérifier les payloads, pas seulement `intents_routed=13`. Exiger
@@ -1226,7 +1234,7 @@ réduction statique de JSON comme une validation modèle.
   spatiale honnête, aide start+advance, deux faits mémorisés et requête mémoire. Toute
   commande « routée » sans UI/device/effect = FAIL.
 
-- [ ] **1.4 Verdict nocturne et performance.** Exiger CloseDay `completed`, recovery
+- [x] **1.4 Verdict nocturne et performance.** Exiger CloseDay `completed`, recovery
   `completed`, output/capability manifests complets, Deep Vision
   `selected=readable=analyzed`, zéro capacité obligatoire `degraded|bypassed|failed`,
   aucune page/cap silencieux. Relever dans `night_llm_call_telemetry_v19` appels validés,

@@ -851,3 +851,43 @@ maintenant `command_execution_trace` par segment et le fake device garde types, 
 payloads significatifs. Matrice exacte du scénario : 13 commandes, 13 handlers avec
 effet, zéro unknown. Le prochain run one-shot doit obtenir 13 traces réelles; les tests PC
 147/147 et Unity 10/10 ferment le code, pas les receipts matériels S25.
+
+## OBS-57 — Des ordres capteur explicites étaient réinterprétés par le 4B (CORRIGÉ — 2026-07-18)
+
+Le one-shot `gateb-clean-20260718-141124` a prouvé une incohérence que le compteur
+`intents_routed=13` masquait : « c'est quoi ça/cet objet » devenait `replay` et « lis le
+texte » devenait `open_app/maps`. Les handlers existaient; le classifieur live écrasait
+la grammaire explicite. Les formes impératives/deictiques non ambiguës
+`what_is|ocr|translate|ask_memory` sont maintenant haute confiance; les demandes
+indirectes restent routées en langage naturel par le LLM. Preuve replay ciblée : les
+quatre libellés exacts produisent les quatre intents attendus. Tests inclus dans les 109
+verts du lot.
+
+## OBS-58 — Le plan Aide bloquait le canal ordonné et perdait « étape suivante » (CORRIGÉ — 2026-07-18)
+
+`HelpTaskEngine.start_from_description` attendait synchroniquement le plan 4B. Le canal
+DataChannel sérialisé ne pouvait donc livrer la commande suivante pendant 60 s; le run
+réel finissait en `needs_reformulation` puis traitait « étape suivante » hors tâche.
+`LivePipeline` active désormais un worker de planification asynchrone : accusé
+`help_planning` immédiat, contrôles conservés et appliqués après adoption, attente
+explicite à la frontière de fermeture/GPU. La bibliothèque reste synchrone par défaut.
+Preuve réelle sur 4B chargé : retour 1 ms, plan valide en 64,9 s sur machine occupée,
+`help_advance` appliqué à l'index 1, zéro rejet. Le temps du modèle n'est pas caché; il ne
+gèle plus le live.
+
+## OBS-59 — « qui est Karim » envoyait 363 k caractères et cinq appels LLM (CORRIGÉ — 2026-07-18)
+
+La requête live explicite payait route V14.1, sélection V14.1, plan vectoriel V14.2,
+fusion V14.2 puis réponse; les deux audits n'altéraient pas les candidats. En outre, 80
+lignes incluant les `metadata_json` complets formaient 363 193 caractères et le schéma
+Brain2 générique demandait aussi prédictions/patterns/interventions : sorties tronquées,
+latence 83–87 s et fallback « indisponible » possible alors qu'Ollama fonctionnait.
+
+Le fast path est strictement limité aux questions d'identité explicites `qui est X / who
+is X` : route relation + raw recall + vector déterministe, toutes les lignes et leur
+provenance restent persistées, huit preuves pertinentes/adjacentes sont projetées avec
+IDs/temps/texte, puis une unique synthèse Brain2 conserve faits, inférences, preuves,
+confiance et manque de contexte. Les questions complexes gardent le Brain2 complet.
+Preuve réelle sur la DB Gate B : réponse Brain2 valide en 7,95 s à chaud au lieu de
+83–87 s; la réponse ne prétend que rendez-vous le 14 et réparation probable. Les refs
+présentes dans `direct_facts|inferences` sont maintenant également exposées au ContextCard.

@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,46 @@ from mlomega_audio_elite.runtime_environment_v19 import (
 # The exact environment used by RUN must be checked.  Correct only the known
 # isolated-runner black hole before any Hugging Face/Whisper imports occur.
 REMOVED_BLACKHOLE_PROXIES = sanitize_blackhole_proxy_env()
+READINESS_RECEIPT = ROOT / "storage" / "runtime" / "phoneonly_readiness.json"
+
+
+def _receipt_fingerprint(*, person_id: str) -> dict[str, Any]:
+    return {
+        "person_id": person_id,
+        "llm_backend": os.environ.get("MLOMEGA_LLM_BACKEND", "ollama"),
+        "llamacpp_base_url": os.environ.get("MLOMEGA_LLAMACPP_BASE_URL", "http://127.0.0.1:8080"),
+        "llamacpp_model": os.environ.get("MLOMEGA_LLAMACPP_MODEL", ""),
+        "poststop_context": os.environ.get("MLOMEGA_OLLAMA_CONTEXT_POSTSTOP", "16384"),
+        "live_model": os.environ.get("MLOMEGA_OLLAMA_LIVE_MODEL", "qwen3.5:4b"),
+        "offline_vlm_model": (
+            os.environ.get("MLOMEGA_OFFLINE_VLM_MODEL")
+            or os.environ.get("MLOMEGA_VLM_HEAVY_MODEL")
+            or "qwen3-vl:8b"
+        ),
+        "gpu_phase_orchestration": os.environ.get("MLOMEGA_GPU_PHASE_ORCHESTRATION", "0"),
+    }
+
+
+def _write_readiness_receipt(report: dict[str, Any], *, person_id: str) -> None:
+    """Publish an atomic receipt consumed by SessionHub's non-GPU health probe."""
+    path = Path(os.environ.get("MLOMEGA_PREFLIGHT_RECEIPT", str(READINESS_RECEIPT)))
+    if not report.get("ready"):
+        path.unlink(missing_ok=True)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "ready": True,
+        "created_at_epoch": time.time(),
+        "mode": report.get("mode"),
+        "fingerprint": _receipt_fingerprint(person_id=person_id),
+        "checks": {
+            name: bool(check.get("ok"))
+            for name, check in (report.get("checks") or {}).items()
+        },
+    }
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    tmp.replace(path)
 
 
 def _load(name: str, path: Path) -> Any:
@@ -38,6 +79,49 @@ def _load(name: str, path: Path) -> Any:
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _warm_live_llm(orchestrator: Any) -> dict[str, Any]:
+    """Load and prove the real live 4B after P1 has released the GPU.
+
+    Merely listing an Ollama tag is not readiness: on the RTX 3070 a cold schema
+    call measured over 60 s, so the first help request could fail although the
+    preflight was green. This probe pays that cold start before pairing and leaves
+    exactly the configured live model resident for capture.
+    """
+    from mlomega_audio_elite.config import get_settings
+    from mlomega_audio_elite.llm import OllamaJsonClient
+
+    settings = get_settings()
+    model = str(settings.ollama_live_model or "").strip()
+    if not model:
+        raise RuntimeError("MLOMEGA_OLLAMA_LIVE_MODEL is empty")
+    timeout_s = max(10.0, float(os.environ.get("MLOMEGA_LIVE_LLM_WARM_TIMEOUT_S", "120")))
+    started = time.perf_counter()
+    result = OllamaJsonClient(
+        base_url=settings.ollama_base_url,
+        model=model,
+        backend="ollama",
+    ).require_json(
+        "Return strict JSON with one boolean field ok.",
+        "Confirm live readiness.",
+        {"ok": True},
+        timeout=timeout_s,
+        max_output_tokens=32,
+    )
+    resident = orchestrator._resident_model_names()
+    foreign = [name for name in resident if not str(name).lower() == model.lower()]
+    if result.get("ok") is not True or foreign or model.lower() not in {
+        str(name).lower() for name in resident
+    }:
+        raise RuntimeError(
+            f"live 4B warmup mismatch model={model!r} resident={resident!r} result={result!r}"
+        )
+    return {
+        "model": model,
+        "elapsed_s": round(time.perf_counter() - started, 3),
+        "resident_after": resident,
+    }
 
 
 def run(*, person_id: str, deep: bool) -> dict[str, Any]:
@@ -69,7 +153,10 @@ def run(*, person_id: str, deep: bool) -> dict[str, Any]:
             checks["p1_sequential"] = {
                 "ok": not orchestrator.p1_running and orchestrator.probe_calls >= 1,
                 "detail": {
-                    "alias": (preflight.get("p1") or {}).get("props", {}).get("alias"),
+                    "alias": (
+                        (preflight.get("p1") or {}).get("props", {}).get("model_alias")
+                        or (preflight.get("p1") or {}).get("props", {}).get("alias")
+                    ),
                     "stopped_after_preflight": not orchestrator.p1_running,
                     "anti_thinking_probed": orchestrator.probe_calls,
                 },
@@ -102,8 +189,14 @@ def run(*, person_id: str, deep: bool) -> dict[str, Any]:
                             "vram_after": prep.get("vram_after"),
                         },
                     }
+                    warm = _warm_live_llm(orchestrator)
+                    checks["live_llm_warm"] = {"ok": True, "detail": warm}
                 except Exception as exc:
                     checks["prepare_live_gpu"] = {
+                        "ok": False,
+                        "detail": f"{type(exc).__name__}: {str(exc)[:300]}",
+                    }
+                    checks["live_llm_warm"] = {
                         "ok": False,
                         "detail": f"{type(exc).__name__}: {str(exc)[:300]}",
                     }
@@ -172,6 +265,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--deep", action="store_true")
     args = parser.parse_args(argv)
     report = run(person_id=args.person_id, deep=bool(args.deep))
+    _write_readiness_receipt(report, person_id=args.person_id)
     print(json.dumps(report, ensure_ascii=False))
     if report["ready"]:
         print("[OK] PhoneOnly full-chain readiness passed.", file=sys.stderr)

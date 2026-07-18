@@ -63,9 +63,38 @@ FUSION_AUDIT_SCHEMA: dict[str, Any] = {
     "what_should_not_be_overinterpreted": [],
 }
 
+LIVE_PERSON_ANSWER_SCHEMA: dict[str, Any] = {
+    "answer": "1 to 5 concise sentences answering who this person is",
+    "direct_facts": [
+        {"fact": "", "source_table": "", "source_id": "", "confidence": 0.0}
+    ],
+    "inferences": [
+        {"inference": "", "source_table": "", "source_id": "", "confidence": 0.0}
+    ],
+    "evidence": [
+        {"source_type": "", "source_id": "", "quote_or_summary": "", "confidence": 0.0}
+    ],
+    "confidence": 0.0,
+    "what_is_fact_vs_inference": "",
+    "what_is_missing": [],
+}
 
-def _llm_json(system: str, payload: dict[str, Any], schema: dict[str, Any], timeout: int = 360) -> dict[str, Any]:
-    data = OllamaJsonClient().require_json(system, json_dumps(payload), schema_hint=schema, timeout=timeout)
+
+def _llm_json(
+    system: str,
+    payload: dict[str, Any],
+    schema: dict[str, Any],
+    timeout: int = 360,
+    *,
+    max_output_tokens: int | None = None,
+) -> dict[str, Any]:
+    data = OllamaJsonClient().require_json(
+        system,
+        json_dumps(payload),
+        schema_hint=schema,
+        timeout=timeout,
+        max_output_tokens=max_output_tokens,
+    )
     if not isinstance(data, dict):
         raise RuntimeError("Brain2 V14.2 returned non-object JSON")
     return data
@@ -92,6 +121,114 @@ def _text_from_payload(payload: dict[str, Any]) -> str:
         if isinstance(val, str) and val.strip():
             return val.strip()
     return ""
+
+
+def _compact_live_answer_candidates(
+    candidates: list[dict[str, Any]],
+    route: dict[str, Any],
+    *,
+    max_items: int = 8,
+) -> list[dict[str, Any]]:
+    """Project live evidence into a bounded semantic packet, preserving provenance.
+
+    Full candidate rows remain persisted in V14.1/V14.2.  Sending their large
+    metadata blobs to the answer model added no semantic evidence and overflowed
+    the live 4B context.  This projection keeps exact source IDs, scores, speaker,
+    time and evidence text; exact person matches rank first and adjacent turns are
+    retained for conversational context.
+    """
+    targets = [
+        str(item.get("person_id_or_name") or "").casefold()
+        for item in (route.get("people") or [])
+        if isinstance(item, dict) and item.get("person_id_or_name")
+    ]
+    prepared: list[tuple[int, int, float, dict[str, Any], dict[str, Any]]] = []
+    matched_turns: set[tuple[str, int]] = set()
+    for candidate in candidates:
+        payload = _safe_json(candidate.get("payload_json"), {}) or {}
+        if not isinstance(payload, dict):
+            payload = {"text": str(payload)}
+        searchable = json_dumps(payload).casefold()
+        exact = sum(1 for target in targets if target and target in searchable)
+        source_kind = str(candidate.get("source_kind") or "unknown")
+        source_priority = 2 if source_kind in {
+            "relationship", "interpersonal_state", "relationship_state_model",
+            "interpersonal_loop", "social_aftereffect", "emotional_coupling",
+        } else (3 if source_kind in {"raw_turn", "source_span", "episode"} else 1)
+        details: dict[str, Any] = {}
+        detail_budget = 500
+        for key in (
+            "relationship_type", "person_a", "person_b", "person_hint",
+            "known_person_id", "situation_summary", "relationship_state_summary",
+            "trigger_event_summary", "user_after_state", "predicted_value",
+            "prediction_target", "usual_outcome", "evidence_json",
+            "counter_evidence_json", "common_triggers_json",
+        ):
+            value = payload.get(key)
+            if value in (None, "", [], {}):
+                continue
+            rendered = value if isinstance(value, (int, float, bool)) else str(value)
+            if isinstance(rendered, str):
+                rendered = rendered[:detail_budget]
+                detail_budget -= len(rendered)
+            details[key] = rendered
+            if detail_budget <= 0:
+                break
+        projected = {
+            "candidate_id": candidate.get("fused_candidate_id") or candidate.get("candidate_id"),
+            "source_kind": source_kind,
+            "source_table": candidate.get("source_table"),
+            "source_id": candidate.get("source_id"),
+            "score": candidate.get("fused_score") or candidate.get("score"),
+            "text": _text_from_payload(payload)[:500],
+            "details": details,
+            "speaker_label": payload.get("speaker_label"),
+            "person_id": payload.get("person_id"),
+            "start_s": payload.get("start_s"),
+            "end_s": payload.get("end_s"),
+            "created_at": payload.get("created_at") or candidate.get("created_at"),
+        }
+        conversation_id = str(payload.get("conversation_id") or "")
+        try:
+            turn_idx = int(payload.get("idx"))
+        except (TypeError, ValueError):
+            turn_idx = -999999
+        if exact and conversation_id and turn_idx != -999999:
+            matched_turns.add((conversation_id, turn_idx))
+        prepared.append((exact, source_priority, float(projected["score"] or 0.0), projected, payload))
+
+    def _is_neighbor(payload: dict[str, Any]) -> bool:
+        conversation_id = str(payload.get("conversation_id") or "")
+        try:
+            turn_idx = int(payload.get("idx"))
+        except (TypeError, ValueError):
+            return False
+        return any(cid == conversation_id and abs(idx - turn_idx) <= 1 for cid, idx in matched_turns)
+
+    ranked = sorted(
+        prepared,
+        key=lambda item: (item[0], item[1], int(_is_neighbor(item[4])), item[2]),
+        reverse=True,
+    )
+    selected: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for exact, _priority, _score, projected, payload in ranked:
+        if targets and exact <= 0 and not _is_neighbor(payload) and selected:
+            continue
+        key = (
+            str(projected.get("source_table") or ""),
+            str(projected.get("source_id") or ""),
+            " ".join(str(projected.get("text") or "").casefold().split()),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(projected)
+        if len(selected) >= max_items:
+            break
+    if not selected:
+        selected = [item[3] for item in ranked[:max_items]]
+    return selected
 
 
 def _word_count(text: str) -> int:
@@ -266,6 +403,14 @@ def route_question(question: str, *, person_id: str | None = None) -> dict[str, 
 
 
 def _decide_vector_need(question: str, route: dict[str, Any]) -> dict[str, Any]:
+    if route.get("_skip_planner_llm"):
+        return {
+            "vector_needed": True,
+            "semantic_query": question,
+            "why_vector_needed": "live explicit query: semantic recall is always useful",
+            "risk_if_vector_missing": "medium",
+            "selection_mode": "deterministic_live",
+        }
     try:
         return _llm_json(
             "Tu es le planificateur vectoriel Brain2 V14.2. Réponds uniquement en JSON.",
@@ -494,7 +639,16 @@ def select_candidates(question: str, *, person_id: str | None = None, route_payl
             "created_at": now,
         }, "report_id")
         try:
-            audit = _llm_json(
+            if route.get("_skip_planner_llm"):
+                audit = {
+                    "selected_items": [],
+                    "missed_risk": "low",
+                    "noise_warnings": [],
+                    "what_should_not_be_overinterpreted": [],
+                    "selection_mode": "deterministic_rank_for_live_answer",
+                }
+            else:
+                audit = _llm_json(
                 "Tu es le fusionneur Brain2 V14.2. Choisis seulement parmi les candidats fournis. Réponds en JSON.",
                 {
                     "question": question,
@@ -543,26 +697,55 @@ def select_candidates(question: str, *, person_id: str | None = None, route_payl
     }
 
 
-def ask_brain2(question: str, *, person_id: str | None = None, limit: int = 80) -> dict[str, Any]:
+def ask_brain2(
+    question: str,
+    *,
+    person_id: str | None = None,
+    limit: int = 80,
+    route_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     ensure_v14_2_schema()
-    route_info = route_question(question, person_id=person_id)
+    route_info = route_payload or route_question(question, person_id=person_id)
     if route_info.get("status") != "ok":
         return {"version": V14_2_VERSION, "status": "route_failed", **route_info}
     selected = select_candidates(question, person_id=route_info.get("person_id"), route_payload=route_info, limit=limit)
     now = now_iso()
     with connect() as con:
         person_id = str(route_info.get("person_id") or _default_user(con))
+        answer_candidates = selected.get("candidates", [])[:limit]
+        route = selected.get("route") or {}
+        if route.get("_skip_planner_llm"):
+            answer_candidates = _compact_live_answer_candidates(answer_candidates, route)
+        answer_schema = (
+            LIVE_PERSON_ANSWER_SCHEMA if route.get("_skip_planner_llm") else ANSWER_SCHEMA
+        )
         payload = {
             "mission": "Réponds au nom du cerveau 2.0 complet. Utilise la bonne couche: brut pour faits, V13 pour prédictions/simulations, V14 pour boucles longues, V14.2 vector fusion pour ne pas rater les vieux souvenirs sémantiques, V14.7 pour les interventions proactives timing-aware. Sépare fait, inférence, prédiction, manque de contexte. Ne vends jamais une simple répétition comme pattern profond sans preuves/outcome/counter-exemples. Si une intervention V14.7 existe, explique pourquoi maintenant et ce qui reste hypothétique.",
             "question": question,
-            "route": selected.get("route"),
-            "fused_candidates": selected.get("candidates", [])[:limit],
+            "route": route,
+            "fused_candidates": answer_candidates,
+            "live_projection": {
+                "full_candidate_count": len(selected.get("candidates") or []),
+                "prompt_candidate_count": len(answer_candidates),
+                "lossless_sources_persisted": True,
+            } if route.get("_skip_planner_llm") else None,
+            "live_answer_constraints": {
+                "answer_max_sentences": 5,
+                "max_items_per_list": 3,
+                "instruction": "Be concise but keep fact/inference separation and source IDs.",
+            } if route.get("_skip_planner_llm") else None,
             "qwen_fusion": selected.get("qwen_fusion"),
             "noise_guardrail": selected.get("noise_guardrail"),
             "v14_digest": pattern_mirror_digest(person_id=person_id, limit=30),
-            "answer_schema": ANSWER_SCHEMA,
+            "answer_schema": answer_schema,
         }
-        out = _llm_json("Tu es l'interface Brain2 V14.2. Réponds uniquement en JSON valide.", payload, ANSWER_SCHEMA, timeout=360)
+        out = _llm_json(
+            "Tu es l'interface Brain2 V14.2. Réponds uniquement en JSON valide.",
+            payload,
+            answer_schema,
+            timeout=360,
+            max_output_tokens=1100 if route.get("_skip_planner_llm") else None,
+        )
         answer_id = stable_id("v142answer", person_id, question, selected.get("fusion_run_id"), _hash_payload(out), now)
         upsert(con, "v14_2_answer_packets", {
             "answer_id": answer_id,
@@ -653,7 +836,18 @@ def select_candidates(question: str, *, person_id: str | None = None, route_payl
     return out
 
 
-def ask_brain2(question: str, *, person_id: str | None = None, limit: int = 80) -> dict[str, Any]:
+def ask_brain2(
+    question: str,
+    *,
+    person_id: str | None = None,
+    limit: int = 80,
+    route_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if not person_id:
         raise _V18ScopeError("V18 vector answers require an explicit person_id")
-    return _v17_ask_brain2_v142(question, person_id=person_id, limit=limit)
+    return _v17_ask_brain2_v142(
+        question,
+        person_id=person_id,
+        limit=limit,
+        route_payload=route_payload,
+    )

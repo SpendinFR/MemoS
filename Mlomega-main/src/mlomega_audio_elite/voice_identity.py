@@ -19,6 +19,25 @@ class VoiceIdentityError(RuntimeError):
 _EMBEDDER_CACHE: dict[tuple[str, str], "SpeechBrainVoiceEmbedder"] = {}
 
 
+def release_voice_identity_cache() -> int:
+    """Drop the process-local ECAPA models at a hard GPU phase boundary.
+
+    The cache is useful while live/deep-audio work is running, but retaining it
+    while llama.cpp loads the nightly 9B model costs enough VRAM on an 8 GB card
+    to force a severe partial offload.  Durable voice embeddings are already in
+    SQLite; releasing the inference model loses no product data and it is loaded
+    lazily again for a later session.
+    """
+    released = len(_EMBEDDER_CACHE)
+    for embedder in list(_EMBEDDER_CACHE.values()):
+        try:
+            embedder.classifier = None
+        except Exception:
+            pass
+    _EMBEDDER_CACHE.clear()
+    return released
+
+
 class SpeechBrainVoiceEmbedder:
     """Mandatory SpeechBrain ECAPA voice embeddings for elite local voice identity."""
     def __init__(self, model_id: str = "speechbrain/spkrec-ecapa-voxceleb", device: str | None = None) -> None:

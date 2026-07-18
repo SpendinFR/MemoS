@@ -141,6 +141,30 @@ def test_valid_llm_reply_yields_schema_exact_plan():
     assert eng.metrics["plans_generated"] == 1
 
 
+def test_initial_help_context_reuses_worldbrain_without_loading_vlm():
+    llm = _FakeLLM(_tea_plan())
+
+    class _MustNotLoadVlm:
+        def describe(self, *_args, **_kwargs):
+            raise AssertionError("initial help must not swap a heavy VLM into live VRAM")
+
+    wb = _FakeWorldBrain([
+        {"label": "cup", "track_id": "trk-1", "age_seconds": 1.0},
+        {"label": "coffee machine", "track_id": "trk-2", "age_seconds": 2.0},
+    ])
+    eng = help_mode.HelpTaskEngine(
+        llm_router=llm,
+        worldbrain=wb,
+        vlm=_MustNotLoadVlm(),
+        keyframe_provider=lambda: np.zeros((4, 4, 3), np.uint8),
+        emit_ui_intent=lambda _i: None,
+    )
+    result = eng.start_from_description("faire un café")
+    assert result["status"] == "active"
+    assert "objets visibles: cup, coffee machine" in llm.last_user
+    assert eng.metrics["scene_worldbrain_contexts"] == 1
+
+
 def test_unknown_enum_values_are_normalised_not_rejected():
     plan = {"title": "X", "domain": "banana", "steps": [
         {"text": "fais un truc", "action": "teleport",
@@ -470,6 +494,41 @@ def test_help_start_routes_from_grammar():
     assert r["intent"] == "help_start"
     assert r["result"]["status"] == "active"
     assert eng.active
+    assert router.metrics["grammar_hits"] == 1
+    assert router.metrics["llm_fallbacks"] == 0
+
+
+def test_product_async_plan_does_not_block_next_step_control():
+    started = threading.Event()
+    release = threading.Event()
+
+    class _SlowLLM:
+        cloud_active = False
+
+        def complete_json(self, _system, _user, **_kwargs):
+            started.set()
+            assert release.wait(timeout=2.0)
+            return _tea_plan()
+
+    eng = help_mode.HelpTaskEngine(
+        llm_router=_SlowLLM(),
+        emit_ui_intent=lambda _intent: None,
+        config=help_mode.HelpModeConfig(async_plan_generation=True),
+    )
+    router = intent_router.IntentRouter(help_engine=eng)
+
+    first = router.on_transcript("aide-moi a faire du the")
+    assert first["result"]["status"] == "planning"
+    assert started.wait(timeout=1.0)
+
+    queued = router.on_transcript("etape suivante")
+    assert queued["intent"] == "help_advance"
+    assert queued["result"]["status"] == "queued_planning"
+
+    release.set()
+    assert eng.wait_for_planning(timeout=2.0)
+    assert eng.active and eng._current_index() == 1
+    assert eng.metrics["steps_advanced"] == 1
 
 
 def test_mode_aide_alone_is_multiturn():

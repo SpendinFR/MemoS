@@ -960,6 +960,24 @@ class PhoneOnlyRuntime:
                     f"full drain budget ({budget_s:.0f}s): {seg} "
                     f"(intent={cmd.get('intent')}) — CloseDay stays gated"
                 )
+        # Drain the gateway task set itself, not only the pipeline registry.
+        # DataChannel callbacks are ordered behind an asyncio lock; commands
+        # queued behind the current callback do not enter pending_commands() until
+        # they acquire it. Gate B 20260718-115603 proved that this invisible queue
+        # let CloseDay overtake help_next and ask_memory. The transport is already
+        # closed, so no new tasks can arrive and this establishes true quiescence.
+        wait_s = deadline - time.monotonic()
+        if wait_s <= 0:
+            raise TimeoutError(
+                f"receipt/command queue did not finalize within budget ({budget_s:.0f}s)"
+            )
+        try:
+            await self.ingress.drain_receipts(timeout_s=wait_s)
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"receipt/command queue did not finalize within budget ({budget_s:.0f}s): {exc}"
+            ) from exc
+
         if not durable:
             # Interactive workers are quiesced (or provably effect-suppressed).
             # CloseDay can proceed. (Plain receipts, if any remained, are the fast

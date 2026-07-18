@@ -721,6 +721,76 @@ def test_schema_responsibilities_do_not_mix_semantic_objects_with_array_unions()
     )
 
 
+def test_interpersonal_reads_each_evidence_leaf_once_before_lossless_union(monkeypatch):
+    from mlomega_audio_elite.night_orchestrator import run_hierarchical_json
+
+    # Exercise the executor directly; canonical projection has its own DB-backed
+    # tests and the production call supplies a real conversations table.
+    monkeypatch.setenv("MLOMEGA_E64_SHARED_FACTS", "0")
+
+    class FullSchemaClient:
+        model = "fake-interpersonal-single-pass"
+
+        def __init__(self):
+            self.schemas = []
+
+        def generate_json(
+            self, system, prompt, schema_hint, timeout, *,
+            max_output_tokens, format_schema=None,
+        ):
+            self.schemas.append(tuple(schema_hint))
+            return _FakeResult(ok=True, data={
+                key: ([] if isinstance(template, list) else 0.5)
+                for key, template in schema_hint.items()
+            })
+
+    schema = {
+        "other_person_state_snapshots": [],
+        "emotional_couplings": [],
+        "micro_interaction_impacts": [],
+        "social_aftereffects": [],
+        "relationship_state_models": [],
+        "interpersonal_loops": [],
+        "intervention_suggestions": [],
+        "person_model_summaries": [],
+        "missing_context": [],
+        "confidence": 0.0,
+    }
+    con = sqlite3.connect(":memory:")
+    client = FullSchemaClient()
+    result = run_hierarchical_json(
+        stage_name="v14_interpersonal_state",
+        person_id="me",
+        package_date="2026-07-14",
+        source_ref="fixture",
+        system="SYS",
+        payload={
+            "mission": "analyse",
+            "turns": [
+                {"turn_id": f"t{index}", "text": "x" * 900}
+                for index in range(24)
+            ],
+        },
+        schema=schema,
+        timeout=1,
+        client=client,
+        context_window=4096,
+        output_budget=512,
+        connection=con,
+    )
+
+    assert set(result) == set(schema)
+    assert len(client.schemas) > 1
+    assert all(set(part) == set(schema) for part in client.schemas)
+    # One central coverage ledger proves the 24 evidence leaves.  The former
+    # output-responsibility path recorded two ledgers and reread all 24 twice.
+    coverage = con.execute(
+        "SELECT expected_count,missing_count,ok FROM night_llm_coverage_v19 "
+        "WHERE stage_name='v14_interpersonal_state'"
+    ).fetchone()
+    assert coverage and coverage[0] == 24 and coverage[1:] == (0, 1)
+
+
 def test_output_cardinality_guard_preserves_budget_for_json_termination():
     from mlomega_audio_elite.night_orchestrator.hierarchical_json import (
         _output_cardinality_guard,

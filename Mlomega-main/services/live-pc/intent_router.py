@@ -157,6 +157,16 @@ _HIGH_CONFIDENCE: list[tuple[re.Pattern[str], str]] = [
         (r"agrandis?\b", "zoom"),
         (r"(?:trouve|cherche)\b", "find"),
         (r"where\s+(?:is|are)\b", "find"),
+        # Explicit sensor/memory orders are just as unambiguous as ``zoom`` or
+        # ``trouve``. Letting the small live classifier override them caused a
+        # real Gate-B run to turn "c'est quoi cet objet" into replay and
+        # "lis le texte" into open_app/maps even though the production grammar
+        # already had the correct handlers. Indirect natural requests remain
+        # LLM-first; only these imperative/deictic forms take the shortcut.
+        (r"(?:c'?est\s+quoi|qu'?est-?ce\s+que\s+c'?est|what\s+is\s+(?:this|that))\b", "what_is"),
+        (r"(?:lis|lire|ocr|read|d[ée]chiffre)\b", "ocr"),
+        (r"(?:traduis|traduire|translate)\b", "translate"),
+        (r"(?:interroge\s+ma\s+m[ée]moire|demande\s+[àa]\s+ma\s+m[ée]moire|ask\s+my\s+memory)\b", "ask_memory"),
         (r"o[ùu]\s+(?:est|sont)\b", "find"),
         (r"o[ùu]\s+se\s+trouv(?:e|ent)\b", "find"),
         (r"pause\s+priv[ée]e?\b", "privacy_pause"),
@@ -177,6 +187,10 @@ _HIGH_CONFIDENCE: list[tuple[re.Pattern[str], str]] = [
         (r"arr[êe]te\s+la\s+traduction\b", "translate_live"),
         (r"mode\s+aide\b", "help_start"),
         (r"help\s+mode\b", "help_start"),
+        # Unambiguous natural help request: route directly to the existing free-
+        # text grammar instead of paying an LLM classification call before the
+        # actual plan-generation call.
+        (r"(?:aide|aide-?moi|help\s+me)\s+(?:[àa]|pour|to)\b", "help_start"),
         (r"retiens\b", "remember_fact"),
         (r"m[ée]morise\b", "remember_fact"),
         (r"qui\s+est\s+(?:cette|la)\s+personne\b", "who_is"),
@@ -701,6 +715,17 @@ class IntentRouter:
         # so ordinary "c'est fait" in conversation is never captured. A paused task
         # only accepts "reprends"/"termine"; everything else needs an active task.
         plan = getattr(eng, "plan", None)
+        if not plan and getattr(eng, "planning", False):
+            control = _match_help_control(text)
+            if control is None:
+                return None
+            res = eng.queue_planning_control(control)
+            self.context.note(intent=control)
+            return RoutedIntent(
+                intent=control,
+                result=res,
+                handled=bool((res or {}).get("handled", False)),
+            )
         if not plan:
             return None
         control = _match_help_control(text)

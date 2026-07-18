@@ -84,6 +84,9 @@ class DeferredFineIntel:
             "turns_extracted": 0,
             "turns_applied": 0,
             "reused_extractions": 0,
+            "contract_rejections": 0,
+            "batch_splits": 0,
+            "singleton_id_rebinds": 0,
             "failures": 0,
         }
         self._ensure_schema()
@@ -111,6 +114,19 @@ class DeferredFineIntel:
                 );
                 CREATE INDEX IF NOT EXISTS idx_live_fine_intel_pending_v19
                     ON live_fine_intel_queue_v19(person_id, live_session_id, status, created_at, turn_id);
+                CREATE TABLE IF NOT EXISTS live_fine_intel_rejections_v19(
+                    rejection_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    person_id TEXT NOT NULL,
+                    live_session_id TEXT NOT NULL,
+                    expected_turn_ids_json TEXT NOT NULL,
+                    observed_turn_ids_json TEXT NOT NULL,
+                    raw_output_json TEXT,
+                    error_text TEXT NOT NULL,
+                    strategy TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_live_fine_intel_rejections_session_v19
+                    ON live_fine_intel_rejections_v19(person_id, live_session_id, rejection_id);
                 """
             )
 
@@ -214,60 +230,185 @@ class DeferredFineIntel:
         by_id = {str(row["turn_id"]): row for row in rows}
         return [by_id[turn_id] for turn_id in turn_ids if turn_id in by_id]
 
-    def _extract_batch(self, rows: Sequence[Mapping[str, Any]]) -> None:
+    def _save_extracted(
+        self,
+        by_id: Mapping[str, Mapping[str, Any]],
+        expected: Sequence[str],
+    ) -> None:
+        if not expected:
+            return
+        extracted_at = _now()
+        with self._connect() as con, write_transaction(con):
+            for turn_id in expected:
+                con.execute(
+                    """UPDATE live_fine_intel_queue_v19
+                       SET status='extracted',result_json=?,attempts=attempts+1,
+                           last_error=NULL,extracted_at=? WHERE turn_id=?""",
+                    (
+                        json.dumps(by_id[turn_id], ensure_ascii=False, sort_keys=True),
+                        extracted_at,
+                        turn_id,
+                    ),
+                )
+        self.metrics["turns_extracted"] += len(expected)
+
+    def _record_contract_rejection(
+        self,
+        *,
+        expected: Sequence[str],
+        observed: Sequence[str],
+        result: Any,
+        error_text: str,
+        strategy: str,
+    ) -> None:
+        try:
+            raw = json.dumps(result, ensure_ascii=False, sort_keys=True, default=str)
+        except Exception:
+            raw = repr(result)
+        with self._connect() as con, write_transaction(con):
+            con.execute(
+                """INSERT INTO live_fine_intel_rejections_v19(
+                       person_id,live_session_id,expected_turn_ids_json,
+                       observed_turn_ids_json,raw_output_json,error_text,strategy,created_at)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    self.person_id,
+                    self.live_session_id,
+                    json.dumps(list(expected), ensure_ascii=False),
+                    json.dumps(list(observed), ensure_ascii=False),
+                    raw[:200000],
+                    error_text[:1000],
+                    strategy,
+                    _now(),
+                ),
+            )
+        self.metrics["contract_rejections"] += 1
+
+    def _mark_failed(self, rows: Sequence[Mapping[str, Any]], exc: Exception) -> None:
+        self.metrics["failures"] += 1
+        with self._connect() as con, write_transaction(con):
+            for row in rows:
+                con.execute(
+                    """UPDATE live_fine_intel_queue_v19
+                       SET attempts=attempts+1,last_error=? WHERE turn_id=?""",
+                    (f"{type(exc).__name__}: {str(exc)[:500]}", str(row["turn_id"])),
+                )
+
+    def _extract_batch(
+        self,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        singleton_retry: int = 0,
+    ) -> None:
+        """Extract a batch losslessly, splitting only contract-mismatched rows.
+
+        A small model can omit or mutate one opaque ``turn_id`` even when the
+        semantic JSON is otherwise valid.  Failing the whole durable drain made
+        CloseDay impossible (Gate B 20260718-112417).  Exact-ID results are now
+        checkpointed immediately; unresolved rows are bisected down to a singleton.
+        With one input and one output, rebinding the sole opaque ID is deterministic
+        and cannot associate the semantics with another turn.  Zero/multiple
+        singleton outputs remain a hard, audited failure after bounded retries.
+        """
+        if not rows:
+            return
         payloads = [json.loads(str(row["payload_json"])) for row in rows]
         prompt = json.dumps(
             {"turns": [{"turn_id": p["turn_id"], "text": p["text"]} for p in payloads]},
             ensure_ascii=False,
             separators=(",", ":"),
         )
+        system = _SYSTEM
+        if len(payloads) == 1:
+            system += (
+                " CRITICAL SINGLE-TURN CONTRACT: return exactly one turns item and "
+                f"copy this turn_id byte-for-byte: {payloads[0]['turn_id']}."
+            )
         try:
+            self.metrics["model_calls"] += 1
             result = self.llm.complete_json(
-                _SYSTEM,
+                system,
                 prompt,
                 schema_hint=_SCHEMA,
                 max_output_tokens=self.max_output_tokens,
             )
-            self.metrics["model_calls"] += 1
-            items = result.get("turns") if isinstance(result, Mapping) else None
-            if not isinstance(items, list):
-                raise ValueError("fine-intel batch result has no turns array")
-            expected = [str(p["turn_id"]) for p in payloads]
-            by_id: dict[str, Mapping[str, Any]] = {}
-            for item in items:
-                if not isinstance(item, Mapping):
-                    raise ValueError("fine-intel batch contains a non-object result")
-                turn_id = str(item.get("turn_id") or "")
-                if not turn_id or turn_id in by_id:
-                    raise ValueError("fine-intel batch has missing/duplicate turn_id")
-                by_id[turn_id] = item
-            if set(by_id) != set(expected):
-                raise ValueError("fine-intel batch output cardinality/IDs do not match input")
-
-            extracted_at = _now()
-            with self._connect() as con, write_transaction(con):
-                for turn_id in expected:
-                    con.execute(
-                        """UPDATE live_fine_intel_queue_v19
-                           SET status='extracted',result_json=?,attempts=attempts+1,
-                               last_error=NULL,extracted_at=? WHERE turn_id=?""",
-                        (
-                            json.dumps(by_id[turn_id], ensure_ascii=False, sort_keys=True),
-                            extracted_at,
-                            turn_id,
-                        ),
-                    )
-            self.metrics["turns_extracted"] += len(expected)
         except Exception as exc:
-            self.metrics["failures"] += 1
-            with self._connect() as con, write_transaction(con):
-                for row in rows:
-                    con.execute(
-                        """UPDATE live_fine_intel_queue_v19
-                           SET attempts=attempts+1,last_error=? WHERE turn_id=?""",
-                        (f"{type(exc).__name__}: {str(exc)[:500]}", str(row["turn_id"])),
-                    )
+            self._mark_failed(rows, exc)
             raise
+
+        expected = [str(p["turn_id"]) for p in payloads]
+        items = result.get("turns") if isinstance(result, Mapping) else None
+        mappings = [item for item in items if isinstance(item, Mapping)] if isinstance(items, list) else []
+        observed = [str(item.get("turn_id") or "") for item in mappings]
+        counts = {turn_id: observed.count(turn_id) for turn_id in set(observed) if turn_id}
+        by_id = {
+            turn_id: item
+            for turn_id, item in ((str(item.get("turn_id") or ""), item) for item in mappings)
+            if turn_id in expected and counts.get(turn_id) == 1
+        }
+
+        exact = (
+            isinstance(items, list)
+            and len(items) == len(expected)
+            and set(by_id) == set(expected)
+        )
+        if exact:
+            self._save_extracted(by_id, expected)
+            return
+
+        missing = [turn_id for turn_id in expected if turn_id not in by_id]
+        unexpected = sorted({turn_id for turn_id in observed if turn_id and turn_id not in expected})
+        duplicates = sorted(turn_id for turn_id, count in counts.items() if count > 1)
+        error_text = (
+            "fine-intel batch contract mismatch: "
+            f"missing={missing}, unexpected={unexpected}, duplicates={duplicates}, "
+            f"non_objects={(len(items) - len(mappings)) if isinstance(items, list) else 'no_turns_array'}"
+        )
+
+        # One input + one semantic object has only one possible provenance.  The
+        # model merely corrupted an opaque identifier; repair it deterministically.
+        if len(expected) == 1 and isinstance(items, list) and len(mappings) == 1 and len(items) == 1:
+            fixed = dict(mappings[0])
+            fixed["turn_id"] = expected[0]
+            self._record_contract_rejection(
+                expected=expected,
+                observed=observed,
+                result=result,
+                error_text=error_text,
+                strategy="singleton_id_rebind",
+            )
+            self.metrics["singleton_id_rebinds"] += 1
+            self._save_extracted({expected[0]: fixed}, expected)
+            return
+
+        # Preserve every unambiguous exact-ID result; only unresolved turns are
+        # repaid.  This is lossless and cheaper than throwing away a valid prefix.
+        matched = [turn_id for turn_id in expected if turn_id in by_id]
+        if matched:
+            self._save_extracted(by_id, matched)
+        unresolved = [row for row in rows if str(row["turn_id"]) not in by_id]
+        strategy = "split_unresolved" if len(unresolved) > 1 else "retry_singleton"
+        self._record_contract_rejection(
+            expected=expected,
+            observed=observed,
+            result=result,
+            error_text=error_text,
+            strategy=strategy,
+        )
+
+        if len(unresolved) > 1:
+            self.metrics["batch_splits"] += 1
+            mid = len(unresolved) // 2
+            self._extract_batch(unresolved[:mid])
+            self._extract_batch(unresolved[mid:])
+            return
+        if len(unresolved) == 1 and singleton_retry + 1 < self.max_attempts:
+            self._extract_batch(unresolved, singleton_retry=singleton_retry + 1)
+            return
+
+        exc = ValueError(error_text)
+        self._mark_failed(unresolved or rows, exc)
+        raise exc
 
     def _apply_rows(self, rows: Sequence[Mapping[str, Any]]) -> None:
         for row in rows:

@@ -72,6 +72,26 @@ def test_ollama_uses_distinct_total_context_windows(monkeypatch):
     assert captured[-1]["options"]["num_predict"] == 4096
 
 
+def test_live_ollama_transport_does_not_reuse_nightly_retry_backoffs(monkeypatch):
+    from mlomega_audio_elite import llm
+    from mlomega_audio_elite.runtime_v18_7 import phase
+
+    seen: list[int | None] = []
+
+    def fake_retry(operation, **kwargs):
+        seen.append(kwargs.get("max_retries"))
+        return {"done": True, "response": '{}'}
+
+    monkeypatch.setattr(llm, "retry_operation", fake_retry)
+    payload = {"model": "qwen3.5:4b", "prompt": "x", "stream": False}
+    llm.ollama_generate(payload, timeout=1, component="live-test")
+    assert seen[-1] == 0
+
+    with phase("post_stop_test"):
+        llm.ollama_generate(payload, timeout=1, component="night-test")
+    assert seen[-1] == llm.get_settings().poststop_retry_max
+
+
 def test_truncated_json_is_never_applied(monkeypatch):
     from mlomega_audio_elite import llm
 

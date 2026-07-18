@@ -19,6 +19,7 @@ real provider path runs only when a key is present in the env):
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -219,6 +220,42 @@ def test_real_video_session_thirteen_commands_reach_an_effect():
     assert outputs[8]["request"]["kind"] == "ocr"
 
 
+def test_explicit_visual_and_memory_orders_cannot_be_overridden_by_live_llm():
+    """Regression for the first fully-completed Gate-B real run."""
+    class _WrongLLM:
+        def __init__(self):
+            self.calls = 0
+
+        def complete_json(self, *_args, **_kwargs):
+            self.calls += 1
+            return {"intent": "replay", "time": "14h"}
+
+    sink = _Sink()
+    llm = _WrongLLM()
+    questions = []
+    router = _router(
+        sink,
+        llm=llm,
+        ask_memory=lambda question: questions.append(question) or {
+            "component": "context_card", "content": {"kind": "memory_answer"},
+        },
+    )
+
+    outputs = [
+        router.on_transcript("c'est quoi ca"),
+        router.on_transcript("c'est quoi cet objet"),
+        router.on_transcript("lis le texte"),
+        router.on_transcript("traduis le texte"),
+        router.on_transcript("interroge ma memoire qui est Karim"),
+    ]
+
+    assert [item["intent"] for item in outputs] == [
+        "what_is", "what_is", "ocr", "translate", "ask_memory",
+    ]
+    assert llm.calls == 0
+    assert questions == ["qui est Karim"]
+
+
 # --------------------------------------------------------------------------- multi-turn
 def test_multiturn_deixis_resolves_last_target():
     sink = _Sink()
@@ -340,6 +377,60 @@ def test_ask_memory_calls_ask_brain2(monkeypatch):
     assert "mardi" in card["content"]["text"]
     assert card["truth_level"] == "remembered"
     assert card["evidence_refs"] == ["atomic:m-1"]
+
+
+def test_explicit_person_memory_query_skips_only_redundant_planners(monkeypatch):
+    calls = {}
+    import mlomega_audio_elite.brain2_router_v14_2 as b2
+
+    def _fake_ask(question, *, person_id=None, limit=80, route_payload=None):
+        calls.update(question=question, person_id=person_id, route=route_payload)
+        return {
+            "status": "ok",
+            "answer": "Karim est ton ami.",
+            "evidence": [],
+            "direct_facts": [{"source_table": "turns", "source_id": "turn-1"}],
+        }
+
+    monkeypatch.setattr(b2, "ask_brain2", _fake_ask)
+    mq = memory_query.MemoryQuery(person_id="me")
+    card = mq.ask("qui est Karim")
+
+    route = calls["route"]["route"]
+    assert route["route_type"] == "relationship"
+    assert route["needs_raw_recall"] is True
+    assert route["needs_relationship_model"] is True
+    assert route["_skip_planner_llm"] is True
+    assert card["content"]["source"] == "brain2"
+    assert card["evidence_refs"] == ["turns:turn-1"]
+    assert mq.metrics["fast_person_routes"] == 1
+
+
+def test_live_person_candidate_projection_is_bounded_and_keeps_provenance():
+    import mlomega_audio_elite.brain2_router_v14_2 as b2
+
+    candidates = []
+    for idx in range(20):
+        candidates.append({
+            "fused_candidate_id": f"f-{idx}",
+            "source_kind": "raw_turn",
+            "source_table": "turns",
+            "source_id": f"turn-{idx}",
+            "fused_score": 1.0 - idx / 100.0,
+            "payload_json": json.dumps({
+                "conversation_id": "conv-1",
+                "idx": idx,
+                "text": ("Karim " if idx == 10 else "autre ") + "x" * 3000,
+                "metadata_json": "z" * 10000,
+            }),
+        })
+    route = {"people": [{"person_id_or_name": "Karim"}]}
+    projected = b2._compact_live_answer_candidates(candidates, route)
+
+    assert len(projected) <= 8
+    assert projected[0]["source_id"] == "turn-10"
+    assert all(len(item["text"]) <= 500 for item in projected)
+    assert all("metadata_json" not in item for item in projected)
 
 
 def test_ask_memory_degraded_without_llm(monkeypatch):

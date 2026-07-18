@@ -149,6 +149,24 @@ class _ReceiptIngress:
         return {"peer_state": self.peer_state, "frames_received": 0, "frames_dropped": 0}
 
 
+class _SequentialReceiptIngress(_ReceiptIngress):
+    """Production-faithful receipt ordering: later commands wait behind a lock."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._receipt_lock = asyncio.Lock()
+
+    async def _dispatch_locked(self, pipeline, payload):
+        async with self._receipt_lock:
+            return await asyncio.to_thread(pipeline.on_device_transcript, payload)
+
+    def dispatch_transcript(self, pipeline, payload) -> asyncio.Task:
+        task = asyncio.create_task(self._dispatch_locked(pipeline, payload))
+        self._receipt_tasks.add(task)
+        task.add_done_callback(self._receipt_tasks.discard)
+        return task
+
+
 def _command_payload(segment_id: str, text: str) -> dict:
     return {
         "type": "device_transcript", "is_final": True, "is_command": True,
@@ -316,6 +334,60 @@ def test_cancelled_interactive_effect_is_suppressed_and_drain_waits_real_end(tmp
     terminal = [t for t in traces if t["phase"] in ("completed", "failed")]
     assert terminal, "the worker reached exactly one terminal status"
     assert all(t["response_suppressed"] == 1 for t in terminal)
+
+
+def test_drain_waits_commands_still_queued_behind_receipt_lock(tmp_path, monkeypatch):
+    """Gate B 20260718-115603: a command not yet inside the pipeline registry is
+    still a real gateway task and must finish before CloseDay can start."""
+    monkeypatch.setenv("MLOMEGA_COMMAND_GRACE_S", "0.1")
+    monkeypatch.setenv("MLOMEGA_FINAL_DRAIN_TIMEOUT_S", "3")
+    db = tmp_path / "memory.db"
+    first_gate = threading.Event()
+
+    class _FirstBlocks:
+        metrics = {"intents_routed": 0}
+
+        def __init__(self):
+            self.context = _Context()
+            self.calls = 0
+
+        def on_transcript(self, _text):
+            self.calls += 1
+            self.context.note("ask_memory")
+            if self.calls == 1:
+                first_gate.wait(timeout=3.0)
+            return {"intent": "ask_memory", "handled": True, "result": {"status": "ok"}}
+
+    intents = _FirstBlocks()
+
+    async def scenario():
+        rt = runtime_mod.PhoneOnlyRuntime(
+            "transport-queued",
+            person_id="owner", db_path=db,
+            ingress_factory=_SequentialReceiptIngress,
+            pipeline_factory=lambda **_k: _pipeline(db, intents),
+            close_day=lambda **_k: {"status": "completed"},
+        )
+        first = rt.ingress.dispatch_transcript(
+            rt.pipeline, _command_payload("seg-first", "première commande")
+        )
+        second = rt.ingress.dispatch_transcript(
+            rt.pipeline, _command_payload("seg-queued", "commande encore en file")
+        )
+        await asyncio.sleep(0.03)
+
+        async def release_first():
+            await asyncio.sleep(0.25)
+            first_gate.set()
+
+        releaser = asyncio.create_task(release_first())
+        await rt._drain_commands_with_grace()
+        await releaser
+        await asyncio.gather(first, second)
+        return second.done()
+
+    assert asyncio.run(scenario()) is True
+    assert "completed" in [t["phase"] for t in _traces(db, "seg-queued")]
 
 
 # --------------------------------------------------------------------------- #

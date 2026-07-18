@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -35,6 +36,27 @@ visionrt = _load("v19_visionrt", "services/live-pc/visionrt.py")
 cv2 = pytest.importorskip("cv2")
 
 from packages.contracts.python.models import FrameEnvelope, Pose, SceneDelta  # noqa: E402
+
+
+def test_live_vlm_request_expires_model_after_one_shot(monkeypatch):
+    captured = {}
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return None
+        def read(self): return b'{"response":"cup","done":true}'
+
+    def fake_urlopen(request, timeout=None):
+        captured.update(json.loads(request.data.decode("utf-8")))
+        return Response()
+
+    monkeypatch.delenv("MLOMEGA_LIVE_VLM_KEEP_ALIVE", raising=False)
+    monkeypatch.setattr(visionrt.urllib.request, "urlopen", fake_urlopen)
+    result = visionrt.VlmCrop(model="qwen3-vl:4b").describe(
+        np.zeros((8, 8, 3), dtype=np.uint8)
+    )
+    assert result["status"] == "ok"
+    assert captured["keep_alive"] == "0"
 
 
 def _envelope(fid: str) -> FrameEnvelope:

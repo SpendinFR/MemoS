@@ -165,6 +165,7 @@ class GpuPhaseOrchestrator:
         foreign_p1_probe: Callable[[], bool] | None = None,
         ready_timeout_s: float = 120.0,
         poll_interval_s: float = 0.5,
+        eviction_timeout_s: float = 30.0,
     ) -> None:
         self._spawn = spawn or _default_spawn
         self._props_probe = props_probe or self._default_props_probe
@@ -176,6 +177,7 @@ class GpuPhaseOrchestrator:
         self._foreign_p1_probe = foreign_p1_probe or self._default_foreign_p1_probe
         self.ready_timeout_s = max(1.0, float(ready_timeout_s))
         self.poll_interval_s = max(0.01, float(poll_interval_s))
+        self.eviction_timeout_s = max(0.05, float(eviction_timeout_s))
         self._proc: Any | None = None
         self.probe_calls = 0
 
@@ -362,11 +364,23 @@ class GpuPhaseOrchestrator:
 
     # -- phase transitions --------------------------------------------------
     def enter_preflight(self) -> dict[str, Any]:
-        """Prove P1 availability SEQUENTIALLY, then leave it STOPPED."""
-        start = self.start_p1()
+        """Prove P1 sequentially, then leave the GPU ready for live warmup.
+
+        A previous Ollama model may still be resident when FirstTry is relaunched.
+        Starting P1 directly would transiently co-reside with it on an 8 GB GPU.
+        Reuse the verified text boundary to empty Ollama before starting P1.
+        """
+        text = self.enter_text()
+        start = text["p1"]
         stop = self.stop_p1()
         assert not self.p1_running, "preflight must leave P1 stopped"
-        return {"phase": "preflight", "p1": start, "p1_stopped": stop}
+        return {
+            "phase": "preflight",
+            "p1": start,
+            "p1_stopped": stop,
+            "ollama_before": text.get("resident_before", []),
+            "ollama_after": text.get("resident_after", []),
+        }
 
     def enter_live(self) -> dict[str, Any]:
         """Capture phase: Ollama 4B only. P1 must not be resident."""
@@ -466,6 +480,37 @@ class GpuPhaseOrchestrator:
                 names.append(name)
         return names
 
+    def _evict_ollama_until_empty(self, models: list[str]) -> tuple[list[str], list[str]]:
+        """Evict Ollama models and wait until ``/api/ps`` proves they left.
+
+        Ollama acknowledges ``keep_alive=0`` before the runner has necessarily
+        released the model/VRAM. Gate B 20260718-115603 hit that exact race:
+        Qwen3-VL completed all images, the unload request returned, but an
+        immediate ``/api/ps`` still exposed ``qwen3-vl:8b``. A phase boundary is
+        therefore a verified state transition, not a single HTTP request.
+        """
+        requested: list[str] = []
+        remaining = list(dict.fromkeys(str(m).strip() for m in models if str(m).strip()))
+        deadline = time.monotonic() + self.eviction_timeout_s
+        while remaining:
+            for model in remaining:
+                try:
+                    self._ollama_unload(model=model)
+                    requested.append(model)
+                except Exception as exc:
+                    record_phase_event("ollama_unload_failed", model=model, error=str(exc)[:200])
+            if time.monotonic() < deadline:
+                time.sleep(min(self.poll_interval_s, max(0.01, deadline - time.monotonic())))
+            remaining = self._resident_model_names()
+            if not remaining or time.monotonic() >= deadline:
+                break
+            record_phase_event(
+                "ollama_unload_waiting",
+                resident_models=remaining,
+                deadline_s=self.eviction_timeout_s,
+            )
+        return list(dict.fromkeys(requested)), remaining
+
     def enter_text(self) -> dict[str, Any]:
         """Nightly text phase: EVICT EVERY resident Ollama model, prove Ollama is
         empty, THEN start P1 (the 9B llama.cpp server).
@@ -487,14 +532,7 @@ class GpuPhaseOrchestrator:
             resident_models=before_models,
             vram=vram_before,
         )
-        unloaded: list[str] = []
-        for model in before_models:
-            try:
-                self._ollama_unload(model=model)
-                unloaded.append(model)
-            except Exception as exc:
-                record_phase_event("ollama_unload_failed", model=model, error=str(exc)[:200])
-        after_models = self._resident_model_names()
+        unloaded, after_models = self._evict_ollama_until_empty(before_models)
         vram_after = self._vram_snapshot()
         record_phase_event(
             "enter_text_ollama_drained",
@@ -507,6 +545,24 @@ class GpuPhaseOrchestrator:
             raise LiveGpuResidencyError(
                 "Ollama model(s) still resident before starting the text-phase P1: "
                 + ", ".join(sorted(after_models))
+            )
+        # An empty Ollama process list proves only that Ollama released its own
+        # models. WhisperX/Pyannote/SpeechBrain/ONNX live in Python processes and
+        # can still leave too little room for full P1 GPU offload. Gate B
+        # 20260718-125014 entered P1 with only 5.4 GB free and then spent >30 min
+        # in Brain2; the same model starts at full speed with ~6.8 GB free.
+        min_free_mb = max(0, int(os.environ.get("MLOMEGA_P1_MIN_FREE_VRAM_MB", "6000")))
+        free_mb = vram_after.get("free_mb") if isinstance(vram_after, dict) else None
+        if min_free_mb and isinstance(free_mb, (int, float)) and int(free_mb) < min_free_mb:
+            record_phase_event(
+                "enter_text_python_vram_leak",
+                free_mb=int(free_mb),
+                minimum_free_mb=min_free_mb,
+                vram=vram_after,
+            )
+            raise LiveGpuResidencyError(
+                f"only {int(free_mb)} MiB VRAM free before P1; need at least "
+                f"{min_free_mb} MiB after live/deep model release"
             )
         started = self.start_p1()
         return {

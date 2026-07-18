@@ -36,13 +36,19 @@ for _p in (_ROOT, _ROOT / "src"):
 def _evidence_refs(answer: dict[str, Any]) -> list[str]:
     """Pull evidence refs from a Brain2 answer packet, best-effort."""
     refs: list[str] = []
-    for key in ("evidence", "citations", "sources", "fused_candidates"):
+    for key in (
+        "evidence", "direct_facts", "inferences", "citations", "sources",
+        "fused_candidates",
+    ):
         items = answer.get(key)
         if not isinstance(items, list):
             continue
         for it in items[:8]:
             if isinstance(it, dict):
-                st = it.get("source_type") or it.get("type") or "memory"
+                st = (
+                    it.get("source_type") or it.get("source_table")
+                    or it.get("type") or "memory"
+                )
                 sid = it.get("source_id") or it.get("id") or it.get("memory_id")
                 if sid:
                     refs.append(f"{st}:{sid}")
@@ -51,18 +57,82 @@ def _evidence_refs(answer: dict[str, Any]) -> list[str]:
     return refs[:8]
 
 
+def _explicit_person_route(question: str, person_id: str) -> dict[str, Any] | None:
+    """Build a lossless fast route only for an unambiguous person-identity ask.
+
+    The legacy rich route paid four planning/selection LLM calls whose outputs did
+    not filter the candidate rows.  For ``qui est X`` the product already knows the
+    requested layer: recent raw evidence + relationship models + semantic recall.
+    The final Brain2 answer LLM is kept, so inference quality and citations remain.
+    """
+    raw = (question or "").strip()
+    folded = raw.casefold()
+    prefixes = ("qui est ", "c'est qui ", "who is ")
+    prefix = next((item for item in prefixes if folded.startswith(item)), None)
+    if prefix is None:
+        return None
+    target = raw[len(prefix):].strip(" .?!,:;")
+    if not target or len(target.split()) > 8:
+        return None
+    route = {
+        "route_type": "relationship",
+        "question_rewrite": raw,
+        "needs_raw_recall": True,
+        "needs_prediction_engine": False,
+        "needs_pattern_mirror": False,
+        "needs_relationship_model": True,
+        "needs_language_model": False,
+        "needs_periodic_snapshots": False,
+        "time_filters": [],
+        "people": [{
+            "person_id_or_name": target,
+            "role_in_question": "other",
+            "importance": "high",
+        }],
+        "topics": [target],
+        "prediction_targets": [],
+        "evidence_strategy": ["raw_turns", "episodes", "relationships"],
+        "answer_goal": f"Identifier {target} a partir des preuves de memoire disponibles.",
+        "missing_route_context": [],
+        "confidence": 1.0,
+        "_skip_planner_llm": True,
+        "routing_mode": "deterministic_explicit_person_live",
+    }
+    return {
+        "version": "14.2-live-fast-route",
+        "person_id": person_id,
+        "question": raw,
+        "route": route,
+        "status": "ok",
+    }
+
+
 class MemoryQuery:
     """Route a memory question to the rich Brain2 router with an honest fallback."""
 
     def __init__(self, *, person_id: str = "me", limit: int = 80) -> None:
         self.person_id = person_id or "me"
         self.limit = int(limit)
-        self.metrics: dict[str, Any] = {"asks": 0, "brain2_answers": 0, "retrieval_fallbacks": 0, "unavailable": 0}
+        self.metrics: dict[str, Any] = {
+            "asks": 0,
+            "brain2_answers": 0,
+            "fast_person_routes": 0,
+            "retrieval_fallbacks": 0,
+            "unavailable": 0,
+        }
 
     # ---- core call (kept identical to the CLI's cmd_v14_ask) ----------------
     def _ask_brain2(self, question: str) -> dict[str, Any]:
         from mlomega_audio_elite.brain2_router_v14_2 import ask_brain2  # type: ignore
 
+        route_payload = _explicit_person_route(question, self.person_id)
+        if route_payload is not None:
+            self.metrics["fast_person_routes"] += 1
+            return ask_brain2(
+                question,
+                person_id=self.person_id,
+                route_payload=route_payload,
+            )
         return ask_brain2(question, person_id=self.person_id)
 
     def _retrieval_only(self, question: str) -> dict[str, Any] | None:

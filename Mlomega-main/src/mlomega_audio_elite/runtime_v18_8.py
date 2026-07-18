@@ -482,8 +482,9 @@ def release_live_model_caches() -> None:
     `faster-whisper` live model resident while loading WhisperX large-v3 wastes
     VRAM and is a common cause of avoidable OOM on 8–12 GB cards. The VAD and
     transient speaker-continuity caches are no longer needed after the session
-    is stopped. SpeechBrain's persistent voice embedder is intentionally left
-    alone because deep reconciliation may use it immediately.
+    is stopped. SpeechBrain is also released here: callers invoke this boundary
+    again after deep reconciliation and before the nightly 9B text model. Its
+    durable embeddings remain in SQLite and the model reloads lazily next time.
     """
     cleared: list[str] = []
     try:
@@ -493,6 +494,13 @@ def release_live_model_caches() -> None:
             if isinstance(cache, dict):
                 cache.clear()
                 cleared.append(attr)
+    except Exception:
+        pass
+    try:
+        from .voice_identity import release_voice_identity_cache
+        released_voice = int(release_voice_identity_cache())
+        if released_voice:
+            cleared.append(f"_EMBEDDER_CACHE:{released_voice}")
     except Exception:
         pass
     # Vector assets are created lazily later; do not retain an unrelated live

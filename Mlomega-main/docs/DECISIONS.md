@@ -1416,3 +1416,53 @@ avait été bloquée 16/9/0. Les tentatives restent en base pour audit.
 latence/rendu restent un gate S25. Le run de travail avec retries n'autorise aucune
 projection de débit : I7 Gate B global attend encore un passage one-shot propre pour le
 seuil ×5.
+
+## 2026-07-18 — Gate B one-shot : frontières GPU prouvées et interactions live non bloquantes (ADR)
+
+**Un préflight lourd ne doit pas être rejoué par `/health`.** Le préflight profond prouve
+séquentiellement P1 puis l'arrête, chauffe le vrai 4B live, vérifie qu'il est le seul
+résident Ollama et écrit un receipt atomique fingerprinté (backend, URLs/alias, contextes,
+modèles live/VLM, orchestration, personne). SessionHub valide ce receipt sans recharger
+les modèles GPU à chaque health poll; en production orchestrée, un receipt absent/périmé
+ou incohérent bloque le pairing. `RUN_MLOMEGA_V19.ps1 -LivePhone` impose donc
+`MLOMEGA_REQUIRE_AI_READY_FOR_PAIRING=1`. Le rollback explicite reste disponible pour le
+développement non produit.
+
+**La VRAM est une frontière de processus, pas un `empty_cache` optimiste.** Deep Audio
+WhisperX/Pyannote/identité tourne par défaut dans `deep_audio_subprocess.py`; la sortie de
+ce processus libère réellement CUDA avant Deep Vision/P1. Les caches ECAPA, PyTorch et
+objets pipeline sont relâchés aux frontières. `enter_text` évince Ollama puis exige au
+moins 6000 MiB libres avant P1 (`MLOMEGA_P1_MIN_FREE_VRAM_MB`, rollback configurable) :
+un 9B partiellement offloadé n'est plus accepté comme un succès. Le VLM live utilise
+`keep_alive=0`; le post-stop reste séquentiel Deep Audio → Deep Vision → texte.
+
+**Aucune sémantique fine ne doit bloquer le worker audio.** Le deferred fine-intel
+persiste les entrées, extrait par batch, répare uniquement un identifiant opaque quand le
+mapping est univoque, journalise les rejets de contrat et échoue autrement. Le compilateur
+autonome V18 transforme les sorties strictement mappables par code; le passage
+interpersonnel partage une projection et merge des responsabilités disjointes au lieu de
+repayer le même contexte. Ces choix expliquent le one-shot : 20 appels / 147 072 tokens
+entrée / 841 s, contre 169 / 1,119 M / 83 min sur la baseline (comparaison de cardinalité,
+pas encore une extrapolation huit heures).
+
+**Une commande live ne peut retenir le canal ordonné.** Les ordres explicites capteur,
+OCR, traduction et mémoire ont une grammaire haute confiance; le langage indirect reste
+LLM-first. Le mode Aide renvoie immédiatement `planning`, calcule en worker, conserve les
+contrôles arrivés entre-temps et est attendu avant changement de phase GPU. Une fermeture
+de dernière étape incrémente le compteur d'avancement avant `done`.
+
+**Brain2 live garde la profondeur, mais pas les planners redondants.** Pour la seule forme
+non ambiguë `qui est X / who is X`, la route relation/raw/vector est déterministe. Toutes
+les preuves restent persistées; le prompt reçoit huit preuves pertinentes/adjacentes avec
+provenance et un contrat spécialisé faits/inférences/preuves/manque, puis un unique appel
+4B synthétise. Les autres questions continuent le routeur Brain2 complet. Mesure réelle :
+80 candidats/363 193 caractères et 83–87 s auparavant; réponse Brain2 grounded en 7,95 s
+à chaud après correction. Ce n'est ni un fallback retrieval-only ni une suppression des
+couches mémoire.
+
+**Portée du verdict.** `gateb-clean-20260718-141124` est le premier one-shot harnais
+entièrement vert : live sans drop, médias durables, CloseDay/recovery/manifests complets,
+Deep Vision 7=7=7 et gain chaîne >×5. Les correctifs Aide/Mémoire ont été prouvés ensuite
+en réel et par 109 tests courts. Un dernier one-shot sur le HEAD exact reste exigé pour
+regrouper les treize effets corrigés et la nuit dans le même rapport; ensuite Dashboard,
+Gate qualité William, Gate C synthétique, S25 puis Gate D.

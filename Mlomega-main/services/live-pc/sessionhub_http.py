@@ -364,6 +364,61 @@ def _probe_ai_chain(*, person_id: str = "me", deep: bool = False) -> dict[str, A
     }
 
 
+def _preflight_receipt_check(*, person_id: str) -> tuple[bool, dict[str, Any]]:
+    """Validate the strict external preflight without loading GPU models again."""
+    path = Path(os.environ.get(
+        "MLOMEGA_PREFLIGHT_RECEIPT",
+        str(_ROOT / "storage" / "runtime" / "phoneonly_readiness.json"),
+    ))
+    ttl_s = float(os.environ.get("MLOMEGA_PREFLIGHT_RECEIPT_TTL_S", "86400"))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        age_s = max(0.0, time.time() - float(payload.get("created_at_epoch") or 0.0))
+        fingerprint = dict(payload.get("fingerprint") or {})
+        expected = {
+            "person_id": person_id,
+            "llm_backend": os.environ.get("MLOMEGA_LLM_BACKEND", "ollama"),
+            "llamacpp_base_url": os.environ.get("MLOMEGA_LLAMACPP_BASE_URL", "http://127.0.0.1:8080"),
+            "llamacpp_model": os.environ.get("MLOMEGA_LLAMACPP_MODEL", ""),
+            "poststop_context": os.environ.get("MLOMEGA_OLLAMA_CONTEXT_POSTSTOP", "16384"),
+            "live_model": os.environ.get("MLOMEGA_OLLAMA_LIVE_MODEL", "qwen3.5:4b"),
+            "offline_vlm_model": (
+                os.environ.get("MLOMEGA_OFFLINE_VLM_MODEL")
+                or os.environ.get("MLOMEGA_VLM_HEAVY_MODEL")
+                or "qwen3-vl:8b"
+            ),
+            "gpu_phase_orchestration": os.environ.get("MLOMEGA_GPU_PHASE_ORCHESTRATION", "0"),
+        }
+        mismatches = {
+            key: {"expected": value, "observed": fingerprint.get(key)}
+            for key, value in expected.items()
+            if str(fingerprint.get(key)) != str(value)
+        }
+        checks = dict(payload.get("checks") or {})
+        ok = bool(
+            payload.get("ready")
+            and payload.get("mode") == "deep"
+            and checks
+            and all(checks.values())
+            and age_s <= ttl_s
+            and not mismatches
+        )
+        return ok, {
+            "path": str(path),
+            "age_s": round(age_s, 1),
+            "ttl_s": ttl_s,
+            "mode": payload.get("mode"),
+            "mismatches": mismatches,
+            "failed_checks": sorted(name for name, passed in checks.items() if not passed),
+        }
+    except Exception as exc:
+        return False, {
+            "path": str(path),
+            "error": f"{type(exc).__name__}: {str(exc)[:240]}",
+            "fix": "run scripts/check_phoneonly_readiness.py --deep before SessionHub",
+        }
+
+
 def create_app(
     hub: "SessionHub | None" = None,
     ingress: Any | None = None,
@@ -440,7 +495,24 @@ def create_app(
     app.state.readiness_cache = None
     app.state.readiness_cache_at = 0.0
     app.state.readiness_task = None
-    readiness_probe = readiness_probe or (lambda: _probe_ai_chain(person_id=person_id, deep=True))
+    if readiness_probe is None:
+        def _production_readiness_probe() -> dict[str, Any]:
+            # Never run the heavy GPU probe in SessionHub: /health refreshes every
+            # five minutes and would otherwise contend with live Whisper/YOLOX.
+            report = dict(_probe_ai_chain(person_id=person_id, deep=False))
+            checks = dict(report.get("checks") or {})
+            if os.environ.get(
+                "MLOMEGA_REQUIRE_AI_READY_FOR_PAIRING",
+                os.environ.get("MLOMEGA_GPU_PHASE_ORCHESTRATION", "0"),
+            ).strip().lower() in {"1", "true", "yes", "on"}:
+                receipt_ok, receipt_detail = _preflight_receipt_check(person_id=person_id)
+                checks["deep_preflight_receipt"] = {"ok": receipt_ok, "detail": receipt_detail}
+            report["checks"] = checks
+            report["ready"] = all(bool(check.get("ok")) for check in checks.values())
+            report["failed"] = [name for name, check in checks.items() if not check.get("ok")]
+            return report
+
+        readiness_probe = _production_readiness_probe
 
     def _authenticate(session_id: str, token: str) -> "Session":
         session = hub.authenticate(token)
@@ -481,8 +553,20 @@ def create_app(
             "checks": {},
             "failed": ["readiness_probe_running" if enable_signaling else "signaling_disabled"],
         })
-        pairing_ready = bool(signaling and runtime_ready and recovery_state == "completed")
-        ai_ready = bool(pairing_ready and chain.get("ready"))
+        base_pairing_ready = bool(signaling and runtime_ready and recovery_state == "completed")
+        # A minimal/dev SessionHub may still expose pairing while optional AI is
+        # unavailable.  Production PhoneOnly is stricter: its startup deep probe
+        # loads Whisper/YOLOX and must finish BEFORE the offer starts the live
+        # runtime.  Gate B 20260718-112417 proved that pairing while this probe was
+        # still loading GPU models starved the audio callback (queue 3000, drops).
+        # GPU phase orchestration therefore implies the strict gate unless an
+        # operator explicitly opts out; legacy/minimal tests keep the old default.
+        require_ai_for_pairing = os.environ.get(
+            "MLOMEGA_REQUIRE_AI_READY_FOR_PAIRING",
+            os.environ.get("MLOMEGA_GPU_PHASE_ORCHESTRATION", "0"),
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        ai_ready = bool(base_pairing_ready and chain.get("ready"))
+        pairing_ready = bool(base_pairing_ready and (ai_ready or not require_ai_for_pairing))
         payload = {
             "status": "full_ready" if ai_ready else ("pairing_ready" if pairing_ready else "unavailable"),
             # Backward-compatible field: ``ready`` means safe to pair/offer, not

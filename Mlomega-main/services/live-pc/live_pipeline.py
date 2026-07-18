@@ -24,6 +24,7 @@ import asyncio
 import importlib.util
 import json
 import hashlib
+import os
 import queue
 import sys
 import threading
@@ -669,6 +670,8 @@ class LivePipeline:
                 config=help_mode.HelpModeConfig(
                     no_progress_seconds=float(hmcfg.get("no_progress_seconds", 90.0)),
                     allow_cloud_hints=bool(hmcfg.get("allow_cloud_hints", True)),
+                    plan_timeout_s=float(hmcfg.get("plan_timeout_s", 120.0)),
+                    async_plan_generation=bool(hmcfg.get("async_plan_generation", True)),
                 ),
                 db_path=self.db_path,
             )
@@ -2032,6 +2035,12 @@ class LivePipeline:
 
     def release_live_resources(self) -> None:
         """Drop live model references before core post-stop/CloseDay phases."""
+        if self.help_engine is not None and getattr(self.help_engine, "planning", False):
+            timeout_s = float(os.environ.get("MLOMEGA_HELP_PLAN_DRAIN_TIMEOUT_S", "180"))
+            if not self.help_engine.wait_for_planning(timeout=timeout_s):
+                raise TimeoutError(
+                    f"help plan generation still running after {timeout_s:.0f}s"
+                )
         self._stop_final_worker()
         self.audio.close()
         detector = getattr(self.vision, "detector", None)
@@ -2041,6 +2050,40 @@ class LivePipeline:
                     setattr(detector, attr, None)
                 except Exception:
                     pass
+        # Removing only the native session/model member is not sufficient when
+        # the owning pipeline objects remain reachable from SessionManager for
+        # status polling during CloseDay. Drop every heavyweight owner too; a
+        # later network session constructs a fresh LivePipeline.
+        try:
+            self.audio.transcriber = None
+        except Exception:
+            pass
+        try:
+            self.vision.detector = None
+        except Exception:
+            pass
+        self.enrollment = None
+        self.voice_identity = None
+        self.face = None
+
+        # CTranslate2/ONNX Runtime/PyTorch release native allocations only after
+        # the final Python reference is collected.  The following core cache
+        # boundary will run immediately afterwards, but collecting here makes
+        # this public release method honest when called on its own as well.
+        import gc
+
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                try:
+                    torch.cuda.ipc_collect()
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def drain_deferred_semantics(self) -> dict[str, Any]:
         """Process persisted E38 batches before the asynchronous nightly read.

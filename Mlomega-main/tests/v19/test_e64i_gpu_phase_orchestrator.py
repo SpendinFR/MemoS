@@ -90,8 +90,12 @@ def _make(*, props_ok=True, probe_finish="stop", unloads=None, released=None,
         ollama_unload=ollama_unload,
         ollama_ps=ollama_ps,
         release_live_models=release_live_models,
+        vram_snapshot=lambda: {
+            "source": "fake", "total_mb": 8192, "used_mb": 1200, "free_mb": 6992,
+        },
         ready_timeout_s=2.0,
         poll_interval_s=0.01,
+        eviction_timeout_s=0.1,
     )
     return orch, spawned
 
@@ -124,7 +128,7 @@ def test_full_phase_sequence_keeps_p1_off_during_live_and_vision():
     # text: release live models + start P1.
     orch.enter_text()
     assert orch.p1_running is True
-    assert released == [True]
+    assert released == [True, True]  # preflight boundary + explicit text boundary
     assert unloads  # at least the live model was asked to unload
 
     # vision: P1 torn down so Qwen3-VL owns the GPU.
@@ -151,6 +155,34 @@ def test_enter_text_evicts_every_ollama_model_including_9b_before_p1():
     assert result["vram_before"] and result["vram_after"]
 
 
+def test_enter_text_waits_for_delayed_ollama_eviction_before_starting_p1():
+    """An acknowledged unload is not proof that VRAM was released yet."""
+    ps_calls = 0
+    unloads: list[str] = []
+
+    def ollama_ps():
+        nonlocal ps_calls
+        ps_calls += 1
+        # before, then two still-resident observations, then empty
+        return [{"name": "qwen3-vl:8b"}] if ps_calls < 4 else []
+
+    orch = GpuPhaseOrchestrator(
+        spawn=lambda _c: FakeProc(),
+        props_probe=lambda: {"alias": p1_alias(), "n_ctx": p1_ctx()},
+        anti_thinking_probe=lambda: {"choices": [{"finish_reason": "stop"}]},
+        ollama_unload=lambda *, model: unloads.append(model),
+        ollama_ps=ollama_ps,
+        release_live_models=lambda: None,
+        vram_snapshot=lambda: {"free_mb": 7000, "used_mb": 1192, "total_mb": 8192},
+        poll_interval_s=0.01,
+        eviction_timeout_s=0.2,
+    )
+    result = orch.enter_text()
+    assert result["resident_after"] == []
+    assert unloads.count("qwen3-vl:8b") >= 2
+    assert orch.p1_running is True
+
+
 def test_enter_text_fails_if_an_ollama_model_resists_eviction(monkeypatch):
     """A model Ollama refuses to unload must abort the text phase before P1 — a
     9B coexisting with the 7 GB P1 on 8 GB VRAM is exactly the leak to prevent."""
@@ -170,10 +202,30 @@ def test_enter_text_fails_if_an_ollama_model_resists_eviction(monkeypatch):
         release_live_models=lambda: None,
         ready_timeout_s=2.0,
         poll_interval_s=0.01,
+        eviction_timeout_s=0.05,
     )
     with pytest.raises(LiveGpuResidencyError, match="qwen3.5:9b"):
         orch.enter_text()
     assert orch.p1_running is False  # P1 never started with a resident 9B
+
+
+def test_enter_text_rejects_python_gpu_residency_before_starting_p1(monkeypatch):
+    """Empty Ollama is insufficient when live/deep Python models still own VRAM."""
+    monkeypatch.setenv("MLOMEGA_P1_MIN_FREE_VRAM_MB", "6000")
+    spawned: list[FakeProc] = []
+    orch = GpuPhaseOrchestrator(
+        spawn=lambda _c: spawned.append(FakeProc()) or spawned[-1],
+        props_probe=lambda: {"alias": p1_alias(), "n_ctx": p1_ctx()},
+        anti_thinking_probe=lambda: {"choices": [{"finish_reason": "stop"}]},
+        ollama_ps=lambda: [],
+        release_live_models=lambda: None,
+        vram_snapshot=lambda: {
+            "source": "fake", "total_mb": 8192, "used_mb": 2600, "free_mb": 5592,
+        },
+    )
+    with pytest.raises(LiveGpuResidencyError, match="5592 MiB"):
+        orch.enter_text()
+    assert spawned == []
 
 
 def test_anti_thinking_probe_runs_at_startup_and_rejects_reasoning():
@@ -329,6 +381,11 @@ def test_prepare_live_gpu_called_in_preflight_finally_even_on_failure(monkeypatc
         return real_load(name, path)
 
     monkeypatch.setattr(mod, "_load", fake_load)
+    monkeypatch.setattr(
+        mod,
+        "_warm_live_llm",
+        lambda _orch: {"model": "qwen3.5:4b", "resident_after": ["qwen3.5:4b"]},
+    )
     report = mod.run(person_id="me", deep=False)
     assert prepared["count"] == 1
     # The preflight sequence failed but the frontier still ran and reported.

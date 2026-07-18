@@ -517,11 +517,32 @@ def select_candidates(question: str, *, person_id: str | None = None, route_payl
         candidates += _select_raw_recall(con, route_id=route_id, run_id=run_id, person_id=person_id, route=route, question=question, limit=limit)
         candidates += _select_model_candidates(con, run_id=run_id, person_id=person_id, route=route, limit=limit)
         stored = _many(con, "SELECT * FROM v14_1_selection_candidates WHERE run_id=? ORDER BY score DESC, created_at DESC LIMIT ?", (run_id, limit * 3))
+        if route.get("_skip_planner_llm"):
+            targets = [
+                str(item.get("person_id_or_name") or "").casefold()
+                for item in _as_list(route.get("people"))
+                if isinstance(item, dict) and item.get("person_id_or_name")
+            ]
+
+            def _live_relevance(row: dict[str, Any]) -> tuple[int, float]:
+                haystack = str(row.get("payload_json") or "").casefold()
+                exact_hits = sum(1 for target in targets if target and target in haystack)
+                return exact_hits, float(row.get("score") or 0.0)
+
+            stored = sorted(stored, key=_live_relevance, reverse=True)
         # Qwen does the final cognitive selection among candidates. If Qwen fails, the
         # deterministic ranking still preserves table/time/evidence ordering but does
         # not invent psychological meaning.
         try:
-            audit = _llm_json(
+            if route.get("_skip_planner_llm"):
+                audit = {
+                    "selected_items": [],
+                    "missing_context": [],
+                    "risk_of_missing_something": "low",
+                    "selection_mode": "deterministic_rank_for_live_answer",
+                }
+            else:
+                audit = _llm_json(
                 "Tu es le sélectionneur Brain2 V14.1. Choisis seulement parmi les candidates fournies. Réponds en JSON.",
                 {
                     "question": question,

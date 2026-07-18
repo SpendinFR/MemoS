@@ -47,6 +47,7 @@ with its cost via the existing mechanism.
 """
 
 import json
+import os
 import sys
 import threading
 import time
@@ -89,7 +90,18 @@ class HelpModeConfig:
     panel_ttl_ms: int = 3_600_000       # task panel is sticky (1 h) — a long task
     anchor_ttl_ms: int = 20_000         # per-object anchor refresh window
     hint_ttl_ms: int = 12_000           # a proactive hint card
-    plan_timeout_s: float = 20.0        # LLM budget for plan generation
+    # A schema-constrained 4B plan can exceed 20 s on a cold 8 GB GPU. One honest
+    # 45 s attempt is still bounded and is faster than the former accidental
+    # three-attempt/nightly-backoff path (137 s) fixed in llm.ollama_generate.
+    plan_timeout_s: float = 60.0        # one cold or warm LLM plan attempt
+    # Product live mode must not block the ordered DataChannel callback while the
+    # plan is generated.  Tests and library callers remain synchronous by default;
+    # LivePipeline opts into this worker explicitly.
+    async_plan_generation: bool = False
+    # On an 8 GB GPU, loading Qwen-VL for a scene sentence evicts the live 4B
+    # immediately before plan generation. WorldBrain already carries the current
+    # detector scene; reserve the expensive glance for explicit opt-in hardware.
+    allow_initial_vlm_glance: bool = False
     hint_timeout_s: float = 12.0        # LLM/VLM budget for a contextual hint
 
 
@@ -322,6 +334,12 @@ class HelpTaskEngine:
         self._now = now_fn or time.monotonic
         self._svc_lock = threading.RLock()
         self._svc_db = self._init_service_db(service_db_path or db_path)
+        self._state_lock = threading.RLock()
+        self._planning = False
+        self._planning_thread: threading.Thread | None = None
+        self._planning_done = threading.Event()
+        self._planning_done.set()
+        self._queued_planning_controls: list[str] = []
 
         self.plan: dict[str, Any] | None = None
         # per-step no-progress timer bookkeeping (monotonic seconds).
@@ -445,6 +463,8 @@ class HelpTaskEngine:
         if self.llm_router is None:
             self.metrics["llm_unavailable"] += 1
             return self._needs_reformulation("Le générateur de plan n'est pas disponible.")
+        if self.config.async_plan_generation:
+            return self._start_plan_async(desc)
         # E53: ONE initial scene glance (VLM on the current keyframe) so the plan is
         # grounded in what the user actually has in front of them — best-effort,
         # event-driven (a single call at start, never per frame).
@@ -464,13 +484,147 @@ class HelpTaskEngine:
             )
         return self._adopt_plan(data, source="user_description")
 
+    def _generate_plan_sync(self, desc: str) -> dict[str, Any]:
+        """Generate and adopt one plan from the product worker."""
+        scene_ctx = self._guess_scene_context()
+        user_msg = desc if not scene_ctx else (
+            desc + "\n\nContexte visuel (scene actuelle, indicatif) : " + scene_ctx
+        )
+        try:
+            data = self.llm_router.complete_json(
+                _PLAN_SYSTEM,
+                user_msg,
+                schema_hint=_PLAN_SCHEMA,
+                timeout=self.config.plan_timeout_s,
+            )
+        except Exception:
+            self.metrics["llm_unavailable"] += 1
+            return self._needs_reformulation(
+                "Je n'ai pas reussi a preparer le plan. Tu peux reformuler la tache ?"
+            )
+        return self._adopt_plan(data, source="user_description")
+
+    def _start_plan_async(self, desc: str) -> dict[str, Any]:
+        """Start product plan generation without holding the ordered live callback."""
+        with self._state_lock:
+            if self._planning:
+                return {
+                    "status": "planning",
+                    "text": "Je prepare deja le plan.",
+                    "handled": True,
+                }
+            self._planning = True
+            self._planning_done.clear()
+            self._queued_planning_controls.clear()
+
+        text = "Je prepare le plan. Tu peux deja dire etape suivante ou annule l'aide."
+        intent = self._card(text, kind="help_planning", level="confirm")
+        self._push(intent)
+
+        def _worker() -> None:
+            try:
+                result = self._generate_plan_sync(desc)
+                with self._state_lock:
+                    queued = list(self._queued_planning_controls)
+                    self._queued_planning_controls.clear()
+                if result.get("status") == "active":
+                    for control in queued:
+                        self._apply_queued_control(control)
+            finally:
+                with self._state_lock:
+                    self._planning = False
+                self._planning_done.set()
+
+        thread = threading.Thread(
+            target=_worker,
+            name=f"help-plan-{self.live_session_id or 'live'}",
+            daemon=True,
+        )
+        self._planning_thread = thread
+        thread.start()
+        return {
+            "status": "planning",
+            "text": text,
+            "ui_intent": intent,
+            "handled": True,
+        }
+
+    @property
+    def planning(self) -> bool:
+        with self._state_lock:
+            return self._planning
+
+    def queue_planning_control(self, control: str) -> dict[str, Any]:
+        """Preserve help controls received while the plan worker is running."""
+        with self._state_lock:
+            if not self._planning:
+                return {"status": "not_planning", "handled": False}
+            self._queued_planning_controls.append(str(control))
+        return {"status": "queued_planning", "control": control, "handled": True}
+
+    def _apply_queued_control(self, control: str) -> Any:
+        if control == "help_advance":
+            return self.advance()
+        if control == "help_back":
+            return self.go_to(max(0, (self.current_step() or {}).get("index", 0) - 1))
+        if control == "help_repeat":
+            return self.repeat()
+        if control == "help_pause":
+            return self.pause()
+        if control == "help_resume":
+            return self.resume()
+        if control == "help_stop":
+            return self.finish(cancelled=True)
+        return None
+
+    def wait_for_planning(self, timeout: float | None = None) -> bool:
+        """Wait at the phase boundary so a live worker never leaks into night."""
+        return self._planning_done.wait(timeout=timeout)
+
     def _guess_scene_context(self) -> str:
         """E53: one best-effort VLM glance at the current keyframe when help starts.
 
         Infers what task/problem the user is facing and which objects are visible so
         the plan matches reality. Returns "" on any failure or missing wiring — the
         plan is then generated from the description alone (honest degraded)."""
-        if self.vlm is None or self._keyframe_provider is None:
+        # Prefer the already-observed live world. This is current detector evidence,
+        # costs no model swap, and preserves the exact grounding source used later
+        # by task anchors.
+        if self.worldbrain is not None:
+            try:
+                snapshot = self.worldbrain.snapshot() or {}
+                labels: list[str] = []
+                for entity in snapshot.get("entities") or []:
+                    if not isinstance(entity, Mapping):
+                        continue
+                    label = _clean_str(entity.get("label"), limit=60)
+                    age = entity.get("age_seconds")
+                    try:
+                        fresh = age is None or float(age) <= 5.0
+                    except (TypeError, ValueError):
+                        fresh = True
+                    if label and fresh and label not in labels:
+                        labels.append(label)
+                zone = _clean_str(
+                    snapshot.get("active_zone") or snapshot.get("place_hint"), limit=80
+                )
+                if labels or zone:
+                    self.metrics["scene_worldbrain_contexts"] = (
+                        self.metrics.get("scene_worldbrain_contexts", 0) + 1
+                    )
+                    parts = []
+                    if zone:
+                        parts.append("zone observée: " + zone)
+                    if labels:
+                        parts.append("objets visibles: " + ", ".join(labels[:12]))
+                    return _clean_str("; ".join(parts), limit=400)
+            except Exception:
+                pass
+
+        allow_vlm = self.config.allow_initial_vlm_glance or os.environ.get(
+            "MLOMEGA_HELP_INITIAL_VLM_GLANCE", "0"
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if not allow_vlm or self.vlm is None or self._keyframe_provider is None:
             return ""
         try:
             img = self._keyframe_provider()
@@ -578,6 +732,7 @@ class HelpTaskEngine:
             return None
         i = self._current_index()
         if i + 1 >= len(self.plan["steps"]):
+            self.metrics["steps_advanced"] += 1
             return self.finish()
         self.plan["current_index"] = i + 1
         self.metrics["steps_advanced"] += 1
@@ -955,6 +1110,7 @@ class HelpTaskEngine:
     def snapshot(self) -> dict[str, Any]:
         return {
             "active": self.active,
+            "planning": self.planning,
             "task_id": self.plan.get("task_id") if self.plan else None,
             "current_index": self._current_index() if self.plan else None,
             "awaiting_description": self._awaiting_description,

@@ -126,14 +126,95 @@ def test_restart_reuses_extracted_json_without_repaying_model(tmp_path):
     assert replay.metrics["reused_extractions"] == 4
 
 
-def test_cardinality_mismatch_keeps_every_turn_pending_for_retry(tmp_path):
+def test_cardinality_mismatch_checkpoints_exact_ids_and_audits_unresolved_turn(tmp_path):
     batch = _batcher(tmp_path / "memory.db", _LLM(invalid=True), size=4)
     _enqueue(batch, 4)
 
-    with pytest.raises(ValueError, match="cardinality"):
+    with pytest.raises(ValueError, match="contract mismatch"):
         batch.process_pending()
 
-    assert batch.pending_count() == 4
+    # The three exact-ID outputs are durable and never repaid. Only the omitted
+    # singleton remains pending after its bounded targeted retries.
     rows = batch._load_rows("pending", 4)
+    assert len(rows) == 1
     assert {int(row["attempts"]) for row in rows} == {1}
     assert all(row["result_json"] is None for row in rows)
+    with batch._connect() as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM live_fine_intel_queue_v19 WHERE status='extracted'"
+        ).fetchone()[0] == 3
+        assert con.execute(
+            "SELECT COUNT(*) FROM live_fine_intel_rejections_v19"
+        ).fetchone()[0] >= 2
+
+
+class _OmitLastOnlyForBatch(_LLM):
+    def complete_json(self, _system, prompt, **kwargs):
+        self.calls += 1
+        turns = json.loads(prompt)["turns"]
+        out = [
+            {
+                "turn_id": item["turn_id"],
+                "addressed": False,
+                "name": "",
+                "addressee": "unknown",
+                "address_confidence": 0.0,
+                "states_fact": False,
+                "subject_hint": "",
+                "attribute": "",
+                "value": "",
+                "fact_confidence": 0.0,
+            }
+            for item in turns
+        ]
+        if len(out) > 1:
+            out.pop()
+        return {"turns": out}
+
+
+def test_batch_omission_splits_only_missing_singleton_and_completes_losslessly(tmp_path):
+    llm = _OmitLastOnlyForBatch()
+    batch = _batcher(tmp_path / "memory.db", llm, size=4)
+    _enqueue(batch, 4)
+
+    result = batch.process_pending()
+
+    assert result["status"] == "completed"
+    assert result["remaining"] == 0
+    assert llm.calls == 2  # one batch + only the missing singleton
+    assert batch.metrics["turns_extracted"] == 4
+    assert batch.metrics["contract_rejections"] == 1
+
+
+class _WrongSingletonId(_LLM):
+    def complete_json(self, _system, prompt, **kwargs):
+        self.calls += 1
+        return {
+            "turns": [{
+                "turn_id": "mutated-by-model",
+                "addressed": False,
+                "name": "",
+                "addressee": "unknown",
+                "address_confidence": 0.0,
+                "states_fact": False,
+                "subject_hint": "",
+                "attribute": "",
+                "value": "",
+                "fact_confidence": 0.0,
+            }]
+        }
+
+
+def test_singleton_opaque_id_is_rebound_without_losing_semantics(tmp_path):
+    llm = _WrongSingletonId()
+    batch = _batcher(tmp_path / "memory.db", llm, size=1)
+    _enqueue(batch, 1)
+
+    assert batch.process_pending()["status"] == "completed"
+    assert llm.calls == 1
+    assert batch.metrics["singleton_id_rebinds"] == 1
+    with batch._connect() as con:
+        row = con.execute(
+            "SELECT result_json FROM live_fine_intel_queue_v19 WHERE turn_id='turn-0'"
+        ).fetchone()
+        assert json.loads(row["result_json"])["turn_id"] == "turn-0"

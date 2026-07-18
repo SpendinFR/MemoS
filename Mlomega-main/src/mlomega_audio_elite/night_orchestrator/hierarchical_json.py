@@ -231,6 +231,7 @@ def _run_hierarchical_json_single_schema(
     output_budget: int | None = None,
     connection: Any | None = None,
     lossless_array_merge: bool = False,
+    prefer_lossless_input_windows: bool = False,
 ) -> dict[str, Any]:
     """Return one complete schema object or raise without applying a partial."""
     # Legacy stages often embed the exact output schema in their payload. It is
@@ -291,7 +292,16 @@ def _run_hierarchical_json_single_schema(
     # separately supplied schema hint. Mirror that calculation here; measuring
     # only the prompt string still under-counted the clarification contract.
     complete_request = {"prompt": complete_probe, "schema_hint": dict(schema)}
-    if estimate_tokens_for_text(json_dumps(complete_request)) <= budget.max_input_tokens:
+    if prefer_lossless_input_windows:
+        # Some broad contracts contain only append-only collections plus a
+        # numeric aggregate.  Splitting their OUTPUT schema first makes every
+        # responsibility reread the same transcript.  Extract evidence leaves
+        # once instead, ask for the complete contract per evidence window and
+        # merge those disjoint projections deterministically below.  Keeping
+        # leaves even when the complete request would fit also gives the length
+        # recovery path something real to subdivide.
+        base, leaves = _extract_lists(dict(payload))
+    elif estimate_tokens_for_text(json_dumps(complete_request)) <= budget.max_input_tokens:
         leaves = [complete_leaf]
         base = {"complete_input_window": True}
     else:
@@ -661,6 +671,33 @@ def run_hierarchical_json(
         connection=connection,
     )
     payload = projection.payload
+    if (
+        stage_name == "v14_interpersonal_state"
+        and _supports_lossless_window_union(schema)
+    ):
+        # The V14.6 contract is nine append-only collections plus confidence.
+        # Its former two output responsibilities each reread the complete
+        # conversation, multiplying both prompt cost and latency.  A single
+        # evidence pass is lossless here: every window returns the full schema,
+        # arrays are exact-unioned and confidence is averaged by the shared
+        # deterministic reducer.  Raw evidence coverage remains authoritative.
+        result = _run_hierarchical_json_single_schema(
+            stage_name=stage_name,
+            person_id=person_id,
+            package_date=package_date,
+            source_ref=source_ref,
+            system=system,
+            payload=payload,
+            schema=schema,
+            timeout=timeout,
+            client=client,
+            context_window=context_window,
+            output_budget=output_budget,
+            connection=connection,
+            lossless_array_merge=True,
+            prefer_lossless_input_windows=True,
+        )
+        return restore_stage_output(result, projection)
     if not _requires_output_responsibility_split(schema, stage_name=stage_name):
         result = _run_hierarchical_json_single_schema(
             stage_name=stage_name,

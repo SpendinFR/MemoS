@@ -32,6 +32,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import urllib.error
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,13 @@ def _http_get(url: str, timeout: float = 1.0) -> dict[str, Any] | None:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        # /health intentionally returns 503 while recovery/preflight is pending;
+        # retain its structured cause instead of replacing it with an opaque {}.
+        try:
+            return json.loads(exc.read().decode("utf-8"))
+        except Exception:
+            return {"http_status": exc.code, "error": str(exc)}
     except Exception:
         return None
 
@@ -83,6 +91,13 @@ def start_server(host: str, port: int, db: Path, *, log: Path) -> subprocess.Pop
     # stops it; live runs Ollama only; night text/vision phases swap P1/VLM) must
     # be ACTIVE without a manual export. Explicit "0" remains the rollback.
     env.setdefault("MLOMEGA_GPU_PHASE_ORCHESTRATION", "1")
+    # A full-chain Gate B must never race the SessionHub deep readiness probe
+    # against the first seconds of live ASR/vision on an 8 GB GPU.
+    env.setdefault("MLOMEGA_REQUIRE_AI_READY_FOR_PAIRING", "1")
+    # The phone receives its end ACK immediately; this only bounds the background
+    # quiescence gate. Gate B sends its last interactive commands near t=290 s, so
+    # the ordered DataChannel queue needs enough time to finish before CloseDay.
+    env.setdefault("MLOMEGA_FINAL_DRAIN_TIMEOUT_S", "900")
     py = _venv_python()
     cmd = [
         str(py), str(ROOT / "services" / "live-pc" / "sessionhub_http.py"),
@@ -142,7 +157,10 @@ def main(argv: list[str] | None = None) -> int:
                 p.unlink()
 
     proc: subprocess.Popen | None = None
-    server_log = scratch / "server.log"
+    # Evidence belongs to this exact DB/run. A fixed server.log/device_report.json
+    # silently overwrote the previous one-shot and made post-mortem comparisons
+    # impossible even though the DB/report names were unique.
+    server_log = db.with_suffix(".server.log")
     try:
         if not args.attach:
             print(f"[harness] starting server on {args.host}:{args.port} (db={db})")
@@ -183,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         report["ui_intents_delivered"] = active.get("ui_intents_delivered", 0)
         report["server_close_day"] = active.get("close_day")
 
-        report_path = scratch / "device_report.json"
+        report_path = db.with_suffix(".device_report.json")
         report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
         res = asrt.run_assertions(

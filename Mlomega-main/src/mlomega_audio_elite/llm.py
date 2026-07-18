@@ -123,10 +123,20 @@ def ollama_generate(
         return outer
 
     record_phase_event("ollama_request", component=component, model=body.get("model"), timeout_s=effective_timeout_s)
+    # Interactive live calls have a user-visible deadline. Reusing the nightly
+    # retry policy here turned one 20 s help request into three attempts plus the
+    # 15 s/60 s post-stop backoffs (137 s measured on 20260718). A live timeout is
+    # an honest immediate degrade; durable post-stop callers keep their bounded
+    # recovery retries.
+    effective_retry_max = (
+        retry_max
+        if retry_max is not None
+        else (settings.poststop_retry_max if _is_post_stop_phase() else 0)
+    )
     return retry_operation(
         request_once,
         component=component,
-        max_retries=retry_max,
+        max_retries=effective_retry_max,
         on_retry=lambda attempt, failure, delay: record_phase_event(
             "ollama_retry", component=component, model=body.get("model"), attempt=attempt, error_code=failure.code, delay_s=delay
         ),
