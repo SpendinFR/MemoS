@@ -176,6 +176,13 @@ def main() -> int:
 
     if args.pro:
         os.environ["MLOMEGA_CLOUD_MODE"] = "pro"
+        # The PRO profile marker every brain2/orchestrator gate checks
+        # (_pro_closeday_enabled, fan-out, local EpisodeBuilder frontier). The
+        # harness path inherits it from the parent env, but a DIRECT CLI resume
+        # did not set it: EpisodeBuilder then inherited the deepseek backend
+        # below and went to the cloud again (proven 2026-07-20 on the resume of
+        # gateb-pro-20260719-185246.db). --pro IS the profile: assert it here.
+        os.environ["MLOMEGA_PRO_CLOSEDAY"] = "1"
         os.environ["MLOMEGA_LLM_BACKEND"] = "deepseek"
         os.environ["MLOMEGA_DEEPSEEK_MODEL"] = (
             "deepseek-v4-pro" if args.pro_text_model == "pro" else "deepseek-v4-flash"

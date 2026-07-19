@@ -2014,12 +2014,18 @@ def _build_local_episode_window_llm() -> Any:
     the implicit constructor (which would inherit ``deepseek`` in PRO). The
     ``base_url``/``model`` come from the same P1 env the GpuPhaseOrchestrator uses.
     """
+    from .gpu_phase_orchestrator import p1_alias, p1_base_url
     from .night_orchestrator.ollama_window_llm import OllamaWindowLLM
 
+    # Fall back to the canonical P1 identity when the env is unset: the model
+    # name feeds the window checkpoint keys (OllamaWindowLLM.model), so it must
+    # NEVER degrade to the generic "ollama-json" label — that would collide with
+    # the window keys of a previous cloud-driven episode attempt and silently
+    # resume foreign outputs (proven on gateb-pro-20260719-185246.db).
     client = OllamaJsonClient(
         backend="llamacpp",
-        base_url=os.environ.get("MLOMEGA_LLAMACPP_BASE_URL"),
-        model=os.environ.get("MLOMEGA_LLAMACPP_MODEL"),
+        base_url=os.environ.get("MLOMEGA_LLAMACPP_BASE_URL") or p1_base_url(),
+        model=os.environ.get("MLOMEGA_LLAMACPP_MODEL") or p1_alias(),
     )
     return OllamaWindowLLM(system=_BRAIN2_STRICT_SYSTEM, client=client)
 

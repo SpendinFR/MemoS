@@ -144,6 +144,24 @@ def test_complete_episodes_predicate_gates_the_boundary():
     assert con.execute("SELECT COUNT(*) FROM episodes").fetchone()[0] == 2
 
 
+def test_local_episode_client_never_degrades_to_generic_model_label(monkeypatch):
+    """The injected client's model feeds the window checkpoint keys. With the
+    P1 env unset it must fall back to the canonical P1 alias — NEVER to the
+    generic "ollama-json" label, which would collide with the window keys of a
+    previous cloud-driven episode attempt and silently resume foreign outputs
+    (proven on gateb-pro-20260719-185246.db)."""
+    from mlomega_audio_elite.brain2_strict_v13_2 import _build_local_episode_window_llm
+    from mlomega_audio_elite.gpu_phase_orchestrator import p1_alias
+
+    monkeypatch.delenv("MLOMEGA_LLAMACPP_MODEL", raising=False)
+    monkeypatch.delenv("MLOMEGA_LLAMACPP_BASE_URL", raising=False)
+    llm = _build_local_episode_window_llm()
+    assert llm.model == p1_alias()
+    assert llm.model != "ollama-json"
+    monkeypatch.setenv("MLOMEGA_LLAMACPP_MODEL", "qwen9b-p1-24k-mlomega")
+    assert _build_local_episode_window_llm().model == "qwen9b-p1-24k-mlomega"
+
+
 def test_boundary_decision_requires_pro_and_deepseek_backend(monkeypatch):
     from mlomega_audio_elite.brain2_strict_v13_2 import _episode_builder_forces_local
 
