@@ -1,5 +1,9 @@
 # EXECUTOR_BUILD_GUIDE — MLOmega V19, construction pas à pas
 
+> **Commandes opérateur :** avant tout run, test, harnais, dashboard, build Unity ou
+> diagnostic d'environnement, utiliser [`docs/OPERATOR_RUNBOOK.md`](OPERATOR_RUNBOOK.md).
+> Il fixe notamment la frontière `.venv-live`/`.venv` et évite les faux rouges.
+
 ## PASSATION 2026-07-19 — Profil CloseDay PRO branché, fournisseurs réels validés
 
 > **Reprise prioritaire :** lire intégralement
