@@ -25,7 +25,8 @@ import os
 import subprocess
 import time
 import urllib.request
-from typing import Any, Callable, Optional
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator, Optional
 
 from .runtime_v18_7 import record_phase_event
 
@@ -590,6 +591,22 @@ class GpuPhaseOrchestrator:
             "vram_before": vram_before,
             "vram_after": vram_after,
         }
+
+    @contextmanager
+    def pro_local_text_phase(self) -> Iterator["GpuPhaseOrchestrator"]:
+        """PRO frontier for the LOCAL EpisodeBuilder phase (PRO_CLOSEDAY_HANDOFF §A).
+
+        ``enter_text`` evicts every resident Ollama model (verified empty), starts
+        P1 and proves alias/context/anti-thinking. The caller builds+commits the
+        episodes inside the ``with`` block; P1 is ALWAYS stopped on exit — success
+        or failure — so the DeepSeek fan-out never runs beside a resident 9B and
+        an EpisodeBuilder error can never silently fall through to the cloud with
+        P1 still holding the VRAM."""
+        self.enter_text()
+        try:
+            yield self
+        finally:
+            self.stop_p1()
 
     def enter_vision(self) -> dict[str, Any]:
         """Deep Vision phase: STOP P1 so Qwen3-VL (Ollama) owns the GPU."""

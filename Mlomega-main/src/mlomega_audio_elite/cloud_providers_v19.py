@@ -31,6 +31,7 @@ from uuid import uuid4
 from .cloud_budget_v19 import (
     CloudBudgetExceeded,
     cloud_budget_policy,
+    mark_cloud_in_flight,
     reconcile_cloud_cost,
     release_cloud_reservation,
     reserve_cloud_cost,
@@ -261,6 +262,47 @@ def deepseek_chat_json(
     )
 
 
+def warm_bundle_prefix(
+    bundle_id: str, bundle_payload: dict[str, Any], *, timeout: float = 60.0,
+    model: str | None = None,
+) -> str:
+    """Pay the ONE cache-priming warm-up for an episode prefix, deduplicated.
+
+    CHANTIER 2 step 2: emit one warm-up per unique episode so the concurrent
+    engine fan-out that follows hits the cache instead of re-sending the full
+    prefix N times.  Reuses the exact per-digest dedup in ``deepseek_chat_json``
+    (process lock + ``_BUNDLE_WARM_RESPONSES``), so a repeated episode or a resume
+    never buys a second warm-up.  The caller applies ONE cache-settle wait after
+    warming every episode, never one wait per episode.
+    """
+    selected = (model or os.environ.get("MLOMEGA_DEEPSEEK_MODEL") or "deepseek-v4-pro").strip()
+    with cloud_bundle_prefix(bundle_id, bundle_payload) as context:
+        warm_key = (context.digest, selected)
+        cached = _BUNDLE_WARM_RESPONSES.get(warm_key)
+        if cached:
+            return cached
+        with _BUNDLE_WARM_LOCK:
+            cached = _BUNDLE_WARM_RESPONSES.get(warm_key)
+            if cached:
+                return cached
+            warm_outer = _deepseek_request(
+                messages=_deepseek_messages("", "", model=selected, warm_only=True),
+                model=selected, max_output_tokens=48, timeout=timeout,
+                stage_name="bundle_prefix_warm", json_schema={"type": "object"},
+            )
+            choices = warm_outer.get("choices") or []
+            message = choices[0].get("message", {}) if choices and isinstance(choices[0], dict) else {}
+            warm_text = str(message.get("content") or "").strip()
+            try:
+                parsed = json.loads(warm_text)
+            except Exception:
+                parsed = {}
+            if not isinstance(parsed, dict) or parsed.get("bundle_loaded") is not True:
+                raise CloudProviderError("DeepSeek bundle prefix warm-up contract failed")
+            _BUNDLE_WARM_RESPONSES[warm_key] = warm_text
+            return warm_text
+
+
 def _deepseek_request(
     *, messages: list[dict[str, str]], model: str, max_output_tokens: int,
     timeout: float, stage_name: str, json_schema: dict[str, Any] | None,
@@ -297,6 +339,9 @@ def _deepseek_request(
     sent = False
     started = time.monotonic()
     try:
+        # Persist the durable reserved->in_flight frontier before the HTTP send so
+        # a crash mid-call is recovered as ``uncertain`` (OBS-70), never released.
+        mark_cloud_in_flight(reservation)
         sent = True
         outer, status, retries = _json_request(
             os.environ.get("MLOMEGA_DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/") + "/chat/completions",
@@ -419,6 +464,7 @@ def groq_transcribe(audio_path: Path, *, language: str, timeout: float = 900.0) 
                     "User-Agent": "MLOmega-V19-PRO/1.0",
                 },
             )
+            mark_cloud_in_flight(reservation)
             sent = True
             raw, status, retries = _request(request, timeout=timeout, retries=int(os.environ.get("MLOMEGA_CLOUD_HTTP_RETRIES", "4")))
         outer = json.loads(raw.decode("utf-8"))
@@ -474,6 +520,7 @@ def gemini_vision_json(
     sent = False
     started = time.monotonic()
     try:
+        mark_cloud_in_flight(reservation)
         sent = True
         outer, status, retries = _json_request(
             os.environ.get("MLOMEGA_GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
@@ -506,5 +553,5 @@ def gemini_vision_json(
 __all__ = [
     "BundlePrefixContext", "CloudProviderError", "cloud_bundle_prefix",
     "current_bundle_prefix", "deepseek_chat_json", "gemini_vision_json",
-    "groq_transcribe",
+    "groq_transcribe", "warm_bundle_prefix",
 ]

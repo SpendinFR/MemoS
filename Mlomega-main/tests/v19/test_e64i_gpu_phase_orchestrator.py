@@ -377,7 +377,9 @@ def test_prepare_live_gpu_called_in_preflight_finally_even_on_failure(monkeypatc
 
     def fake_load(name, path):
         if "sessionhub_http" in str(path):
-            return type("H", (), {"_probe_ai_chain": staticmethod(lambda *, person_id: {"checks": {}})})
+            return type("H", (), {"_probe_ai_chain": staticmethod(
+                lambda *, person_id, deep=False: {"checks": {}}
+            )})
         return real_load(name, path)
 
     monkeypatch.setattr(mod, "_load", fake_load)

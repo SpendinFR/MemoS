@@ -186,6 +186,13 @@ def main() -> int:
         os.environ.setdefault("MLOMEGA_GEMINI_VLM_MODEL", "gemini-3.1-flash-lite")
         os.environ["MLOMEGA_CLOUD_DAILY_BUDGET_EUR"] = str(args.cloud_budget_eur)
         os.environ["MLOMEGA_CLOUD_ON_BUDGET"] = args.cloud_on_budget
+        # OBS-70: reconcile reservations orphaned by an earlier crash BEFORE any
+        # new cloud call. Foreign runs' never-sent rows free their worst case;
+        # possibly-billed in_flight rows stay counted as uncertain. Never edits
+        # the active run's own reservations, so a resume is idempotent.
+        from mlomega_audio_elite.cloud_budget_v19 import recover_cloud_reservations
+
+        recover_cloud_reservations()
 
     if not _CUDA_ENV_OK:
         raise RuntimeError(f"CloseDay CUDA/cuDNN environment invalid: {_CUDA_ENV_DETAIL}")

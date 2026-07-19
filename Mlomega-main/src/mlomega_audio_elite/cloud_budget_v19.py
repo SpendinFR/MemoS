@@ -23,6 +23,12 @@ from .utils import now_iso
 
 LEDGER_TABLE = "cloud_cost_ledger_v19"
 
+# OBS-70 crash-safe frontier (docs/PRO_CLOSEDAY_HANDOFF.md, §"crash/budget"):
+#   run_id / worker_id  : durable identity of the process that owns a reservation.
+#   sent_at             : set the instant BEFORE the HTTP request leaves; its
+#                         presence is the proof a request may have been billed.
+#   status='in_flight'  : persisted after ``mark_cloud_in_flight`` and before the
+#                         network call, so a crash mid-call is recoverable.
 LEDGER_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS {LEDGER_TABLE}(
   call_id TEXT PRIMARY KEY,
@@ -45,12 +51,37 @@ CREATE TABLE IF NOT EXISTS {LEDGER_TABLE}(
   tariff_json TEXT NOT NULL DEFAULT '{{}}',
   usage_json TEXT NOT NULL DEFAULT '{{}}',
   error_code TEXT,
+  run_id TEXT,
+  worker_id TEXT,
+  sent_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_cloud_cost_day_v19
   ON {LEDGER_TABLE}(budget_day,status,provider,model);
 """
+
+# Created only AFTER the identity columns are guaranteed to exist (a pre-OBS-70
+# table is migrated first), so a legacy ledger does not fail on ``run_id``.
+_LEDGER_RUN_INDEX = (
+    f"CREATE INDEX IF NOT EXISTS idx_cloud_cost_run_v19 "
+    f"ON {LEDGER_TABLE}(run_id,status);"
+)
+
+# Columns added after the first PRO ledger shipped. Old databases (e.g. the
+# preserved gateb-pro-20260719-185246.db) must gain them without losing a row.
+_LEDGER_ADDED_COLUMNS = (("run_id", "TEXT"), ("worker_id", "TEXT"), ("sent_at", "TEXT"))
+
+# Every status that must count at (at least) its reserved worst case in the cap.
+# ``in_flight`` and ``uncertain`` are conservative: a possibly-billed request is
+# never released on age alone (OBS-70).
+_COMMITTED_STATUSES = (
+    "reserved", "in_flight", "completed", "failed_charged", "uncertain",
+)
+
+
+_PROCESS_RUN_ID: str | None = None
+_PROCESS_WORKER_ID: str | None = None
 
 
 class CloudBudgetExceeded(RuntimeError):
@@ -88,6 +119,8 @@ class CloudReservation:
     reserved_eur: float
     budget_day: str
     tariff: dict[str, Any]
+    run_id: str = ""
+    worker_id: str = ""
 
 
 def cloud_mode_enabled() -> bool:
@@ -140,22 +173,59 @@ def _budget_day() -> str:
     return datetime.now(tz).date().isoformat()
 
 
+def _migrate_ledger_columns(con: Any) -> None:
+    """Add the crash-safe identity/frontier columns to a pre-OBS-70 ledger."""
+    existing = {
+        str(row["name"])
+        for row in con.execute(f"PRAGMA table_info({LEDGER_TABLE})").fetchall()
+    }
+    for name, decl in _LEDGER_ADDED_COLUMNS:
+        if name not in existing:
+            con.execute(f"ALTER TABLE {LEDGER_TABLE} ADD COLUMN {name} {decl}")
+
+
 def ensure_cloud_budget_schema() -> None:
     with connect() as con:
         con.executescript(LEDGER_SCHEMA)
+        _migrate_ledger_columns(con)
+        con.execute(_LEDGER_RUN_INDEX)
         con.commit()
 
 
+def cloud_run_id() -> str:
+    """Durable identity of the CloseDay run that owns a reservation.
+
+    Prefer an explicit run identity set by the launcher so a resume of the SAME
+    run recognises its own prior reservations; fall back to a per-process id.
+    """
+    for key in ("MLOMEGA_CLOUD_RUN_ID", "MLOMEGA_CLOSE_DAY_RUN_ID", "MLOMEGA_RUN_ID"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    global _PROCESS_RUN_ID
+    if _PROCESS_RUN_ID is None:
+        _PROCESS_RUN_ID = f"run_{uuid4().hex}"
+    return _PROCESS_RUN_ID
+
+
+def cloud_worker_id() -> str:
+    """Per-process/worker identity (thread-safe: derived once per process)."""
+    global _PROCESS_WORKER_ID
+    if _PROCESS_WORKER_ID is None:
+        _PROCESS_WORKER_ID = f"worker_{os.getpid()}_{uuid4().hex[:8]}"
+    return _PROCESS_WORKER_ID
+
+
 def _committed_eur(con: Any, budget_day: str) -> float:
+    placeholders = ",".join("?" for _ in _COMMITTED_STATUSES)
     row = con.execute(
         f"""SELECT COALESCE(SUM(
-               CASE WHEN status='reserved' THEN reserved_eur
+               CASE WHEN status IN ('reserved','in_flight') THEN reserved_eur
                     ELSE COALESCE(actual_eur,reserved_eur) END
              ),0) AS total
              FROM {LEDGER_TABLE}
-             WHERE budget_day=? AND status IN
-               ('reserved','completed','failed_charged','uncertain')""",
-        (budget_day,),
+             WHERE budget_day=? AND status IN ({placeholders})""",
+        (budget_day, *_COMMITTED_STATUSES),
     ).fetchone()
     return float(row["total"] if row is not None else 0.0)
 
@@ -175,6 +245,8 @@ def reserve_cloud_cost(
     policy = cloud_budget_policy()
     call_id = f"cloudcall_{uuid4().hex}"
     timestamp = now_iso()
+    run_id = cloud_run_id()
+    worker_id = cloud_worker_id()
     with connect() as con, write_transaction(con, immediate=True):
         committed = _committed_eur(con, day)
         if committed + amount > limit + 1e-9:
@@ -189,12 +261,12 @@ def reserve_cloud_cost(
         con.execute(
             f"""INSERT INTO {LEDGER_TABLE}(
                  call_id,budget_day,provider,model,stage_name,status,
-                 reserved_eur,tariff_json,created_at,updated_at)
-                 VALUES(?,?,?,?,?,'reserved',?,?,?,?)""",
+                 reserved_eur,tariff_json,run_id,worker_id,created_at,updated_at)
+                 VALUES(?,?,?,?,?,'reserved',?,?,?,?,?,?)""",
             (
                 call_id, day, str(provider), str(model), str(stage_name), amount,
                 json.dumps(tariff, ensure_ascii=False, sort_keys=True),
-                timestamp, timestamp,
+                run_id, worker_id, timestamp, timestamp,
             ),
         )
     return CloudReservation(
@@ -205,7 +277,28 @@ def reserve_cloud_cost(
         reserved_eur=amount,
         budget_day=day,
         tariff=dict(tariff),
+        run_id=run_id,
+        worker_id=worker_id,
     )
+
+
+def mark_cloud_in_flight(reservation: CloudReservation) -> None:
+    """Persist the durable ``reserved -> in_flight`` frontier BEFORE the HTTP send.
+
+    After this returns, the row carries ``sent_at`` and ``status='in_flight'``: a
+    crash from here until reconciliation proves the request *may* have been billed,
+    so recovery keeps it at worst case (``uncertain``) instead of releasing it.
+    A row already reconciled (completed/failed_charged/uncertain) is left as-is so
+    a late duplicate call cannot regress a settled cost.
+    """
+    ensure_cloud_budget_schema()
+    with connect() as con, write_transaction(con, immediate=True):
+        con.execute(
+            f"""UPDATE {LEDGER_TABLE}
+                SET status='in_flight',sent_at=?,updated_at=?
+                WHERE call_id=? AND status='reserved'""",
+            (now_iso(), now_iso(), reservation.call_id),
+        )
 
 
 def reconcile_cloud_cost(
@@ -273,6 +366,57 @@ def release_cloud_reservation(
         )
 
 
+def recover_cloud_reservations(*, active_run_id: str | None = None) -> dict[str, Any]:
+    """Reconcile reservations orphaned by a crash, conservatively (OBS-70).
+
+    Called ONCE at the start of a resumed PRO run, before any new reservation.
+    The rule mirrors ``docs/PRO_CLOSEDAY_HANDOFF.md``:
+
+    * A ``reserved`` row that belongs to a DIFFERENT, now-inactive run and was
+      never marked ``in_flight`` (no ``sent_at``) is PROVEN to have never sent a
+      request. It becomes ``released`` and frees its worst case.
+    * An ``in_flight`` row (``sent_at`` present) from any run MAY have been billed.
+      It becomes ``uncertain`` and KEEPS its reserved worst case in the cap. Age is
+      never a release reason.
+    * Rows owned by the ACTIVE run are left untouched: the live process is still
+      the authority on its own reservations (idempotent re-entry, concurrency).
+
+    Idempotent: re-running only transitions rows that are still reserved/in_flight
+    and not owned by the active run, so a second call is a no-op.
+    """
+    ensure_cloud_budget_schema()
+    active = str(active_run_id or cloud_run_id())
+    released = 0
+    uncertain = 0
+    with connect() as con, write_transaction(con, immediate=True):
+        # Proven non-emission: a foreign run's still-reserved row with no sent_at.
+        cursor = con.execute(
+            f"""UPDATE {LEDGER_TABLE}
+                SET status='released',actual_eur=0,error_code='recovered_never_sent',
+                    updated_at=?
+                WHERE status='reserved' AND sent_at IS NULL
+                  AND (run_id IS NULL OR run_id<>?)""",
+            (now_iso(), active),
+        )
+        released = int(cursor.rowcount or 0)
+        # Possibly billed: any orphaned in_flight row keeps worst case as uncertain.
+        cursor = con.execute(
+            f"""UPDATE {LEDGER_TABLE}
+                SET status='uncertain',actual_eur=reserved_eur,
+                    error_code=COALESCE(error_code,'recovered_uncertain_send'),
+                    updated_at=?
+                WHERE status='in_flight'
+                  AND (run_id IS NULL OR run_id<>?)""",
+            (now_iso(), active),
+        )
+        uncertain = int(cursor.rowcount or 0)
+    return {
+        "active_run_id": active,
+        "released": released,
+        "uncertain": uncertain,
+    }
+
+
 def cloud_budget_summary(
     *, budget_day: str | None = None, initialized_only: bool = False
 ) -> dict[str, Any]:
@@ -328,8 +472,12 @@ __all__ = [
     "cloud_budget_policy",
     "cloud_budget_summary",
     "cloud_mode_enabled",
+    "cloud_run_id",
+    "cloud_worker_id",
     "ensure_cloud_budget_schema",
+    "mark_cloud_in_flight",
     "reconcile_cloud_cost",
+    "recover_cloud_reservations",
     "release_cloud_reservation",
     "reserve_cloud_cost",
     "usd_per_eur",

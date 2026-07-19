@@ -11,6 +11,7 @@ regex/keyword analyst and no evidence-only cognitive mode.
 import os
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from contextvars import copy_context
 from typing import Any, Mapping, Sequence
 
@@ -20,6 +21,7 @@ from .llm import (
     EliteLLMError,
     LLMTruncatedOutputError,
     OllamaJsonClient,
+    llm_client_override,
 )
 from .utils import json_dumps, json_loads, now_iso, sha256_bytes, stable_id
 from .brain2_complete_v13 import COMPLETE_TARGETS, ENGINE_ORDER, ENGINE_TABLES, PLAN_TABLES, ENGINE_SCHEMAS
@@ -1944,6 +1946,124 @@ def _materialize_episodes_from_qwen(con, conversation_id: str, output: dict[str,
 _EPISODE_MISSION = "Découpe cette conversation en épisodes de vie selon le plan Brain 2.0. Aucun découpage par regex: utilise le sens, les preuves et l'incertitude. Respecte metadata_json.kind/evidence_role: observation système ≠ parole de William."
 
 
+def _pro_closeday_enabled() -> bool:
+    return os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _episode_builder_forces_local() -> bool:
+    """PRO must never let DeepSeek build episodes (docs/PRO_CLOSEDAY_HANDOFF.md §A).
+
+    The nightly PRO subprocess sets ``MLOMEGA_LLM_BACKEND=deepseek`` so the
+    cognitive engines fan out to the cloud. EpisodeBuilder, however, is the
+    already-validated lossless P1/llama.cpp stage and stays local. This is true
+    only when a cloud text backend would otherwise be inherited: without the PRO
+    flag (or with the local backend) this returns ``False`` and NOTHING below runs,
+    so the local path keeps its exact implicit client and stays byte-for-byte.
+    """
+    if not _pro_closeday_enabled():
+        return False
+    return os.environ.get("MLOMEGA_LLM_BACKEND", "").strip().lower() == "deepseek"
+
+
+def _cache_settle_seconds() -> float:
+    try:
+        return max(0.0, float(os.environ.get("MLOMEGA_DEEPSEEK_CACHE_SETTLE_S", "28")))
+    except ValueError:
+        return 28.0
+
+
+def _pro_warm_episode_prefixes(episodes: Sequence[tuple[str, Mapping[str, Any]]]) -> None:
+    """Warm each unique episode prefix once, then wait one cache-settle period.
+
+    The warm-up is idempotent per digest (``cloud_providers_v19.warm_bundle_prefix``)
+    so repeated episodes and resumes never repay it. A single settle wait follows
+    ALL warm-ups (not one per episode). Set ``MLOMEGA_DEEPSEEK_CACHE_SETTLE_S=0``
+    (tests) to skip the wall-clock wait while still proving one warm-up/episode.
+    """
+    if not episodes:
+        return
+    from .cloud_providers_v19 import warm_bundle_prefix
+
+    seen: set[str] = set()
+    warmed = 0
+    try:
+        timeout = float(os.environ.get("MLOMEGA_V13_ENGINE_TIMEOUT", "180"))
+    except ValueError:
+        timeout = 180.0
+    for episode_id, bundle in episodes:
+        if episode_id in seen:
+            continue
+        seen.add(episode_id)
+        warm_bundle_prefix(str(episode_id), dict(bundle), timeout=timeout)
+        warmed += 1
+    if warmed:
+        settle = _cache_settle_seconds()
+        if settle > 0:
+            import time as _time
+
+            _time.sleep(settle)
+
+
+def _build_local_episode_window_llm() -> Any:
+    """Explicit local EpisodeBuilder client for the PRO frontier.
+
+    Constructs ``OllamaJsonClient(backend="llamacpp", ...)`` wrapped by
+    ``OllamaWindowLLM`` so ``build_conversation_episode_v6`` never falls back to
+    the implicit constructor (which would inherit ``deepseek`` in PRO). The
+    ``base_url``/``model`` come from the same P1 env the GpuPhaseOrchestrator uses.
+    """
+    from .night_orchestrator.ollama_window_llm import OllamaWindowLLM
+
+    client = OllamaJsonClient(
+        backend="llamacpp",
+        base_url=os.environ.get("MLOMEGA_LLAMACPP_BASE_URL"),
+        model=os.environ.get("MLOMEGA_LLAMACPP_MODEL"),
+    )
+    return OllamaWindowLLM(system=_BRAIN2_STRICT_SYSTEM, client=client)
+
+
+def _conversation_has_complete_episodes(con, conversation_id: str) -> bool:
+    """Read-only completeness predicate, mirror of ``_ensure_episodes_strict``'s head.
+
+    Used ONLY by the PRO P1 boundary decision: when the conversation already has
+    complete, source-compatible episodes, the physical P1 subprocess must not be
+    started at all (PRO_CLOSEDAY_HANDOFF §A). Never mutates; the authoritative
+    check-and-clean stays inside ``_ensure_episodes_strict`` unchanged."""
+    rows = [dict(r) for r in con.execute(
+        "SELECT metadata_json FROM episodes WHERE source_conversation_id=?",
+        (conversation_id,),
+    ).fetchall()]
+    accepted_episode_sources = {EPISODE_BUILD_VERSION}
+    try:
+        from .brain2_conversation_episode import (
+            CONVERSATION_EPISODE_BUILD_VERSION,
+            conversation_episode_enabled,
+        )
+        if conversation_episode_enabled():
+            accepted_episode_sources = {CONVERSATION_EPISODE_BUILD_VERSION}
+    except Exception:
+        pass
+    for r in rows:
+        meta = json_loads(r.get("metadata_json"), {}) if isinstance(r.get("metadata_json"), str) else {}
+        if meta.get("episode_source") in accepted_episode_sources and meta.get("coverage_status") == "complete":
+            return True
+    return False
+
+
+def _pro_local_episode_p1_boundary():
+    """Physical P1 lifecycle for the PRO episode phase (PRO_CLOSEDAY_HANDOFF §A).
+
+    Owns a fresh orchestrator: evict Ollama -> start P1 (alias/context/
+    anti-thinking proven) -> yield for build+commit -> stop P1 in ``finally``,
+    BEFORE any DeepSeek engine call. Reached only when PRO forces the local
+    EpisodeBuilder AND the episodes are not already materialized."""
+    from .gpu_phase_orchestrator import GpuPhaseOrchestrator
+
+    return GpuPhaseOrchestrator().pro_local_text_phase()
+
+
 def _ensure_episodes_strict(con, conversation_id: str, *, person_id: str) -> int:
     existing_rows = [dict(r) for r in con.execute("SELECT episode_id, metadata_json FROM episodes WHERE source_conversation_id=?", (conversation_id,)).fetchall()]
     if existing_rows:
@@ -1976,6 +2096,23 @@ def _ensure_episodes_strict(con, conversation_id: str, *, person_id: str) -> int
     # structured episodes with a persisted coverage proof. The prompt text is
     # unchanged; small conversations keep the legacy single-call path below.
     resolved_owner = _default_user(con, conversation_id, explicit_person_id=person_id)
+    # CHANTIER 1: in PRO, EpisodeBuilder stays on the validated local P1/llama.cpp
+    # client instead of the DeepSeek text backend inherited from the environment.
+    # ``force_local`` is False without the PRO flag, so both objects are None and
+    # the local path below keeps its exact implicit client (byte-for-byte).
+    force_local_episode = _episode_builder_forces_local()
+    episode_window_llm = (
+        _build_local_episode_window_llm() if force_local_episode else None
+    )
+    episode_backend_override = (
+        llm_client_override(
+            backend="llamacpp",
+            base_url=os.environ.get("MLOMEGA_LLAMACPP_BASE_URL"),
+            model=os.environ.get("MLOMEGA_LLAMACPP_MODEL"),
+        )
+        if force_local_episode
+        else nullcontext()
+    )
     try:
         from .brain2_conversation_episode import (
             build_conversation_episode_v6,
@@ -1986,16 +2123,18 @@ def _ensure_episodes_strict(con, conversation_id: str, *, person_id: str) -> int
         use_conversation_episode = False
     if use_conversation_episode:
         conversation_package_date = str(bundle.get("conversation", {}).get("started_at") or now_iso())[:10]
-        stats = build_conversation_episode_v6(
-            con,
-            conversation_id,
-            bundle=bundle,
-            safe_prompt=_safe_prompt_payload,
-            materialize=_materialize_episodes_from_qwen,
-            system=_BRAIN2_STRICT_SYSTEM,
-            person_id=resolved_owner,
-            package_date=conversation_package_date,
-        )
+        with episode_backend_override:
+            stats = build_conversation_episode_v6(
+                con,
+                conversation_id,
+                bundle=bundle,
+                safe_prompt=_safe_prompt_payload,
+                materialize=_materialize_episodes_from_qwen,
+                system=_BRAIN2_STRICT_SYSTEM,
+                person_id=resolved_owner,
+                package_date=conversation_package_date,
+                window_llm=episode_window_llm,
+            )
         _record_engine(
             con,
             engine="episode_builder",
@@ -2021,18 +2160,19 @@ def _ensure_episodes_strict(con, conversation_id: str, *, person_id: str) -> int
         use_windows = False
     if use_windows:
         package_date = str(bundle.get("conversation", {}).get("started_at") or now_iso())[:10]
-        stats = build_episodes_windowed(
-            con,
-            conversation_id,
-            bundle=bundle,
-            person_id=resolved_owner,
-            package_date=package_date,
-            safe_prompt=_safe_prompt_payload,
-            materialize=_materialize_episodes_from_qwen,
-            mission=_EPISODE_MISSION,
-            schema=STRICT_EPISODE_SCHEMA,
-            system=_BRAIN2_STRICT_SYSTEM,
-        )
+        with episode_backend_override:
+            stats = build_episodes_windowed(
+                con,
+                conversation_id,
+                bundle=bundle,
+                person_id=resolved_owner,
+                package_date=package_date,
+                safe_prompt=_safe_prompt_payload,
+                materialize=_materialize_episodes_from_qwen,
+                mission=_EPISODE_MISSION,
+                schema=STRICT_EPISODE_SCHEMA,
+                system=_BRAIN2_STRICT_SYSTEM,
+            )
         _record_engine(
             con,
             engine="episode_builder",
@@ -2045,7 +2185,8 @@ def _ensure_episodes_strict(con, conversation_id: str, *, person_id: str) -> int
         )
         return int(stats.get("episodes") or 0)
     prompt = _safe_prompt_payload({"mission": _EPISODE_MISSION, "conversation_bundle": bundle, "schema": STRICT_EPISODE_SCHEMA})
-    out = _llm_require_json("episode_builder", prompt, STRICT_EPISODE_SCHEMA)
+    with episode_backend_override:
+        out = _llm_require_json("episode_builder", prompt, STRICT_EPISODE_SCHEMA)
     _record_engine(
         con,
         engine="episode_builder",
@@ -2482,9 +2623,24 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
         if use_shared_facts and shared_facts is not None:
             shared_facts.ensure_shared_fact_schema(con)
         person_id = _default_user(con, conversation_id, explicit_person_id=person_id)
-        counts["episodes_created_by_qwen"] += _ensure_episodes_strict(
-            con, conversation_id, person_id=person_id
-        )
+        # CHANTIER 1 (physical frontier): in PRO with missing episodes, the local
+        # P1 subprocess is started for the build and ALWAYS stopped before any
+        # DeepSeek engine call. Episodes already complete => P1 never starts.
+        # Without the PRO flag the two statements below are the historic ones.
+        if _episode_builder_forces_local() and not _conversation_has_complete_episodes(
+            con, conversation_id
+        ):
+            with _pro_local_episode_p1_boundary():
+                counts["episodes_created_by_qwen"] += _ensure_episodes_strict(
+                    con, conversation_id, person_id=person_id
+                )
+                # Episodes must be durable BEFORE P1 goes away (handoff §A:
+                # build -> coverage -> commit -> stop P1 -> cloud fan-out).
+                con.commit()
+        else:
+            counts["episodes_created_by_qwen"] += _ensure_episodes_strict(
+                con, conversation_id, person_id=person_id
+            )
         _create_readiness_checks(con, conversation_id)
         # EpisodeBuilder is a complete, independently covered stage. Keep its
         # materialized episodes durable before the per-episode engine matrix so a
@@ -2670,6 +2826,17 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
             # materialize their outputs before the following level. The local
             # episode-pack-v2 path above remains byte-for-byte unchanged.
             con.commit()
+
+            # CHANTIER 2 step 2-4: prime each UNIQUE episode prefix once, then wait
+            # a SINGLE cache propagation before the concurrent fan-out (never one
+            # wait per episode). Warm-up is deduplicated by digest, so a resume or
+            # a repeated episode never repays it. Only runs under PRO fan-out.
+            _pro_warm_episode_prefixes(
+                [
+                    (str(work["episode_id"]), dict(work["bundle"]))
+                    for work in pro_episode_work
+                ]
+            )
 
             def run_engine_task(task: Mapping[str, Any]) -> dict[str, Any]:
                 with connect() as worker_con:
