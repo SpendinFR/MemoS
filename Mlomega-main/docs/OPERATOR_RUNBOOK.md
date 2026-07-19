@@ -89,6 +89,42 @@ Remove-Item Env:HTTP_PROXY,Env:HTTPS_PROXY,Env:ALL_PROXY -ErrorAction SilentlyCo
 Le lanceur `RUN_MLOMEGA_V19.ps1 -LivePhone` exécute déjà ce préflight. Il est inutile de le
 doubler juste avant RUN, sauf diagnostic ciblé.
 
+### Gate PRO : préflight et harnais dans le même environnement
+
+Le reçu profond contient un fingerprint exact. Pour un Gate PRO détaché, le wrapper doit
+poser toutes les variables, lancer le préflight puis le harnais **dans le même script
+PowerShell**. Un préflight exécuté dans un autre terminal peut être entièrement vert mais
+sera refusé par SessionHub (`deep_preflight_receipt mismatch`). Le budget du fingerprint
+doit également être identique à `--cloud-budget-eur`.
+
+```powershell
+$env:MLOMEGA_GPU_PHASE_ORCHESTRATION="1"
+$env:MLOMEGA_REQUIRE_AI_READY_FOR_PAIRING="1"
+$env:MLOMEGA_PRO_CLOSEDAY="1"
+$env:MLOMEGA_CLOUD_MODE="pro"
+$env:MLOMEGA_PRO_TEXT_MODEL="deepseek-v4-pro"
+$env:MLOMEGA_DEEP_AUDIO_TRANSCRIBER="groq"
+$env:MLOMEGA_GROQ_WHISPER_MODEL="whisper-large-v3"
+$env:MLOMEGA_CLOUD_VLM_PROVIDER="gemini"
+$env:MLOMEGA_GEMINI_VLM_MODEL="gemini-3.1-flash-lite"
+$env:MLOMEGA_CLOUD_DAILY_BUDGET_EUR="1.48"
+$env:MLOMEGA_CLOUD_ON_BUDGET="stop"
+
+Remove-Item Env:OPENAI_API_KEY,Env:HTTP_PROXY,Env:HTTPS_PROXY,Env:ALL_PROXY `
+  -ErrorAction SilentlyContinue
+
+.\.venv-live\Scripts\python.exe scripts\check_phoneonly_readiness.py `
+  --person-id me --deep
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+# Lancer run_harness.py --pro ici, sans ouvrir un nouveau shell et avec :
+# --cloud-budget-eur 1.48 --cloud-on-budget stop
+```
+
+Champs qui doivent correspondre : personne, backend/URL/alias/contexte P1, modèle live,
+VLM, orchestration GPU, flag PRO, modèles DeepSeek/Groq/Gemini, budget et politique. Ne pas
+éditer le reçu pour les aligner : recréer le reçu avec le véritable environnement du run.
+
 Préflight CloseDay direct, uniquement pour diagnostiquer l'environnement nocturne :
 
 ```powershell
