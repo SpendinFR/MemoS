@@ -13,6 +13,10 @@ param(
   [switch]$SimOnly,
   [Alias("PhoneOnly")][switch]$LivePhone,
   [switch]$Xr,
+  [switch]$Pro,
+  [ValidateSet("pro", "flash")][string]$ProTextModel = "pro",
+  [ValidateSet("stop", "flash", "local")][string]$CloudOnBudget = "stop",
+  [double]$CloudBudgetEur = 1.50,
   [string]$PersonId = "me",
   [string]$BindHost = "0.0.0.0",
   [int]$Port = 8710
@@ -92,6 +96,19 @@ function Initialize-CoreCudaPath {
 
 if ($LivePhone) {
   Import-DotEnv
+  if ($Pro) {
+    $env:MLOMEGA_CLOUD_MODE = "pro"
+    $env:MLOMEGA_PRO_CLOSEDAY = "1"
+    if ($ProTextModel -eq "flash") { $env:MLOMEGA_PRO_TEXT_MODEL = "deepseek-v4-flash" }
+    else { $env:MLOMEGA_PRO_TEXT_MODEL = "deepseek-v4-pro" }
+    $env:MLOMEGA_DEEP_AUDIO_TRANSCRIBER = "groq"
+    if (-not $env:MLOMEGA_GROQ_WHISPER_MODEL) { $env:MLOMEGA_GROQ_WHISPER_MODEL = "whisper-large-v3" }
+    $env:MLOMEGA_CLOUD_VLM_PROVIDER = "gemini"
+    if (-not $env:MLOMEGA_GEMINI_VLM_MODEL) { $env:MLOMEGA_GEMINI_VLM_MODEL = "gemini-3.1-flash-lite" }
+    $env:MLOMEGA_CLOUD_DAILY_BUDGET_EUR = [string]$CloudBudgetEur
+    $env:MLOMEGA_CLOUD_ON_BUDGET = $CloudOnBudget
+    Write-Host "[PRO] CloseDay cloud opt-in: DeepSeek/$($env:MLOMEGA_PRO_TEXT_MODEL), Groq Whisper, Gemini Flash-Lite; live Ollama unchanged; budget $CloudBudgetEur EUR." -ForegroundColor Cyan
+  }
   Remove-KnownBlackholeProxy
   Initialize-CoreCudaPath
   # Orchestration GPU par phase active par defaut en production (preflight teste
@@ -181,5 +198,5 @@ if ($SimOnly) {
   exit $code
 }
 
-Write-Host "Usage: .\scripts\RUN_MLOMEGA_V19.ps1 -SimOnly | -LivePhone [-BindHost 0.0.0.0] [-Port 8710]" -ForegroundColor Cyan
+Write-Host "Usage: .\scripts\RUN_MLOMEGA_V19.ps1 -SimOnly | -LivePhone [-Pro] [-CloudBudgetEur 1.50] [-CloudOnBudget stop|flash|local]" -ForegroundColor Cyan
 exit 0

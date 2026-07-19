@@ -54,7 +54,6 @@ def transcribe_with_whisperx(
         whisperx = active_runtime.whisperx_module()
         device = settings.whisperx_device
         compute_type = settings.whisperx_compute_type
-        model = active_runtime.transcription_model(language)
         audio = whisperx.load_audio(str(audio_path))
         # A batch size that fits a cold 8–12 GB card can still OOM after a live
         # session.  Retry the *same* transcription with smaller batches before
@@ -72,30 +71,54 @@ def transcribe_with_whisperx(
         result = None
         effective_batch_size = requested_batch
         last_exc: Exception | None = None
-        for index, batch_size in enumerate(batch_candidates):
+        cloud_transcriber = os.environ.get("MLOMEGA_DEEP_AUDIO_TRANSCRIBER", "local").strip().lower()
+        if cloud_transcriber == "groq":
+            from .cloud_budget_v19 import CloudBudgetExceeded, cloud_budget_policy
+            from .cloud_providers_v19 import groq_transcribe
+
             try:
-                result = model.transcribe(audio, batch_size=batch_size, language=language)
-                effective_batch_size = batch_size
-                if index:
-                    record_phase_event(
-                        "deep_audio_batch_fallback_succeeded",
-                        requested_batch=requested_batch,
-                        effective_batch_size=batch_size,
-                    )
-                break
-            except Exception as exc:
-                last_exc = exc
-                failure = classify_failure(exc)
-                if failure.code != "gpu_oom" or batch_size == 1:
-                    raise
-                release_gpu_memory(reason=f"deep_audio_batch_oom:{batch_size}")
-                record_phase_event(
-                    "deep_audio_batch_fallback",
-                    requested_batch=requested_batch,
-                    failed_batch_size=batch_size,
-                    next_batch_size=batch_candidates[index + 1],
-                    error_code=failure.code,
+                result = groq_transcribe(
+                    audio_path,
+                    language=language,
+                    timeout=float(os.environ.get("MLOMEGA_GROQ_TIMEOUT_S", "900")),
                 )
+                effective_batch_size = 0
+                record_phase_event(
+                    "deep_audio_cloud_transcription_completed",
+                    provider="groq",
+                    model=os.environ.get("MLOMEGA_GROQ_WHISPER_MODEL", "whisper-large-v3"),
+                )
+            except CloudBudgetExceeded:
+                if cloud_budget_policy() != "local":
+                    raise
+                cloud_transcriber = "local"
+                record_phase_event("deep_audio_cloud_budget_local_fallback")
+        if cloud_transcriber != "groq":
+            model = active_runtime.transcription_model(language)
+            for index, batch_size in enumerate(batch_candidates):
+                try:
+                    result = model.transcribe(audio, batch_size=batch_size, language=language)
+                    effective_batch_size = batch_size
+                    if index:
+                        record_phase_event(
+                            "deep_audio_batch_fallback_succeeded",
+                            requested_batch=requested_batch,
+                            effective_batch_size=batch_size,
+                        )
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    failure = classify_failure(exc)
+                    if failure.code != "gpu_oom" or batch_size == 1:
+                        raise
+                    release_gpu_memory(reason=f"deep_audio_batch_oom:{batch_size}")
+                    record_phase_event(
+                        "deep_audio_batch_fallback",
+                        requested_batch=requested_batch,
+                        failed_batch_size=batch_size,
+                        next_batch_size=batch_candidates[index + 1],
+                        error_code=failure.code,
+                    )
         if result is None:
             assert last_exc is not None
             raise last_exc
@@ -165,8 +188,11 @@ def transcribe_with_whisperx(
             "relationship_context": {},
             "voice_identity": identity_details,
             "pipeline": {
-                "transcriber": "whisperx",
-                "model": settings.whisperx_model,
+                "transcriber": "groq_whisper" if cloud_transcriber == "groq" else "whisperx",
+                "model": (
+                    os.environ.get("MLOMEGA_GROQ_WHISPER_MODEL", "whisper-large-v3")
+                    if cloud_transcriber == "groq" else settings.whisperx_model
+                ),
                 "device": device,
                 "compute_type": compute_type,
                 "requested_batch_size": requested_batch,

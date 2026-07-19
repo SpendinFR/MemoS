@@ -34,7 +34,7 @@ from uuid import uuid4
 
 from .config import get_settings
 from .db import connect, init_db, upsert
-from .llm import EliteLLMError, ollama_generate, ollama_unload
+from .llm import EliteLLMError, json_schema_for_hint, ollama_generate, ollama_unload
 from .runtime_v18_7 import classify_failure, gpu_phase, record_phase_event
 from .utils import json_dumps, json_loads, now_iso, stable_id
 
@@ -1084,12 +1084,16 @@ def select_keyframes_for_bundle(bundle: dict[str, Any], *, max_keyframes: int = 
 
 def _deep_vlm_json(image_path: str, *, model: str | None, timeout: float, personal_context: dict[str, Any] | None = None, num_predict: int = 900, use_cache: bool = True) -> dict[str, Any]:
     settings = get_settings()
-    if not settings.enable_ollama:
+    cloud_vlm = os.environ.get("MLOMEGA_CLOUD_VLM_PROVIDER", "local").strip().lower()
+    if cloud_vlm != "gemini" and not settings.enable_ollama:
         raise EliteLLMError("MLOMEGA_ENABLE_OLLAMA=false: VLM offline requis pour analyse visuelle profonde.")
     p = Path(image_path).expanduser().resolve()
     if not p.exists():
         raise FileNotFoundError(p)
-    chosen_model = _resolve_offline_vlm_model(model)
+    chosen_model = (
+        os.environ.get("MLOMEGA_GEMINI_VLM_MODEL", "gemini-3.1-flash-lite")
+        if cloud_vlm == "gemini" else _resolve_offline_vlm_model(model)
+    )
     image_sha = _image_sha256(p)
     if use_cache:
         cached = _deep_vision_cache_get(image_sha, chosen_model, DEEP_VISION_PROMPT_VERSION)
@@ -1124,6 +1128,89 @@ def _deep_vlm_json(image_path: str, *, model: str | None, timeout: float, person
         f"SYSTEM:\n{system}\n\nUSER:\n{prompt}\n\nReturn strict JSON only."
         f"\n\nExpected shape:\n{json.dumps(DEEP_VISION_SCHEMA_HINT, ensure_ascii=False)}"
     )
+    if cloud_vlm == "gemini":
+        from .cloud_budget_v19 import CloudBudgetExceeded, cloud_budget_policy
+        from .cloud_providers_v19 import gemini_vision_json
+
+        attempts: list[dict[str, Any]] = []
+        total_latency_ms = 0
+        total_output_tokens = 0
+        parsed_data: dict[str, Any] | None = None
+        parse_strategy = "strict"
+        for attempt_index in (1, 2):
+            compact_retry = attempt_index == 2
+            recovery = ""
+            if compact_retry:
+                recovery = (
+                    "\n\nRECOVERY: la sortie précédente était invalide. Retourne le même "
+                    "schéma compact, sans commentaire hors JSON; listes <=6 éléments."
+                )
+            try:
+                raw_data, meta = gemini_vision_json(
+                    p,
+                    system=system,
+                    prompt=prompt + recovery,
+                    schema=json_schema_for_hint(DEEP_VISION_SCHEMA_HINT),
+                    max_output_tokens=max(1200, int(num_predict or 900)) if compact_retry else int(num_predict or 900),
+                    timeout=max(float(timeout), settings.poststop_vlm_timeout_s),
+                )
+                parsed_data, parse_strategy = _parse_deep_vision_body(
+                    json.dumps(raw_data, ensure_ascii=False)
+                )
+                total_latency_ms += int(meta.get("latency_ms") or 0)
+                total_output_tokens += int(meta.get("output_tokens") or 0)
+                attempts.append({
+                    "attempt": attempt_index,
+                    "strategy": "compact_retry" if compact_retry else "primary",
+                    "parse_strategy": parse_strategy,
+                    "provider": "gemini",
+                })
+                break
+            except CloudBudgetExceeded:
+                if cloud_budget_policy() != "local":
+                    raise
+                # The CloseDay worker is isolated and sequential. Temporarily
+                # select the already-proven local VLM, then restore PRO for the
+                # next image/stage. No prompt or writer changes.
+                prior = os.environ.get("MLOMEGA_CLOUD_VLM_PROVIDER")
+                os.environ["MLOMEGA_CLOUD_VLM_PROVIDER"] = "local"
+                try:
+                    return _deep_vlm_json(
+                        image_path, model=model, timeout=timeout,
+                        personal_context=personal_context, num_predict=num_predict,
+                        use_cache=use_cache,
+                    )
+                finally:
+                    if prior is None:
+                        os.environ.pop("MLOMEGA_CLOUD_VLM_PROVIDER", None)
+                    else:
+                        os.environ["MLOMEGA_CLOUD_VLM_PROVIDER"] = prior
+            except Exception as exc:
+                attempts.append({
+                    "attempt": attempt_index,
+                    "strategy": "compact_retry" if compact_retry else "primary",
+                    "provider": "gemini",
+                    "error": str(exc)[:500],
+                })
+                if attempt_index == 2:
+                    raise
+        if parsed_data is None:
+            raise EliteLLMError("Réponse Gemini VLM absente après tentative bornée")
+        output_tokens = total_output_tokens or None
+        parsed_data["_model"] = chosen_model
+        parsed_data["_cache_hit"] = False
+        parsed_data["_output_tokens"] = output_tokens
+        parsed_data["_latency_ms"] = total_latency_ms
+        parsed_data["_vlm_attempt_count"] = len(attempts)
+        parsed_data["_vlm_recovery_strategy"] = "compact_retry" if len(attempts) > 1 else parse_strategy
+        parsed_data["_vlm_attempt_audit"] = attempts
+        if use_cache:
+            _deep_vision_cache_put(
+                image_sha256=image_sha, model=chosen_model, prompt_version=DEEP_VISION_PROMPT_VERSION,
+                data={k: v for k, v in parsed_data.items() if not k.startswith("_")},
+                output_tokens=output_tokens, latency_ms=total_latency_ms,
+            )
+        return parsed_data
     attempts: list[dict[str, Any]] = []
     total_latency_ms = 0
     total_output_tokens = 0

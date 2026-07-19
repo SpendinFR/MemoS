@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import os
 import sys
 import time
 import threading
@@ -1414,3 +1415,31 @@ def test_close_day_subprocess_reports_structured_blocker_not_stderr_warning(tmp_
     assert "deep_vision returned blocked" in detail
     assert "close-1" in detail
     assert "torch.load" not in detail
+
+
+def test_pro_profile_switches_only_the_isolated_close_day_process(tmp_path, monkeypatch):
+    from mlomega_audio_elite import runtime_environment_v19
+
+    monkeypatch.setenv("MLOMEGA_LLM_BACKEND", "ollama")
+    monkeypatch.setenv("MLOMEGA_PRO_CLOSEDAY", "1")
+    monkeypatch.setenv("MLOMEGA_PRO_TEXT_MODEL", "deepseek-v4-pro")
+    monkeypatch.setattr(runtime_environment_v19, "configure_windows_cuda_dlls", lambda _root: (True, {}))
+    monkeypatch.setattr(runtime_environment_v19, "sanitize_blackhole_proxy_env", lambda: [])
+    captured = {}
+
+    def fake_run(*_args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"status": "completed", "run_id": "pro-1"}) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(runtime_mod.subprocess, "run", fake_run)
+    result = runtime_mod._run_close_day_subprocess(
+        person_id="me", live_session_id="brain-pro", db_path=tmp_path / "memory.db"
+    )
+    assert result["status"] == "completed"
+    assert captured["env"]["MLOMEGA_LLM_BACKEND"] == "deepseek"
+    assert captured["env"]["MLOMEGA_DEEPSEEK_MODEL"] == "deepseek-v4-pro"
+    assert os.environ["MLOMEGA_LLM_BACKEND"] == "ollama"

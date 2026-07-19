@@ -971,3 +971,54 @@ Sous PowerShell/CP1252, l'impression finale d'un résultat Unicode levait
 `completed`. `mlomega_audio_elite.cli` reconfigure stdout en UTF-8 avec échappement de
 secours. `brainlive-close-day-status` imprime désormais le résultat complet et conserve
 le bon code de sortie.
+
+## OBS-68 — Un profil cloud global aurait détourné le live et dépassé les limites audio (CORRIGÉ AVANT GATE — 2026-07-19)
+
+Le premier raccord naïf de `-Pro` aurait posé `MLOMEGA_LLM_BACKEND=deepseek` dans le
+SessionHub entier. Tout client nocturne réutilisé par une commande BrainLive aurait alors
+pu quitter Ollama pendant la capture. Le profil ne fait désormais que marquer
+`MLOMEGA_PRO_CLOSEDAY=1`; seule la copie d'environnement du sous-processus CloseDay reçoit
+DeepSeek. Un test capture les deux environnements et interdit la fuite.
+
+Deux autres défauts ont été fermés avant appel réel : une tape WAV de 30 minutes peut
+dépasser la limite Groq 25 MiB, elle est donc transcodée temporairement en FLAC lossless
+au-delà de 24 MiB puis supprimée; et les corps d'erreurs HTTP fournisseurs ne sont jamais
+journalisés car ils pourraient répéter un fragment de requête. Les clés restent uniquement
+dans `.env`/headers et le ledger ne stocke que métriques d'usage et coût.
+
+Les probes réels ont fermé deux faux diagnostics supplémentaires. Groq répondait 403 au
+`User-Agent` Python par défaut malgré une clé autorisée : les clients et preflights portent
+maintenant un identifiant applicatif explicite. Gemini 2.5 répondait au GET catalogue mais
+refusait `generateContent` aux nouveaux comptes : le profil utilise le stable
+`gemini-3.1-flash-lite` et vérifie la méthode annoncée, pas seulement le nom du modèle.
+
+## OBS-69 — Le premier préfixe PRO recopiait 532k tokens et EpisodeBuilder sérialisait les rejets (EN COURS — 2026-07-19)
+
+Le premier Gate PRO réel a montré deux défauts que les micro-appels ne pouvaient révéler.
+`_cloud_bundle_payload` envoyait `SELECT *` du bundle : timeline vision, world-state et raw
+étaient recopiées, soit 532 041 tokens par requête. La projection sémantique garde désormais
+transcript/diarisation/change-atoms et remplace les indexes opaques par manifests
+count+digest; mesure réelle 49 026 tokens, preuves brutes intactes en DB.
+
+Ensuite DeepSeek a produit de bons sous-thèmes, mais omettait dans ses citations certains
+tours de salutations/fillers. Le gate lossless les a justement refusés; le resolver a alors
+subdivisé séquentiellement de nombreuses fenêtres `brain2_conversation_detail`. Après
+plusieurs minutes : zéro épisode, donc le fan-out moteur PRO n'avait pas encore été atteint.
+Le run a été arrêté volontairement. Décision de correction : EpisodeBuilder reste sur le
+P1/llama.cpp local validé, puis DeepSeek analyse les épisodes matérialisés avec un warm-up
+par épisode et un fan-out 8–12 des moteurs indépendants. Interdit de désactiver le contrat,
+de fusionner plusieurs moteurs dans un gros JSON ou de modifier le chemin local par défaut.
+
+## OBS-70 — Une interruption peut laisser une réservation cloud sans frontière d'envoi (OUVERT — 2026-07-19)
+
+Le ledger réserve correctement le pire coût avant chaque appel et compte les statuts
+`reserved`, ce qui empêche un dépassement concurrent. Mais un processus tué avant la
+réconciliation laisse aujourd'hui une ligne `reserved` sans permettre de distinguer
+« jamais envoyée » de « envoyée, réponse perdue ». La libérer automatiquement risquerait
+de sous-compter une facture; la conserver indéfiniment peut immobiliser le budget du jour.
+
+Correction exigée avant le prochain Gate B payant : identité durable du run/worker,
+frontière `reserved → in_flight` persistée immédiatement avant HTTP, reprise idempotente.
+Seule une non-émission prouvée devient `released`; un envoi possible devient `uncertain`
+et reste compté au pire cas. Tests crash avant/après envoi et concurrence obligatoires.
+Les lignes du run interrompu restent des preuves et ne doivent pas être éditées à la main.

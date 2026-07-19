@@ -47,6 +47,12 @@ def _receipt_fingerprint(*, person_id: str) -> dict[str, Any]:
             or "qwen3-vl:8b"
         ),
         "gpu_phase_orchestration": os.environ.get("MLOMEGA_GPU_PHASE_ORCHESTRATION", "0"),
+        "pro_close_day": os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0"),
+        "pro_text_model": os.environ.get("MLOMEGA_PRO_TEXT_MODEL", ""),
+        "pro_audio_model": os.environ.get("MLOMEGA_GROQ_WHISPER_MODEL", ""),
+        "pro_vision_model": os.environ.get("MLOMEGA_GEMINI_VLM_MODEL", ""),
+        "cloud_budget_eur": os.environ.get("MLOMEGA_CLOUD_DAILY_BUDGET_EUR", ""),
+        "cloud_budget_policy": os.environ.get("MLOMEGA_CLOUD_ON_BUDGET", ""),
     }
 
 
@@ -126,7 +132,10 @@ def _warm_live_llm(orchestrator: Any) -> dict[str, Any]:
 
 def run(*, person_id: str, deep: bool) -> dict[str, Any]:
     http = _load("phoneonly_readiness_http", LIVE / "sessionhub_http.py")
-    report = dict(http._probe_ai_chain(person_id=person_id))
+    # The strict command owns the expensive probe.  Forward ``deep`` so the
+    # CloseDay environment (including an opt-in cloud profile) is actually
+    # checked before the durable receipt is published.
+    report = dict(http._probe_ai_chain(person_id=person_id, deep=deep))
     checks = dict(report.get("checks") or {})
     night_report = (checks.get("close_day_env") or {}).get("detail")
     if isinstance(night_report, dict) and isinstance(night_report.get("checks"), dict):
@@ -149,18 +158,31 @@ def run(*, person_id: str, deep: bool) -> dict[str, Any]:
             from mlomega_audio_elite.gpu_phase_orchestrator import GpuPhaseOrchestrator
 
             orchestrator = GpuPhaseOrchestrator()
-            preflight = orchestrator.enter_preflight()
-            checks["p1_sequential"] = {
-                "ok": not orchestrator.p1_running and orchestrator.probe_calls >= 1,
-                "detail": {
-                    "alias": (
-                        (preflight.get("p1") or {}).get("props", {}).get("model_alias")
-                        or (preflight.get("p1") or {}).get("props", {}).get("alias")
-                    ),
-                    "stopped_after_preflight": not orchestrator.p1_running,
-                    "anti_thinking_probed": orchestrator.probe_calls,
-                },
+            pro_close_day = os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower() in {
+                "1", "true", "yes", "on",
             }
+            if pro_close_day:
+                # P1 is not a dependency of a PRO night.  Requiring 6 GiB for it
+                # rejected a valid cloud run before pairing, even though live only
+                # needs Ollama 4B and the nested CloseDay probe already authenticates
+                # DeepSeek/Groq/Gemini.
+                checks["p1_sequential"] = {
+                    "ok": True,
+                    "detail": {"status": "not_required_for_pro_close_day"},
+                }
+            else:
+                preflight = orchestrator.enter_preflight()
+                checks["p1_sequential"] = {
+                    "ok": not orchestrator.p1_running and orchestrator.probe_calls >= 1,
+                    "detail": {
+                        "alias": (
+                            (preflight.get("p1") or {}).get("props", {}).get("model_alias")
+                            or (preflight.get("p1") or {}).get("props", {}).get("alias")
+                        ),
+                        "stopped_after_preflight": not orchestrator.p1_running,
+                        "anti_thinking_probed": orchestrator.probe_calls,
+                    },
+                }
         except Exception as exc:
             checks["p1_sequential"] = {
                 "ok": False,

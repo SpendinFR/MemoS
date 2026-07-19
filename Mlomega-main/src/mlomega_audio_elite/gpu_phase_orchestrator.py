@@ -546,6 +546,21 @@ class GpuPhaseOrchestrator:
                 "Ollama model(s) still resident before starting the text-phase P1: "
                 + ", ".join(sorted(after_models))
             )
+        if os.environ.get("MLOMEGA_LLM_BACKEND", "").strip().lower() == "deepseek":
+            # PRO text runs remotely. Keep the exact local teardown boundary,
+            # but never start P1 or impose a meaningless local free-VRAM gate.
+            stopped = self.stop_p1() if self.p1_running else {"status": "not_running"}
+            return {
+                "phase": "text_cloud",
+                "backend": "deepseek",
+                "p1_stopped": stopped,
+                "released_live": True,
+                "unloaded": unloaded,
+                "resident_before": before_models,
+                "resident_after": after_models,
+                "vram_before": vram_before,
+                "vram_after": vram_after,
+            }
         # An empty Ollama process list proves only that Ollama released its own
         # models. WhisperX/Pyannote/SpeechBrain/ONNX live in Python processes and
         # can still leave too little room for full P1 GPU offload. Gate B

@@ -163,12 +163,29 @@ def main() -> int:
     parser.add_argument("--person-id", required=True)
     parser.add_argument("--live-session-id", required=True)
     parser.add_argument("--package-date", default=None)
+    parser.add_argument("--pro", action="store_true", help="opt-in cloud CloseDay profile; local remains the default")
+    parser.add_argument("--cloud-budget-eur", type=float, default=1.50)
+    parser.add_argument("--cloud-on-budget", choices=("stop", "flash", "local"), default="stop")
+    parser.add_argument("--pro-text-model", choices=("pro", "flash"), default="pro")
     parser.add_argument(
         "--allow-rerun",
         action="store_true",
         help="reopen today's completed close-day so a second same-day session is consolidated (E47-C)",
     )
     args = parser.parse_args()
+
+    if args.pro:
+        os.environ["MLOMEGA_CLOUD_MODE"] = "pro"
+        os.environ["MLOMEGA_LLM_BACKEND"] = "deepseek"
+        os.environ["MLOMEGA_DEEPSEEK_MODEL"] = (
+            "deepseek-v4-pro" if args.pro_text_model == "pro" else "deepseek-v4-flash"
+        )
+        os.environ["MLOMEGA_DEEP_AUDIO_TRANSCRIBER"] = "groq"
+        os.environ.setdefault("MLOMEGA_GROQ_WHISPER_MODEL", "whisper-large-v3")
+        os.environ["MLOMEGA_CLOUD_VLM_PROVIDER"] = "gemini"
+        os.environ.setdefault("MLOMEGA_GEMINI_VLM_MODEL", "gemini-3.1-flash-lite")
+        os.environ["MLOMEGA_CLOUD_DAILY_BUDGET_EUR"] = str(args.cloud_budget_eur)
+        os.environ["MLOMEGA_CLOUD_ON_BUDGET"] = args.cloud_on_budget
 
     if not _CUDA_ENV_OK:
         raise RuntimeError(f"CloseDay CUDA/cuDNN environment invalid: {_CUDA_ENV_DETAIL}")
@@ -239,6 +256,11 @@ def main() -> int:
             "media_retention": retention,
             "maintenance": maintenance,
         }
+
+    if os.environ.get("MLOMEGA_CLOUD_MODE", "local").strip().lower() in {"pro", "cloud", "deepseek"}:
+        from mlomega_audio_elite.cloud_budget_v19 import cloud_budget_summary
+
+        result = {**result, "cloud_cost": cloud_budget_summary()}
 
     # Windows consoles commonly use CP1252.  A valid CloseDay result may contain
     # Greek, Cyrillic or emoji, so emitting raw Unicode can raise after every

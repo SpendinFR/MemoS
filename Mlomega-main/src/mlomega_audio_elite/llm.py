@@ -380,8 +380,6 @@ class OllamaJsonClient:
         backend: str | None = None,
     ) -> None:
         settings = get_settings()
-        if not settings.enable_ollama:
-            raise EliteLLMError("MLOMEGA_ENABLE_OLLAMA=false refusé: l'analyse élite exige Ollama/Qwen.")
         # ``backend=`` is an EXPLICIT override for callers that are Ollama by
         # construction (live providers, fine-intel). Under the process-wide
         # MLOMEGA_LLM_BACKEND=llamacpp, a caller passing an Ollama base_url but
@@ -393,6 +391,8 @@ class OllamaJsonClient:
             backend or override.get("backend")
             or os.environ.get("MLOMEGA_LLM_BACKEND", "ollama")
         ).strip().lower()
+        if self.backend in {"ollama", "llamacpp"} and not settings.enable_ollama:
+            raise EliteLLMError("MLOMEGA_ENABLE_OLLAMA=false: local LLM backend is disabled")
         if self.backend == "llamacpp":
             self.base_url = (
                 base_url
@@ -413,9 +413,20 @@ class OllamaJsonClient:
             self.model = model or override.get("model") or (
                 settings.ollama_model if _is_post_stop_phase() else settings.ollama_live_model
             )
+        elif self.backend == "deepseek":
+            self.base_url = (
+                base_url or override.get("base_url")
+                or os.environ.get("MLOMEGA_DEEPSEEK_BASE_URL")
+                or "https://api.deepseek.com"
+            ).rstrip("/")
+            self.model = (
+                model or override.get("model")
+                or os.environ.get("MLOMEGA_DEEPSEEK_MODEL")
+                or "deepseek-v4-pro"
+            )
         else:
             raise EliteLLMError(
-                f"MLOMEGA_LLM_BACKEND inconnu: {self.backend!r} (ollama|llamacpp)"
+                f"MLOMEGA_LLM_BACKEND inconnu: {self.backend!r} (ollama|llamacpp|deepseek)"
             )
 
     def generate_json(
@@ -496,6 +507,24 @@ class OllamaJsonClient:
                     message.get("content", "") if isinstance(message, dict) else ""
                 )
                 finish_reason = str(choice.get("finish_reason") or "") or None
+            elif self.backend == "deepseek":
+                from .cloud_providers_v19 import deepseek_chat_json
+
+                outer = deepseek_chat_json(
+                    system=system,
+                    prompt=prompt,
+                    json_schema=json_schema,
+                    max_output_tokens=budget,
+                    timeout=timeout,
+                    model=self.model,
+                )
+                choices = outer.get("choices") or []
+                choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+                message = choice.get("message") if isinstance(choice, dict) else {}
+                response_text = str(
+                    message.get("content", "") if isinstance(message, dict) else ""
+                )
+                finish_reason = str(choice.get("finish_reason") or "") or None
             else:
                 outer = ollama_generate(
                     payload,
@@ -506,7 +535,7 @@ class OllamaJsonClient:
                 response_text = str(outer.get("response", ""))
                 finish_reason = str(outer.get("done_reason") or outer.get("finish_reason") or "") or None
             raw_outer = json.dumps(outer, ensure_ascii=False)
-            if self.backend == "llamacpp":
+            if self.backend in {"llamacpp", "deepseek"}:
                 usage = outer.get("usage") if isinstance(outer, dict) else None
                 prompt_tokens = int((usage or {}).get("prompt_tokens") or 0) or None
                 completion_tokens = int((usage or {}).get("completion_tokens") or 0) or None

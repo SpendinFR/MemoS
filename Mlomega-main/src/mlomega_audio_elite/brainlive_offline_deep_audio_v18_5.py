@@ -427,7 +427,7 @@ def _voice_registry_fingerprint(person_id: str) -> str:
 
 def _processing_profile(*, person_id: str, language: str, max_gap_seconds: float) -> dict[str, Any]:
     settings = get_settings()
-    return {
+    profile = {
         "version": VERSION,
         "language": language,
         "stitch_policy": {
@@ -450,6 +450,15 @@ def _processing_profile(*, person_id: str, language: str, max_gap_seconds: float
             "voice_registry_sha256": _voice_registry_fingerprint(person_id),
         },
     }
+    if os.environ.get("MLOMEGA_DEEP_AUDIO_TRANSCRIBER", "local").strip().lower() == "groq":
+        profile["cloud_transcription"] = {
+            "provider": "groq",
+            "model": os.environ.get("MLOMEGA_GROQ_WHISPER_MODEL", "whisper-large-v3"),
+            "local_alignment": "whisperx",
+            "local_diarization": bool(settings.enable_pyannote),
+            "local_voice_identity": bool(settings.enable_speechbrain),
+        }
+    return profile
 
 
 def _duration_seconds(path: Path) -> float:

@@ -10,6 +10,8 @@ regex/keyword analyst and no evidence-only cognitive mode.
 
 import os
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from typing import Any, Mapping, Sequence
 
 from .db import connect, init_db, upsert
@@ -542,14 +544,24 @@ def _engine_prompt(
     prior: dict[str, Any],
     *,
     schema_override: dict[str, Any] | None = None,
+    bundle_in_prefix: bool = False,
 ) -> str:
+    prompt_bundle: Any = bundle
+    if bundle_in_prefix:
+        episode = bundle.get("episode") if isinstance(bundle, Mapping) else None
+        episode_id = episode.get("episode_id") if isinstance(episode, Mapping) else None
+        prompt_bundle = {
+            "provided_in_shared_prefix": True,
+            "episode_id": episode_id,
+            "digest": _hash_payload(bundle),
+        }
     return _safe_prompt_payload({
         "engine_name": engine_name,
         "mission": "Remplir le modèle dynamique Brain 2.0: vie observée -> situation -> état -> parole/action -> réaction/résultat -> patterns -> simulation -> prédiction -> vérification -> correction.",
         "no_heuristic_policy": "Tout contenu cognitif vient de cette réponse Qwen. Ne pas inventer. Marquer missing_context.",
         "evidence_role_policy": "Respecte metadata_json.kind/evidence_role: human_or_audio_transcript = parole/transcription humaine; system_observation_not_user_speech = observation capteur/contexte, jamais une déclaration de William; side-channel prediction/intervention/outcome dans conversation.raw_json = metadata de vérification, jamais parole utilisateur. Ne transforme pas une observation système en goût, préférence ou intention déclarée.",
         "schema": schema_override or ENGINE_SCHEMAS[engine_name],
-        "bundle": bundle,
+        "bundle": prompt_bundle,
         "prior_engine_outputs": prior,
     })
 
@@ -565,6 +577,7 @@ def _run_engine_partitioned(
     window_llm: Any | None = None,
     context_window: int | None = None,
     output_budget: int | None = None,
+    bundle_in_prefix: bool = False,
 ) -> dict[str, Any]:
     """Execute one V13 engine by bounded schema-field tasks, then merge losslessly.
 
@@ -607,7 +620,8 @@ def _run_engine_partitioned(
         }
         return {
             "prompt": _engine_prompt(
-                engine, bundle, prior, schema_override=task_schema
+                engine, bundle, prior, schema_override=task_schema,
+                bundle_in_prefix=bundle_in_prefix,
             ),
             "schema_hint": task_schema,
         }
@@ -645,7 +659,8 @@ def _run_engine_partitioned(
     ).fetchone()
     package_date = str((episode["start_time"] if episode else None) or now_iso())[:10]
     empty_prompt = _engine_prompt(
-        engine, bundle, prior, schema_override=common_schema
+        engine, bundle, prior, schema_override=common_schema,
+        bundle_in_prefix=bundle_in_prefix,
     )
     stage = run_windows(
         units,
@@ -667,7 +682,15 @@ def _run_engine_partitioned(
         render=render,
         validate=validate,
         decorate_output=envelope,
-        target_units=2 if len(business_names) > 3 else 3,
+        # The local 9B keeps its deliberately small field groups. DeepSeek PRO
+        # gets one request per cognitive engine and subdivides only on a real
+        # size/contract failure; engines themselves are never merged together.
+        target_units=(
+            len(units)
+            if os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower()
+            in {"1", "true", "yes", "on"}
+            else (2 if len(business_names) > 3 else 3)
+        ),
         overlap=0,
         prompt_overhead_tokens=estimate_tokens_for_text(empty_prompt),
     )
@@ -2504,6 +2527,13 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
             (conversation_id,),
         ).fetchone()
         package_date = str((conversation_row["started_at"] if conversation_row else None) or now_iso())[:10]
+        pro_fanout = (
+            os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower()
+            in {"1", "true", "yes", "on"}
+            and os.environ.get("MLOMEGA_PRO_FANOUT", "1").strip().lower()
+            not in {"0", "false", "no", "off"}
+        )
+        pro_episode_work: list[dict[str, Any]] = []
 
         if use_shared_facts and shared_facts is not None:
             for episode in episodes:
@@ -2546,7 +2576,10 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                         )
                     continue
                 prior = {**conversation_outputs, **outputs_by_episode[episode_id]}
-                prompt = _engine_prompt(engine, bundles[episode_id], prior)
+                prompt = _engine_prompt(
+                    engine, bundles[episode_id], prior,
+                    bundle_in_prefix=pro_fanout,
+                )
                 resumed_output = _load_completed_engine_output(
                     con, engine=engine, conversation_id=conversation_id,
                     episode_id=episode_id, prompt=prompt,
@@ -2573,6 +2606,14 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
             if not pending:
                 continue
             pack_prior = {**conversation_outputs, **outputs_by_episode[episode_id]}
+            if pro_fanout:
+                pro_episode_work.append({
+                    "episode_id": episode_id,
+                    "pending": tuple(pending),
+                    "prior": pack_prior,
+                    "bundle": bundles[episode_id],
+                })
+                continue
             try:
                 packed = _run_episode_engine_pack(
                     con,
@@ -2622,6 +2663,135 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                     )
                 con.commit()
                 raise
+
+        if pro_episode_work:
+            # Cloud-only DAG: each cognitive engine keeps its own schema/request.
+            # Only independent engines share a wave, while dependency barriers
+            # materialize their outputs before the following level. The local
+            # episode-pack-v2 path above remains byte-for-byte unchanged.
+            con.commit()
+
+            def run_engine_task(task: Mapping[str, Any]) -> dict[str, Any]:
+                with connect() as worker_con:
+                    from .cloud_providers_v19 import cloud_bundle_prefix
+                    with cloud_bundle_prefix(str(task["episode_id"]), dict(task["bundle"])):
+                        return _run_engine_partitioned(
+                            worker_con,
+                            engine=str(task["engine"]),
+                            episode_id=str(task["episode_id"]),
+                            person_id=person_id,
+                            bundle=task["bundle"],
+                            prior=task["prior"],
+                            bundle_in_prefix=True,
+                        )
+
+            try:
+                initial_width = max(1, min(12, int(os.environ.get("MLOMEGA_PRO_FANOUT_INITIAL", "4"))))
+            except ValueError:
+                initial_width = 4
+            try:
+                max_width = max(
+                    initial_width,
+                    min(40, int(os.environ.get("MLOMEGA_CLOUD_MAX_IN_FLIGHT", "12"))),
+                )
+            except ValueError:
+                max_width = max(initial_width, 12)
+
+            known_levels = [
+                ("capture_engine", "language_signature_engine"),
+                ("context_resolver",),
+                ("internal_state_engine", "social_model_engine"),
+                ("causality_engine", "contradiction_engine", "choice_model_engine"),
+                ("outcome_tracker",),
+            ]
+            known = {engine for level in known_levels for engine in level}
+            for engine in local_engines:
+                if engine not in known:
+                    known_levels.append((engine,))
+
+            for level in known_levels:
+                tasks: list[dict[str, Any]] = []
+                for work in pro_episode_work:
+                    episode_id = str(work["episode_id"])
+                    for engine in level:
+                        if engine in work["pending"]:
+                            tasks.append({
+                                "episode_id": episode_id,
+                                "engine": engine,
+                                "bundle": work["bundle"],
+                                "prior": {
+                                    **conversation_outputs,
+                                    **outputs_by_episode[episode_id],
+                                },
+                            })
+                if not tasks:
+                    continue
+
+                task_results: dict[tuple[str, str], dict[str, Any] | Exception] = {}
+                cursor = 0
+                wave_width = initial_width
+                while cursor < len(tasks):
+                    wave = tasks[cursor:cursor + wave_width]
+                    with ThreadPoolExecutor(
+                        max_workers=len(wave), thread_name_prefix="mlomega-pro-engine"
+                    ) as pool:
+                        futures = {}
+                        for task in wave:
+                            # ContextVar carries the exact canonical bundle prefix;
+                            # copies share its one warm-cache response.
+                            context = copy_context()
+                            future = pool.submit(context.run, run_engine_task, task)
+                            futures[future] = (str(task["episode_id"]), str(task["engine"]))
+                        for future in as_completed(futures):
+                            key = futures[future]
+                            try:
+                                task_results[key] = future.result()
+                            except Exception as exc:
+                                task_results[key] = exc
+                    cursor += len(wave)
+                    wave_width = min(max_width, wave_width * 2)
+
+                # Deterministic writer barrier before dependent engines proceed.
+                for task in tasks:
+                    episode_id = str(task["episode_id"])
+                    engine = str(task["engine"])
+                    out_or_error = task_results[(episode_id, engine)]
+                    prompt = _engine_prompt(
+                        engine, bundles[episode_id], task["prior"],
+                        bundle_in_prefix=True,
+                    )
+                    if isinstance(out_or_error, Exception):
+                        _record_engine(
+                            con, engine=engine, conversation_id=conversation_id,
+                            episode_id=episode_id, person_id=person_id,
+                            prompt=prompt, output=None, status="error",
+                            error=str(out_or_error)[:1000],
+                        )
+                        con.commit()
+                        raise out_or_error
+                    out = out_or_error
+                    if use_shared_facts and shared_facts is not None:
+                        out = shared_facts.record_engine_output(
+                            con,
+                            person_id=person_id,
+                            conversation_id=conversation_id,
+                            episode_id=episode_id,
+                            engine_name=engine,
+                            output=out,
+                            schema=ENGINE_SCHEMAS[engine],
+                            applicability_reason=applicability_reasons[episode_id][engine],
+                        )
+                    _record_engine(
+                        con, engine=engine, conversation_id=conversation_id,
+                        episode_id=episode_id, person_id=person_id,
+                        prompt=prompt, output=out, status="ok",
+                    )
+                    outputs_by_episode[episode_id][engine] = out
+                    mat = _put_engine_payload(con, engine, episode_id, person_id, out)
+                    episode_counts[episode_id][f"{engine}_rows"] += mat
+                    counts[f"engine_{engine}"] += 1
+                    counts[f"{engine}_rows"] += mat
+                con.commit()
 
         # Cross-episode engines also share one compact conversation package.
         # Pack them once and let the same durable executor subdivide by engine
@@ -2683,17 +2853,39 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
 
             if pending_globals:
                 try:
-                    packed = _run_global_engine_hierarchy(
-                        con,
-                        conversation_id=conversation_id,
-                        person_id=person_id,
-                        package_date=package_date,
-                        conversation=bundle.get("conversation"),
-                        episodes=episodes,
-                        profiles=profiles,
-                        outputs_by_episode=outputs_by_episode,
-                        engines=pending_globals,
-                    )
+                    if pro_fanout:
+                        # These engines form a real dependency chain; keep one
+                        # request per engine, sequentially enriching prior output.
+                        packed: dict[str, dict[str, Any]] = {}
+                        for engine in pending_globals:
+                            packed[engine] = _run_engine_partitioned(
+                                con,
+                                engine=engine,
+                                episode_id=anchor_episode_id,
+                                person_id=person_id,
+                                bundle=bundle,
+                                prior={
+                                    "conversation_outputs": {
+                                        **conversation_outputs, **packed,
+                                    },
+                                    "by_episode": {
+                                        key: value for key, value in outputs_by_episode.items()
+                                        if value
+                                    },
+                                },
+                            )
+                    else:
+                        packed = _run_global_engine_hierarchy(
+                            con,
+                            conversation_id=conversation_id,
+                            person_id=person_id,
+                            package_date=package_date,
+                            conversation=bundle.get("conversation"),
+                            episodes=episodes,
+                            profiles=profiles,
+                            outputs_by_episode=outputs_by_episode,
+                            engines=pending_globals,
+                        )
                     for engine in pending_globals:
                         out = packed[engine]
                         if use_shared_facts and shared_facts is not None:

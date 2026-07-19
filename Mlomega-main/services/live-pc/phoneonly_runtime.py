@@ -198,6 +198,20 @@ def _run_close_day_subprocess(
     if allow_rerun:
         command.append("--allow-rerun")
     env = os.environ.copy()
+    if env.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        # The capture/live process remains on its proven local Ollama providers.
+        # Only the isolated nightly worker switches to the opt-in cloud profile.
+        env["MLOMEGA_LLM_BACKEND"] = "deepseek"
+        env["MLOMEGA_DEEPSEEK_MODEL"] = env.get(
+            "MLOMEGA_PRO_TEXT_MODEL", "deepseek-v4-pro"
+        )
+        env.setdefault("MLOMEGA_CLOUD_MODE", "pro")
+        env.setdefault("MLOMEGA_DEEP_AUDIO_TRANSCRIBER", "groq")
+        env.setdefault("MLOMEGA_GROQ_WHISPER_MODEL", "whisper-large-v3")
+        env.setdefault("MLOMEGA_CLOUD_VLM_PROVIDER", "gemini")
+        env.setdefault("MLOMEGA_GEMINI_VLM_MODEL", "gemini-3.1-flash-lite")
+        env.setdefault("MLOMEGA_CLOUD_DAILY_BUDGET_EUR", "1.50")
+        env.setdefault("MLOMEGA_CLOUD_ON_BUDGET", "stop")
     if db_path is not None:
         env["MLOMEGA_DB"] = str(Path(db_path).resolve())
     proc = subprocess.run(
@@ -1303,13 +1317,24 @@ class SinglePhoneRuntimeManager:
         return self.active if self.active is not None and self.active.session_id == session_id else None
 
     def metrics(self) -> dict[str, Any]:
-        return {
+        result = {
             "mode": "single_phone",
             "active": self.active.status() if self.active else None,
             "startup_recovery": self.recovery_state,
             "startup_recovery_report": self.recovery_report,
             "watchdog_closures": self.watchdog_closures,
         }
+        if os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower() in {"1", "true", "yes", "on"}:
+            try:
+                from mlomega_audio_elite.cloud_budget_v19 import cloud_budget_summary
+
+                result["cloud_cost"] = cloud_budget_summary(initialized_only=True)
+            except Exception as exc:
+                result["cloud_cost"] = {
+                    "status": "unavailable",
+                    "error": f"{type(exc).__name__}: {str(exc)[:160]}",
+                }
+        return result
 
     def start_close_day(self, session_id: str) -> asyncio.Task[Any]:
         runtime = self.get(session_id)

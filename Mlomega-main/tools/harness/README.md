@@ -68,6 +68,17 @@ Full nightly consolidation too (HEAVY: WhisperX GPU + core `.venv`, off by defau
 .venv-live\Scripts\python tools\harness\run_harness.py --port 8730 --with-close-day --duration 30
 ```
 
+Opt-in PRO CloseDay (the live part remains local). Put `DEEPSEEK_API_KEY`,
+`GROQ_API_KEY` and `GEMINI_API_KEY` in the ignored root `.env` first:
+
+```
+.venv-live\Scripts\python tools\harness\run_harness.py --port 8730 --with-close-day --pro --cloud-budget-eur 1.50 --cloud-on-budget stop --media path\to\clip.mp4
+```
+
+`--pro-text-model flash` is explicit. `--cloud-on-budget flash` uses Flash only
+when a Pro text reservation would exceed the shared cap; `local` permits local
+audio/vision fallback and a checkpointed text resume without `--pro`.
+
 Just the device (server already up), writing its own report:
 
 ```

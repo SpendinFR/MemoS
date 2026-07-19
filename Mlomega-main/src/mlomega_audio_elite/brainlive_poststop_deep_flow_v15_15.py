@@ -9,6 +9,7 @@ later stage can consume a failed, incomplete or cross-session input.
 """
 
 import os
+from contextlib import nullcontext
 from typing import Any, Callable
 
 from .db import connect, init_db, insert_only, write_transaction
@@ -124,6 +125,77 @@ def _exported_bundle_conversations(person_id: str, package_date: str, *, live_se
             WHERE {where} AND e.export_status IN ('active','ok','exported')
             ORDER BY b.start_time,b.bundle_id LIMIT ?
         """, tuple(params))
+
+
+def _cloud_source_manifest(name: str, rows: Any) -> dict[str, Any]:
+    values = rows if isinstance(rows, list) else ([] if rows is None else [rows])
+    return {
+        "source": name,
+        "count": len(values),
+        "digest": stable_id("cloudsrc", name, json_dumps(values)),
+        "durable_table": "brainlive_event_bundles_v1514",
+    }
+
+
+def _compact_cloud_bundle_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Build the semantic cache prefix; raw evidence stays durable in SQLite.
+
+    ``raw_timeline`` and ``world_state_timeline`` are provenance indexes, while
+    ``audio_timeline`` repeats the transcript. Sending all three made a five-minute
+    bundle exceed 530k tokens. Their exact count/digest remains in the prefix and
+    their full rows remain queryable; vision is represented losslessly by change
+    atoms with compact source manifests.
+    """
+
+    def decoded(name: str, default: Any) -> Any:
+        value = row.get(f"{name}_json")
+        return json_loads(value, default) if isinstance(value, str) else (value if value is not None else default)
+
+    from .night_orchestrator import reduce_vision_timeline
+
+    raw_vision = decoded("vision_timeline", [])
+    vision_atoms: list[dict[str, Any]] = []
+    for atom in reduce_vision_timeline(raw_vision):
+        item = atom.to_dict()
+        source_refs = item.pop("source_refs", [])
+        frame_refs = item.pop("frame_refs", [])
+        item["source_manifest"] = _cloud_source_manifest("vision_source_refs", source_refs)
+        item["frame_manifest"] = _cloud_source_manifest("vision_frame_refs", frame_refs)
+        vision_atoms.append(item)
+
+    payload = {
+        key: row.get(key)
+        for key in (
+            "bundle_id", "person_id", "package_date", "live_session_id",
+            "start_time", "end_time", "bundle_kind", "title",
+            "brain2_conversation_id", "status",
+        )
+    }
+    payload.update({
+        "participants": decoded("participants", []),
+        "place": decoded("place", {}),
+        "transcript": decoded("transcript", []),
+        "diarization": decoded("diarization", []),
+        "vision_atoms": vision_atoms,
+        "outcomes": decoded("outcome_timeline", []),
+        "interventions": decoded("intervention_timeline", []),
+        "predictions": decoded("prediction_timeline", []),
+        "affordances": decoded("affordance_timeline", []),
+        "source_counts": decoded("source_counts", {}),
+    })
+    for name in ("raw_timeline", "world_state_timeline", "audio_timeline", "vision_timeline"):
+        payload[f"{name}_manifest"] = _cloud_source_manifest(name, decoded(name, []))
+    return payload
+
+
+def _cloud_bundle_payload(bundle_id: str) -> dict[str, Any]:
+    """Return one stable, semantic, provenance-complete PRO cache prefix."""
+
+    with connect() as con:
+        row = _one(con, "SELECT * FROM brainlive_event_bundles_v1514 WHERE bundle_id=?", (bundle_id,))
+    if not row:
+        raise StageGateError(f"missing bundle evidence for cloud prefix: {bundle_id}")
+    return _compact_cloud_bundle_row(row)
 
 
 def _conversation_digest(con, conversation_id: str) -> str:
@@ -538,11 +610,20 @@ def run_brainlive_post_stop_deep_flow(
                         if skipped:
                             unit = {"conversation_id": cid, "bundle_id": item.get("bundle_id"), "status": "skipped_already_ok"}
                         else:
-                            result = run_brain2_deep_stack_for_conversation(
-                                cid, person_id=person_id, trigger_type="brainlive_event_bundle_v18_7",
-                                run_v13=True, run_v15_after=False, run_periodic_export=False, use_llm=use_llm,
-                                checkpoint_run_id=run_id,
-                            )
+                            prefix_context = nullcontext()
+                            if os.environ.get("MLOMEGA_LLM_BACKEND", "").strip().lower() == "deepseek":
+                                from .cloud_providers_v19 import cloud_bundle_prefix
+
+                                bundle_id = str(item.get("bundle_id") or "")
+                                prefix_context = cloud_bundle_prefix(
+                                    bundle_id, _cloud_bundle_payload(bundle_id)
+                                )
+                            with prefix_context:
+                                result = run_brain2_deep_stack_for_conversation(
+                                    cid, person_id=person_id, trigger_type="brainlive_event_bundle_v18_7",
+                                    run_v13=True, run_v15_after=False, run_periodic_export=False, use_llm=use_llm,
+                                    checkpoint_run_id=run_id,
+                                )
                             if str(result.get("status")) not in {"ok", "completed", "skipped_llm_disabled"}:
                                 raise _stage_failure_from_result("brain2_unit", result)
                             if result.get("status") != "skipped_llm_disabled":

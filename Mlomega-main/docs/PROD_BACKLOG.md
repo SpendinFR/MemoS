@@ -1278,26 +1278,74 @@ réduction statique de JSON comme une validation modèle.
   Life Model, prédictions/outcomes, preuves et absence de doublons. Conserver captures et
   jugement humain dans le rapport Gate B; le dashboard ne doit jamais écrire la DB.
 
-#### Étape finale 2 — cloud optionnel (DeepSeek ou MiniMax) et auditeur shadow borné
+#### Étape finale 2 — profil CloseDay PRO optionnel et auditeur shadow borné
 
-> **Principe non négociable.** Le chemin local validé reste le défaut et le rollback :
-> Ollama 4B pour le live, llama.cpp/P1 pour le texte nocturne et Qwen3-VL 8B pour Deep
-> Vision. Rien ne change sans flag explicite. DeepSeek V4 Pro/Flash est officiellement
-> **text-only** : `--deepseek` ne remplace jamais le VLM. Le candidat VLM cloud économique
-> est Together Serverless avec `Qwen/Qwen3.5-9B`, réellement multimodal; Gemini 3.1
-> Flash-Lite sert de contrôle prix/latence tant qu'un gate ne les a pas départagés. Ce choix
-> reste séparé sous `--cloud-vlm-provider together|gemini`. `--cloud` pourra être un alias
-> explicite de `--deepseek --cloud-vlm-provider <provider-validé>`,
-> jamais une bascule implicite. La génération d'images Together n'est pas pertinente ici :
-> MLOmega paie l'analyse image→JSON, pas la création d'une image.
+> **Principe non négociable.** Le chemin validé reste le défaut et le rollback : Ollama 4B
+> pour le live, llama.cpp/P1 pour le texte nocturne, WhisperX local et Qwen3-VL 8B. Le
+> profil cloud n'existe qu'avec `-Pro` / `--pro` et ne change jamais le live : seul le
+> sous-processus CloseDay reçoit DeepSeek. Le choix arrêté le 19 juillet 2026 est
+> DeepSeek V4 Pro non-thinking pour le texte, Groq `whisper-large-v3` pour la transcription
+> nocturne et Gemini `gemini-3.1-flash-lite` pour les keyframes. MiniMax et Together sont
+> écartés de cette première intégration afin de ne pas maintenir quatre branches.
 
-- [ ] **2.1 Providers cloud sélectionnables, sans perdre le local.** Ajouter
-  `--deepseek` à `run_harness.py` et aux commandes CloseDay, plus le switch PowerShell
-  équivalent `-DeepSeek` dans `RUN_MLOMEGA_V19.ps1`. Ajouter séparément
-  `--cloud-vlm-provider together|gemini` / `-CloudVlmProvider`; `--together-vlm` peut rester
-  un raccourci explicite. `--cloud` / `-Cloud` n'est qu'un alias visible pour le texte et
-  le provider VLM validé. Sans flag, comportement, variables et orchestration GPU locale
-  restent identiques.
+- [x] **2.1 Providers PRO branchés sans perdre le local (code, contrats et micro-appels
+  fournisseurs réels verts; Gate B PRO ouvert).** `RUN_MLOMEGA_V19.ps1 -LivePhone -Pro`,
+  `run_harness.py --pro` et `run_phoneonly_close_day.py --pro` sélectionnent le profil.
+  Sans flag, aucune variable cloud n'est posée et les blocs Ollama/llama.cpp historiques
+  sont inchangés. Le SessionHub garde `MLOMEGA_LLM_BACKEND=ollama` pendant la capture;
+  `_run_close_day_subprocess` applique DeepSeek uniquement dans la copie d'environnement
+  du worker nocturne. Test de frontière réel au niveau subprocess ajouté.
+
+  **Implémentation autoritaire du lot :**
+
+  - `cloud_budget_v19.py` crée `cloud_cost_ledger_v19`. Chaque requête réserve sous
+    `BEGIN IMMEDIATE`, puis réconcilie tokens cache hit/miss, sortie, secondes audio,
+    images, latence, HTTP, retries, tarif et euros. Budget par défaut **1,50 EUR/jour**;
+    `stop|flash|local`; aucune clé, donnée ou prompt dans la table;
+    `/metrics` et le résultat CloseDay exposent le résumé courant sans muter la DB;
+  - `cloud_providers_v19.py` utilise uniquement la bibliothèque standard. DeepSeek V4 Pro
+    conserve chaque system/prompt historique intact, désactive thinking, exige JSON et
+    place d'abord un bundle canonique stable. Un warm-up par bundle construit le préfixe;
+    les moteurs suivants réutilisent exactement les mêmes messages initiaux. Le cache est
+    compté depuis l'usage fournisseur, jamais supposé. Backoff 429/5xx et sémaphore par
+    défaut à 12 (`MLOMEGA_CLOUD_MAX_IN_FLIGHT`, max 40);
+  - Groq remplace seulement la transcription Whisper dans Deep Audio. Alignment WhisperX,
+    Pyannote, SpeechBrain, assemblage et writers restent locaux. Les WAV >24 MiB deviennent
+    un FLAC lossless temporaire afin de rester sous la limite d'upload; le fichier est
+    supprimé en `finally`;
+  - Gemini remplace seulement l'appel Qwen3-VL. Sélection de keyframes, cache image,
+    provenance, validation, writers et égalité `selected=readable=analyzed` restent les
+    mêmes. Modèle exact : `gemini-3.1-flash-lite` (le 2.5 est refusé aux nouveaux comptes
+    même si son endpoint catalogue répond encore); le preflight exige aussi la méthode
+    `generateContent`;
+  - le préflight authentifie les trois APIs et vérifie les IDs de modèles avant capture,
+    sans appel payant et sans exposer les secrets. Les clés vont dans `.env` ignoré :
+    `DEEPSEEK_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`;
+  - preuves sans réseau : `test_cloud_pro_v19.py` 9/9, suites Deep Audio/Vision/GPU 31/31,
+    runtime PhoneOnly 43/43. Micro-appels réels : DeepSeek JSON strict, Groq WAV 12 s →
+    1 segment, Gemini image → JSON structuré (1 115 tokens entrée/11 sortie). Le premier
+    Gate B `--pro` a ensuite révélé le blocage EpisodeBuilder décrit en 2.1-B; ne pas
+    déclarer la qualité fournisseur avant la preuve bout-en-bout finale.
+
+- [ ] **2.1-B — EpisodeBuilder local validé, puis moteurs parallèles en PRO, sans toucher au
+  local par défaut.** Passation autoritaire : `docs/PRO_CLOSEDAY_HANDOFF.md`. État mesuré du run
+  `gateb-pro-20260719-185246` : Groq et Gemini 18/18/18 passent; projection DeepSeek
+  532 041→49 026 tokens et cache réel ~50 304 tokens hit/appel; réponses de détail riches
+  mais rejetées par `detail_normalized_output_none`, donc zéro épisode matérialisé et
+  fan-out moteur non atteint. Décision : ne plus demander EpisodeBuilder à DeepSeek.
+  Exécuter exactement l'EpisodeBuilder P1/llama.cpp déjà validé, commit des épisodes, arrêt
+  P1, puis un warm-up DeepSeek par épisode et fan-out 8→12 des couples épisode×moteur avec
+  connexions séparées, barrières du DAG réel et writers ordonnés. Un appel reste distinct
+  par moteur; aucune fusion de schémas. Test faux-P1/faux-DeepSeek, reprise checkpointée,
+  puis un Gate B neuf ≤120 s post-stop. Le chemin sans `--pro` garde impérativement
+  `episode-pack-v2`, ses providers et son ordre actuel.
+
+  Avant ce run payant, fermer aussi la récupération des réservations cloud interrompues :
+  persister l'identité du run et la frontière `reserved → in_flight` avant HTTP; seule une
+  absence d'envoi prouvée autorise `released`, tandis qu'un appel possiblement envoyé reste
+  `uncertain` et compté au pire cas. Tests crash/concurrence/idempotence obligatoires. Ne
+  jamais supprimer manuellement les réservations du run interrompu pour récupérer du
+  budget. Détails et commandes dans `docs/PRO_CLOSEDAY_HANDOFF.md`.
 
   **Texte DeepSeek :**
 
@@ -1306,16 +1354,15 @@ réduction statique de JSON comme une validation modèle.
   - adapter V4 à l'interface `WindowLLM` et à l'orchestrateur existant : mêmes prompts,
     schémas, fenêtres, merge, checkpoints, couverture et writers; aucune version parallèle
     des moteurs V13/V14/V17/V18/Life;
-  - `deepseek-v4-flash` candidat par défaut pour extraction/segmentation/champs structurés;
-    `deepseek-v4-pro` réservé aux synthèses transversales réellement complexes. La liste
-    des stages Pro est explicite, versionnée et comparée; pas de routage « intelligent »
-    opaque qui rendrait une nuit non reproductible;
+  - `deepseek-v4-pro` est le défaut PRO pour mesurer le saut maximal de qualité sans
+    routage opaque. `deepseek-v4-flash` est sélectionnable explicitement ou utilisé lorsque
+    la politique budgétaire vaut `flash` et que la réservation Pro dépasserait le plafond;
   - le live/Ultralive reste sur Ollama 4B local. Une panne cloud pendant une nuit marquée
     `--deepseek` est `blocked/retryable`; aucun mélange silencieux cloud/local. Un fallback
     local éventuel exige un flag distinct et doit être inscrit dans le capability manifest;
   - ne jamais créer un faux `--deepseek-vlm` tant que l'API officielle reste text-only.
 
-  **Alternative MiniMax M3 :** ajouter `--minimax`, mutuellement exclusif avec
+  **Alternative MiniMax M3 (écartée pour ce lot, historique seulement) :** ajouter `--minimax`, mutuellement exclusif avec
   `--deepseek`. Le profil utilise M3 pour le texte et `API-vlm`/M3 multimodal pour la
   vision, sans modifier prompts, schemas, writers ou gates. L'offre Plus actuelle est
   20 $/mois pour ~1,7 B tokens M3 et un quota multimodal partagé. Aucun dépassement payant
@@ -1326,7 +1373,7 @@ réduction statique de JSON comme une validation modèle.
   très au-dessus du Qwen 9B local attendu; le shadow doit seulement prouver JSON, preuves,
   qualité centrée William, temps et consommation sur notre charge réelle.
 
-  **Vision Together optionnelle :**
+  **Vision Together optionnelle (écartée; les calculs ci-dessous restent historiques) :**
 
   - adapter l'endpoint OpenAI-compatible Together à l'interface Deep Vision existante,
     modèle initial `Qwen/Qwen3.5-9B`, reasoning désactivé, même prompt, même JSON Schema,
@@ -1389,7 +1436,7 @@ réduction statique de JSON comme une validation modèle.
   snapshot de tarif.
 
   **Plafond quotidien dur multi-provider.** Défaut
-  `MLOMEGA_CLOUD_DAILY_BUDGET_EUR=1.00` (alias de compatibilité temporaire
+  `MLOMEGA_CLOUD_DAILY_BUDGET_EUR=1.50` (alias de compatibilité temporaire
   `MLOMEGA_DEEPSEEK_DAILY_BUDGET_EUR`), partagé par DeepSeek/MiniMax, le VLM cloud,
   CloseDay et outils
   shadow. Avant chaque appel, réserver atomiquement le pire coût input+output+image; après

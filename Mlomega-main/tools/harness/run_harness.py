@@ -84,7 +84,11 @@ def _fetch_metrics(host: str, port: int) -> dict[str, Any]:
     return got or {}
 
 
-def start_server(host: str, port: int, db: Path, *, log: Path) -> subprocess.Popen:
+def start_server(
+    host: str, port: int, db: Path, *, log: Path, pro: bool = False,
+    cloud_budget_eur: float = 1.50, cloud_on_budget: str = "stop",
+    pro_text_model: str = "pro",
+) -> subprocess.Popen:
     env = os.environ.copy()
     env["MLOMEGA_DB"] = str(db.resolve())
     # Production default: the GPU phase orchestration (preflight tests P1 then
@@ -98,6 +102,18 @@ def start_server(host: str, port: int, db: Path, *, log: Path) -> subprocess.Pop
     # quiescence gate. Gate B sends its last interactive commands near t=290 s, so
     # the ordered DataChannel queue needs enough time to finish before CloseDay.
     env.setdefault("MLOMEGA_FINAL_DRAIN_TIMEOUT_S", "900")
+    if pro:
+        env.update({
+            "MLOMEGA_CLOUD_MODE": "pro",
+            "MLOMEGA_PRO_CLOSEDAY": "1",
+            "MLOMEGA_PRO_TEXT_MODEL": "deepseek-v4-pro" if pro_text_model == "pro" else "deepseek-v4-flash",
+            "MLOMEGA_DEEP_AUDIO_TRANSCRIBER": "groq",
+            "MLOMEGA_GROQ_WHISPER_MODEL": env.get("MLOMEGA_GROQ_WHISPER_MODEL", "whisper-large-v3"),
+            "MLOMEGA_CLOUD_VLM_PROVIDER": "gemini",
+            "MLOMEGA_GEMINI_VLM_MODEL": env.get("MLOMEGA_GEMINI_VLM_MODEL", "gemini-3.1-flash-lite"),
+            "MLOMEGA_CLOUD_DAILY_BUDGET_EUR": str(cloud_budget_eur),
+            "MLOMEGA_CLOUD_ON_BUDGET": cloud_on_budget,
+        })
     py = _venv_python()
     cmd = [
         str(py), str(ROOT / "services" / "live-pc" / "sessionhub_http.py"),
@@ -144,6 +160,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--server-timeout", type=float, default=120.0)
     parser.add_argument("--out", default=None)
     parser.add_argument("--synth-seconds", type=int, default=30)
+    parser.add_argument("--pro", action="store_true", help="opt-in cloud CloseDay; live remains local")
+    parser.add_argument("--cloud-budget-eur", type=float, default=1.50)
+    parser.add_argument("--cloud-on-budget", choices=("stop", "flash", "local"), default="stop")
+    parser.add_argument("--pro-text-model", choices=("pro", "flash"), default="pro")
     args = parser.parse_args(argv)
 
     scratch = HERE / "_run"
@@ -164,7 +184,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if not args.attach:
             print(f"[harness] starting server on {args.host}:{args.port} (db={db})")
-            proc = start_server(args.host, args.port, db, log=server_log)
+            proc = start_server(
+                args.host, args.port, db, log=server_log, pro=bool(args.pro),
+                cloud_budget_eur=float(args.cloud_budget_eur),
+                cloud_on_budget=str(args.cloud_on_budget),
+                pro_text_model=str(args.pro_text_model),
+            )
         health = _wait_health(
             args.host, args.port, timeout_s=args.server_timeout, require_pairing=True
         )

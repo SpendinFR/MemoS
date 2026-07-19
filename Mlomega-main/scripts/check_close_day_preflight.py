@@ -42,15 +42,92 @@ except ImportError:
 CUDA_ENV_OK, CUDA_ENV_DETAIL = configure_windows_cuda_dlls(ROOT)
 
 
-def _request_json(url: str, *, payload: dict[str, Any] | None = None, timeout_s: float = 10.0) -> Any:
+def _request_json(
+    url: str, *, payload: dict[str, Any] | None = None,
+    timeout_s: float = 10.0, headers: dict[str, str] | None = None,
+) -> Any:
     data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json; charset=utf-8"} if data is not None else {},
+        headers={
+            **({"Content-Type": "application/json; charset=utf-8"} if data is not None else {}),
+            "User-Agent": "MLOmega-V19-Preflight/1.0",
+            **(headers or {}),
+        },
     )
     with urllib.request.urlopen(request, timeout=timeout_s) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def _probe_cloud_profile() -> tuple[bool, dict[str, Any]]:
+    """Authenticate every PRO provider without spending a transcription/VLM call."""
+
+    enabled = os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower() in {"1", "true", "yes", "on"}
+    if not enabled:
+        return True, {"status": "not_enabled", "local_default_unchanged": True}
+    expected = {
+        "DEEPSEEK_API_KEY": os.environ.get("DEEPSEEK_API_KEY", "").strip(),
+        "GROQ_API_KEY": os.environ.get("GROQ_API_KEY", "").strip(),
+        "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY", "").strip(),
+    }
+    missing = [name for name, value in expected.items() if not value]
+    detail: dict[str, Any] = {
+        "keys_present": {name: bool(value) for name, value in expected.items()},
+        "text_model": os.environ.get("MLOMEGA_PRO_TEXT_MODEL", "deepseek-v4-pro"),
+        "audio_model": os.environ.get("MLOMEGA_GROQ_WHISPER_MODEL", "whisper-large-v3"),
+        "vision_model": os.environ.get("MLOMEGA_GEMINI_VLM_MODEL", "gemini-3.1-flash-lite"),
+        "budget_eur": os.environ.get("MLOMEGA_CLOUD_DAILY_BUDGET_EUR", "1.50"),
+        "budget_policy": os.environ.get("MLOMEGA_CLOUD_ON_BUDGET", "stop"),
+    }
+    if missing:
+        detail["missing"] = missing
+        detail["fix"] = "Ajoute les trois cles dans .env (jamais dans Git), puis relance -Pro."
+        return False, detail
+    probes: dict[str, Any] = {}
+    try:
+        deep = _request_json(
+            os.environ.get("MLOMEGA_DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/") + "/models",
+            headers={"Authorization": f"Bearer {expected['DEEPSEEK_API_KEY']}"}, timeout_s=15,
+        )
+        deep_ids = {str(item.get("id")) for item in (deep.get("data") or []) if isinstance(item, dict)}
+        selected = str(detail["text_model"])
+        probes["deepseek"] = {"ok": selected in deep_ids, "model": selected}
+    except Exception as exc:
+        probes["deepseek"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
+    try:
+        selected = str(detail["audio_model"])
+        groq = _request_json(
+            os.environ.get("MLOMEGA_GROQ_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/") + f"/models/{selected}",
+            headers={"Authorization": f"Bearer {expected['GROQ_API_KEY']}"}, timeout_s=15,
+        )
+        probes["groq"] = {"ok": str(groq.get("id") or "") == selected, "model": selected}
+    except Exception as exc:
+        probes["groq"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
+    try:
+        selected = str(detail["vision_model"])
+        gemini = _request_json(
+            os.environ.get("MLOMEGA_GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+            + f"/models/{selected}",
+            headers={"x-goog-api-key": expected["GEMINI_API_KEY"]}, timeout_s=15,
+        )
+        methods = {str(item) for item in (gemini.get("supportedGenerationMethods") or [])}
+        probes["gemini"] = {
+            "ok": str(gemini.get("name") or "").endswith(selected) and "generateContent" in methods,
+            "model": selected,
+            "generate_content": "generateContent" in methods,
+        }
+    except Exception as exc:
+        probes["gemini"] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:180]}"}
+    detail["probes"] = probes
+    try:
+        budget_ok = float(detail["budget_eur"]) > 0 and str(detail["budget_policy"]) in {"stop", "flash", "local"}
+    except (TypeError, ValueError):
+        budget_ok = False
+    ok = budget_ok and all(bool(item.get("ok")) for item in probes.values())
+    if not ok:
+        detail["fix"] = "Verifie acces/modeles cloud, budget > 0 et politique stop|flash|local."
+    return ok, detail
 
 
 def _version_tuple(value: str) -> tuple[int, ...]:
@@ -324,6 +401,9 @@ def _probe_llm_process_consistency(*, timeout_s: float = 2.0) -> tuple[bool, dic
 
 def run() -> dict[str, Any]:
     checks: dict[str, dict[str, Any]] = {}
+    pro_close_day = os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
     def record(name: str, ok: bool, detail: Any) -> None:
         checks[name] = {"ok": bool(ok), "detail": detail}
@@ -333,6 +413,8 @@ def run() -> dict[str, Any]:
     record("proxy_environment", proxy_ok, proxy_detail)
 
     record("cuda_dll_environment", CUDA_ENV_OK, CUDA_ENV_DETAIL)
+    cloud_ok, cloud_detail = _probe_cloud_profile()
+    record("cloud_pro_profile", cloud_ok, cloud_detail)
 
     record(
         "python311_64",
@@ -378,6 +460,17 @@ def run() -> dict[str, Any]:
         record("llm_context_budget", False, "settings unavailable; context equality unproved")
         record("llm_json_contract", False, "settings unavailable")
         record("vlm_json_contract", False, "settings unavailable")
+    elif pro_close_day:
+        # The cloud profile above authenticates the exact text/audio/vision
+        # providers.  Loading the local 9B and Qwen-VL here both wastes VRAM and
+        # can reject a valid PRO run.  Live Ollama 4B is proved by the outer
+        # PhoneOnly preflight; these three checks describe only the night.
+        cloud_gate = bool(cloud_ok)
+        detail = {"status": "delegated_to_cloud_pro_profile"}
+        record("llm_process_consistency", cloud_gate, detail)
+        record("llm_context_budget", cloud_gate, detail)
+        record("llm_json_contract", cloud_gate, detail)
+        record("vlm_json_contract", cloud_gate, detail)
     else:
         process_ok, process_detail = _probe_llm_process_consistency()
         record("llm_process_consistency", process_ok, process_detail)

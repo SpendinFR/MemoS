@@ -168,6 +168,7 @@ def test_production_gpu_mode_opens_pairing_after_deep_probe(tmp_path, monkeypatc
     monkeypatch.setenv("MLOMEGA_OLLAMA_LIVE_MODEL", "qwen3.5:4b")
     monkeypatch.setenv("MLOMEGA_OFFLINE_VLM_MODEL", "qwen3-vl:8b")
     monkeypatch.setenv("MLOMEGA_GPU_PHASE_ORCHESTRATION", "1")
+    monkeypatch.setenv("MLOMEGA_CLOUD_DAILY_BUDGET_EUR", "1.5")
     receipt.write_text(json.dumps({
         "ready": True,
         "created_at_epoch": time.time(),
@@ -219,6 +220,7 @@ def test_deep_preflight_receipt_requires_fresh_matching_environment(tmp_path, mo
     monkeypatch.setenv("MLOMEGA_OLLAMA_LIVE_MODEL", "qwen3.5:4b")
     monkeypatch.setenv("MLOMEGA_OFFLINE_VLM_MODEL", "qwen3-vl:8b")
     monkeypatch.setenv("MLOMEGA_GPU_PHASE_ORCHESTRATION", "1")
+    monkeypatch.setenv("MLOMEGA_CLOUD_DAILY_BUDGET_EUR", "1.5")
     fingerprint = {
         "person_id": "me",
         "llm_backend": "llamacpp",
@@ -228,6 +230,13 @@ def test_deep_preflight_receipt_requires_fresh_matching_environment(tmp_path, mo
         "live_model": "qwen3.5:4b",
         "offline_vlm_model": "qwen3-vl:8b",
         "gpu_phase_orchestration": "1",
+        "pro_close_day": "0",
+        "pro_text_model": "",
+        "pro_audio_model": "",
+        "pro_vision_model": "",
+        # Numeric formatting is deliberately different from the environment.
+        "cloud_budget_eur": "1.50",
+        "cloud_budget_policy": "",
     }
     receipt.write_text(json.dumps({
         "ready": True,

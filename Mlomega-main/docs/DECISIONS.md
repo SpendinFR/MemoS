@@ -1533,6 +1533,60 @@ active : elle conserve toutes les keyframes et a rétabli l'égalité sélection
 analysé. À l'inverse, aucune règle owner/déduplication/promotion shadow ne doit être
 présentée comme active dans CloseDay après ce rollback.
 
+## 2026-07-19 — Le profil PRO est une frontière de sous-processus, pas un remplacement du live (ADR)
+
+Le chemin local validé reste le défaut byte-for-byte au niveau de ses prompts et de ses
+providers. `-Pro` marque le serveur, mais ne change pas `MLOMEGA_LLM_BACKEND` pendant la
+capture : `_run_close_day_subprocess` pose DeepSeek uniquement dans l'environnement enfant.
+Cette décision empêche BrainLive, Aide ou une requête mémoire d'aller au cloud par accident
+et évite de réintroduire la régression de frontière observée avec P1 dans le live.
+
+Le texte nocturne utilise `deepseek-v4-pro` non-thinking par défaut. Chaque bundle est
+sérialisé canoniquement et devient le préfixe exact commun; un ACK JSON payé une fois rend
+ce préfixe cacheable avant les appels moteurs. Les consignes et prompts historiques restent
+des messages séparés, inchangés. Flash n'est pas choisi opaque par moteur : il est un choix
+explicite ou la conséquence explicite de la politique budgétaire `flash`.
+
+Deep Audio externalise seulement Whisper vers Groq `whisper-large-v3`; alignement,
+diarisation et identité vocale restent locaux. Deep Vision externalise seulement
+l'inférence vers `gemini-3.1-flash-lite`; sélection, cache, provenance, writers et gate de
+couverture restent locaux. Le ledger SQLite partagé réserve avant envoi sous transaction
+immédiate et réconcilie les usages après réponse. Plafond initial : 1,50 EUR/jour. Un secret,
+un prompt ou une réponse brute ne doit jamais entrer dans ce ledger ou les erreurs.
+
+Le stable 2.5 initialement choisi reste visible dans le catalogue Gemini mais son endpoint
+de génération répond `NOT_FOUND` pour un nouveau compte. Le stable 3.1 est donc le défaut
+produit; son tarif est enregistré à 0,25 USD/M tokens entrée image/texte et 1,50 USD/M
+sortie. Un GET de modèle ne suffit plus : le preflight exige explicitement la présence de
+`generateContent` avant capture.
+
+Alternatives écartées pour la première mise en production : MiniMax (quotas d'abonnement
+non assimilables à un milliard de tokens API libres), Together VLM (branche supplémentaire
+sans gain démontré face au tarif image Gemini), et bascule automatique vers P1 au milieu
+d'un appel DeepSeek (frontière GPU non prouvée). Le fallback texte local est donc une
+reprise checkpointée sans `--pro`, jamais un mélange silencieux dans le même run.
+
+### Amendement — parallélisme PRO par DAG, jamais par mutation du local
+
+La preuve réelle impose une seconde frontière : EpisodeBuilder reste exécuté une fois par
+le P1/llama.cpp local déjà validé, y compris dans le profil PRO. Ses prompts, fenêtres,
+contrats, checkpoints et writers ne changent pas. Après son commit, P1 est arrêté et PRO
+conserve un appel DeepSeek distinct par moteur. Le défaut de fillers observé sur
+EpisodeBuilder DeepSeek n'est donc pas contourné heuristiquement : ce provider n'est plus
+responsable de construire les épisodes.
+
+Chaque épisode compact devient alors un préfixe cache stable, chauffé exactement une fois.
+Les couples épisode×moteur indépendants peuvent partir en parallèle; causalité/agrégats et
+la chaîne pattern→prédiction→simulation→calibration→intervention attendent seulement leurs
+dépendances réellement consommées. Chaque worker possède sa connexion SQLite et les
+writers restent derrière une barrière ordonnée. Plusieurs moteurs ne sont jamais fusionnés
+dans un même gros contrat JSON pour gagner du temps.
+
+Le même principe conservateur vaut pour le budget : une réservation cloud n'est libérée
+après crash que si le système peut prouver que l'appel HTTP n'est jamais parti. Une
+réservation marquée envoyée mais non réconciliée devient `uncertain` et reste comptée au
+pire cas. L'âge seul n'est jamais une preuve de non-facturation.
+
 ## 2026-07-18 — Un tour WhisperX posé uniquement sur du silence synthétique est une preuve quarantinée (ADR)
 
 Le tape Deep Audio préserve les trous d'acquisition par du silence afin de conserver une

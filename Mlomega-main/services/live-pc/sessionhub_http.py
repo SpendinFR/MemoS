@@ -388,11 +388,25 @@ def _preflight_receipt_check(*, person_id: str) -> tuple[bool, dict[str, Any]]:
                 or "qwen3-vl:8b"
             ),
             "gpu_phase_orchestration": os.environ.get("MLOMEGA_GPU_PHASE_ORCHESTRATION", "0"),
+            "pro_close_day": os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0"),
+            "pro_text_model": os.environ.get("MLOMEGA_PRO_TEXT_MODEL", ""),
+            "pro_audio_model": os.environ.get("MLOMEGA_GROQ_WHISPER_MODEL", ""),
+            "pro_vision_model": os.environ.get("MLOMEGA_GEMINI_VLM_MODEL", ""),
+            "cloud_budget_eur": os.environ.get("MLOMEGA_CLOUD_DAILY_BUDGET_EUR", ""),
+            "cloud_budget_policy": os.environ.get("MLOMEGA_CLOUD_ON_BUDGET", ""),
         }
+        def fingerprint_matches(key: str, observed: Any, wanted: Any) -> bool:
+            if key == "cloud_budget_eur":
+                try:
+                    return float(observed) == float(wanted)
+                except (TypeError, ValueError):
+                    return False
+            return str(observed) == str(wanted)
+
         mismatches = {
             key: {"expected": value, "observed": fingerprint.get(key)}
             for key, value in expected.items()
-            if str(fingerprint.get(key)) != str(value)
+            if not fingerprint_matches(key, fingerprint.get(key), value)
         }
         checks = dict(payload.get("checks") or {})
         ok = bool(

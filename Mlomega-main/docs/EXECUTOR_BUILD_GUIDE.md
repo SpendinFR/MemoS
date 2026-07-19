@@ -1,5 +1,65 @@
 # EXECUTOR_BUILD_GUIDE — MLOmega V19, construction pas à pas
 
+## PASSATION 2026-07-19 — Profil CloseDay PRO branché, fournisseurs réels validés
+
+> **Reprise prioritaire :** lire intégralement
+> [`docs/PRO_CLOSEDAY_HANDOFF.md`](PRO_CLOSEDAY_HANDOFF.md) avant toute modification ou
+> tout appel payant. Le transport cloud, le préfixe compact et le fan-out moteur PRO sont
+> posés, mais EpisodeBuilder a été routé à tort vers DeepSeek. La reprise doit exécuter
+> EpisodeBuilder une fois avec le P1 local déjà validé, puis chauffer chaque épisode et
+> paralléliser seulement ses moteurs DeepSeek. Le Gate PRO est ouvert, pas validé. Le chemin
+> local sans `--pro` ne doit pas être modifié.
+
+Le lot est **additif**. Sans `-Pro`/`--pro`, le live et la nuit locale suivent exactement
+Ollama 4B → WhisperX/Pyannote/SpeechBrain → Qwen3-VL → llama.cpp/P1. Avec `-Pro`, le live
+reste lui aussi sur Ollama; seule la copie d'environnement du sous-processus CloseDay
+sélectionne DeepSeek V4 Pro, Groq Whisper Large V3 et Gemini 3.1 Flash-Lite. Ne jamais
+mettre `MLOMEGA_LLM_BACKEND=deepseek` globalement avant la capture.
+
+Ajouter une fois dans `Mlomega-main\.env` (fichier déjà ignoré par Git) :
+
+```dotenv
+DEEPSEEK_API_KEY=...
+GROQ_API_KEY=...
+GEMINI_API_KEY=...
+```
+
+Premier lancement produit, depuis la racine :
+
+```powershell
+.\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -Pro `
+  -CloudBudgetEur 1.50 -CloudOnBudget stop
+```
+
+Gate harnais équivalent, uniquement après un préflight vert :
+
+```powershell
+.\.venv-live\Scripts\python.exe tools\harness\run_harness.py `
+  --pro --cloud-budget-eur 1.50 --cloud-on-budget stop `
+  --port 8730 --with-close-day --media <video.mp4>
+```
+
+`stop` est le premier gate recommandé. `flash` remplace automatiquement Pro par
+`deepseek-v4-flash` lorsqu'une réservation texte dépasserait le plafond. `local` autorise
+Groq/Gemini à reprendre leur moteur local; pour le texte, le run s'arrête de façon
+retryable afin qu'une reprise sans `--pro` réutilise les checkpoints déjà terminés : on ne
+démarre pas P1 silencieusement au milieu d'une phase cloud. Le résumé final contient
+`cloud_cost`; `/metrics` expose le même total pendant le worker et le détail durable est
+dans `cloud_cost_ledger_v19`.
+
+Code : `cloud_budget_v19.py`, `cloud_providers_v19.py`, branchements dans `llm.py`,
+`audio_pipeline.py`, `brainlive_offline_deep_vision_v16_1.py`, frontière du préfixe dans
+`brainlive_poststop_deep_flow_v15_15.py`, profil dans les trois lanceurs. Validation sans
+clé/réseau : 9 tests cloud, 31 tests Deep Audio/Vision/GPU et 43 tests PhoneOnly verts.
+Validation fournisseur réelle et minimale : DeepSeek a rendu un JSON strict via le client
+produit, Groq a transcrit un WAV de 12 s en un segment, Gemini a analysé une vraie image en
+JSON structuré (1 115 tokens entrée, 11 sortie). Le modèle Gemini 2.5 encore listé par
+Google est refusé aux nouveaux comptes; le défaut a donc été remplacé partout par le stable
+`gemini-3.1-flash-lite`, et le préflight exige désormais `generateContent`. Le prochain
+exécuteur ne relance pas un Gate B local : il exécute un seul Gate B PRO et compare
+preuves/manifests, JSON rejetés, cache hit/miss, coût réel et latence avant de cocher le
+gate fournisseur.
+
 ## PASSATION 2026-07-18 — Étape finale 2 qualité owner GO
 
 Le chemin Qwen de production reste **strictement** `episode-pack-v2`. Ne pas réintroduire
