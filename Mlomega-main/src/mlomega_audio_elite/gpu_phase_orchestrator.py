@@ -512,7 +512,7 @@ class GpuPhaseOrchestrator:
             )
         return list(dict.fromkeys(requested)), remaining
 
-    def enter_text(self) -> dict[str, Any]:
+    def enter_text(self, *, force_local_p1: bool = False) -> dict[str, Any]:
         """Nightly text phase: EVICT EVERY resident Ollama model, prove Ollama is
         empty, THEN start P1 (the 9B llama.cpp server).
 
@@ -547,9 +547,16 @@ class GpuPhaseOrchestrator:
                 "Ollama model(s) still resident before starting the text-phase P1: "
                 + ", ".join(sorted(after_models))
             )
-        if os.environ.get("MLOMEGA_LLM_BACKEND", "").strip().lower() == "deepseek":
+        if (
+            not force_local_p1
+            and os.environ.get("MLOMEGA_LLM_BACKEND", "").strip().lower() == "deepseek"
+        ):
             # PRO text runs remotely. Keep the exact local teardown boundary,
             # but never start P1 or impose a meaningless local free-VRAM gate.
+            # ``force_local_p1`` bypasses this skip for the ONE local text phase
+            # PRO still owns: the EpisodeBuilder frontier (proven on
+            # gateb-pro-20260720-012416: this branch returned without P1 and the
+            # local episode build failed segmentation_llm_failed:unavailable).
             stopped = self.stop_p1() if self.p1_running else {"status": "not_running"}
             return {
                 "phase": "text_cloud",
@@ -601,8 +608,10 @@ class GpuPhaseOrchestrator:
         episodes inside the ``with`` block; P1 is ALWAYS stopped on exit — success
         or failure — so the DeepSeek fan-out never runs beside a resident 9B and
         an EpisodeBuilder error can never silently fall through to the cloud with
-        P1 still holding the VRAM."""
-        self.enter_text()
+        P1 still holding the VRAM. ``force_local_p1`` is essential: the PRO env
+        carries MLOMEGA_LLM_BACKEND=deepseek, and without it enter_text's cloud
+        branch would return WITHOUT starting P1."""
+        self.enter_text(force_local_p1=True)
         try:
             yield self
         finally:

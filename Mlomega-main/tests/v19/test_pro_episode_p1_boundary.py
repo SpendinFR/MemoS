@@ -83,6 +83,27 @@ def test_pro_local_text_phase_starts_p1_then_always_stops_it():
     assert events.index("build") > events.index("p1_spawn")
 
 
+def test_pro_local_text_phase_starts_p1_even_under_deepseek_backend(monkeypatch):
+    """Regression gateb-pro-20260720-012416: the PRO env carries
+    MLOMEGA_LLM_BACKEND=deepseek and enter_text's cloud branch then returns
+    WITHOUT starting P1 — the local episode build died unavailable. The episode
+    frontier must force the local P1 start regardless of that env."""
+    monkeypatch.setenv("MLOMEGA_LLM_BACKEND", "deepseek")
+    events: list[str] = []
+    orch = _orchestrator(events)
+    with orch.pro_local_text_phase():
+        assert orch.p1_running is True          # P1 up despite the deepseek env
+        assert "p1_spawn" in events
+    assert orch.p1_running is False
+    # The plain text phase keeps the cloud skip (no P1) under the same env.
+    events2: list[str] = []
+    orch2 = _orchestrator(events2)
+    result = orch2.enter_text()
+    assert result["phase"] == "text_cloud"
+    assert orch2.p1_running is False
+    assert "p1_spawn" not in events2
+
+
 def test_pro_local_text_phase_stops_p1_in_finally_on_build_failure():
     events: list[str] = []
     orch = _orchestrator(events)
