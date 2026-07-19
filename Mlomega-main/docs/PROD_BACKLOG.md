@@ -1278,7 +1278,7 @@ réduction statique de JSON comme une validation modèle.
   Life Model, prédictions/outcomes, preuves et absence de doublons. Conserver captures et
   jugement humain dans le rapport Gate B; le dashboard ne doit jamais écrire la DB.
 
-#### Étape finale 2 — cloud optionnel (DeepSeek texte + Together Vision) et auditeur shadow borné
+#### Étape finale 2 — cloud optionnel (DeepSeek ou MiniMax) et auditeur shadow borné
 
 > **Principe non négociable.** Le chemin local validé reste le défaut et le rollback :
 > Ollama 4B pour le live, llama.cpp/P1 pour le texte nocturne et Qwen3-VL 8B pour Deep
@@ -1314,6 +1314,17 @@ réduction statique de JSON comme une validation modèle.
     `--deepseek` est `blocked/retryable`; aucun mélange silencieux cloud/local. Un fallback
     local éventuel exige un flag distinct et doit être inscrit dans le capability manifest;
   - ne jamais créer un faux `--deepseek-vlm` tant que l'API officielle reste text-only.
+
+  **Alternative MiniMax M3 :** ajouter `--minimax`, mutuellement exclusif avec
+  `--deepseek`. Le profil utilise M3 pour le texte et `API-vlm`/M3 multimodal pour la
+  vision, sans modifier prompts, schemas, writers ou gates. L'offre Plus actuelle est
+  20 $/mois pour ~1,7 B tokens M3 et un quota multimodal partagé. Aucun dépassement payant
+  si la Subscription Key n'a ni Credits ni clé Pay-As-You-Go associée : vérifier
+  `/v1/token_plan/remains` avant et pendant CloseDay, puis bloquer/reprendre localement à
+  quota nul. Quotas 5 h/hebdomadaires et throttling imposent checkpoint/retry; le local
+  reste le défaut et le secours. M3 et DeepSeek Pro sont du même niveau général mesuré,
+  très au-dessus du Qwen 9B local attendu; le shadow doit seulement prouver JSON, preuves,
+  qualité centrée William, temps et consommation sur notre charge réelle.
 
   **Vision Together optionnelle :**
 
@@ -1367,7 +1378,8 @@ réduction statique de JSON comme une validation modèle.
   troisième branche à maintenir.
 
   **Gate A/B avant activation produit.** Sur des clones d'une même DB, comparer texte
-  local/Flash/Pro-hybride et vision locale/Together/Gemini, chacun isolément puis ensemble :
+  local/Flash/Pro-hybride/MiniMax M3 et vision locale/Together/Gemini/MiniMax, chacun
+  isolément puis ensemble :
   sorties champ par champ, preuves, abstentions, contradictions, promotions, nombre
   d'appels, cache, tokens, latence et coût. GO seulement si toutes les capacités/manifests
   restent complètes, aucune preuve n'est perdue, qualité humaine au moins égale et reprise
@@ -1378,7 +1390,8 @@ réduction statique de JSON comme une validation modèle.
 
   **Plafond quotidien dur multi-provider.** Défaut
   `MLOMEGA_CLOUD_DAILY_BUDGET_EUR=1.00` (alias de compatibilité temporaire
-  `MLOMEGA_DEEPSEEK_DAILY_BUDGET_EUR`), partagé par DeepSeek, Together/Gemini, CloseDay et outils
+  `MLOMEGA_DEEPSEEK_DAILY_BUDGET_EUR`), partagé par DeepSeek/MiniMax, le VLM cloud,
+  CloseDay et outils
   shadow. Avant chaque appel, réserver atomiquement le pire coût input+output+image; après
   réponse, réconcilier avec l'usage réellement retourné. Le cache DeepSeek est un gain
   mesuré, jamais supposé : premier appel miss,
@@ -1404,7 +1417,8 @@ réduction statique de JSON comme une validation modèle.
     keyframes et tuiles image, checkpoints/cache réutilisables, coût min/max par provider
     et estimation murale. Afficher ce devis avant toute demande payante;
   - exécution uniquement avec `--execute`, modes orthogonaux
-    `--text-backend local|deepseek` et `--vision-backend local|together|gemini`, même fixture et
+    `--text-backend local|deepseek|minimax` et
+    `--vision-backend local|together|gemini|minimax`, même fixture et
     même clone de départ pour A/B; pas de tâche planifiée chaque nuit et pas d'appel en
     arrière-plan sans commande;
   - journaliser chaque appel/retour : stage, digest sans donnée sensible, provider/modèle,
