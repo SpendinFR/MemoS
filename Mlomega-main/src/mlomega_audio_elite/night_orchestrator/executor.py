@@ -346,6 +346,15 @@ def run_windows(
             )
         ):
             state = None
+        # Same non-final rule for an OVER-BUDGET single-unit quarantine written
+        # before the resolver could split it by turns (Gate B 014448: a ~41-turn
+        # coarse detail segment). When a resolver is now available, re-drive it —
+        # the over-budget path will split it by turns instead of quarantining.
+        if state == cp.STATE_QUARANTINED and (
+            resolve_contract_rejection is not None
+            and str(existing.get("error_text") or "") == "single unit exceeds input budget"
+        ):
+            state = None
         if state in (cp.STATE_COMPLETED, cp.STATE_QUARANTINED):
             if state == cp.STATE_COMPLETED:
                 cp.record_call_telemetry(

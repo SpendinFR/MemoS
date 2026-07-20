@@ -283,6 +283,55 @@ def test_single_unit_over_budget_is_split_by_the_resolver_not_quarantined():
     assert sorted(u for o in res2.outputs for u in o["units"]) == ["big.0", "big.1"]
 
 
+def test_stale_over_budget_quarantine_is_requeued_and_split_on_resume():
+    """A single-unit over-budget window quarantined BEFORE a resolver existed
+    (Gate B 014448 pre-fix) is not final: a resume WITH a resolver re-drives it and
+    splits it by units instead of staying blocked."""
+    con = _con()
+    scope = _scope("over_budget_resume")
+    big_unit = [PlanUnit(ref_id="big", tokens=5000, ts="t000")]
+
+    class Fits:
+        def generate(self, prompt, *, output_budget):
+            return LLMCallResult(ok=True, data={"units": prompt["units"], "bad": False},
+                                 finish_reason="stop")
+
+    # Run 1: NO resolver -> the over-budget single unit quarantines.
+    r1 = run_windows(
+        big_unit, con=con, scope=scope, llm=Fits(),
+        budget=ModelBudget(context_window=3000 + 200, output_reserve=200),
+        render=_render, validate=lambda d: not d.get("bad"),
+        target_units=1, overlap=0, prompt_overhead_tokens=0, max_attempts=3,
+    )
+    assert len(r1.quarantined) == 1
+
+    def resolve(window, ctx):
+        primary = list(window.primary_units)
+        if len(primary) != 1 or primary[0].tokens < 2:
+            return False
+        base = int(window.spec.window_index)
+        drive = ctx["drive"]
+        for i in range(2):
+            ref = f"{primary[0].ref_id}.{i}"
+            spec = WindowSpec(stage_name=scope.stage_name, window_index=base * 1000 + i + 1,
+                              primary_refs=(ref,), overlap_refs=(), input_digest=content_digest([ref]))
+            drive(PlannedWindow(spec=spec,
+                                primary_units=(PlanUnit(ref_id=ref, tokens=primary[0].tokens // 2, ts=f"t{i}"),),
+                                overlap_units=(), input_tokens=primary[0].tokens // 2))
+        return True
+
+    # Run 2 WITH a resolver: the stale over-budget quarantine is re-driven + split.
+    r2 = run_windows(
+        big_unit, con=con, scope=scope, llm=Fits(),
+        budget=ModelBudget(context_window=3000 + 200, output_reserve=200),
+        render=_render, validate=lambda d: not d.get("bad"),
+        resolve_contract_rejection=resolve,
+        target_units=1, overlap=0, prompt_overhead_tokens=0, max_attempts=3,
+    )
+    assert r2.quarantined == []
+    assert sorted(u for o in r2.outputs for u in o["units"]) == ["big.0", "big.1"]
+
+
 def test_single_oversized_irreducible_unit_still_quarantines():
     """A single unit that the resolver cannot split (one turn) stays fail-closed."""
     con = _con()
