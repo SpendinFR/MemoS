@@ -330,6 +330,74 @@ def warm_bundle_prefix(
             return warm_text
 
 
+def _probe_cache_hit_tokens(context: BundlePrefixContext, model: str, timeout: float) -> int:
+    """Send ONE small probe on the warmed prefix and return its cache-hit tokens.
+
+    Reads ``usage.prompt_cache_hit_tokens`` (the same field ``_deepseek_cost_eur``
+    trusts, incl. the ``prompt_tokens_details.cached_tokens`` fallback).  A positive
+    value means the prefix is genuinely cached and the fan-out may proceed; zero
+    means the cache is cold and the caller must NOT launch a concurrent cold fan-out.
+    """
+    token = _BUNDLE_PREFIX.set(context)
+    try:
+        outer = _deepseek_request(
+            messages=_deepseek_messages("", "", model=model, warm_only=True),
+            model=model, max_output_tokens=48, timeout=timeout,
+            stage_name="bundle_prefix_probe", json_schema={"type": "object"},
+        )
+    finally:
+        _BUNDLE_PREFIX.reset(token)
+    usage = outer.get("usage") if isinstance(outer.get("usage"), dict) else {}
+    details = usage.get("prompt_tokens_details") if isinstance(usage.get("prompt_tokens_details"), dict) else {}
+    return int(usage.get("prompt_cache_hit_tokens") or details.get("cached_tokens") or 0)
+
+
+def probe_bundle_prefix(
+    bundle_id: str, bundle_payload: dict[str, Any], *, timeout: float = 60.0,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Codex correction 5: warm the prefix TWICE, probe ONCE, gate the fan-out.
+
+    DeepSeek's prompt cache only becomes a hit after the same prefix has been sent
+    and settled.  We send the small prefix warm-up twice sequentially (the second
+    send is what usually lands in the cache), then issue ONE probe and read
+    ``prompt_cache_hit_tokens``.  The caller starts the concurrent fan-out ONLY when
+    ``cache_hit`` is true; otherwise it must fall back to a degraded SEQUENTIAL
+    fan-out rather than firing 8-12 cold concurrent calls.
+
+    Returns ``{"cache_hit": bool, "hit_tokens": int, "digest": str}``.  Never raises
+    on a cold cache — a cold result is a valid, expected outcome.
+    """
+    selected = (model or os.environ.get("MLOMEGA_DEEPSEEK_MODEL") or "deepseek-v4-pro").strip()
+    # Two sequential warms of the SAME prefix. ``warm_bundle_prefix`` dedups by
+    # digest, so we must force the second send past the cache to actually re-prime
+    # the provider; do it via a direct warm request under the same prefix context.
+    with cloud_bundle_prefix(bundle_id, bundle_payload) as context:
+        warm_key = (context.digest, selected)
+        for _ in range(2):
+            warm_outer = _deepseek_request(
+                messages=_deepseek_messages("", "", model=selected, warm_only=True),
+                model=selected, max_output_tokens=48, timeout=timeout,
+                stage_name="bundle_prefix_warm", json_schema={"type": "object"},
+            )
+            choices = warm_outer.get("choices") or []
+            message = choices[0].get("message", {}) if choices and isinstance(choices[0], dict) else {}
+            warm_text = str(message.get("content") or "").strip()
+            try:
+                parsed = json.loads(warm_text)
+            except Exception:
+                parsed = {}
+            if not isinstance(parsed, dict) or parsed.get("bundle_loaded") is not True:
+                raise CloudProviderError("DeepSeek bundle prefix warm-up contract failed")
+            _BUNDLE_WARM_RESPONSES[warm_key] = warm_text
+        hit_tokens = _probe_cache_hit_tokens(context, selected, timeout)
+    return {
+        "cache_hit": hit_tokens > 0,
+        "hit_tokens": int(hit_tokens),
+        "digest": context.digest,
+    }
+
+
 def _deepseek_request(
     *, messages: list[dict[str, str]], model: str, max_output_tokens: int,
     timeout: float, stage_name: str, json_schema: dict[str, Any] | None,
@@ -581,5 +649,5 @@ __all__ = [
     "BundlePrefixContext", "CloudProviderError", "cloud_bundle_prefix",
     "cloud_engine_stage", "current_bundle_prefix", "current_engine_stage",
     "deepseek_chat_json", "gemini_vision_json",
-    "groq_transcribe", "warm_bundle_prefix",
+    "groq_transcribe", "probe_bundle_prefix", "warm_bundle_prefix",
 ]

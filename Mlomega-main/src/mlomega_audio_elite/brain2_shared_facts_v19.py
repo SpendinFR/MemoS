@@ -986,6 +986,58 @@ def conversation_turn_refs(con: Any, conversation_id: str) -> dict[str, str]:
     }
 
 
+# Verbose provenance/bookkeeping keys that repeat identically across facts (the
+# episode/section/run identity already travels once in the fact envelope) or that
+# only duplicate what a downstream engine can re-read from DB.  They are dropped
+# from the payload VALUE sent to the prompt; the complete payload stays lossless
+# in ``brain2_shared_facts_v19.payload_json``.  Codex point B (going further than
+# the ~23k core toward ~8-12k): ~60-100 tok/fact instead of the full payload.
+_PAYLOAD_PROVENANCE_KEYS = frozenset({
+    "episode_id", "source_episode_id", "conversation_id", "person_id",
+    "run_id", "section_id", "capability_id", "fact_id", "source_id",
+    "source_table", "source_field", "source_engine", "provenance",
+    "created_at", "updated_at", "evidence_manifest", "metadata_sha256",
+    "digest", "payload_digest", "output_digest", "full_text_digest",
+    "schema_version", "version",
+})
+
+# Per-fact value string cap: an essential semantic value, not a re-embedded
+# transcript.  Long strings are kept as a bounded semantic head plus a manifest
+# so nothing is silently truncated (the full text remains in DB).
+_COMPACT_VALUE_STRING_CAP = 400
+
+
+def _essential_payload_value(value: Any, refs: Mapping[str, str]) -> Any:
+    """Trim a fact payload to its essential semantic value for the prompt.
+
+    Drops the repeated provenance/bookkeeping keys (already carried once by the
+    fact envelope / recoverable from DB), replaces long turn ids by short refs,
+    and bounds very long free-text strings with a lossless manifest.  Never
+    fabricates: absent means absent, the authoritative payload stays in DB.
+    """
+
+    if isinstance(value, list):
+        return [_essential_payload_value(item, refs) for item in value]
+    if isinstance(value, str):
+        if refs and value in refs:
+            return refs[value]
+        if len(value) > _COMPACT_VALUE_STRING_CAP:
+            return {
+                "head": value[:_COMPACT_VALUE_STRING_CAP],
+                "full_len": len(value),
+                "digest": _digest(value),
+            }
+        return value
+    if not isinstance(value, Mapping):
+        return value
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in _PAYLOAD_PROVENANCE_KEYS:
+            continue
+        result[key] = _essential_payload_value(item, refs)
+    return result
+
+
 def compact_facts_for_prompt(
     fact_bundle: Mapping[str, Any],
     turn_ref_by_id: Mapping[str, str] | None = None,
@@ -993,12 +1045,20 @@ def compact_facts_for_prompt(
     """Serialise canonical facts into the COMPACT prompt form (Codex point B).
 
     Unlike :func:`_prompt_facts` (which drops provenance for the stage prompt),
-    this keeps ``source_engine``/``source_field``/``episode_id`` so a caller can
-    PROJECT facts per dependent engine (Codex point A).  Everything else is the
-    trimmed form: short turn refs instead of long ``turn_id``s, deduplicated
-    ``evidence_manifest`` (dropped — every role/turn already lives once in DB and
-    in the payload's own evidence lists), no ``created_at``/bookkeeping, rounded
-    confidence.  The full evidence stays authoritative in ``brain2_shared_facts_v19``.
+    this keeps ``source_engine`` so a caller can PROJECT facts per dependent
+    engine (Codex point A).  Everything else is the trimmed form:
+
+    * a short ``f0..fN`` fact ref plus a short ``ep`` episode ref, so the long
+      ``episode_id`` (repeated once per fact) travels a single time in
+      ``episode_index`` — see :func:`compact_fact_registry`;
+    * short turn refs instead of long ``turn_id``s;
+    * the ``evidence_manifest`` dropped (every role/turn already lives once in DB
+      and in the payload's own evidence lists) plus every other repeated
+      provenance/bookkeeping key (``_PAYLOAD_PROVENANCE_KEYS``);
+    * bounded free-text (long strings become a head + digest manifest);
+    * subject + type + essential value + rounded confidence only.
+
+    The full evidence stays authoritative in ``brain2_shared_facts_v19``.
     """
 
     refs = turn_ref_by_id or {}
@@ -1014,10 +1074,70 @@ def compact_facts_for_prompt(
             "status": fact["epistemic_status"],
             "evidence_status": fact["evidence_status"],
             "confidence": round(float(confidence), 3) if confidence is not None else None,
-            "value": _prompt_payload_value(fact.get("payload"), refs),
+            "value": _essential_payload_value(fact.get("payload"), refs),
         }
         compact.append({key: value for key, value in item.items() if value is not None})
     return compact
+
+
+def compact_fact_registry(
+    fact_bundle: Mapping[str, Any],
+    turn_ref_by_id: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """The ~8-12k canonical fact CORE (Codex point 2): short refs, deduped ids.
+
+    Wraps :func:`compact_facts_for_prompt` and factorises the repeated ``episode_id``
+    (one long string per fact) into a single ``episode_index`` (``ep0..epN``),
+    assigns every fact a short ``id`` (``f0..fN``), and drops the verbose
+    ``epistemic_status``/``evidence_status`` label pair down to single-letter
+    status codes.  Callers that only need the projection by ``source_engine``
+    keep using the list form; this registry is what feeds the prompt / the shared
+    cache prefix so the common core lands near ~60-100 tok/fact.
+
+    The projected list still carries ``source_engine`` so
+    ``_facts_for_global_engine`` keeps working unchanged.
+    """
+
+    facts = compact_facts_for_prompt(fact_bundle, turn_ref_by_id)
+    episode_index: dict[str, str] = {}
+    registry: list[dict[str, Any]] = []
+    for ordinal, fact in enumerate(facts):
+        episode_id = fact.get("episode_id")
+        episode_ref = None
+        if episode_id is not None:
+            episode_ref = episode_index.get(str(episode_id))
+            if episode_ref is None:
+                episode_ref = f"ep{len(episode_index)}"
+                episode_index[str(episode_id)] = episode_ref
+        # ``ref`` already encodes ``source_engine.source_field`` and ``type`` is
+        # ``source_field`` — both are recoverable from ``ref``, so the registry
+        # (prompt-facing core) drops the duplicates.  The projection by
+        # ``source_engine`` uses the list form, which keeps them.
+        entry = {
+            "id": f"f{ordinal}",
+            "ref": fact["ref"],
+        }
+        if episode_ref is not None:
+            entry["ep"] = episode_ref
+        if fact.get("subject") is not None:
+            entry["subject"] = fact["subject"]
+        # Single-letter epistemic/evidence status codes drop two repeated verbose
+        # labels to two characters without losing the distinction.
+        status = str(fact.get("status") or "")
+        evidence_status = str(fact.get("evidence_status") or "")
+        if status:
+            entry["s"] = status[:1]
+        if evidence_status:
+            entry["e"] = evidence_status[:1]
+        if fact.get("confidence") is not None:
+            entry["c"] = fact["confidence"]
+        if "value" in fact:
+            entry["v"] = fact["value"]
+        registry.append({key: value for key, value in entry.items() if value is not None})
+    return {
+        "episode_index": {ref: episode_id for episode_id, ref in episode_index.items()},
+        "facts": registry,
+    }
 
 
 def compact_stage_input(

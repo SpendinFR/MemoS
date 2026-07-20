@@ -8,6 +8,7 @@ psychology (time/object links, audit rows, dependency rows). There is no
 regex/keyword analyst and no evidence-only cognitive mode.
 """
 
+import logging
 import os
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -26,6 +27,8 @@ from .llm import (
 from .utils import json_dumps, json_loads, now_iso, sha256_bytes, stable_id
 from .brain2_complete_v13 import COMPLETE_TARGETS, ENGINE_ORDER, ENGINE_TABLES, PLAN_TABLES, ENGINE_SCHEMAS
 from .llm_contracts_v15_18 import normalize_outcome_tracker, normalize_similar_case_score, normalize_calibration_rows, normalize_intervention_plan
+
+_LOG = logging.getLogger("mlomega.brain2_strict_v13_2")
 
 STRICT_VERSION = "13.2.0-brain2-strict-final"
 EPISODE_BUILD_VERSION = "13.2.0-e64-cognitive-routing-v5"
@@ -580,12 +583,21 @@ def _run_engine_partitioned(
     context_window: int | None = None,
     output_budget: int | None = None,
     bundle_in_prefix: bool = False,
+    projected_facts: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Execute one V13 engine by bounded schema-field tasks, then merge losslessly.
 
     Evidence/counter-evidence/confidence accompany every task. Business fields are
     each primary exactly once; the generic E64 executor checkpoints and recursively
     subdivides them on length/invalid JSON. No engine or schema field is dropped.
+
+    Codex correction 4: when ``projected_facts`` (the shared-facts INPUT list in
+    ``prior['shared_facts']['facts']``) is large enough to push the prompt over the
+    input budget, the INPUT is windowed by ``(source_engine, type)`` and the engine
+    is run once per window, then merged/deduplicated by fact ref — never growing the
+    context past the 24576 cap, never losing a fact.  This attacks the real cause
+    of the ``similar_case`` quarantine (oversized ENTRY facts), which the schema-field
+    resolver below cannot fix.
     """
     from .config import get_settings
     from .night_orchestrator import (
@@ -616,6 +628,60 @@ def _run_engine_partitioned(
             return _llm_require_json(
                 engine, _engine_prompt(engine, bundle, prior), schema
             )
+
+        # Codex correction 4: LOSSLESS input-fact windowing.  Only reachable when a
+        # caller passed the projected shared-facts INPUT list.  If that full input
+        # would push the engine prompt over the input budget, split the FACTS by
+        # (source_engine, type), run this engine once per window (with the schema
+        # resolver intact inside each), then merge/dedup by ref.  Never grows the
+        # context past the cap; never drops a fact.
+        if projected_facts:
+            input_budget = _pro_engine_input_budget(output_budget)
+            full_prompt = _engine_prompt(
+                engine, bundle, prior, bundle_in_prefix=bundle_in_prefix
+            )
+            if estimate_tokens_for_text(full_prompt) > input_budget:
+                # Budget the number of facts per window from the average fact size,
+                # leaving headroom for the schema + prior scaffolding.
+                per_fact_tokens = max(
+                    1,
+                    estimate_tokens_for_text(json_dumps(list(projected_facts)))
+                    // max(1, len(projected_facts)),
+                )
+                scaffold = _engine_prompt(
+                    engine,
+                    bundle,
+                    _prior_without_shared_facts(prior),
+                    bundle_in_prefix=bundle_in_prefix,
+                )
+                headroom = max(
+                    per_fact_tokens,
+                    input_budget - estimate_tokens_for_text(scaffold),
+                )
+                max_facts_per_window = max(1, headroom // per_fact_tokens)
+                windows = _window_facts_by_source(
+                    projected_facts, max_facts_per_window=max_facts_per_window
+                )
+                if len(windows) > 1:
+                    window_outputs: list[Mapping[str, Any]] = []
+                    for window in windows:
+                        window_prior = _prior_with_shared_facts(prior, window)
+                        window_outputs.append(
+                            _run_engine_partitioned(
+                                con,
+                                engine=engine,
+                                episode_id=episode_id,
+                                person_id=person_id,
+                                bundle=bundle,
+                                prior=window_prior,
+                                window_llm=window_llm,
+                                context_window=context_window,
+                                output_budget=output_budget,
+                                bundle_in_prefix=bundle_in_prefix,
+                                projected_facts=None,  # windows are already bounded
+                            )
+                        )
+                    return _merge_windowed_fact_outputs(window_outputs)
 
         units = [
             PlanUnit(
@@ -901,6 +967,307 @@ def _facts_for_global_engine(
         dict(fact) for fact in compact_facts
         if str(fact.get("source_engine") or "") in allowed
     ]
+
+
+# ---------------------------------------------------------------------------
+# Codex correction 3: similar_case_retrieval must NOT receive the 97 canonical
+# facts.  It receives ONLY (a) the COMPACT OUTPUT of pattern_miner (its engine
+# result summarised, not its facts), (b) the EPISODE FINGERPRINT (title /
+# participants / compact sub-themes, never the transcript), and (c) the INDEX of
+# historically relevant cases (short refs + matching keys, not the full cases).
+# This keeps the stage well under the 24576 input budget; the full evidence
+# stays authoritative in DB.
+# ---------------------------------------------------------------------------
+
+_PATTERN_SUMMARY_CAP = 24
+
+
+def _pattern_output_summary(pattern_output: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Summarise pattern_miner's ENGINE OUTPUT (never its raw facts).
+
+    Keeps the pattern identity/title/strength keys a case retriever matches on;
+    drops evidence lists, counterexamples and prose so the summary is a bounded
+    fingerprint of "what patterns fired", not the mining substrate.
+    """
+
+    if not isinstance(pattern_output, Mapping):
+        return {"signals": [], "candidate_patterns": [], "confirmed_patterns": []}
+
+    def _sig(item: Any) -> dict[str, Any]:
+        if not isinstance(item, Mapping):
+            return {}
+        return {
+            key: item.get(key)
+            for key in ("signal_type", "signal_value", "strength")
+            if item.get(key) is not None
+        }
+
+    def _patt(item: Any) -> dict[str, Any]:
+        if not isinstance(item, Mapping):
+            return {}
+        return {
+            key: item.get(key)
+            for key in ("pattern_type", "pattern_key", "title", "usual_outcome")
+            if item.get(key) is not None
+        }
+
+    return {
+        "signals": [
+            summary for summary in (
+                _sig(item) for item in _as_list(pattern_output.get("signals"))[:_PATTERN_SUMMARY_CAP]
+            ) if summary
+        ],
+        "candidate_patterns": [
+            summary for summary in (
+                _patt(item) for item in _as_list(pattern_output.get("candidate_patterns"))[:_PATTERN_SUMMARY_CAP]
+            ) if summary
+        ],
+        "confirmed_patterns": [
+            summary for summary in (
+                _patt(item) for item in _as_list(pattern_output.get("confirmed_patterns"))[:_PATTERN_SUMMARY_CAP]
+            ) if summary
+        ],
+    }
+
+
+def _episode_fingerprint(bundle: Mapping[str, Any]) -> dict[str, Any]:
+    """The compact fingerprint of the episode(s): title / participants / topics.
+
+    Uses only the already-summarised ``episodes`` slice of
+    ``_conversation_engine_bundle`` plus the conversation participants; never the
+    turns/transcript.  This is the "what is this episode about" match key, not the
+    evidence.
+    """
+
+    conversation = bundle.get("conversation") if isinstance(bundle.get("conversation"), Mapping) else {}
+    participants = conversation.get("participants") if isinstance(conversation, Mapping) else None
+    episodes = []
+    for episode in bundle.get("episodes") or []:
+        if not isinstance(episode, Mapping):
+            continue
+        episodes.append({
+            key: episode.get(key)
+            for key in (
+                "episode_id", "episode_type", "topic", "situation_summary",
+                "trigger_summary", "outcome_summary", "unresolved_tension",
+            )
+            if episode.get(key) is not None
+        })
+    return {
+        "participants": participants,
+        "episodes": episodes,
+    }
+
+
+_CASE_INDEX_CAP = 40
+
+
+def _case_index(con, person_id: str, conversation_id: str) -> list[dict[str, Any]]:
+    """Return a compact INDEX of historically relevant cases, not the full cases.
+
+    Short case refs plus the matching keys (type / outcome label / a bounded
+    title) a retriever needs to decide relevance.  The full case rows stay in DB;
+    nothing here re-embeds their evidence.  Read-only.
+    """
+
+    index: list[dict[str, Any]] = []
+    for table, id_col, key_cols in (
+        ("v13_case_clusters", "cluster_key",
+         ("cluster_type", "case_ids")),
+        ("prediction_cases", "case_id",
+         ("case_type", "outcome_label", "title")),
+    ):
+        exists = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone()
+        if not exists:
+            continue
+        columns = {
+            str(row[1])
+            for row in con.execute(f"PRAGMA table_info({table})")
+        }
+        selectable = [col for col in (id_col, *key_cols) if col in columns]
+        if id_col not in columns or not selectable:
+            continue
+        rows = con.execute(
+            f"SELECT {', '.join(selectable)} FROM {table} "
+            f"ORDER BY rowid DESC LIMIT ?",
+            (int(_CASE_INDEX_CAP),),
+        ).fetchall()
+        for row in rows:
+            entry = {"table": table}
+            for col in selectable:
+                value = row[col] if col in row.keys() else None
+                if value is None:
+                    continue
+                if col == "title" and isinstance(value, str) and len(value) > 120:
+                    value = value[:120]
+                entry[col] = value
+            index.append(entry)
+    return index[:_CASE_INDEX_CAP]
+
+
+def _similar_case_prior(
+    con,
+    *,
+    person_id: str,
+    conversation_id: str,
+    bundle: Mapping[str, Any],
+    pattern_output: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Assemble the MINIMAL similar_case_retrieval prior (Codex correction 3).
+
+    Exactly the three bounded inputs — pattern output summary, episode
+    fingerprint, case index — and explicitly NOT the canonical facts registry.
+    """
+
+    return {
+        "projection": "similar_case_minimal_v1",
+        "note": "facts_registry_intentionally_omitted_kept_in_db",
+        "pattern_output_summary": _pattern_output_summary(pattern_output),
+        "episode_fingerprint": _episode_fingerprint(bundle),
+        "case_index": _case_index(con, person_id, conversation_id),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Codex correction 4: lossless fallback windowing of INPUT FACTS (not schema
+# fields).  When a projected fact/case list would push a stage's prompt over the
+# 24576 input budget, split the list into windows by (source_engine, type),
+# run the engine once per window, then merge/dedup by fact ref — never grow the
+# context beyond the budget, never lose a fact.
+# ---------------------------------------------------------------------------
+
+
+def _fact_window_key(fact: Mapping[str, Any]) -> tuple[str, str]:
+    return (
+        str(fact.get("source_engine") or ""),
+        str(fact.get("type") or fact.get("fact_type") or ""),
+    )
+
+
+def _window_facts_by_source(
+    facts: Sequence[Mapping[str, Any]],
+    *,
+    max_facts_per_window: int,
+) -> list[list[dict[str, Any]]]:
+    """Split a fact list into source/type windows, each bounded in size.
+
+    Facts are grouped by ``(source_engine, type)`` in first-seen order; an
+    oversized group is further chunked so no window exceeds ``max_facts_per_window``.
+    The union of all windows equals the input (no fact dropped, order stable).
+    """
+
+    order: list[tuple[str, str]] = []
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for fact in facts:
+        key = _fact_window_key(fact)
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(dict(fact))
+    windows: list[list[dict[str, Any]]] = []
+    limit = max(1, int(max_facts_per_window))
+    for key in order:
+        group = grouped[key]
+        for start in range(0, len(group), limit):
+            windows.append(group[start:start + limit])
+    return windows
+
+
+def _fact_ref(fact: Mapping[str, Any]) -> str:
+    for key in ("id", "ref", "fact_id"):
+        value = fact.get(key)
+        if value is not None and str(value).strip():
+            return str(value)
+    return _hash_payload(fact)
+
+
+def _merge_windowed_fact_outputs(outputs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Losslessly merge per-window engine outputs, dedup list items by ref/JSON.
+
+    List fields are concatenated then deduplicated (by ``fact_id``/``id``/``ref``
+    when present, else by canonical JSON); scalar ``confidence`` is averaged;
+    other scalars keep the first non-null.  No window's contribution is dropped.
+    """
+
+    merged: dict[str, Any] = {}
+    confidences: list[float] = []
+    for output in outputs:
+        if not isinstance(output, Mapping):
+            continue
+        for key, value in output.items():
+            if key == "confidence":
+                if isinstance(value, (int, float)):
+                    confidences.append(float(value))
+                continue
+            if isinstance(value, list):
+                bucket = merged.setdefault(key, [])
+                if not isinstance(bucket, list):
+                    continue
+                bucket.extend(value)
+            elif key not in merged or merged.get(key) in (None, "", [], {}):
+                merged[key] = value
+    # Deduplicate every list field, preserving first-seen order.
+    for key, value in list(merged.items()):
+        if not isinstance(value, list):
+            continue
+        seen: set[str] = set()
+        deduped: list[Any] = []
+        for item in value:
+            marker = _fact_ref(item) if isinstance(item, Mapping) else None
+            if marker is None:
+                marker = json_dumps(item)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            deduped.append(item)
+        merged[key] = deduped
+    if confidences:
+        merged["confidence"] = sum(confidences) / len(confidences)
+    return merged
+
+
+def _pro_engine_input_budget(output_budget: int | None) -> int:
+    """The input-token budget the fact-windowing fallback must keep under.
+
+    Mirrors the executor's ``ModelBudget.max_input_tokens`` for the PRO cloud
+    context cap (24576 by default, operator-overridable) minus the reserved output
+    and the safety margin, so a windowed prompt matches what the executor accepts.
+    """
+
+    try:
+        cloud_ctx = int(os.environ.get("MLOMEGA_CLOUD_CONTEXT_POSTSTOP", "24576"))
+    except ValueError:
+        cloud_ctx = 24576
+    if output_budget is None:
+        try:
+            output_budget = max(
+                256, int(os.environ.get("MLOMEGA_POSTSTOP_LLM_MAX_OUTPUT_TOKENS", "4096"))
+            )
+        except ValueError:
+            output_budget = 4096
+    return max(1, cloud_ctx - int(output_budget) - 768)
+
+
+def _prior_without_shared_facts(prior: Mapping[str, Any]) -> dict[str, Any]:
+    """A copy of ``prior`` with the (large) shared-facts input list removed."""
+    return {key: value for key, value in prior.items() if key != "shared_facts"}
+
+
+def _prior_with_shared_facts(
+    prior: Mapping[str, Any], facts: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """A copy of ``prior`` whose ``shared_facts.facts`` is replaced by ``facts``."""
+    result = {key: value for key, value in prior.items()}
+    base = prior.get("shared_facts")
+    envelope = dict(base) if isinstance(base, Mapping) else {
+        "projection": "per_dependency_source_engine",
+    }
+    envelope["facts"] = [dict(fact) for fact in facts]
+    envelope["windowed"] = True
+    result["shared_facts"] = envelope
+    return result
 
 
 _INTERNAL_STATE_TYPES = {
@@ -2137,9 +2504,11 @@ def _pro_warm_episode_prefixes(episodes: Sequence[tuple[str, Mapping[str, Any]]]
     if not episodes:
         return
     from .cloud_providers_v19 import warm_bundle_prefix
+    from .night_orchestrator import estimate_tokens_for_text
 
     seen: set[str] = set()
     warmed = 0
+    ceiling = _pro_warm_core_max_tokens()
     try:
         timeout = float(os.environ.get("MLOMEGA_V13_ENGINE_TIMEOUT", "180"))
     except ValueError:
@@ -2148,6 +2517,11 @@ def _pro_warm_episode_prefixes(episodes: Sequence[tuple[str, Mapping[str, Any]]]
         if episode_id in seen:
             continue
         seen.add(episode_id)
+        # Codex correction 1: only warm a SMALL episode prefix.  A large episode
+        # bundle would be paid as a big MISS twice (warm + first engine); skip it
+        # and let the fan-out send its prefix once instead.
+        if ceiling and estimate_tokens_for_text(json_dumps(dict(bundle))) > ceiling:
+            continue
         warm_bundle_prefix(str(episode_id), dict(bundle), timeout=timeout)
         warmed += 1
     if warmed:
@@ -2184,6 +2558,19 @@ def _global_common_fact_core(
     return [seen_refs[ref] for ref in order if counts.get(ref, 0) >= 2]
 
 
+def _pro_warm_core_max_tokens() -> int:
+    """Codex correction 1: never warm a prefix bigger than the SMALL common core.
+
+    A warm-up is paid twice as a big MISS if the warmed prefix is large; better to
+    skip the warm entirely than to pay a 47k bundle 2x.  The ceiling is ~12k tokens
+    (operator-overridable) — only a genuinely small common core is worth caching.
+    """
+    try:
+        return max(0, int(os.environ.get("MLOMEGA_PRO_WARM_MAX_TOKENS", "12288")))
+    except ValueError:
+        return 12288
+
+
 def _pro_warm_global_fact_core(
     conversation_id: str, common_core: Sequence[Mapping[str, Any]]
 ) -> None:
@@ -2191,10 +2578,23 @@ def _pro_warm_global_fact_core(
 
     Idempotent per digest via ``warm_bundle_prefix``; the cache reduces cost and
     latency only — the real prompt-volume reduction is the projection/trim above.
-    A no-op when there is no common core (nothing worth caching).
+    A no-op when there is no common core (nothing worth caching), OR when the core
+    is above ~12k tokens (Codex correction 1: skip rather than pay a big MISS 2x).
     """
 
     if not common_core:
+        return
+    from .night_orchestrator import estimate_tokens_for_text
+
+    payload = {
+        "conversation_id": conversation_id,
+        "shared_global_fact_core": [dict(fact) for fact in common_core],
+    }
+    core_tokens = estimate_tokens_for_text(json_dumps(payload))
+    ceiling = _pro_warm_core_max_tokens()
+    if ceiling and core_tokens > ceiling:
+        # The common core is too big to be worth a warm; the projection/trim is
+        # the real reduction, and a warm here would pay a large MISS twice.
         return
     from .cloud_providers_v19 import warm_bundle_prefix
 
@@ -2203,13 +2603,48 @@ def _pro_warm_global_fact_core(
     except ValueError:
         timeout = 180.0
     warm_bundle_prefix(
-        f"global-fact-core:{conversation_id}",
-        {
-            "conversation_id": conversation_id,
-            "shared_global_fact_core": [dict(fact) for fact in common_core],
-        },
-        timeout=timeout,
+        f"global-fact-core:{conversation_id}", payload, timeout=timeout,
     )
+
+
+def _pro_probe_fanout_ready(
+    episodes: Sequence[tuple[str, Mapping[str, Any]]]
+) -> bool:
+    """Codex correction 5: gate the concurrent fan-out on a real cache-hit probe.
+
+    For each UNIQUE episode prefix, ``probe_bundle_prefix`` does two sequential
+    warms then one probe.  The concurrent fan-out is allowed ONLY when EVERY probed
+    prefix reports ``prompt_cache_hit_tokens > 0``; otherwise we log clearly and the
+    caller must run a degraded SEQUENTIAL fan-out (never 8-12 cold concurrent calls).
+    Set ``MLOMEGA_PRO_FANOUT_PROBE=0`` to skip the probe (assume ready).
+    """
+    if os.environ.get("MLOMEGA_PRO_FANOUT_PROBE", "1").strip().lower() in {
+        "0", "false", "no", "off",
+    }:
+        return True
+    if not episodes:
+        return True
+    from .cloud_providers_v19 import probe_bundle_prefix
+
+    try:
+        timeout = float(os.environ.get("MLOMEGA_V13_ENGINE_TIMEOUT", "180"))
+    except ValueError:
+        timeout = 180.0
+    seen: set[str] = set()
+    all_hot = True
+    for episode_id, bundle in episodes:
+        if episode_id in seen:
+            continue
+        seen.add(episode_id)
+        result = probe_bundle_prefix(str(episode_id), dict(bundle), timeout=timeout)
+        if not result.get("cache_hit"):
+            all_hot = False
+            _LOG.warning(
+                "pro_fanout_probe_cold episode_id=%s hit_tokens=%s "
+                "decision=sequential_degraded_fanout",
+                str(episode_id), int(result.get("hit_tokens") or 0),
+            )
+    return all_hot
 
 
 def _build_local_episode_window_llm() -> Any:
@@ -3043,12 +3478,15 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
             # a SINGLE cache propagation before the concurrent fan-out (never one
             # wait per episode). Warm-up is deduplicated by digest, so a resume or
             # a repeated episode never repays it. Only runs under PRO fan-out.
-            _pro_warm_episode_prefixes(
-                [
-                    (str(work["episode_id"]), dict(work["bundle"]))
-                    for work in pro_episode_work
-                ]
-            )
+            episode_prefixes = [
+                (str(work["episode_id"]), dict(work["bundle"]))
+                for work in pro_episode_work
+            ]
+            _pro_warm_episode_prefixes(episode_prefixes)
+            # Codex correction 5: gate the CONCURRENT fan-out on a real cache-hit
+            # probe (two warms + one probe).  When the probe is cold, degrade to a
+            # SEQUENTIAL fan-out instead of firing 8-12 cold concurrent calls.
+            fanout_ready = _pro_probe_fanout_ready(episode_prefixes)
 
             def run_engine_task(task: Mapping[str, Any]) -> dict[str, Any]:
                 with connect() as worker_con:
@@ -3075,6 +3513,10 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                 )
             except ValueError:
                 max_width = max(initial_width, 12)
+            if not fanout_ready:
+                # Degraded sequential fan-out: cold cache, so one call at a time.
+                initial_width = 1
+                max_width = 1
 
             known_levels = [
                 ("capture_engine", "language_signature_engine"),
@@ -3274,12 +3716,33 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                             direct = _direct_prior(engine, conversation_outputs, packed)
                             global_prior: dict[str, Any] = {"direct_dependencies": direct}
                             projected = projected_by_engine.get(engine) or []
-                            if projected:
+                            # Only engines that actually carry the shared-facts
+                            # INPUT list expose it to the lossless windowing fallback.
+                            windowed_facts: list[dict[str, Any]] | None = None
+                            if engine == "similar_case_retrieval":
+                                # Codex correction 3: this stage receives ONLY the
+                                # pattern output summary + episode fingerprint +
+                                # case index — NEVER the 97-fact registry — so it
+                                # falls back under the 24576 input budget.  It does
+                                # NOT expose ``projected_facts`` (its input is the
+                                # minimal prior, not the fact list).
+                                global_prior = {
+                                    "direct_dependencies": direct,
+                                    "similar_case_input": _similar_case_prior(
+                                        con,
+                                        person_id=person_id,
+                                        conversation_id=conversation_id,
+                                        bundle=bundle,
+                                        pattern_output=packed.get("pattern_miner"),
+                                    ),
+                                }
+                            elif projected:
                                 global_prior["shared_facts"] = {
                                     "conversation_id": conversation_id,
                                     "projection": "per_dependency_source_engine",
                                     "facts": projected,
                                 }
+                                windowed_facts = projected
                             packed[engine] = _run_engine_partitioned(
                                 con,
                                 engine=engine,
@@ -3287,6 +3750,7 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                                 person_id=person_id,
                                 bundle=bundle,
                                 prior=global_prior,
+                                projected_facts=windowed_facts,
                             )
                     else:
                         packed = _run_global_engine_hierarchy(
