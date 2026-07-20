@@ -67,6 +67,12 @@ def _orchestrator(events: list[str]) -> GpuPhaseOrchestrator:
         ollama_unload=ollama_unload,
         ollama_ps=lambda: [{"name": m} for m in state["resident"]],
         release_live_models=lambda: None,
+        # Inject a fake VRAM snapshot so this P1-lifecycle test is hermetic: it
+        # proves start/stop, NOT the real free-VRAM gate (which has its own test).
+        # Without it, enter_text read the live nvidia-smi and flaked whenever the
+        # desktop happened to sit just under MLOMEGA_P1_MIN_FREE_VRAM_MB (6000).
+        vram_snapshot=lambda: {"source": "fake", "total_mb": 8192,
+                               "used_mb": 512, "free_mb": 7680},
         ready_timeout_s=2.0,
         poll_interval_s=0.01,
     )

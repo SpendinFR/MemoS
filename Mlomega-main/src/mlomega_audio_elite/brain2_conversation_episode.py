@@ -29,6 +29,7 @@ from .night_orchestrator import (
     WindowSpec,
     estimate_tokens_for_text,
     run_windows,
+    subdivide,
 )
 from .night_orchestrator import checkpoint_store as cp
 from .night_orchestrator.evidence_ref import content_digest
@@ -317,6 +318,26 @@ class ConversationEpisodeContractError(RuntimeError):
 def conversation_episode_enabled() -> bool:
     """Use the lossless conversation parent by default; ``=0`` is rollback."""
     return os.environ.get("MLOMEGA_E64_CONVERSATION_EPISODES", "1") != "0"
+
+
+def _pro_closeday_enabled() -> bool:
+    """PRO close-day mode forces the lossless windowed segmentation executor.
+
+    The single-call segmentation path is not lossless by construction: it needs
+    the model to emit an ``end`` boundary on the LAST turn, and the 9B used on the
+    PRO close-day sometimes stops before the tail fillers, so ``next_start`` never
+    reaches ``len(ordered_ids)`` and the run trips ``segmentation_not_lossless``.
+    The windowed path forces the final segment onto the window's last primary turn
+    (lossless by construction), so PRO routes through it even when the whole input
+    would fit one call.
+
+    This is an EXPLICIT close-day flag, deliberately independent of
+    ``MLOMEGA_LLM_BACKEND``: the EpisodeBuilder runs in local llamacpp even in PRO,
+    so the backend name would misclassify the run. Absent the flag the historic
+    single-call path stays byte-for-byte unchanged.
+    """
+    value = os.environ.get("MLOMEGA_PRO_CLOSEDAY", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def _unique_strings(value: Any) -> list[str]:
@@ -1250,6 +1271,58 @@ def _run_segmentation_windows(
             "segments": output,
         }
 
+    def _describe_violation(candidate: Any, window: PlannedWindow) -> Mapping[str, Any]:
+        """Explain WHY ``normalize_window_segmentation`` rejected this window's output.
+
+        The night executor persists this beside the raw output so the audit shows
+        which segmentation contract failed on which window's primary turns. A None
+        candidate means the local boundary partition could not be reconstructed
+        (root missing/invalid, an end off the window's primary turns, a
+        non-advancing end, or missing title/reason) - the same signal that the
+        window must be split rather than re-asked identically."""
+        primary_refs = [unit.ref_id for unit in window.primary_units]
+        if candidate is None:
+            return {
+                "rule": "segmentation_window_normalized_none",
+                "reason": "normalize_window_segmentation returned None",
+                "primary_refs": primary_refs,
+            }
+        return {
+            "rule": "segmentation_window_contract_rejected",
+            "primary_refs": primary_refs,
+        }
+
+    def _resolve_rejection(window: PlannedWindow, ctx: Mapping[str, Any]) -> bool:
+        """Deterministic escalation: split ONE segmentation window's primary turns
+        into two contiguous halves, re-run each through this same executor, and let
+        the executor + global reassembly re-verify lossless coverage.
+
+        No temperature/seed change and no invented boundary: this reuses the
+        planner's own ``subdivide`` (``window_index*1000+i+1`` child indices,
+        primary turns halved contiguously, no overlap), so each child window emits
+        boundaries only for its own primary turns and
+        ``normalize_window_segmentation`` forces each child's last segment onto that
+        child's last primary turn. The children therefore abut with neither gap nor
+        duplicate, and the stage-scoped provenance reassembly rebuilds the exact
+        global membership. A single-turn window cannot be split and is left to
+        quarantine (fail-closed)."""
+        subs = subdivide(window, stage_name=SEGMENTATION_STAGE_NAME)
+        if not subs:
+            return False  # irreducible: one turn cannot be halved
+        drive = ctx["drive"]
+        for sub in subs:
+            drive(sub)
+        # Coverage is proven downstream by the global provenance reassembly; here we
+        # only require every child window reached a durable COMPLETED state (never a
+        # partial). Any other state fails closed and quarantines the parent.
+        result = ctx["result"]
+        child_indexes = {sub.spec.window_index for sub in subs}
+        completed = [
+            w for w in result.windows
+            if w.window_index in child_indexes and w.state == cp.STATE_COMPLETED
+        ]
+        return len(completed) == len(subs)
+
     scope = StageScope(
         person_id=scope_person,
         package_date=scope_date,
@@ -1269,6 +1342,8 @@ def _run_segmentation_windows(
         validate=_validate,
         normalize_window_output=_normalize,
         decorate_output=_decorate,
+        describe_contract_violation=_describe_violation,
+        resolve_contract_rejection=_resolve_rejection,
         target_units=target_units,
         overlap=overlap,
         prompt_overhead_tokens=_segmentation_prompt_overhead(safe_prompt),
@@ -1715,7 +1790,18 @@ def build_conversation_episode_v6(
     windowed_detail = 0
 
     # ---- Pass 1: segmentation (single call if it fits, else windowed) ----
-    if segmentation_tokens <= int(input_budget):
+    # PRO close-day forces the windowed executor even when the whole input fits a
+    # single call, because only the windowed path is lossless by construction (it
+    # forces the last segment onto the window's last primary turn). The single-call
+    # path is kept EXACTLY unchanged when PRO is absent. When PRO is set but the
+    # caller gave no owner/day (``not can_window``) there is no durable checkpoint
+    # scope to window against, so the historic fail-closed contract is preserved:
+    # single-call if it fits, ``input_budget_exceeded`` otherwise.
+    force_windowed_segmentation = _pro_closeday_enabled() and can_window
+    route_windowed = force_windowed_segmentation or segmentation_tokens > int(input_budget)
+    if not route_windowed:
+        # segmentation_tokens <= input_budget here (route_windowed is False), so the
+        # historic single-call path runs byte-for-byte identically to before.
         if injected_llm is None:
             segmentation_llm = OllamaWindowLLM(
                 system=system,
