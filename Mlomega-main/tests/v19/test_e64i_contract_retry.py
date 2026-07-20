@@ -332,6 +332,42 @@ def test_stale_over_budget_quarantine_is_requeued_and_split_on_resume():
     assert sorted(u for o in r2.outputs for u in o["units"]) == ["big.0", "big.1"]
 
 
+def test_over_budget_quarantine_completes_on_resume_when_budget_grows():
+    """No resolver needed: an over-budget quarantine re-drives on resume, and if the
+    budget grew (Gate B 014448: local 24k → DeepSeek context) it now completes.
+    ``context_window`` is not part of the checkpoint key, so the same unit is retried."""
+    con = _con()
+    scope = _scope("over_budget_grows")
+    unit = [PlanUnit(ref_id="u", tokens=5000, ts="t000")]
+
+    class Fits:
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, prompt, *, output_budget):
+            self.calls += 1
+            return LLMCallResult(ok=True, data={"units": prompt["units"], "bad": False},
+                                 finish_reason="stop")
+
+    common = dict(
+        con=con, scope=scope, render=_render, validate=lambda d: not d.get("bad"),
+        target_units=1, overlap=0, prompt_overhead_tokens=0, max_attempts=3,
+    )
+    # Run 1: small budget -> the 5000-token unit is over budget -> quarantined.
+    r1 = run_windows(unit, llm=Fits(),
+                     budget=ModelBudget(context_window=3000 + 200, output_reserve=200), **common)
+    assert len(r1.quarantined) == 1
+
+    # Run 2: budget grown well past the unit -> the SAME quarantine re-drives and
+    # completes (no resolver involved).
+    llm2 = Fits()
+    r2 = run_windows(unit, llm=llm2,
+                     budget=ModelBudget(context_window=65536, output_reserve=4096), **common)
+    assert r2.quarantined == []
+    assert llm2.calls == 1
+    assert sorted(u for o in r2.outputs for u in o["units"]) == ["u"]
+
+
 def test_single_oversized_irreducible_unit_still_quarantines():
     """A single unit that the resolver cannot split (one turn) stays fail-closed."""
     con = _con()

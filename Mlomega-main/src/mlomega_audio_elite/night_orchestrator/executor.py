@@ -346,13 +346,14 @@ def run_windows(
             )
         ):
             state = None
-        # Same non-final rule for an OVER-BUDGET single-unit quarantine written
-        # before the resolver could split it by turns (Gate B 014448: a ~41-turn
-        # coarse detail segment). When a resolver is now available, re-drive it —
-        # the over-budget path will split it by turns instead of quarantining.
+        # An OVER-BUDGET single-unit quarantine is NEVER final on resume: the input
+        # budget (``context_window``) is NOT part of the checkpoint key and may have
+        # grown between runs (Gate B 014448: the PRO engine-field budget was lifted
+        # from the local ~24k to the DeepSeek context, so a ~29k bundle prefix now
+        # fits), or a resolver may now be available to split it. Re-drive it: if it
+        # now fits it completes; otherwise it re-quarantines identically (idempotent).
         if state == cp.STATE_QUARANTINED and (
-            resolve_contract_rejection is not None
-            and str(existing.get("error_text") or "") == "single unit exceeds input budget"
+            str(existing.get("error_text") or "") == "single unit exceeds input budget"
         ):
             state = None
         if state in (cp.STATE_COMPLETED, cp.STATE_QUARANTINED):

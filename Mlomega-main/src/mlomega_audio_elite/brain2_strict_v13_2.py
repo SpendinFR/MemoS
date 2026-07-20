@@ -646,6 +646,20 @@ def _run_engine_partitioned(
         except ValueError:
             output_budget = 4096
     context_window = int(context_window or cfg.ollama_context_poststop)
+    # PRO cloud text (DeepSeek) has a far larger context than the local P1's ~24k
+    # post-stop window. Capping the engine-field budget at the LOCAL context made a
+    # large episode bundle prefix (~29k tokens, the whole conversation as a cache
+    # prefix) trip "single unit exceeds input budget" and quarantine — Gate B
+    # 014448 pattern_miner. In PRO, budget against the cloud model's real context
+    # so the cached prefix fits. The local path keeps ``ollama_context_poststop``.
+    if os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }:
+        try:
+            cloud_ctx = int(os.environ.get("MLOMEGA_CLOUD_CONTEXT_POSTSTOP", "65536"))
+        except ValueError:
+            cloud_ctx = 65536
+        context_window = max(context_window, cloud_ctx)
     if window_llm is None:
         try:
             timeout = float(os.environ.get("MLOMEGA_V13_ENGINE_TIMEOUT", "180"))
