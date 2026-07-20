@@ -1090,7 +1090,7 @@ def _global_engine_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-_CASE_INDEX_CAP = 40
+_CASE_INDEX_CAP = 24
 
 
 def _case_index(con, person_id: str, conversation_id: str) -> list[dict[str, Any]]:
@@ -1099,12 +1099,18 @@ def _case_index(con, person_id: str, conversation_id: str) -> list[dict[str, Any
     Short case refs plus the matching keys (type / outcome label / a bounded
     title) a retriever needs to decide relevance.  The full case rows stay in DB;
     nothing here re-embeds their evidence.  Read-only.
+
+    ``case_ids`` (the full membership array of a cluster) is EVIDENCE, not a
+    matching key: it exploded the ``similar_case_retrieval`` prompt to ~20k once
+    ``v13_case_clusters`` was populated (Gate B 183352).  It is deliberately NOT
+    selected — a retriever matches on type/outcome/title, and the membership
+    stays authoritative in DB.
     """
 
     index: list[dict[str, Any]] = []
     for table, id_col, key_cols in (
         ("v13_case_clusters", "cluster_key",
-         ("cluster_type", "case_ids")),
+         ("cluster_type",)),
         ("prediction_cases", "case_id",
          ("case_type", "outcome_label", "title")),
     ):
@@ -3752,8 +3758,16 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                         global_bundle = _global_engine_bundle(bundle)
                         packed: dict[str, dict[str, Any]] = {}
                         for engine in pending_globals:
-                            direct = _direct_prior(engine, conversation_outputs, packed)
-                            global_prior: dict[str, Any] = {"direct_dependencies": direct}
+                            # Codex: a GLOBAL engine synthesises from its projected
+                            # COMPACT inputs (the shared-facts projection / the
+                            # similar_case summary), NEVER the full raw parent engine
+                            # outputs.  Passing ``direct_dependencies`` (the ~20k full
+                            # parent output) re-sent pattern_miner's whole output on
+                            # top of its own compact summary and pushed
+                            # similar_case to 21k > budget (Gate B 183352).  The
+                            # per-episode DAG prior is unchanged; only the global
+                            # chain drops the raw parent outputs here.
+                            global_prior: dict[str, Any] = {}
                             projected = projected_by_engine.get(engine) or []
                             # Only engines that actually carry the shared-facts
                             # INPUT list expose it to the lossless windowing fallback.
@@ -3761,12 +3775,9 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                             if engine == "similar_case_retrieval":
                                 # Codex correction 3: this stage receives ONLY the
                                 # pattern output summary + episode fingerprint +
-                                # case index — NEVER the 97-fact registry — so it
-                                # falls back under the 24576 input budget.  It does
-                                # NOT expose ``projected_facts`` (its input is the
-                                # minimal prior, not the fact list).
+                                # case index — NEVER the 97-fact registry NOR the full
+                                # pattern output — so it stays under the input budget.
                                 global_prior = {
-                                    "direct_dependencies": direct,
                                     "similar_case_input": _similar_case_prior(
                                         con,
                                         person_id=person_id,
