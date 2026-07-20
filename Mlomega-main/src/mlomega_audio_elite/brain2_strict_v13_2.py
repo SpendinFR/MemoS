@@ -836,6 +836,73 @@ def _direct_prior(
             prior[parent] = conversation_outputs[parent]
     return prior
 
+
+# The per-episode ``source_engine`` values whose canonical facts feed the base of
+# the global chain.  ``pattern_miner`` mines the whole per-episode substrate, so
+# it receives the broad registry; every later global then narrows to the facts
+# produced by the globals it depends on (plus, where Codex asks for it, a compact
+# language fingerprint or the per-episode loops).
+_PER_EPISODE_FACT_SOURCES: tuple[str, ...] = (
+    "episode_builder",
+    "capture_engine",
+    "language_signature_engine",
+    "context_resolver",
+    "internal_state_engine",
+    "social_model_engine",
+    "causality_engine",
+    "contradiction_engine",
+    "choice_model_engine",
+    "outcome_tracker",
+)
+
+# Codex cost point A: per-dependency PROJECTION of canonical facts for the six
+# GLOBAL engines.  Instead of shipping the single 36778-token bundle to all of
+# them, each global receives ONLY the ``source_engine`` facts its dependencies
+# actually need.  Values are ``source_engine`` names filtered out of the canonical
+# ``compact_fact_bundle`` — the evidence stays authoritative in DB.
+_GLOBAL_ENGINE_FACT_SOURCES: dict[str, tuple[str, ...]] = {
+    # pattern_miner: the broad per-episode substrate (capture/langage/contexte/
+    # état interne/social/causalité/contradiction/choix/outcome + structure).
+    "pattern_miner": _PER_EPISODE_FACT_SOURCES,
+    # similar_case_retrieval: patterns + a compact language fingerprint.
+    "similar_case_retrieval": ("pattern_miner", "language_signature_engine"),
+    # prediction_engine: patterns + cases + the loops (open-loops / outcome).
+    "prediction_engine": (
+        "pattern_miner", "similar_case_retrieval", "outcome_tracker",
+    ),
+    # simulation_engine: predictions + the context it needs to project a branch.
+    "simulation_engine": ("prediction_engine", "context_resolver"),
+    # calibration_engine: predictions + historical outcomes.
+    "calibration_engine": ("prediction_engine", "outcome_tracker"),
+    # intervention_engine: predictions + simulations + the constraints (context).
+    "intervention_engine": (
+        "prediction_engine", "simulation_engine", "context_resolver",
+    ),
+}
+
+
+def _facts_for_global_engine(
+    engine: str, compact_facts: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """Project the COMPACT canonical facts to those a global engine depends on.
+
+    ``compact_facts`` is the trimmed registry (see
+    ``brain2_shared_facts_v19.compact_facts_for_prompt``); each entry keeps its
+    ``source_engine``.  We keep ONLY the facts whose ``source_engine`` is in this
+    engine's dependency set, so a non-dependency fact never reaches the prompt.
+    An engine with no mapping receives nothing (its dependencies travel as direct
+    outputs); the full evidence always stays in DB.
+    """
+
+    allowed = set(_GLOBAL_ENGINE_FACT_SOURCES.get(engine, ()))
+    if not allowed:
+        return []
+    return [
+        dict(fact) for fact in compact_facts
+        if str(fact.get("source_engine") or "") in allowed
+    ]
+
+
 _INTERNAL_STATE_TYPES = {
     "emotional_reaction", "relationship_tension", "conflict", "avoidance",
     "commitment", "self_reflection",
@@ -2091,6 +2158,60 @@ def _pro_warm_episode_prefixes(episodes: Sequence[tuple[str, Mapping[str, Any]]]
             _time.sleep(settle)
 
 
+def _global_common_fact_core(
+    projected_by_engine: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> list[dict[str, Any]]:
+    """The compact facts shared by two or more projected global engines (Codex C).
+
+    After the per-dependency projection, the fact ``ref``s appearing in more than
+    one global engine's slice are the genuinely common core.  Only that core is
+    worth a shared cache prefix; per-engine-only facts are not.  Order is stable
+    (first-seen) so the warmed prefix is byte-for-byte reproducible.
+    """
+
+    seen_refs: dict[str, dict[str, Any]] = {}
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    for facts in projected_by_engine.values():
+        for fact in facts:
+            ref = str(fact.get("ref") or "")
+            if not ref:
+                continue
+            if ref not in seen_refs:
+                seen_refs[ref] = dict(fact)
+                order.append(ref)
+            counts[ref] = counts.get(ref, 0) + 1
+    return [seen_refs[ref] for ref in order if counts.get(ref, 0) >= 2]
+
+
+def _pro_warm_global_fact_core(
+    conversation_id: str, common_core: Sequence[Mapping[str, Any]]
+) -> None:
+    """Warm the shared global-fact core once as a DeepSeek cache prefix (Codex C).
+
+    Idempotent per digest via ``warm_bundle_prefix``; the cache reduces cost and
+    latency only — the real prompt-volume reduction is the projection/trim above.
+    A no-op when there is no common core (nothing worth caching).
+    """
+
+    if not common_core:
+        return
+    from .cloud_providers_v19 import warm_bundle_prefix
+
+    try:
+        timeout = float(os.environ.get("MLOMEGA_V13_ENGINE_TIMEOUT", "180"))
+    except ValueError:
+        timeout = 180.0
+    warm_bundle_prefix(
+        f"global-fact-core:{conversation_id}",
+        {
+            "conversation_id": conversation_id,
+            "shared_global_fact_core": [dict(fact) for fact in common_core],
+        },
+        timeout=timeout,
+    )
+
+
 def _build_local_episode_window_llm() -> Any:
     """Explicit local EpisodeBuilder client for the PRO frontier.
 
@@ -3120,21 +3241,45 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                         # request per engine, sequentially enriching prior output.
                         # Codex cost point #2: instead of shipping every raw prior
                         # output + all ``by_episode`` (the 8k->66k explosion), each
-                        # global engine receives ONLY (a) the canonical shared-facts
-                        # registry for this conversation and (b) the outputs of its
-                        # DIRECT parents (from ``_ENGINE_DIRECT_DEPS``), pulled from
-                        # ``packed`` + ``conversation_outputs``.
-                        shared_fact_registry: dict[str, Any] | None = None
+                        # global engine receives ONLY (a) the outputs of its DIRECT
+                        # parents (from ``_ENGINE_DIRECT_DEPS``) and (b) a
+                        # PER-DEPENDENCY PROJECTION of the canonical facts (Codex
+                        # point A): only the ``source_engine`` facts its dependencies
+                        # need, in the COMPACT trimmed form (Codex point B).  The old
+                        # single 36778-token bundle sent to all six is gone; the full
+                        # evidence stays authoritative in brain2_shared_facts_v19.
+                        compact_facts: list[dict[str, Any]] = []
                         if use_shared_facts and shared_facts is not None:
-                            shared_fact_registry = shared_facts.compact_fact_bundle(
+                            fact_bundle = shared_facts.compact_fact_bundle(
                                 con, conversation_id
                             )
+                            turn_refs = shared_facts.conversation_turn_refs(
+                                con, conversation_id
+                            )
+                            compact_facts = shared_facts.compact_facts_for_prompt(
+                                fact_bundle, turn_refs
+                            )
+                        # Codex point C: the small core of facts truly common to
+                        # several globals (after projection) is placed once in a
+                        # shared DeepSeek cache prefix and warmed a single time, so
+                        # the fan-out pays cache reads, not N re-sends of the core.
+                        projected_by_engine = {
+                            engine: _facts_for_global_engine(engine, compact_facts)
+                            for engine in pending_globals
+                        }
+                        common_core = _global_common_fact_core(projected_by_engine)
+                        _pro_warm_global_fact_core(conversation_id, common_core)
                         packed: dict[str, dict[str, Any]] = {}
                         for engine in pending_globals:
                             direct = _direct_prior(engine, conversation_outputs, packed)
                             global_prior: dict[str, Any] = {"direct_dependencies": direct}
-                            if shared_fact_registry is not None:
-                                global_prior["shared_facts"] = shared_fact_registry
+                            projected = projected_by_engine.get(engine) or []
+                            if projected:
+                                global_prior["shared_facts"] = {
+                                    "conversation_id": conversation_id,
+                                    "projection": "per_dependency_source_engine",
+                                    "facts": projected,
+                                }
                             packed[engine] = _run_engine_partitioned(
                                 con,
                                 engine=engine,

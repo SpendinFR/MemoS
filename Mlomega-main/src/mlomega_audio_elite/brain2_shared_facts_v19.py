@@ -966,6 +966,60 @@ def _prompt_facts(
     return facts, compact_groups
 
 
+def conversation_turn_refs(con: Any, conversation_id: str) -> dict[str, str]:
+    """Stable ``turn_id -> t0..tN`` map for one conversation.
+
+    Codex cost point B: the compact fact form replaces the LONG ``turn_id``
+    (~45 chars, repeated twice per fact via ``evidence_manifest``) with a short
+    ordinal ref.  The map is built from the same ``turns`` ordering the stage
+    projections use, so refs are identical byte-for-byte across projections.
+    """
+
+    return {
+        str(row["turn_id"]): f"t{ordinal}"
+        for ordinal, row in enumerate(
+            con.execute(
+                "SELECT turn_id FROM turns WHERE conversation_id=? ORDER BY idx",
+                (conversation_id,),
+            )
+        )
+    }
+
+
+def compact_facts_for_prompt(
+    fact_bundle: Mapping[str, Any],
+    turn_ref_by_id: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Serialise canonical facts into the COMPACT prompt form (Codex point B).
+
+    Unlike :func:`_prompt_facts` (which drops provenance for the stage prompt),
+    this keeps ``source_engine``/``source_field``/``episode_id`` so a caller can
+    PROJECT facts per dependent engine (Codex point A).  Everything else is the
+    trimmed form: short turn refs instead of long ``turn_id``s, deduplicated
+    ``evidence_manifest`` (dropped — every role/turn already lives once in DB and
+    in the payload's own evidence lists), no ``created_at``/bookkeeping, rounded
+    confidence.  The full evidence stays authoritative in ``brain2_shared_facts_v19``.
+    """
+
+    refs = turn_ref_by_id or {}
+    compact: list[dict[str, Any]] = []
+    for fact in fact_bundle.get("facts", []):
+        confidence = fact.get("confidence")
+        item = {
+            "ref": f"{fact['source_engine']}.{fact['source_field']}",
+            "source_engine": fact["source_engine"],
+            "episode_id": fact.get("episode_id"),
+            "type": fact["fact_type"],
+            "subject": fact.get("subject_ref"),
+            "status": fact["epistemic_status"],
+            "evidence_status": fact["evidence_status"],
+            "confidence": round(float(confidence), 3) if confidence is not None else None,
+            "value": _prompt_payload_value(fact.get("payload"), refs),
+        }
+        compact.append({key: value for key, value in item.items() if value is not None})
+    return compact
+
+
 def compact_stage_input(
     con: Any,
     conversation_id: str,
