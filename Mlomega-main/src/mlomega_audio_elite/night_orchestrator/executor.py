@@ -416,10 +416,34 @@ def run_windows(
         )
         con.commit()
 
-        # Refuse over-budget: subdivide, or quarantine a single oversized unit.
+        # Refuse over-budget. First try the planner subdivision (halves the
+        # window's PRIMARY UNITS). A single oversized unit cannot be halved that
+        # way; before quarantining it, hand it to the stage's deterministic
+        # resolver, which splits the unit BY ITS TURNS into contiguous, exclusively
+        # owned ranges (read-only overlap context, lossless merge re-verified) —
+        # exactly the detail/segmentation ``_resolve_rejection``. The reason and
+        # the split are persisted; a resume repays no model call (Codex option A).
         if input_tokens > budget.max_input_tokens:
-            if not _split_and_recurse(window, key, "input exceeds budget"):
-                _quarantine(window, key, 0, "single unit exceeds input budget")
+            if _split_and_recurse(window, key, "input exceeds budget"):
+                return
+            if resolve_contract_rejection is not None:
+                violations = {
+                    "rule": "single_unit_exceeds_input_budget",
+                    "input_tokens": int(input_tokens),
+                    "max_input_tokens": int(budget.max_input_tokens),
+                }
+                cp.record_contract_rejection(
+                    con, window_key=key, attempt=0,
+                    person_id=scope.person_id, package_date=scope.package_date,
+                    stage_name=scope.stage_name, model=scope.model,
+                    strategy="over_budget_single_unit",
+                    input_digest=effective_input_digest,
+                    raw_output=None, parsed_output=None, violations=violations,
+                )
+                con.commit()
+                if _resolve_rejection(window, key, 0, effective_input_digest, violations):
+                    return
+            _quarantine(window, key, 0, "single unit exceeds input budget")
             return
 
         last_error = ""

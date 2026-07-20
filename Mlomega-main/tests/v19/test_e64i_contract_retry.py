@@ -180,6 +180,125 @@ class RejectWholeAcceptHalves:
                              finish_reason="stop")
 
 
+def _halving_resolver(scope):
+    """A resolver that halves the window's primary units and drives each half —
+    the shared shape used by the detail/segmentation resolvers."""
+    def resolve(window, ctx):
+        primary = list(window.primary_units)
+        if len(primary) < 2:
+            return False
+        mid = len(primary) // 2
+        drive = ctx["drive"]
+        base = int(window.spec.window_index)
+        child_indexes = []
+        for i, half in enumerate([primary[:mid], primary[mid:]]):
+            refs = tuple(u.ref_id for u in half)
+            idx = base * 1000 + i + 1
+            child_indexes.append(idx)
+            spec = WindowSpec(
+                stage_name=scope.stage_name, window_index=idx,
+                primary_refs=refs, overlap_refs=(),
+                input_digest=content_digest(list(refs)),
+            )
+            drive(PlannedWindow(spec=spec, primary_units=tuple(half),
+                                overlap_units=(), input_tokens=sum(u.tokens for u in half)))
+        result = ctx["result"]
+        done = [w for w in result.windows
+                if w.window_index in child_indexes and w.state == cp.STATE_COMPLETED]
+        return len(done) == 2
+    return resolve
+
+
+def test_single_unit_over_budget_is_split_by_the_resolver_not_quarantined():
+    """Codex option A: a lone unit whose input exceeds the budget cannot be halved
+    by the planner (one primary unit), so the executor hands it to the stage
+    resolver BEFORE quarantining. The reason is audited, the split is lossless,
+    and a resume repays no call."""
+    con = _con()
+    scope = _scope("over_budget_stage")
+
+    class FitsWhenSmall:
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, prompt, *, output_budget):
+            self.calls += 1
+            return LLMCallResult(ok=True, data={"units": prompt["units"], "bad": False},
+                                 finish_reason="stop")
+
+    llm = FitsWhenSmall()
+    # ONE unit of 5000 tokens > a 3000-token input budget. The planner cannot
+    # halve a single unit; the resolver splits it into two ~2500-token halves.
+    big_unit = [PlanUnit(ref_id="big", tokens=5000, ts="t000")]
+
+    def resolve(window, ctx):
+        # Split the one oversized unit into two contiguous sub-units by tokens.
+        primary = list(window.primary_units)
+        if len(primary) != 1 or primary[0].tokens < 2:
+            return False
+        base = int(window.spec.window_index)
+        drive = ctx["drive"]
+        for i in range(2):
+            ref = f"{primary[0].ref_id}.{i}"
+            spec = WindowSpec(stage_name=scope.stage_name, window_index=base * 1000 + i + 1,
+                              primary_refs=(ref,), overlap_refs=(),
+                              input_digest=content_digest([ref]))
+            drive(PlannedWindow(spec=spec,
+                                primary_units=(PlanUnit(ref_id=ref, tokens=primary[0].tokens // 2, ts=f"t{i}"),),
+                                overlap_units=(), input_tokens=primary[0].tokens // 2))
+        result = ctx["result"]
+        done = [w for w in result.windows
+                if w.window_index in {base * 1000 + 1, base * 1000 + 2}
+                and w.state == cp.STATE_COMPLETED]
+        return len(done) == 2
+
+    res = run_windows(
+        big_unit, con=con, scope=scope, llm=llm,
+        budget=ModelBudget(context_window=3000 + 200, output_reserve=200),
+        render=_render, validate=lambda d: not d.get("bad"),
+        resolve_contract_rejection=resolve,
+        target_units=1, overlap=0, prompt_overhead_tokens=0, max_attempts=3,
+    )
+
+    assert res.quarantined == []                     # NOT quarantined: split instead
+    covered = sorted(u for o in res.outputs for u in o["units"])
+    assert covered == ["big.0", "big.1"]             # both halves detailed, lossless
+    # The over-budget reason is durably audited.
+    rows = con.execute(
+        f"SELECT strategy, violations_json FROM {cp.REJECTIONS_TABLE}"
+    ).fetchall()
+    assert any(r[0] == "over_budget_single_unit"
+               and "single_unit_exceeds_input_budget" in str(r[1]) for r in rows)
+    # Resume repays nothing: the parent is subdivided, children resume completed.
+    class NeverCalled:
+        def generate(self, prompt, *, output_budget):
+            raise AssertionError("resume must repay no call")
+    res2 = run_windows(
+        big_unit, con=con, scope=scope, llm=NeverCalled(),
+        budget=ModelBudget(context_window=3000 + 200, output_reserve=200),
+        render=_render, validate=lambda d: not d.get("bad"),
+        resolve_contract_rejection=resolve,
+        target_units=1, overlap=0, prompt_overhead_tokens=0, max_attempts=3,
+    )
+    assert sorted(u for o in res2.outputs for u in o["units"]) == ["big.0", "big.1"]
+
+
+def test_single_oversized_irreducible_unit_still_quarantines():
+    """A single unit that the resolver cannot split (one turn) stays fail-closed."""
+    con = _con()
+    scope = _scope("over_budget_irreducible")
+    big_unit = [PlanUnit(ref_id="lone", tokens=5000, ts="t000")]
+    res = run_windows(
+        big_unit, con=con, scope=scope, llm=RejectWholeAcceptHalves(),
+        budget=ModelBudget(context_window=3000 + 200, output_reserve=200),
+        render=_render, validate=lambda d: not d.get("bad"),
+        resolve_contract_rejection=lambda window, ctx: False,  # irreducible
+        target_units=1, overlap=0, prompt_overhead_tokens=0, max_attempts=3,
+    )
+    assert len(res.quarantined) == 1
+    assert res.outputs == []
+
+
 def test_split_merge_keeps_coverage_lossless():
     con = _con()
     llm = RejectWholeAcceptHalves()

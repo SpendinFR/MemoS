@@ -670,12 +670,25 @@ def assemble_detail_window_outputs(
             if item is not None
         )
 
-    parts.sort(key=lambda item: (int(item["source_ordinal"]), int(item["part_index"])))
     expected_turn_ids = [
         str(turn_id)
         for segment in segments
         for turn_id in segment.get("turn_ids") or []
     ]
+    # Order parts by the GLOBAL position of their first source turn. This is
+    # depth-safe: a segment split across multiple recursive levels produces parts
+    # whose ``part_index`` arithmetic can collide, but each part's first turn has a
+    # unique, totally-ordered global position. ``source_ordinal``/``part_index``
+    # stay as a stable tiebreak for legacy one-level parts and empty-turn parts.
+    _turn_pos = {turn_id: index for index, turn_id in enumerate(expected_turn_ids)}
+
+    def _part_sort_key(item: Mapping[str, Any]) -> tuple[int, int, int]:
+        turn_ids = [str(t) for t in item.get("turn_ids") or []]
+        positions = [_turn_pos[t] for t in turn_ids if t in _turn_pos]
+        first = min(positions) if positions else 10**9
+        return (first, int(item["source_ordinal"]), int(item["part_index"]))
+
+    parts.sort(key=_part_sort_key)
     actual_turn_ids = [
         str(turn_id)
         for detail in parts
@@ -1310,18 +1323,20 @@ def _run_segmentation_windows(
         if not subs:
             return False  # irreducible: one turn cannot be halved
         drive = ctx["drive"]
+        result = ctx["result"]
+        # Snapshot BEFORE driving so a multi-level split is judged by its true
+        # leaves (a child that itself subdivided is not a leaf; its deeper children
+        # are). The final ``stage.all_completed`` stays the authoritative gate.
+        pre_leaf_count = len(result.windows)
         for sub in subs:
             drive(sub)
-        # Coverage is proven downstream by the global provenance reassembly; here we
-        # only require every child window reached a durable COMPLETED state (never a
-        # partial). Any other state fails closed and quarantines the parent.
-        result = ctx["result"]
-        child_indexes = {sub.spec.window_index for sub in subs}
-        completed = [
-            w for w in result.windows
-            if w.window_index in child_indexes and w.state == cp.STATE_COMPLETED
-        ]
-        return len(completed) == len(subs)
+        # Coverage is proven downstream by the global provenance reassembly; success
+        # here = every LEAF produced under this split (at any depth) reached a
+        # durable COMPLETED state. A quarantine anywhere in the subtree fails closed.
+        descendants = result.windows[pre_leaf_count:]
+        return bool(descendants) and all(
+            w.state == cp.STATE_COMPLETED for w in descendants
+        )
 
     scope = StageScope(
         person_id=scope_person,
@@ -1565,6 +1580,13 @@ def _run_detail_windows(
         halves = [turn_ids[:mid], turn_ids[mid:]]
         drive = ctx["drive"]
         base_index = int(window.spec.window_index)
+        # Snapshot the leaves BEFORE driving so a multi-level split is judged by its
+        # actual leaves (a half that itself had to subdivide is NOT a leaf; its own
+        # deeper children are). Counting only direct COMPLETED children wrongly
+        # quarantined a parent whose half needed a further split (Gate B 014448:
+        # a ~41-turn coarse segment needs two split levels).
+        result = ctx["result"]
+        pre_leaf_count = len(result.windows)
         for half_index, half_turns in enumerate(halves):
             child_ref = f"{segment.get('_ref', 'seg' + str(segment['ordinal']))}#h{part_base + half_index}"
             child_segment = {
@@ -1612,18 +1634,14 @@ def _run_detail_windows(
                 input_tokens=child_tokens,
             )
             drive(child_window)
-        # Coverage proof is enforced downstream by assemble_detail_window_outputs;
-        # here we only require that every child window reached a durable COMPLETED
-        # state (never a partial). Any other state fails closed.
-        result = ctx["result"]
-        child_indexes = {
-            base_index * 1000 + part_base + h + 1 for h in range(len(halves))
-        }
-        completed = [
-            w for w in result.windows
-            if w.window_index in child_indexes and w.state == cp.STATE_COMPLETED
-        ]
-        return len(completed) == len(halves)
+        # Coverage proof is enforced downstream by assemble_detail_window_outputs.
+        # Success here = every LEAF produced under this split (at any depth) reached
+        # a durable COMPLETED state; a quarantine anywhere in the subtree fails
+        # closed. The final ``stage.all_completed`` remains the authoritative gate.
+        descendants = result.windows[pre_leaf_count:]
+        return bool(descendants) and all(
+            w.state == cp.STATE_COMPLETED for w in descendants
+        )
 
     scope = StageScope(
         person_id=scope_person,

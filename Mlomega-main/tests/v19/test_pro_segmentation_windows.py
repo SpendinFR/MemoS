@@ -136,6 +136,17 @@ class SegFake:
         if mission == _SEGMENTATION_MISSION:
             self.segmentation_calls += 1
             primary = list(prompt["contract"]["human_turn_ids"])
+            if self.tail == "coarse":
+                # Emit ONLY the forced last-primary boundary: the whole window
+                # collapses to ONE (lossless but coarse) segment — the exact 9B
+                # behaviour that overflowed the detail budget on Gate B 014448.
+                return LLMCallResult(ok=True, data={
+                    "segments": [{
+                        "ordinal": 0, "title_hint": f"Bloc {primary[-1]}",
+                        "end_turn_id": primary[-1], "boundary_reason": "conversation_start",
+                    }],
+                    "missing_context": [],
+                })
             # Cut every ~3 primary turns so detail batches stay small (a lone
             # 50-turn segment would blow the detail budget). Mirrors the proven
             # WindowedFakeLLM. ``tail='early'`` omits the final forced cut, so the
@@ -351,6 +362,38 @@ def test_resume_replays_zero_llm_calls(monkeypatch):
         assert _s1["windowed_segmentation"] >= 2 and _s1["windowed_detail"] >= 1
         _s2, w2 = _run(con, RaisingLLM(), turns, input_budget=2500)
         assert _covered_turn_ids(w2) == first == [f"t{i}" for i in range(50)]
+
+
+# --------------------------------------------------------------------------- #
+# 8. A coarse segment that overflows the DETAIL budget is split BY ITS TURNS   #
+#    (Codex option A), never quarantined; coverage stays lossless.             #
+# --------------------------------------------------------------------------- #
+def test_coarse_segment_over_detail_budget_is_split_by_turns(monkeypatch):
+    monkeypatch.setenv("MLOMEGA_PRO_CLOSEDAY", "1")
+    monkeypatch.setenv("MLOMEGA_E64_CONVERSATION_TARGET_TURNS", "40")
+    turns = _turns_with_fillers(40)
+    llm = SegFake(tail="coarse")   # the whole window collapses to one big segment
+    # A tight budget makes that single ~40-turn segment far exceed the detail input
+    # budget, forcing MULTI-LEVEL turn-splitting (40→20→10…). The planner cannot
+    # halve a lone segment, so the detail resolver splits by turns recursively; a
+    # child that itself had to subdivide must NOT quarantine its parent.
+    with connect() as con:
+        _stats, written = _run(con, llm, turns, input_budget=2500)
+        covered = _covered_turn_ids(written)
+        assert covered == [f"t{i}" for i in range(40)]     # lossless after turn-split
+        assert len(covered) == len(set(covered)) == 40
+        rows = con.execute(
+            f"SELECT strategy, violations_json FROM {cp.REJECTIONS_TABLE} "
+            f"WHERE stage_name='brain2_conversation_detail'"
+        ).fetchall()
+        # The over-budget reason for the coarse detail segment is durably audited.
+        assert any(r[0] == "over_budget_single_unit"
+                   and "single_unit_exceeds_input_budget" in str(r[1]) for r in rows)
+        q = dict(con.execute(
+            "SELECT state, COUNT(*) FROM night_llm_windows_v19 "
+            "WHERE stage_name='brain2_conversation_detail' GROUP BY state"
+        ).fetchall())
+        assert q.get("quarantined", 0) == 0
 
 
 # --------------------------------------------------------------------------- #
