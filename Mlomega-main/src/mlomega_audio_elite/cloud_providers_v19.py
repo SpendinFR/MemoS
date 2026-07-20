@@ -68,6 +68,29 @@ _BUNDLE_PREFIX: ContextVar[BundlePrefixContext | None] = ContextVar(
     "mlomega_cloud_bundle_prefix", default=None
 )
 
+# Codex cost point #4: the ledger used to record every DeepSeek text call under
+# the single stage 'closeday_text', so per-engine cost was invisible.  Callers set
+# this ContextVar (via ``cloud_engine_stage``) to the REAL engine stage, e.g.
+# 'brain2_engine:pattern_miner:ep-1', which ``deepseek_chat_json`` then propagates
+# to ``reserve_cloud_cost``.  Unset => the historic 'closeday_text' label.
+_ENGINE_STAGE: ContextVar[str | None] = ContextVar(
+    "mlomega_cloud_engine_stage", default=None
+)
+
+
+@contextmanager
+def cloud_engine_stage(stage_name: str) -> Iterator[str]:
+    """Bind the real engine stage name propagated to the cloud cost ledger."""
+    token = _ENGINE_STAGE.set(str(stage_name))
+    try:
+        yield str(stage_name)
+    finally:
+        _ENGINE_STAGE.reset(token)
+
+
+def current_engine_stage() -> str | None:
+    return _ENGINE_STAGE.get()
+
 
 @contextmanager
 def cloud_bundle_prefix(bundle_id: str, bundle_payload: dict[str, Any]) -> Iterator[BundlePrefixContext]:
@@ -255,10 +278,14 @@ def deepseek_chat_json(
                     raise CloudProviderError("DeepSeek bundle prefix warm-up contract failed")
                 context.warm_responses[selected] = warm_text
                 _BUNDLE_WARM_RESPONSES[warm_key] = warm_text
+    # Propagate the REAL engine stage to the ledger when a caller bound it (Codex
+    # cost point #4); fall back to the historic label otherwise (additive, no
+    # schema change).
+    engine_stage = current_engine_stage() or "closeday_text"
     return _deepseek_request(
         messages=_deepseek_messages(system, prompt, model=selected), model=selected,
         max_output_tokens=max_output_tokens, timeout=timeout,
-        stage_name="closeday_text", json_schema=json_schema,
+        stage_name=engine_stage, json_schema=json_schema,
     )
 
 
@@ -552,6 +579,7 @@ def gemini_vision_json(
 
 __all__ = [
     "BundlePrefixContext", "CloudProviderError", "cloud_bundle_prefix",
-    "current_bundle_prefix", "deepseek_chat_json", "gemini_vision_json",
+    "cloud_engine_stage", "current_bundle_prefix", "current_engine_stage",
+    "deepseek_chat_json", "gemini_vision_json",
     "groq_transcribe", "warm_bundle_prefix",
 ]

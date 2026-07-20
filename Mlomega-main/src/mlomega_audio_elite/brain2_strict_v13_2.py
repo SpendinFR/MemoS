@@ -593,167 +593,185 @@ def _run_engine_partitioned(
         estimate_tokens_for_text, run_windows,
     )
 
-    schema = dict(ENGINE_SCHEMAS[engine])
-    common_names = [
-        name for name in ("evidence", "counter_evidence", "confidence")
-        if name in schema
-    ]
-    business_names = [name for name in schema if name not in common_names]
-    if not business_names:
-        return _llm_require_json(
-            engine, _engine_prompt(engine, bundle, prior), schema
-        )
-
-    units = [
-        PlanUnit(
-            ref_id=name,
-            tokens=estimate_tokens_for_text(json_dumps({name: schema[name]})) + 8,
-            content_digest=_hash_payload(json_dumps({name: schema[name]})),
-        )
-        for name in business_names
-    ]
-    common_schema = {name: schema[name] for name in common_names}
-
-    def render(window_units) -> dict[str, Any]:
-        task_names = [unit.ref_id for unit in window_units]
-        task_schema = {
-            **{name: schema[name] for name in task_names},
-            **common_schema,
-        }
-        return {
-            "prompt": _engine_prompt(
-                engine, bundle, prior, schema_override=task_schema,
-                bundle_in_prefix=bundle_in_prefix,
-            ),
-            "schema_hint": task_schema,
-        }
-
-    def validate(value: Any) -> bool:
-        return isinstance(value, dict)
-
-    def envelope(value: Any, primary) -> dict[str, Any]:
-        return {
-            "task_fields": [unit.ref_id for unit in primary],
-            "result": value,
-        }
-
-    cfg = get_settings()
-    if output_budget is None:
-        try:
-            output_budget = max(
-                256, int(os.environ.get("MLOMEGA_POSTSTOP_LLM_MAX_OUTPUT_TOKENS", "4096"))
-            )
-        except ValueError:
-            output_budget = 4096
-    context_window = int(context_window or cfg.ollama_context_poststop)
-    # PRO cloud text (DeepSeek) has a far larger context than the local P1's ~24k
-    # post-stop window. Capping the engine-field budget at the LOCAL context made a
-    # large episode bundle prefix (~29k tokens, the whole conversation as a cache
-    # prefix) trip "single unit exceeds input budget" and quarantine — Gate B
-    # 014448 pattern_miner. In PRO, budget against the cloud model's real context
-    # so the cached prefix fits. The local path keeps ``ollama_context_poststop``.
+    # Codex cost point #4: in PRO, bind the REAL engine stage so every DeepSeek
+    # ledger row is attributed to this engine+episode instead of the flat
+    # 'closeday_text'.  On the local path this stays a no-op so the byte-for-byte
+    # behaviour is untouched.
     if os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower() in {
         "1", "true", "yes", "on",
     }:
-        try:
-            cloud_ctx = int(os.environ.get("MLOMEGA_CLOUD_CONTEXT_POSTSTOP", "65536"))
-        except ValueError:
-            cloud_ctx = 65536
-        context_window = max(context_window, cloud_ctx)
-    if window_llm is None:
-        try:
-            timeout = float(os.environ.get("MLOMEGA_V13_ENGINE_TIMEOUT", "180"))
-        except ValueError:
-            timeout = 180.0
-        window_llm = OllamaWindowLLM(
-            system=_BRAIN2_STRICT_SYSTEM,
-            timeout=timeout,
-        )
-    model = str(getattr(window_llm, "model", "injected-window-llm"))
-    episode = con.execute(
-        "SELECT start_time FROM episodes WHERE episode_id=?", (episode_id,)
-    ).fetchone()
-    package_date = str((episode["start_time"] if episode else None) or now_iso())[:10]
-    empty_prompt = _engine_prompt(
-        engine, bundle, prior, schema_override=common_schema,
-        bundle_in_prefix=bundle_in_prefix,
-    )
-    stage = run_windows(
-        units,
-        con=con,
-        scope=StageScope(
-            person_id=person_id,
-            package_date=package_date,
-            stage_name=f"brain2_engine_fields:{engine}:{episode_id}",
-            adapter_version="e64f-v13-engine-fields-v2",
-            prompt_version=f"{STRICT_VERSION}:{engine}",
-            model=model,
-        ),
-        llm=window_llm,
-        budget=ModelBudget(
-            context_window=context_window,
-            output_reserve=int(output_budget),
-            safety_margin=768,
-        ),
-        render=render,
-        validate=validate,
-        decorate_output=envelope,
-        # The local 9B keeps its deliberately small field groups. DeepSeek PRO
-        # gets one request per cognitive engine and subdivides only on a real
-        # size/contract failure; engines themselves are never merged together.
-        target_units=(
-            len(units)
-            if os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower()
-            in {"1", "true", "yes", "on"}
-            else (2 if len(business_names) > 3 else 3)
-        ),
-        overlap=0,
-        prompt_overhead_tokens=estimate_tokens_for_text(empty_prompt),
-    )
-    if not stage.all_completed:
-        raise RuntimeError(
-            f"{engine} field tasks incomplete: "
-            f"states={[window.state for window in stage.windows]}"
-        )
+        from .cloud_providers_v19 import cloud_engine_stage as _cloud_engine_stage
+        _stage_ctx: Any = _cloud_engine_stage(f"brain2_engine:{engine}:{episode_id}")
+    else:
+        _stage_ctx = nullcontext()
 
-    merged: dict[str, Any] = {}
-    evidence: list[Any] = []
-    counter_evidence: list[Any] = []
-    confidences: list[float] = []
-    for stored in stage.outputs:
-        if not isinstance(stored, dict):
-            continue
-        result = stored.get("result")
-        fields = stored.get("task_fields") or []
-        if not isinstance(result, dict):
-            continue
-        for field in fields:
-            if field in result:
-                merged[str(field)] = result[field]
-        evidence.extend(_as_list(result.get("evidence")))
-        counter_evidence.extend(_as_list(result.get("counter_evidence")))
-        if isinstance(result.get("confidence"), (int, float)):
-            confidences.append(float(result["confidence"]))
+    with _stage_ctx:
+        schema = dict(ENGINE_SCHEMAS[engine])
+        common_names = [
+            name for name in ("evidence", "counter_evidence", "confidence")
+            if name in schema
+        ]
+        business_names = [name for name in schema if name not in common_names]
+        if not business_names:
+            return _llm_require_json(
+                engine, _engine_prompt(engine, bundle, prior), schema
+            )
 
-    def unique_json(values: list[Any]) -> list[Any]:
-        seen: set[str] = set()
-        out: list[Any] = []
-        for value in values:
-            marker = json_dumps(value)
-            if marker not in seen:
-                seen.add(marker)
-                out.append(value)
-        return out
+        units = [
+            PlanUnit(
+                ref_id=name,
+                tokens=estimate_tokens_for_text(json_dumps({name: schema[name]})) + 8,
+                content_digest=_hash_payload(json_dumps({name: schema[name]})),
+            )
+            for name in business_names
+        ]
+        common_schema = {name: schema[name] for name in common_names}
 
-    if "evidence" in schema:
-        merged["evidence"] = unique_json(evidence)
-    if "counter_evidence" in schema:
-        merged["counter_evidence"] = unique_json(counter_evidence)
-    if "confidence" in schema:
-        merged["confidence"] = (
-            sum(confidences) / len(confidences) if confidences else 0.0
+        def render(window_units) -> dict[str, Any]:
+            task_names = [unit.ref_id for unit in window_units]
+            task_schema = {
+                **{name: schema[name] for name in task_names},
+                **common_schema,
+            }
+            return {
+                "prompt": _engine_prompt(
+                    engine, bundle, prior, schema_override=task_schema,
+                    bundle_in_prefix=bundle_in_prefix,
+                ),
+                "schema_hint": task_schema,
+            }
+
+        def validate(value: Any) -> bool:
+            return isinstance(value, dict)
+
+        def envelope(value: Any, primary) -> dict[str, Any]:
+            return {
+                "task_fields": [unit.ref_id for unit in primary],
+                "result": value,
+            }
+
+        cfg = get_settings()
+        if output_budget is None:
+            try:
+                output_budget = max(
+                    256, int(os.environ.get("MLOMEGA_POSTSTOP_LLM_MAX_OUTPUT_TOKENS", "4096"))
+                )
+            except ValueError:
+                output_budget = 4096
+        context_window = int(context_window or cfg.ollama_context_poststop)
+        # PRO cloud text (DeepSeek) has a far larger context than the local P1's ~24k
+        # post-stop window. Capping the engine-field budget at the LOCAL context made a
+        # large episode bundle prefix (~29k tokens, the whole conversation as a cache
+        # prefix) trip "single unit exceeds input budget" and quarantine — Gate B
+        # 014448 pattern_miner. In PRO, budget against the cloud model's real context
+        # so the cached prefix fits. The local path keeps ``ollama_context_poststop``.
+        if os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower() in {
+            "1", "true", "yes", "on",
+        }:
+            # Codex cost point #3: the PRO cloud window is NOT a licence for 66k-token
+            # prompts.  With the DAG projection (direct-deps prior + shared facts) each
+            # engine prompt must fall well under 24k; keep the cap at 24576 so an
+            # overshoot triggers the executor's length subdivision/projection instead of
+            # quarantine OR a 66k free pass.  Defeats commit fa738a2 (which set 65536).
+            try:
+                cloud_ctx = int(os.environ.get("MLOMEGA_CLOUD_CONTEXT_POSTSTOP", "24576"))
+            except ValueError:
+                cloud_ctx = 24576
+            context_window = max(context_window, cloud_ctx)
+        if window_llm is None:
+            try:
+                timeout = float(os.environ.get("MLOMEGA_V13_ENGINE_TIMEOUT", "180"))
+            except ValueError:
+                timeout = 180.0
+            window_llm = OllamaWindowLLM(
+                system=_BRAIN2_STRICT_SYSTEM,
+                timeout=timeout,
+            )
+        model = str(getattr(window_llm, "model", "injected-window-llm"))
+        episode = con.execute(
+            "SELECT start_time FROM episodes WHERE episode_id=?", (episode_id,)
+        ).fetchone()
+        package_date = str((episode["start_time"] if episode else None) or now_iso())[:10]
+        empty_prompt = _engine_prompt(
+            engine, bundle, prior, schema_override=common_schema,
+            bundle_in_prefix=bundle_in_prefix,
         )
-    return merged
+        stage = run_windows(
+            units,
+            con=con,
+            scope=StageScope(
+                person_id=person_id,
+                package_date=package_date,
+                stage_name=f"brain2_engine_fields:{engine}:{episode_id}",
+                adapter_version="e64f-v13-engine-fields-v2",
+                prompt_version=f"{STRICT_VERSION}:{engine}",
+                model=model,
+            ),
+            llm=window_llm,
+            budget=ModelBudget(
+                context_window=context_window,
+                output_reserve=int(output_budget),
+                safety_margin=768,
+            ),
+            render=render,
+            validate=validate,
+            decorate_output=envelope,
+            # The local 9B keeps its deliberately small field groups. DeepSeek PRO
+            # gets one request per cognitive engine and subdivides only on a real
+            # size/contract failure; engines themselves are never merged together.
+            target_units=(
+                len(units)
+                if os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower()
+                in {"1", "true", "yes", "on"}
+                else (2 if len(business_names) > 3 else 3)
+            ),
+            overlap=0,
+            prompt_overhead_tokens=estimate_tokens_for_text(empty_prompt),
+        )
+        if not stage.all_completed:
+            raise RuntimeError(
+                f"{engine} field tasks incomplete: "
+                f"states={[window.state for window in stage.windows]}"
+            )
+
+        merged: dict[str, Any] = {}
+        evidence: list[Any] = []
+        counter_evidence: list[Any] = []
+        confidences: list[float] = []
+        for stored in stage.outputs:
+            if not isinstance(stored, dict):
+                continue
+            result = stored.get("result")
+            fields = stored.get("task_fields") or []
+            if not isinstance(result, dict):
+                continue
+            for field in fields:
+                if field in result:
+                    merged[str(field)] = result[field]
+            evidence.extend(_as_list(result.get("evidence")))
+            counter_evidence.extend(_as_list(result.get("counter_evidence")))
+            if isinstance(result.get("confidence"), (int, float)):
+                confidences.append(float(result["confidence"]))
+
+        def unique_json(values: list[Any]) -> list[Any]:
+            seen: set[str] = set()
+            out: list[Any] = []
+            for value in values:
+                marker = json_dumps(value)
+                if marker not in seen:
+                    seen.add(marker)
+                    out.append(value)
+            return out
+
+        if "evidence" in schema:
+            merged["evidence"] = unique_json(evidence)
+        if "counter_evidence" in schema:
+            merged["counter_evidence"] = unique_json(counter_evidence)
+        if "confidence" in schema:
+            merged["confidence"] = (
+                sum(confidences) / len(confidences) if confidences else 0.0
+            )
+        return merged
 
 
 _CONVERSATION_SCOPE_ENGINES = {
@@ -764,6 +782,59 @@ _CONVERSATION_SCOPE_ENGINES = {
     "calibration_engine",
     "intervention_engine",
 }
+
+# DAG of DIRECT dependencies per engine (Codex cost point #1).  Replaces the old
+# "every prior output, cumulated" prior that exploded 8k -> 66k tokens per engine.
+# Each engine's PRO ``prior`` is projected to ONLY the outputs of these direct
+# parents (see ``_direct_prior``); an engine with no dependency receives ``{}``
+# (it still gets the shared episode bundle prefix).  The per-episode levels are
+# kept consistent with ``known_levels`` (~ line 2900).  The six GLOBAL engines
+# form their own chain and pull from the conversation-scope outputs.
+_ENGINE_DIRECT_DEPS: dict[str, tuple[str, ...]] = {
+    # Per-episode engines
+    "capture_engine": (),
+    "language_signature_engine": (),
+    "context_resolver": ("capture_engine", "language_signature_engine"),
+    "internal_state_engine": ("context_resolver",),
+    "social_model_engine": ("context_resolver",),
+    "causality_engine": ("internal_state_engine", "social_model_engine"),
+    "contradiction_engine": ("internal_state_engine", "social_model_engine"),
+    "choice_model_engine": ("internal_state_engine", "social_model_engine"),
+    "outcome_tracker": ("causality_engine", "choice_model_engine"),
+    # Global (conversation-scope) engines: an explicit dependency chain.
+    # pattern_miner depends on the per-episode parents materialized upstream; it
+    # reads them from the canonical shared-facts registry, so its direct-output
+    # prior is empty and it relies on the facts bundle + episode outputs.
+    "pattern_miner": (),
+    "similar_case_retrieval": ("pattern_miner",),
+    "prediction_engine": ("pattern_miner", "similar_case_retrieval"),
+    "simulation_engine": ("prediction_engine",),
+    "calibration_engine": ("prediction_engine", "simulation_engine"),
+    "intervention_engine": ("calibration_engine", "prediction_engine"),
+}
+
+
+def _direct_prior(
+    engine: str,
+    conversation_outputs: Mapping[str, Any],
+    episode_outputs: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project a per-episode engine ``prior`` to its DIRECT dependencies only.
+
+    An engine with no dependency gets ``{}`` (the shared episode bundle already
+    travels in the cache prefix).  A dependency is resolved from the current
+    episode's outputs first, then from conversation-scope outputs, so both
+    per-episode parents and any already-materialized global parent are honoured
+    without ever dragging in unrelated engines' outputs.
+    """
+
+    prior: dict[str, Any] = {}
+    for parent in _ENGINE_DIRECT_DEPS.get(engine, ()):
+        if parent in episode_outputs:
+            prior[parent] = episode_outputs[parent]
+        elif parent in conversation_outputs:
+            prior[parent] = conversation_outputs[parent]
+    return prior
 
 _INTERNAL_STATE_TYPES = {
     "emotional_reaction", "relationship_tension", "conflict", "avoidance",
@@ -2906,10 +2977,14 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                                 "episode_id": episode_id,
                                 "engine": engine,
                                 "bundle": work["bundle"],
-                                "prior": {
-                                    **conversation_outputs,
-                                    **outputs_by_episode[episode_id],
-                                },
+                                # DAG projection (Codex cost point #1): send only
+                                # this engine's DIRECT dependency outputs, never
+                                # the whole cumulated prior.
+                                "prior": _direct_prior(
+                                    engine,
+                                    conversation_outputs,
+                                    outputs_by_episode[episode_id],
+                                ),
                             })
                 if not tasks:
                     continue
@@ -3043,23 +3118,30 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                     if pro_fanout:
                         # These engines form a real dependency chain; keep one
                         # request per engine, sequentially enriching prior output.
+                        # Codex cost point #2: instead of shipping every raw prior
+                        # output + all ``by_episode`` (the 8k->66k explosion), each
+                        # global engine receives ONLY (a) the canonical shared-facts
+                        # registry for this conversation and (b) the outputs of its
+                        # DIRECT parents (from ``_ENGINE_DIRECT_DEPS``), pulled from
+                        # ``packed`` + ``conversation_outputs``.
+                        shared_fact_registry: dict[str, Any] | None = None
+                        if use_shared_facts and shared_facts is not None:
+                            shared_fact_registry = shared_facts.compact_fact_bundle(
+                                con, conversation_id
+                            )
                         packed: dict[str, dict[str, Any]] = {}
                         for engine in pending_globals:
+                            direct = _direct_prior(engine, conversation_outputs, packed)
+                            global_prior: dict[str, Any] = {"direct_dependencies": direct}
+                            if shared_fact_registry is not None:
+                                global_prior["shared_facts"] = shared_fact_registry
                             packed[engine] = _run_engine_partitioned(
                                 con,
                                 engine=engine,
                                 episode_id=anchor_episode_id,
                                 person_id=person_id,
                                 bundle=bundle,
-                                prior={
-                                    "conversation_outputs": {
-                                        **conversation_outputs, **packed,
-                                    },
-                                    "by_episode": {
-                                        key: value for key, value in outputs_by_episode.items()
-                                        if value
-                                    },
-                                },
+                                prior=global_prior,
                             )
                     else:
                         packed = _run_global_engine_hierarchy(
