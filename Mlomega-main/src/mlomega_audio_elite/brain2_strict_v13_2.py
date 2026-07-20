@@ -1059,6 +1059,37 @@ def _episode_fingerprint(bundle: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _global_engine_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
+    """The COMPACT bundle handed to the GLOBAL engines in PRO (Codex correction 3).
+
+    The global engines (pattern_miner, similar_case_retrieval, prediction_engine,
+    simulation_engine, calibration_engine, intervention_engine) synthesise from
+    their PROJECTED inputs — direct parent outputs, per-dependency facts, or the
+    minimal similar_case prior — never from the raw transcript.  Yet the
+    ``_conversation_engine_bundle`` (with its ~25k-token ``turns`` transcript) used
+    to be serialised into every global prompt, pushing similar_case's window over
+    the 24576 input budget.  Codex correction 3 is explicit: the globals receive
+    the EPISODE FINGERPRINT, never the transcript.
+
+    This returns exactly that fingerprint (title / participants / compact episode
+    summaries) plus the conversation identity + the sensor-route manifest the
+    contracts reference — bounded to ~a few dozen tokens — and drops ``turns``
+    entirely.  The full evidence stays authoritative in brain2_shared_facts_v19.
+    """
+
+    fingerprint = _episode_fingerprint(bundle)
+    conversation = bundle.get("conversation") if isinstance(bundle, Mapping) else None
+    return {
+        "analysis_scope": "conversation_global_fingerprint",
+        "transcript_omitted": "held_in_db_globals_read_projected_inputs_only",
+        "conversation": conversation,
+        "episodes": fingerprint["episodes"],
+        "participants": fingerprint["participants"],
+        "sensor_route_manifest": bundle.get("sensor_route_manifest")
+        if isinstance(bundle, Mapping) else None,
+    }
+
+
 _CASE_INDEX_CAP = 40
 
 
@@ -3711,6 +3742,14 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                         }
                         common_core = _global_common_fact_core(projected_by_engine)
                         _pro_warm_global_fact_core(conversation_id, common_core)
+                        # Codex correction 3: the GLOBAL engines read their
+                        # projected inputs (direct parents / per-dependency facts /
+                        # similar_case prior), NEVER the transcript.  Ship them the
+                        # compact episode fingerprint instead of the ~25k-token
+                        # ``bundle`` so similar_case's window falls back under the
+                        # 24576 input budget.  The per-episode path keeps its full
+                        # episode bundle (those engines analyse the episode content).
+                        global_bundle = _global_engine_bundle(bundle)
                         packed: dict[str, dict[str, Any]] = {}
                         for engine in pending_globals:
                             direct = _direct_prior(engine, conversation_outputs, packed)
@@ -3732,7 +3771,7 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                                         con,
                                         person_id=person_id,
                                         conversation_id=conversation_id,
-                                        bundle=bundle,
+                                        bundle=global_bundle,
                                         pattern_output=packed.get("pattern_miner"),
                                     ),
                                 }
@@ -3748,7 +3787,7 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                                 engine=engine,
                                 episode_id=anchor_episode_id,
                                 person_id=person_id,
-                                bundle=bundle,
+                                bundle=global_bundle,
                                 prior=global_prior,
                                 projected_facts=windowed_facts,
                             )
