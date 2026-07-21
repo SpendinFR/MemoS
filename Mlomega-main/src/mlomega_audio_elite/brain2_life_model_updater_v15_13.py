@@ -785,6 +785,30 @@ def _enforce_life_patch_policy(
         }
         new_drivers = evidence_keys & durable_refs
         if not new_drivers:
+            # An operation with NO new owner-scoped durable evidence must never
+            # become a durable trait (the core "no trait without evidence"
+            # invariant). Locally the 9B never emits one, so this raises. DeepSeek
+            # (bigger, more eager) sometimes proposes a trait it cannot ground; in
+            # PRO, ABSTAIN that single operation instead of blocking the whole
+            # CloseDay — every evidence-backed operation still applies and the
+            # ungrounded one is dropped exactly as the invariant demands. Never
+            # silent. The LOCAL path keeps the hard raise (byte-for-byte unchanged).
+            import os as _os
+            if _os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower() in {
+                "1", "true", "yes", "on",
+            }:
+                try:
+                    from .runtime_v18_7 import record_phase_event
+                    record_phase_event(
+                        "life_patch_operation_abstained_no_durable_evidence",
+                        operation=str(
+                            operation.get("identity_key")
+                            or operation.get("target_id") or "unknown"
+                        ),
+                    )
+                except Exception:
+                    pass
+                continue
             raise RuntimeError(
                 "Life operation has no new owner-scoped durable evidence: "
                 f"{operation.get('identity_key') or operation.get('target_id') or 'unknown'}"

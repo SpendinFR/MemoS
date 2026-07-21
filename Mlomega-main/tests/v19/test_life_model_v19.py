@@ -10,6 +10,50 @@ import pytest
 pytestmark = pytest.mark.memory
 
 
+def _ungrounded_op():
+    # A create op whose only evidence ref is NOT in the durable owner-scoped set.
+    return {
+        "op": "create", "target_id": "trait_import_export",
+        "identity_key": "involved_in_import_export",
+        "evidence": [{"source_table": "turns", "source_id": "t99"}],
+        "confidence_before": 0.0, "confidence_after": 0.5,
+    }
+
+
+def test_pro_abstains_ungrounded_life_op_instead_of_blocking(monkeypatch):
+    from mlomega_audio_elite.brain2_life_model_updater_v15_13 import (
+        _enforce_life_patch_policy,
+    )
+    # No durable owner-scoped evidence matches the op's ref.
+    durable_refs = {("brain2_owner_facts", "f1")}
+    current = {"canonical_layers": {}, "lifecycle": []}
+
+    # PRO: the ungrounded op is ABSTAINED (skipped), never blocks — result empty.
+    monkeypatch.setenv("MLOMEGA_PRO_CLOSEDAY", "1")
+    guarded = _enforce_life_patch_policy(
+        [_ungrounded_op()], durable_refs=durable_refs, current_model=current
+    )
+    assert guarded == []
+
+    # A grounded op alongside it still applies (only the ungrounded one is dropped).
+    grounded = {
+        "op": "create", "target_id": "trait_ok", "identity_key": "ok",
+        "evidence": [{"source_table": "brain2_owner_facts", "source_id": "f1"}],
+        "confidence_before": 0.0, "confidence_after": 0.5,
+    }
+    guarded2 = _enforce_life_patch_policy(
+        [_ungrounded_op(), grounded], durable_refs=durable_refs, current_model=current
+    )
+    assert len(guarded2) == 1
+
+    # LOCAL (no flag): the hard invariant still raises — byte-for-byte unchanged.
+    monkeypatch.delenv("MLOMEGA_PRO_CLOSEDAY", raising=False)
+    with pytest.raises(RuntimeError, match="no new owner-scoped durable evidence"):
+        _enforce_life_patch_policy(
+            [_ungrounded_op()], durable_refs=durable_refs, current_model=current
+        )
+
+
 def _env(tmp_path, monkeypatch):
     db_path = tmp_path / "memory.db"
     monkeypatch.setenv("MLOMEGA_DB", str(db_path))
