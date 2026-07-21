@@ -786,17 +786,6 @@ def normalize_conversation_episode(
         previous_end = positions[-1]
 
         evidence = _unique_strings(raw.get("evidence_turn_ids"))
-        if _pro_closeday_enabled():
-            # PRO: the local 9B sometimes cites evidence OUTSIDE this subtheme's own
-            # turns — most often a semantically-correct NON-turn id (e.g. a
-            # deep-vision addendum ``v18deepaddendum_...`` backing a *visual*
-            # subtheme), occasionally an adjacent turn.  The strict contract only
-            # accepts evidence ⊆ turn_ids, so a reasonable citation hard-blocks the
-            # whole close-day.  Keep only the in-membership evidence; if that leaves
-            # nothing, fall back to the subtheme's own turns (the segment is its own
-            # evidence).  This drops out-of-scope citations, never invents data.
-            # Local (no flag) keeps the strict raise byte-for-byte.
-            evidence = [turn_id for turn_id in evidence if turn_id in turn_ids] or list(turn_ids)
         if not evidence or any(turn_id not in turn_ids for turn_id in evidence):
             raise ConversationEpisodeContractError(f"subtheme_{ordinal}_invalid_evidence")
         title = str(raw.get("title") or "").strip()

@@ -2749,21 +2749,6 @@ def _pro_probe_fanout_ready(
     return all_hot
 
 
-def _pro_fanout_cold_concurrent_enabled() -> bool:
-    """Whether the engine fan-out runs concurrently even on a COLD cache probe.
-
-    Default OFF: a cold probe degrades to a SEQUENTIAL fan-out so the shared prefix
-    warms progressively and later calls hit cache (COST-optimised, but the first
-    cold close-day pays the full ~640s sequential engine latency — the real
-    bottleneck).  Set ``MLOMEGA_PRO_FANOUT_COLD_CONCURRENT=1`` to trade cache-hit
-    rate for WALL-CLOCK: the DAG-level waves fire independent engines together even
-    cold (levels stay ordered by the writer barrier, so no dependency is dropped).
-    """
-    return os.environ.get(
-        "MLOMEGA_PRO_FANOUT_COLD_CONCURRENT", "0"
-    ).strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _build_local_episode_window_llm() -> Any:
     """Explicit local EpisodeBuilder client for the PRO frontier.
 
@@ -3630,17 +3615,7 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                 )
             except ValueError:
                 max_width = max(initial_width, 12)
-            # By default a cold probe degrades to a SEQUENTIAL fan-out (one call at
-            # a time) so the shared prefix warms progressively and later calls hit
-            # cache — this optimises COST but makes the first cold close-day pay the
-            # full ~640s sequential engine latency (the real close-day bottleneck).
-            # MLOMEGA_PRO_FANOUT_COLD_CONCURRENT trades cache-hit rate for WALL-CLOCK:
-            # the DAG-level waves run concurrently even on a cold cache (each level
-            # is dependency-independent; the writer barrier still sequences levels),
-            # so independent engines fire together instead of one-by-one.  Off by
-            # default -> byte-for-byte the historic cost-optimised behaviour.
-            cold_concurrent = _pro_fanout_cold_concurrent_enabled()
-            if not fanout_ready and not cold_concurrent:
+            if not fanout_ready:
                 # Degraded sequential fan-out: cold cache, so one call at a time.
                 initial_width = 1
                 max_width = 1
