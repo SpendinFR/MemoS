@@ -794,6 +794,7 @@ def test_interpersonal_reads_each_evidence_leaf_once_before_lossless_union(monke
 def test_output_cardinality_guard_preserves_budget_for_json_termination():
     from mlomega_audio_elite.night_orchestrator.hierarchical_json import (
         _output_cardinality_guard,
+        _validate_top_level_cardinality,
     )
 
     guard = _output_cardinality_guard(
@@ -801,8 +802,28 @@ def test_output_cardinality_guard_preserves_budget_for_json_termination():
     )
     assert guard["max_response_tokens"] == 3712
     assert 4 <= guard["max_items_per_top_level_list"] <= 16
+    assert guard["max_items_per_epistemic_list"] == 16
     assert guard["max_values_per_nested_list"] == 8
     assert "source evidence remains durable" in guard["selection_rule"]
+    schema = {"people": [], "missing_context": [], "confidence": 0.0}
+    assert _validate_top_level_cardinality(
+        {
+            "people": [{}] * guard["max_items_per_top_level_list"],
+            "missing_context": [f"missing-{i}" for i in range(14)],
+            "confidence": 0.5,
+        },
+        schema,
+        guard,
+    )
+    assert not _validate_top_level_cardinality(
+        {
+            "people": [{}] * (guard["max_items_per_top_level_list"] + 1),
+            "missing_context": [],
+            "confidence": 0.5,
+        },
+        schema,
+        guard,
+    )
 
 
 def test_live_ready_compiles_existing_canonical_model_without_another_llm(monkeypatch):

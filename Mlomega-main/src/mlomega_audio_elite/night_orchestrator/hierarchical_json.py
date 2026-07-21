@@ -133,10 +133,23 @@ def _validate_top_level_cardinality(
     if not isinstance(value, Mapping):
         return False
     maximum = int(guard.get("max_items_per_top_level_list") or 0)
+    epistemic_maximum = int(
+        guard.get("max_items_per_epistemic_list") or maximum
+    )
     for key, template in schema.items():
         if isinstance(template, list):
             items = value.get(key)
-            if not isinstance(items, list) or len(items) > maximum:
+            # Missing/counter evidence is not business output cardinality.  Using
+            # the small business-list cap here rejected an otherwise valid People
+            # Identity response solely because it honestly listed 14 distinct
+            # missing inputs.  Keep this bounded, but give epistemic disclosures
+            # their own budget-derived ceiling.
+            field_maximum = (
+                epistemic_maximum
+                if key in {"missing_context", "evidence", "counter_evidence"}
+                else maximum
+            )
+            if not isinstance(items, list) or len(items) > field_maximum:
                 return False
     return True
 
@@ -203,9 +216,14 @@ def _output_cardinality_guard(
     max_items = max(4, min(16, int(output_budget) // (180 * top_level_lists)))
     if requested_max_items is not None:
         max_items = max(0, min(max_items, int(requested_max_items)))
+    max_epistemic_items = max(
+        max_items,
+        min(24, max(4, int(output_budget) // 256)),
+    )
     return {
         "max_response_tokens": max(256, int(output_budget) - 384),
         "max_items_per_top_level_list": max_items,
+        "max_items_per_epistemic_list": max_epistemic_items,
         "max_values_per_nested_list": 8,
         "max_chars_per_free_text_field": 600,
         "selection_rule": (
