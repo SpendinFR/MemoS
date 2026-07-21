@@ -356,6 +356,17 @@ def run_windows(
             str(existing.get("error_text") or "") == "single unit exceeds input budget"
         ):
             state = None
+        # A LENGTH quarantine (the model's OUTPUT was truncated, finish=length) is
+        # likewise not final on resume: the output budget (``output_reserve``) is NOT
+        # part of the checkpoint key and may have grown between runs (Gate B 183352:
+        # the PRO v14 hierarchical output cap was lifted from the local 4096 to
+        # DeepSeek's 8192, so a clarification output that truncated now fits).
+        # Re-drive it: if it now fits it completes; otherwise it re-quarantines
+        # identically (idempotent, still fail-closed on a genuinely oversized output).
+        if state == cp.STATE_QUARANTINED and (
+            str(existing.get("error_text") or "").startswith("llm_error:length")
+        ):
+            state = None
         if state in (cp.STATE_COMPLETED, cp.STATE_QUARANTINED):
             if state == cp.STATE_COMPLETED:
                 cp.record_call_telemetry(
