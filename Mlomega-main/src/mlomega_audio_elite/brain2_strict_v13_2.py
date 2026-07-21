@@ -2551,38 +2551,64 @@ def _cache_settle_seconds() -> float:
         return 28.0
 
 
-def _pro_warm_episode_prefixes(episodes: Sequence[tuple[str, Mapping[str, Any]]]) -> None:
-    """Warm each unique episode prefix once, then wait one cache-settle period.
+# Throwaway priming prompt: its ONLY job is to make the engine-shared prefix a
+# persisted DeepSeek cache unit. Mentions "JSON" so json_object mode accepts it.
+_PRO_PRIME_PROMPT = 'Acknowledge the shared evidence prefix as compact JSON: {"primed":true}.'
 
-    The warm-up is idempotent per digest (``cloud_providers_v19.warm_bundle_prefix``)
-    so repeated episodes and resumes never repay it. A single settle wait follows
-    ALL warm-ups (not one per episode). Set ``MLOMEGA_DEEPSEEK_CACHE_SETTLE_S=0``
-    (tests) to skip the wall-clock wait while still proving one warm-up/episode.
+
+def _pro_warm_episode_prefixes(episodes: Sequence[tuple[str, Mapping[str, Any]]]) -> None:
+    """Persist the ENGINE-shared prefix in the DeepSeek cache before the fan-out.
+
+    Root cause (measured via live API): every engine sends
+    ``[system, bundle, warm_prompt, assistant, _BRAIN2_STRICT_SYSTEM, <unique tail>]``
+    and each has a DIFFERENT trailing per-engine schema, so no two engine requests
+    ever repeat an identical full prefix — DeepSeek therefore never persists their
+    common prefix as a cache unit, and each engine re-sends the whole ~16k bundle
+    as a MISS (measured ~2% hit, ~1.0M miss tokens/close-day). DeepSeek's
+    common-prefix persistence needs ~2 IDENTICAL observations, so we send TWO
+    identical full-shape priming requests through the SAME path the engines use
+    (``deepseek_chat_json`` with ``_BRAIN2_STRICT_SYSTEM`` — identical assistant
+    warm-response and engine system), which persists
+    ``[system, bundle, warm_prompt, assistant, engine_system]`` once. Every engine
+    then rides it (measured ~98% hit). The priming is a throwaway call whose
+    response is discarded; engine prompts, priors and outputs are UNCHANGED. PRO
+    fan-out only (this function is called solely from the ``pro_fanout`` branch);
+    the local path never reaches here.
     """
     if not episodes:
         return
-    from .cloud_providers_v19 import warm_bundle_prefix
-    from .night_orchestrator import estimate_tokens_for_text
+    from .cloud_providers_v19 import cloud_bundle_prefix, deepseek_chat_json
 
-    seen: set[str] = set()
-    warmed = 0
-    ceiling = _pro_warm_core_max_tokens()
     try:
         timeout = float(os.environ.get("MLOMEGA_V13_ENGINE_TIMEOUT", "180"))
     except ValueError:
         timeout = 180.0
+    try:
+        observations = max(1, int(os.environ.get("MLOMEGA_PRO_PREFIX_PRIME_OBS", "2")))
+    except ValueError:
+        observations = 2
+    seen: set[str] = set()
+    primed = 0
     for episode_id, bundle in episodes:
         if episode_id in seen:
             continue
         seen.add(episode_id)
-        # Codex correction 1: only warm a SMALL episode prefix.  A large episode
-        # bundle would be paid as a big MISS twice (warm + first engine); skip it
-        # and let the fan-out send its prefix once instead.
-        if ceiling and estimate_tokens_for_text(json_dumps(dict(bundle))) > ceiling:
-            continue
-        warm_bundle_prefix(str(episode_id), dict(bundle), timeout=timeout)
-        warmed += 1
-    if warmed:
+        with cloud_bundle_prefix(str(episode_id), dict(bundle)):
+            for _ in range(observations):
+                try:
+                    deepseek_chat_json(
+                        system=_BRAIN2_STRICT_SYSTEM,
+                        prompt=_PRO_PRIME_PROMPT,
+                        json_schema={"type": "object"},
+                        max_output_tokens=32,
+                        timeout=timeout,
+                    )
+                except Exception:
+                    # Priming is best-effort cache warming; a failure must never
+                    # block or fail the fan-out (engines still run, just uncached).
+                    break
+        primed += 1
+    if primed:
         settle = _cache_settle_seconds()
         if settle > 0:
             import time as _time

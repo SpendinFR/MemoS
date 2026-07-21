@@ -61,14 +61,23 @@ def test_pro_warm_episodes_one_per_unique_episode_single_settle(
 
     monkeypatch.setattr(_time, "sleep", lambda s: sleeps.append(s))
 
+    monkeypatch.setenv("MLOMEGA_PRO_PREFIX_PRIME_OBS", "2")
     episodes = [
         ("ep-1", {"episode": {"episode_id": "ep-1"}}),
         ("ep-2", {"episode": {"episode_id": "ep-2"}}),
-        ("ep-1", {"episode": {"episode_id": "ep-1"}}),  # duplicate: no extra warm-up
+        ("ep-1", {"episode": {"episode_id": "ep-1"}}),  # duplicate: no extra priming
     ]
     strict._pro_warm_episode_prefixes(episodes)
-    # Exactly two unique episode prefixes warmed, once each.
-    assert len(sent) == 2
+    # The full-shape priming persists each UNIQUE episode's ENGINE prefix (a
+    # request carrying the assistant warm + engine system), not the short warm.
+    # The duplicate ep-1 is deduped, so exactly two unique episode bundles are
+    # primed (each bundle is the 2nd/user message of a full-shape request).
+    primed_bundles = {
+        payload["messages"][1]["content"]
+        for payload in sent
+        if any(msg.get("role") == "assistant" for msg in payload["messages"])
+    }
+    assert len(primed_bundles) == 2  # ep-1 and ep-2; the duplicate added no priming
     # Settle is 0 in tests, so no wall-clock sleep, but never one-per-episode.
     assert sleeps == []
 

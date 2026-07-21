@@ -374,9 +374,14 @@ def test_warm_global_fact_core_warms_a_small_core(monkeypatch: pytest.MonkeyPatc
     assert len(called) == 1
 
 
-def test_warm_episode_prefixes_skips_oversized_bundles(cloud_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_warm_episode_prefixes_primes_full_engine_shape(cloud_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The old short warm SKIPPED large episode bundles (the ~12k ceiling), which is
+    # exactly why the 16-30k episode prefix was never cached and every engine
+    # re-sent it as a MISS (~2% hit). The full-shape priming pays the bundle MISS
+    # ONCE and lets all ~10 per-episode engines ride it, so large episode bundles
+    # are now PRIMED, not skipped.
     monkeypatch.setenv("MLOMEGA_DEEPSEEK_CACHE_SETTLE_S", "0")
-    monkeypatch.setenv("MLOMEGA_PRO_WARM_MAX_TOKENS", "50")
+    monkeypatch.setenv("MLOMEGA_PRO_PREFIX_PRIME_OBS", "2")
     sent = []
 
     def fake_json_request(url, payload, **kwargs):
@@ -389,4 +394,11 @@ def test_warm_episode_prefixes_skips_oversized_bundles(cloud_env: Path, monkeypa
     monkeypatch.setattr(cloud, "_json_request", fake_json_request)
     big = {"episode": {"episode_id": "ep-1"}, "turns": [{"text": "x" * 4000}]}
     strict._pro_warm_episode_prefixes([("ep-1", big)])
-    assert sent == []  # oversized episode prefix is never warmed
+    # Full-shape priming requests (carrying the assistant warm) were sent, and each
+    # embeds the exact episode bundle as its 2nd (user) message — the engine-shared
+    # prefix DeepSeek will persist.
+    full_shape = [p for p in sent if any(m.get("role") == "assistant" for m in p["messages"])]
+    assert full_shape, "large episode prefix must now be primed, not skipped"
+    bundles = {p["messages"][1]["content"] for p in full_shape}
+    assert len(bundles) == 1  # every priming request shares the ONE episode bundle
+    assert "ep-1" in next(iter(bundles))  # and it is this episode's evidence
