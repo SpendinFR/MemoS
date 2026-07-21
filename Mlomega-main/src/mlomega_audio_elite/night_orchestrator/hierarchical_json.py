@@ -280,9 +280,9 @@ def _run_hierarchical_json_single_schema(
     }:
         try:
             context_window = max(context_window, int(
-                _os.environ.get("MLOMEGA_CLOUD_CONTEXT_POSTSTOP", "49152")))
+                _os.environ.get("MLOMEGA_CLOUD_CONTEXT_POSTSTOP", "57344")))
         except ValueError:
-            context_window = max(context_window, 49152)
+            context_window = max(context_window, 57344)
         try:
             output_budget = max(int(output_budget), int(
                 _os.environ.get("MLOMEGA_CLOUD_MAX_OUTPUT_TOKENS", "8192")))

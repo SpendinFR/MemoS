@@ -724,6 +724,20 @@ def _run_engine_partitioned(
                 )
             except ValueError:
                 output_budget = 4096
+            # PRO cloud (DeepSeek) is a bigger, more thorough model than the local
+            # 9B: for the SAME task it emits longer/more complete lists, so the local
+            # 4096 output cap truncated them (finish=length). DeepSeek supports 8k
+            # output; give every engine the cloud output budget in PRO. The context
+            # cap below is sized so pattern_miner (~40k input) still fits with 8k
+            # output in ONE call. The local path keeps 4096.
+            if os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower() in {
+                "1", "true", "yes", "on",
+            }:
+                try:
+                    output_budget = max(int(output_budget), int(
+                        os.environ.get("MLOMEGA_CLOUD_MAX_OUTPUT_TOKENS", "8192")))
+                except ValueError:
+                    output_budget = max(int(output_budget), 8192)
         context_window = int(context_window or cfg.ollama_context_poststop)
         # PRO cloud text (DeepSeek) has a far larger context than the local P1's ~24k
         # post-stop window. Capping the engine-field budget at the LOCAL context made a
@@ -745,9 +759,9 @@ def _run_engine_partitioned(
             # SINGLE call; the windowing fallback below stays as a safety net for a
             # genuinely huge input (a very long day), never as the normal path.
             try:
-                cloud_ctx = int(os.environ.get("MLOMEGA_CLOUD_CONTEXT_POSTSTOP", "49152"))
+                cloud_ctx = int(os.environ.get("MLOMEGA_CLOUD_CONTEXT_POSTSTOP", "57344"))
             except ValueError:
-                cloud_ctx = 49152
+                cloud_ctx = 57344
             context_window = max(context_window, cloud_ctx)
         if window_llm is None:
             try:
@@ -1274,16 +1288,16 @@ def _pro_engine_input_budget(output_budget: int | None) -> int:
     """The input-token budget the fact-windowing fallback must keep under.
 
     Mirrors the executor's ``ModelBudget.max_input_tokens`` for the PRO cloud
-    context cap (49152 by default, operator-overridable) minus the reserved output
+    context cap (57344 by default, operator-overridable) minus the reserved output
     and the safety margin, so a windowed prompt matches what the executor accepts.
     At 48k every projected engine input fits in ONE cached call; the windowing
     fallback only triggers on a genuinely huge input, never as the normal path.
     """
 
     try:
-        cloud_ctx = int(os.environ.get("MLOMEGA_CLOUD_CONTEXT_POSTSTOP", "49152"))
+        cloud_ctx = int(os.environ.get("MLOMEGA_CLOUD_CONTEXT_POSTSTOP", "57344"))
     except ValueError:
-        cloud_ctx = 49152
+        cloud_ctx = 57344
     if output_budget is None:
         try:
             output_budget = max(

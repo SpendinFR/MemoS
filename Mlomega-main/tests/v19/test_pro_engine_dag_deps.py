@@ -131,18 +131,18 @@ def test_pro_context_cap_lets_each_engine_fit_one_call(monkeypatch: pytest.Monke
     import os
 
     # After the projection work, the largest legitimate input is pattern_miner's
-    # ~27k projected facts. The cloud cap is 49152 (not the local-P1 24576) so every
-    # engine runs in ONE cached DeepSeek call instead of ~27 windowed round trips.
-    # It is NOT the old 65536 blanket, and the windowing fallback stays as a safety
-    # net for a genuinely huge input.
+    # ~40k prompt. The cloud cap is 57344 (not the local-P1 24576) so every engine
+    # runs in ONE cached DeepSeek call — even with the 8k cloud output reserve —
+    # instead of ~27 windowed round trips. It is NOT the old 65536 blanket, and the
+    # windowing fallback stays as a safety net for a genuinely huge input.
     monkeypatch.setenv("MLOMEGA_PRO_CLOSEDAY", "1")
     monkeypatch.delenv("MLOMEGA_CLOUD_CONTEXT_POSTSTOP", raising=False)
-    default = int(os.environ.get("MLOMEGA_CLOUD_CONTEXT_POSTSTOP", "49152"))
-    assert default == 49152
-    # The source default is 49152 (operator-overridable), not the local 24576 nor
+    default = int(os.environ.get("MLOMEGA_CLOUD_CONTEXT_POSTSTOP", "57344"))
+    assert default == 57344
+    # The source default is 57344 (operator-overridable), not the local 24576 nor
     # the old 65536 free pass.
     src = Path(strict.__file__).read_text(encoding="utf-8")
-    assert 'MLOMEGA_CLOUD_CONTEXT_POSTSTOP", "49152"' in src
+    assert 'MLOMEGA_CLOUD_CONTEXT_POSTSTOP", "57344"' in src
     assert '"65536"' not in src.split("_CONVERSATION_SCOPE_ENGINES")[0]
 
 
