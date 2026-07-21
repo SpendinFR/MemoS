@@ -532,148 +532,6 @@ def _run_stage(*, run_id: str, name: str, fn: Callable[[], dict[str, Any]]) -> d
     return result
 
 
-# --------------------------------------------------------------------------- #
-# PRO post-motor stage scheduler (Task 1).
-#
-# The nine post-motor stages (``visual_consolidation`` .. ``live_ready``) run
-# 100% sequentially in the default path (~7 min).  Under ``MLOMEGA_PRO_CLOSEDAY``
-# the cloud provider (DeepSeek) does the heavy per-stage work, so the wall-clock
-# cost is network latency, not the local GPU — several independent stages can be
-# in flight at once.  ``_POST_MOTOR_STAGE_LEVELS`` is the REAL dependency DAG,
-# grouped into topological levels: a stage in level *k* only reads tables written
-# by stages in levels < *k*, so a whole level may run in parallel with its own
-# ``db.connect()`` per stage (WAL + ``BEGIN IMMEDIATE`` serialise the writes).
-#
-# Dependency edges (a stage B depends on A iff B reads a table A writes in this
-# close-day) — proven by reading each ``run_*`` function's SQL:
-#   visual_consolidation  writes visual_events_v19, brain2_spatial_routine_models
-#   longitudinal          writes confirmed/candidate_patterns, prediction_cases,
-#                                brain2_observed_cases_v17, global_life_patterns_v17
-#   coordination          writes brainlive_day_packages, *_reconciliations,
-#                                brainlive_context_snapshots_v1512, *_lifecycle
-#   life_model (v15_13)   reads day_packages/reconciliations/context_snapshots
-#                                (coordination) + confirmed/candidate_patterns +
-#                                prediction_cases (longitudinal)  ->  L1
-#   outcome_resolution    reads visual_events_v19 (visual_consolidation)     ->  L1
-#   life_model_v19        reads visual_events_v19 (visual) + prediction_outcomes_v19
-#                                (outcome_resolution)                        ->  L2
-#   live_ready            reads confirmed/candidate_patterns (longitudinal) +
-#                                brain2_life_model_* (life_model) +
-#                                reconciliations/day_packages (coordination) ->  L2
-#   prediction_emission   reads life_model_entries_v19 (life_model_v19)      ->  L3
-#   self_schema           reads life_model_entries_v19 (life_model_v19) +
-#                                prediction_outcomes_v19 (outcome_resolution) +
-#                                confirmed_patterns (longitudinal)           ->  L3
-#
-# NOTE (fail-safe): the linear order INSIDE each level list is kept identical to
-# the historic sequence so that, when parallelism is disabled, the byte-for-byte
-# sequential behaviour is reproduced exactly.
-_POST_MOTOR_STAGE_LEVELS: tuple[tuple[str, ...], ...] = (
-    ("visual_consolidation", "longitudinal", "coordination"),
-    ("life_model", "outcome_resolution"),
-    ("life_model_v19", "live_ready"),
-    ("prediction_emission", "self_schema"),
-)
-
-# The EXACT historic sequential call order (v18.7 and earlier).  The level DAG
-# above places ``live_ready`` in L2, but historically it ran LAST, after
-# ``prediction_emission``/``self_schema`` (which are independent of it).  The
-# non-PRO path MUST replay THIS order byte-for-byte; only the PRO level scheduler
-# may reorder within the proven dependency constraints.
-_POST_MOTOR_SEQUENTIAL_ORDER: tuple[str, ...] = (
-    "visual_consolidation",
-    "longitudinal",
-    "coordination",
-    "life_model",
-    "outcome_resolution",
-    "life_model_v19",
-    "prediction_emission",
-    "self_schema",
-    "live_ready",
-)
-
-
-def _pro_closeday_parallel_stages() -> bool:
-    """Whether the post-motor stages may run level-parallel (Task 1).
-
-    Requires ``MLOMEGA_PRO_CLOSEDAY`` truthy AND the (default-on) sub-flag
-    ``MLOMEGA_PRO_CLOSEDAY_STAGE_PARALLEL``.  Without the PRO flag the behaviour
-    is the exact historic sequential sequence (byte-for-byte).
-    """
-    import os
-
-    if os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower() not in {
-        "1", "true", "yes", "on",
-    }:
-        return False
-    return os.environ.get(
-        "MLOMEGA_PRO_CLOSEDAY_STAGE_PARALLEL", "1"
-    ).strip().lower() not in {"0", "false", "no", "off"}
-
-
-def _run_post_motor_stages(
-    *,
-    run_id: str,
-    stage_fns: dict[str, Callable[[], dict[str, Any]]],
-    execution_lease: Any,
-    parallel: bool,
-) -> dict[str, dict[str, Any]]:
-    """Run the nine post-motor stages either sequentially or level-parallel.
-
-    ``stage_fns`` maps stage name -> the exact ``do_*`` closure used today.  Each
-    stage still goes through ``_run_stage`` (checkpoints/leases/gates preserved)
-    and each opens its OWN ``db.connect()`` inside its closure, so a parallel wave
-    never shares a connection.  A failure in any wave stage propagates (the whole
-    close-day is retryable/blocked exactly as in the sequential path).
-
-    Sequential mode replays ``_POST_MOTOR_STAGE_LEVELS`` in list order, which is
-    identical to the historic call order — the non-PRO path is byte-for-byte the
-    same sequence of ``_run_stage`` calls it always was.
-    """
-    assert set(_POST_MOTOR_SEQUENTIAL_ORDER) == set(stage_fns), "post-motor stage registry mismatch"
-    results: dict[str, dict[str, Any]] = {}
-
-    if not parallel:
-        # Byte-for-byte the historic sequence (NOT the level order — live_ready ran
-        # last historically even though its DAG level is earlier).
-        for name in _POST_MOTOR_SEQUENTIAL_ORDER:
-            heartbeat_execution_lease(execution_lease)
-            results[name] = _run_stage(run_id=run_id, name=name, fn=stage_fns[name])
-        return results
-
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    from contextvars import copy_context
-
-    for level in _POST_MOTOR_STAGE_LEVELS:
-        heartbeat_execution_lease(execution_lease)
-        if len(level) == 1:
-            name = level[0]
-            results[name] = _run_stage(run_id=run_id, name=name, fn=stage_fns[name])
-            continue
-        errors: list[BaseException] = []
-        with ThreadPoolExecutor(
-            max_workers=len(level), thread_name_prefix="mlomega-closeday-stage"
-        ) as pool:
-            futures = {}
-            for name in level:
-                # copy_context so each stage thread carries the caller's
-                # ContextVars (cloud engine-stage / bundle prefix, gpu phase).
-                context = copy_context()
-                fn = stage_fns[name]
-                futures[pool.submit(context.run, _run_stage, run_id=run_id, name=name, fn=fn)] = name
-            for future in as_completed(futures):
-                name = futures[future]
-                try:
-                    results[name] = future.result()
-                except BaseException as exc:  # noqa: BLE001 - re-raised below
-                    errors.append(exc)
-        if errors:
-            # Deterministic: raise the first level error (all stages in the level
-            # already recorded their own failed checkpoint via ``_run_stage``).
-            raise errors[0]
-    return results
-
-
 def _find_completed_post_stop(ctx: _Context) -> dict[str, Any] | None:
     with connect() as con:
         where = ["person_id=?", "package_date=?", "status='completed'"]
@@ -791,6 +649,9 @@ def close_brainlive_day(
         def do_visual_consolidation() -> dict[str, Any]:
             from .v19_visual_consolidation import run_visual_consolidation
             return run_visual_consolidation(person_id=person_id, package_date=day, live_session_id=ctx.live_session_id)
+        heartbeat_execution_lease(execution_lease)
+        visual_consolidation = _run_stage(run_id=run_id, name="visual_consolidation", fn=do_visual_consolidation)
+        result["stages"]["visual_consolidation"] = visual_consolidation
 
         def do_longitudinal() -> dict[str, Any]:
             from .brain2_longitudinal_cases_v17 import run_longitudinal_consolidation
@@ -821,12 +682,18 @@ def close_brainlive_day(
                 else "failed"
             )
             return out
+        heartbeat_execution_lease(execution_lease)
+        longitudinal = _run_stage(run_id=run_id, name="longitudinal", fn=do_longitudinal)
+        result["stages"]["longitudinal"] = longitudinal
 
         def do_coordination() -> dict[str, Any]:
             from .brainlive_brain2_coordination_v15_12 import run_brainlive_brain2_coordination
             from .runtime_v18_7 import gpu_phase
             with gpu_phase("post_stop_close_day", release_before=False, release_after=False):
                 return run_brainlive_brain2_coordination(person_id=person_id, package_date=day, use_llm=use_llm, timeout=cfg.poststop_llm_timeout_s)
+        heartbeat_execution_lease(execution_lease)
+        coordination = _run_stage(run_id=run_id, name="coordination", fn=do_coordination)
+        result["stages"]["coordination"] = coordination
 
         def do_life_model() -> dict[str, Any]:
             from .brain2_life_model_updater_v15_13 import run_brain2_life_model_update
@@ -835,62 +702,60 @@ def close_brainlive_day(
             start_at, end_at, _ = period_bounds("day", run_date=day)
             with gpu_phase("post_stop_close_day", release_before=False, release_after=False):
                 return run_brain2_life_model_update(person_id, period_start=start_at, period_end=end_at, use_llm=use_llm, timeout=cfg.poststop_llm_timeout_s, limit=120)
+        heartbeat_execution_lease(execution_lease)
+        life = _run_stage(run_id=run_id, name="life_model", fn=do_life_model)
+        result["stages"]["life_model"] = life
 
         def do_outcome_resolution() -> dict[str, Any]:
             from .v19_outcome_watcher import resolve_prediction_outcomes
             return resolve_prediction_outcomes(person_id=person_id, package_date=day)
+        heartbeat_execution_lease(execution_lease)
+        outcome_resolution = _run_stage(run_id=run_id, name="outcome_resolution", fn=do_outcome_resolution)
+        result["stages"]["outcome_resolution"] = outcome_resolution
 
         def do_life_model_v19() -> dict[str, Any]:
             from .v19_life_model_store import run_life_model_v19_stage
             from .runtime_v18_7 import gpu_phase
             with gpu_phase("post_stop_close_day", release_before=False, release_after=False):
                 return run_life_model_v19_stage(person_id=person_id, package_date=day)
+        heartbeat_execution_lease(execution_lease)
+        life_model_v19 = _run_stage(run_id=run_id, name="life_model_v19", fn=do_life_model_v19)
+        result["stages"]["life_model_v19"] = life_model_v19
 
         def do_prediction_emission() -> dict[str, Any]:
             from .v19_prediction_loop import emit_daily_predictions
             return emit_daily_predictions(person_id=person_id, package_date=day)
+        heartbeat_execution_lease(execution_lease)
+        prediction_emission = _run_stage(run_id=run_id, name="prediction_emission", fn=do_prediction_emission)
+        result["stages"]["prediction_emission"] = prediction_emission
 
         def do_self_schema() -> dict[str, Any]:
             from .v19_self_schema import rebuild_self_schema
             return rebuild_self_schema(person_id=person_id)
+        heartbeat_execution_lease(execution_lease)
+        self_schema = _run_stage(run_id=run_id, name="self_schema", fn=do_self_schema)
+        result["stages"]["self_schema"] = self_schema
 
         def do_live_ready() -> dict[str, Any]:
             from .brainlive_personal_model_v15_9 import build_brain2_live_personal_model
             from .runtime_v18_7 import gpu_phase
             with gpu_phase("post_stop_close_day", release_before=False, release_after=False):
                 return build_brain2_live_personal_model(person_id=person_id, use_llm=use_llm, timeout=cfg.poststop_llm_timeout_s, limit=80)
-
-        # Task 1: the nine post-motor stages run through the SAME ``_run_stage``
-        # (checkpoints/leases/gates) with each stage keeping its own db.connect().
-        # Under ``MLOMEGA_PRO_CLOSEDAY`` (+ default-on stage-parallel sub-flag) the
-        # dependency DAG (``_POST_MOTOR_STAGE_LEVELS``) is run level-by-level with a
-        # ThreadPoolExecutor + copy_context; otherwise the exact historic sequence
-        # is replayed byte-for-byte.
-        post_motor_stage_fns: dict[str, Callable[[], dict[str, Any]]] = {
-            "visual_consolidation": do_visual_consolidation,
-            "longitudinal": do_longitudinal,
-            "coordination": do_coordination,
-            "life_model": do_life_model,
-            "outcome_resolution": do_outcome_resolution,
-            "life_model_v19": do_life_model_v19,
-            "prediction_emission": do_prediction_emission,
-            "self_schema": do_self_schema,
-            "live_ready": do_live_ready,
-        }
-        post_motor_results = _run_post_motor_stages(
-            run_id=run_id,
-            stage_fns=post_motor_stage_fns,
-            execution_lease=execution_lease,
-            parallel=_pro_closeday_parallel_stages(),
-        )
-        # Populate in the stable historic order so the persisted ``stages`` map is
-        # deterministic regardless of parallel completion order.
-        for _stage_name in _POST_MOTOR_SEQUENTIAL_ORDER:
-            result["stages"][_stage_name] = post_motor_results[_stage_name]
+        heartbeat_execution_lease(execution_lease)
+        live_ready = _run_stage(run_id=run_id, name="live_ready", fn=do_live_ready)
+        result["stages"]["live_ready"] = live_ready
 
         stage_results = {
             "post_stop": post,
-            **{name: post_motor_results[name] for name in _POST_MOTOR_SEQUENTIAL_ORDER},
+            "visual_consolidation": visual_consolidation,
+            "longitudinal": longitudinal,
+            "coordination": coordination,
+            "life_model": life,
+            "outcome_resolution": outcome_resolution,
+            "life_model_v19": life_model_v19,
+            "prediction_emission": prediction_emission,
+            "self_schema": self_schema,
+            "live_ready": live_ready,
         }
         semantic_warnings = _semantic_output_warnings(
             person_id=person_id, package_date=day, stage_results=stage_results
