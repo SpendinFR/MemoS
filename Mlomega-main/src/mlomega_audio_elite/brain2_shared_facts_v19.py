@@ -254,18 +254,6 @@ def shared_facts_enabled() -> bool:
     return os.environ.get(SHARED_FACT_ENV, "1").strip() != "0"
 
 
-def _pro_shared_fact_backfill_enabled() -> bool:
-    """Whether missing empty LIST-typed schema keys are backfilled (PRO only).
-
-    Gated behind ``MLOMEGA_PRO_CLOSEDAY``: the cloud (DeepSeek no-think) path omits
-    empty list keys the local 9B always emits.  Without the flag the local strict
-    validation is unchanged (byte-for-byte hard raise on any missing key).
-    """
-    return os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower() in {
-        "1", "true", "yes", "on",
-    }
-
-
 def ensure_shared_fact_schema(con: Any | None = None) -> None:
     if con is not None:
         database_row = con.execute("PRAGMA database_list").fetchone()
@@ -486,31 +474,7 @@ def record_engine_output(
     )
     missing = set(schema) - set(output)
     if missing:
-        # PRO (cloud) tolerance — applies uniformly to EVERY engine through this
-        # single validation chokepoint, not per engine.  DeepSeek in no-think mode
-        # emits terse JSON and OMITS list-valued keys whose value is empty (e.g.
-        # contradiction_engine dropping empty ``contradictions`` /
-        # ``model_revisions_needed``), where the local 9B always emits ``[]``.
-        # That is a shape difference, NOT data loss: an omitted findings-list means
-        # "no items".  In PRO we backfill those missing LIST-typed schema keys with
-        # ``[]`` so a terse-but-valid cloud output never hard-blocks the close-day.
-        # A missing NON-list key (scalar/object) still signals a real structural
-        # failure and raises.  The local path keeps the strict raise byte-for-byte.
-        if _pro_shared_fact_backfill_enabled():
-            backfilled = dict(output)
-            unrecoverable: set[str] = set()
-            for key in missing:
-                if isinstance(schema[key], list):
-                    backfilled[key] = []
-                else:
-                    unrecoverable.add(key)
-            if unrecoverable:
-                raise ValueError(
-                    f"shared_fact_invalid_output:{engine_name}:{sorted(unrecoverable)}"
-                )
-            output = backfilled
-        else:
-            raise ValueError(f"shared_fact_invalid_output:{engine_name}:{sorted(missing)}")
+        raise ValueError(f"shared_fact_invalid_output:{engine_name}:{sorted(missing)}")
     now = now_iso()
     canonical = json_loads(json_dumps(dict(output)), {})
     section_id = stable_id("shared-fact-section-v19", run_id, engine_name)
