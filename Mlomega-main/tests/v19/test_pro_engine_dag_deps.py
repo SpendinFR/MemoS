@@ -126,20 +126,23 @@ def test_compact_fact_bundle_is_the_canonical_registry_reader() -> None:
     assert set(bundle) == {"version", "conversation_id", "facts", "capabilities"}
 
 
-# ---------------------------------------------------------- Task 3: 24k context cap
-def test_pro_context_cap_is_24576_not_65536(monkeypatch: pytest.MonkeyPatch) -> None:
+# ------------------------------------------ Task 3: cloud context cap (one call/engine)
+def test_pro_context_cap_lets_each_engine_fit_one_call(monkeypatch: pytest.MonkeyPatch) -> None:
     import os
 
-    # The default cloud post-stop context window must be 24576, defeating the
-    # 65536 override, so an overshoot subdivides instead of being waved through.
+    # After the projection work, the largest legitimate input is pattern_miner's
+    # ~27k projected facts. The cloud cap is 49152 (not the local-P1 24576) so every
+    # engine runs in ONE cached DeepSeek call instead of ~27 windowed round trips.
+    # It is NOT the old 65536 blanket, and the windowing fallback stays as a safety
+    # net for a genuinely huge input.
     monkeypatch.setenv("MLOMEGA_PRO_CLOSEDAY", "1")
     monkeypatch.delenv("MLOMEGA_CLOUD_CONTEXT_POSTSTOP", raising=False)
-    default = int(os.environ.get("MLOMEGA_CLOUD_CONTEXT_POSTSTOP", "24576"))
-    assert default == 24576
-    # And an explicit env override still applies (operator escape hatch), but the
-    # source default is not the old 65536.
+    default = int(os.environ.get("MLOMEGA_CLOUD_CONTEXT_POSTSTOP", "49152"))
+    assert default == 49152
+    # The source default is 49152 (operator-overridable), not the local 24576 nor
+    # the old 65536 free pass.
     src = Path(strict.__file__).read_text(encoding="utf-8")
-    assert 'MLOMEGA_CLOUD_CONTEXT_POSTSTOP", "24576"' in src
+    assert 'MLOMEGA_CLOUD_CONTEXT_POSTSTOP", "49152"' in src
     assert '"65536"' not in src.split("_CONVERSATION_SCOPE_ENGINES")[0]
 
 
