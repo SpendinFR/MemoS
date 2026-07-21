@@ -2644,10 +2644,7 @@ def _pro_warm_global_fact_core(
         return
     from .night_orchestrator import estimate_tokens_for_text
 
-    payload = {
-        "conversation_id": conversation_id,
-        "shared_global_fact_core": [dict(fact) for fact in common_core],
-    }
+    payload = _global_fact_core_payload(conversation_id, common_core)
     core_tokens = estimate_tokens_for_text(json_dumps(payload))
     ceiling = _pro_warm_core_max_tokens()
     if ceiling and core_tokens > ceiling:
@@ -2663,6 +2660,53 @@ def _pro_warm_global_fact_core(
     warm_bundle_prefix(
         f"global-fact-core:{conversation_id}", payload, timeout=timeout,
     )
+
+
+def _global_fact_core_payload(
+    conversation_id: str, common_core: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """The exact byte-for-byte payload warmed AND ridden as the shared prefix.
+
+    Kept as a single source of truth so ``_pro_warm_global_fact_core`` (warm) and
+    ``_pro_global_fact_core_prefix`` (ride) always produce the identical digest.
+    """
+    return {
+        "conversation_id": str(conversation_id),
+        "shared_global_fact_core": [dict(fact) for fact in common_core],
+    }
+
+
+def _pro_global_fact_core_prefix(
+    conversation_id: str, common_core: Sequence[Mapping[str, Any]]
+):
+    """Context manager placing the common fact core in the shared cache prefix.
+
+    TASK 3: the small core shared by >=2 global engines (``_global_common_fact_core``)
+    is put in a DeepSeek cache PREFIX that is byte-for-byte identical for every
+    global engine of the conversation, so each pays a cache READ of the substrate
+    instead of a cold MISS.  The digest matches ``_pro_warm_global_fact_core`` so we
+    ride the already-warmed prefix.  Returns ``nullcontext()`` (no prefix, exact
+    historic behaviour) when:
+      * there is no common core, OR
+      * the core exceeds the warm ceiling (``_pro_warm_global_fact_core`` skipped
+        the warm, so riding a cold big prefix would be a MISS, not a win).
+    ``_run_engine_partitioned`` never sets its own bundle prefix for globals, so
+    this is the only prefix and it is guaranteed identical across the engines.
+    """
+    from contextlib import nullcontext
+
+    if not common_core:
+        return nullcontext()
+    from .night_orchestrator import estimate_tokens_for_text
+
+    payload = _global_fact_core_payload(conversation_id, common_core)
+    core_tokens = estimate_tokens_for_text(json_dumps(payload))
+    ceiling = _pro_warm_core_max_tokens()
+    if ceiling and core_tokens > ceiling:
+        return nullcontext()
+    from .cloud_providers_v19 import cloud_bundle_prefix
+
+    return cloud_bundle_prefix(f"global-fact-core:{conversation_id}", payload)
 
 
 def _pro_probe_fanout_ready(
@@ -3769,6 +3813,17 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                         }
                         common_core = _global_common_fact_core(projected_by_engine)
                         _pro_warm_global_fact_core(conversation_id, common_core)
+                        # TASK 3: place the SAME common fact core (byte-for-byte)
+                        # in a shared DeepSeek cache PREFIX for every global engine
+                        # of this conversation, so the substrate the globals share
+                        # is paid as a cache READ once instead of N cold MISSes.
+                        # The bundle_id/payload MUST match ``_pro_warm_global_fact_core``
+                        # exactly so the warmed digest is the one we ride on. The
+                        # per-dependency projection (volume control) is untouched:
+                        # only the genuinely COMMON core rides the shared prefix.
+                        global_core_prefix = _pro_global_fact_core_prefix(
+                            conversation_id, common_core
+                        )
                         # Codex correction 3: the GLOBAL engines read their
                         # projected inputs (direct parents / per-dependency facts /
                         # similar_case prior), NEVER the transcript.  Ship them the
@@ -3778,7 +3833,8 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                         # episode bundle (those engines analyse the episode content).
                         global_bundle = _global_engine_bundle(bundle)
                         packed: dict[str, dict[str, Any]] = {}
-                        for engine in pending_globals:
+                        with global_core_prefix:
+                          for engine in pending_globals:
                             # Codex: a GLOBAL engine synthesises from its projected
                             # COMPACT inputs (the shared-facts projection / the
                             # similar_case summary), NEVER the full raw parent engine
