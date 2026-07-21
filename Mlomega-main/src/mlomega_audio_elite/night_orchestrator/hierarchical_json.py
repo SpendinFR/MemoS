@@ -259,15 +259,35 @@ def _run_hierarchical_json_single_schema(
     payload = dict(payload)
     if payload.get("schema") == schema:
         payload.pop("schema", None)
+    import os as _os
     cfg = get_settings()
     context_window = int(context_window or cfg.ollama_context_poststop)
     if output_budget is None:
         try:
-            output_budget = max(256, int(__import__("os").environ.get(
+            output_budget = max(256, int(_os.environ.get(
                 "MLOMEGA_POSTSTOP_LLM_MAX_OUTPUT_TOKENS", "4096"
             )))
         except ValueError:
             output_budget = 4096
+    # PRO cloud (DeepSeek): the hierarchical v14 stages (clarification inbox, etc.)
+    # were budgeting against the LOCAL P1 window (~24k) and a 4096 output cap, so a
+    # legitimate clarification output truncated (finish=length) and quarantined
+    # (Gate B 183352 v14_clarification_inbox:level1). DeepSeek handles 128k / 8k
+    # output; mirror the engine fan-out's cloud budget so these stages get the same
+    # room. The local path (no flag) keeps ollama_context_poststop / 4096 unchanged.
+    if _os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }:
+        try:
+            context_window = max(context_window, int(
+                _os.environ.get("MLOMEGA_CLOUD_CONTEXT_POSTSTOP", "49152")))
+        except ValueError:
+            context_window = max(context_window, 49152)
+        try:
+            output_budget = max(int(output_budget), int(
+                _os.environ.get("MLOMEGA_CLOUD_MAX_OUTPUT_TOKENS", "8192")))
+        except ValueError:
+            output_budget = max(int(output_budget), 8192)
     budget = ModelBudget(
         context_window=context_window,
         output_reserve=int(output_budget),
