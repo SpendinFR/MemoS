@@ -172,6 +172,13 @@ Le modèle ne produit pas de SQL. Une cible hors devis bloque tout; un backup
 clamps de confiance prouvés; doublons/fillers deviennent des overlays de lecture, jamais
 des suppressions. Vérifier dans le rapport `quick_check=ok`, le backup et le coût réel.
 
+Résultat réel validé le 23 juillet : l'exécution avec `--apply-safe` a corrigé la DB
+source, conservé son backup et passé `quick_check`. Le rapport doit annoncer
+`mode=execute_applied_safe`; le clone de travail est supprimé après succès.
+`--retain-clone` est réservé au diagnostic. L'audit a abaissé les confiances supérieures
+à leurs preuves, conservé les faux doublons réellement distincts et laissé les cas
+ambigus intacts.
+
 Dashboard :
 
 ```powershell

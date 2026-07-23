@@ -1548,7 +1548,12 @@ réduction statique de JSON comme une validation modèle.
   ```
 
   Le ledger partagé tient compte du coût CloseDay déjà engagé le même jour. Le rapport
-  rapproche prévu/réel et donne le backup exact; le Dashboard sait le lire.
+  rapproche prévu/réel et donne le backup exact; le Dashboard sait le lire. Validation
+  réelle du 23 juillet : application bornée réussie sur la source, backup et
+  `quick_check=ok`; les confiances excessives ont été plafonnées, aucun doublon certain
+  n'a été fusionné et les ambiguïtés sont restées intactes. Après succès, le rapport porte
+  `mode=execute_applied_safe` et le clone transitoire est supprimé; `--retain-clone`
+  reste disponible uniquement pour diagnostiquer un audit.
 
 #### Étape finale 3 — Dashboard humain et spatial fiable, puis chaos réel 30 minutes
 

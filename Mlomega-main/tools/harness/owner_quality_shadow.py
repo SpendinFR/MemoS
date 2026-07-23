@@ -776,7 +776,7 @@ def _execute_plan(
     actual_cost = sum(float(row.get("actual_eur") or 0.0) for row in ledger)
     return {
         "version": "owner-quality-shadow-report-v1",
-        "mode": "execute_proposal_only",
+        "mode": "execute_validated_shadow",
         "source_db": str(source),
         "source_sha256_before": source_sha,
         "source_sha256_after": _sha256(source),
@@ -1103,6 +1103,11 @@ def main() -> int:
         action="store_true",
         help="Après décision DeepSeek, applique automatiquement les seules actions codées et validées.",
     )
+    parser.add_argument(
+        "--retain-clone",
+        action="store_true",
+        help="Keep the working clone after a successful safe apply (diagnostics only).",
+    )
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
@@ -1153,10 +1158,26 @@ def main() -> int:
     )
     if args.apply_safe:
         report["application"] = _apply_validated_report(source, output, report)
+        report["mode"] = "execute_applied_safe"
         report["source_sha256_after"] = _sha256(source)
         report["source_unchanged"] = False
         report["summary"]["canonical_updates"] = report["application"]["canonical_updates"]
         report["summary"]["presentation_overlays"] = report["application"]["presentation_overlays"]
+        report["summary"]["writes_to_source"] = (
+            report["application"]["canonical_updates"]
+            + report["application"]["decisions_persisted"]
+            + 1
+        )
+        if not args.retain_clone:
+            clone = Path(str(report["clone_db"]))
+            for candidate in (
+                clone,
+                Path(str(clone) + "-wal"),
+                Path(str(clone) + "-shm"),
+            ):
+                candidate.unlink(missing_ok=True)
+            report["clone_db"] = None
+            report["clone_deleted_after_apply"] = True
     output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({
         "mode": report["mode"],
