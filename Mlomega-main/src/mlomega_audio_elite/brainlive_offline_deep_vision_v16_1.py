@@ -27,6 +27,8 @@ import os
 import shutil
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -1472,6 +1474,91 @@ def run_offline_deep_vision_for_bundles(
                         continue
                     selected += len(frames)
                     readable += len(frames)
+                    parallel_results: dict[str, dict[str, Any]] = {}
+                    cloud_parallel = (
+                        use_vlm
+                        and os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower()
+                        in {"1", "true", "yes", "on"}
+                        and os.environ.get("MLOMEGA_CLOUD_VLM_PROVIDER", "local").strip().lower()
+                        == "gemini"
+                    )
+                    if cloud_parallel:
+                        try:
+                            vision_workers = max(
+                                1,
+                                min(
+                                    12,
+                                    int(os.environ.get("MLOMEGA_PRO_VISION_WORKERS", "8")),
+                                ),
+                            )
+                        except ValueError:
+                            vision_workers = 8
+
+                        pending_frames: list[tuple[str, dict[str, Any]]] = []
+                        for frame in frames:
+                            observation_id = stable_id(
+                                "bldeep161",
+                                person_id,
+                                b.get("bundle_id"),
+                                frame.get("frame_id") or frame.get("image_path"),
+                                frame.get("sample_index"),
+                                chosen_model,
+                            )
+                            existing = con.execute(
+                                "SELECT status FROM brainlive_deep_vision_observations_v161 "
+                                "WHERE deep_observation_id=?",
+                                (observation_id,),
+                            ).fetchone()
+                            if not (existing and existing["status"] == "ok"):
+                                pending_frames.append((observation_id, frame))
+
+                        def _analyze_cloud_frame(frame: dict[str, Any]) -> dict[str, Any]:
+                            started = time.time()
+                            try:
+                                raw = _deep_vlm_json(
+                                    str(frame.get("image_path")),
+                                    model=chosen_model,
+                                    timeout=timeout_per_image,
+                                    personal_context={
+                                        "bundle_title": b.get("title"),
+                                        "place": _safe_json(b.get("place_json"), {}),
+                                        "live_summary": frame.get("live_summary"),
+                                    },
+                                )
+                                return {
+                                    "raw": raw,
+                                    "status": "ok",
+                                    "error": None,
+                                    "failure": None,
+                                    "latency_ms": int((time.time() - started) * 1000),
+                                }
+                            except Exception as exc:
+                                failure = classify_failure(exc)
+                                return {
+                                    "raw": {},
+                                    "status": (
+                                        "retryable_error" if failure.retryable else "blocked"
+                                    ),
+                                    "error": str(exc)[:1500],
+                                    "failure": failure,
+                                    "exception": exc,
+                                    "latency_ms": int((time.time() - started) * 1000),
+                                }
+
+                        if pending_frames:
+                            with ThreadPoolExecutor(
+                                max_workers=min(vision_workers, len(pending_frames)),
+                                thread_name_prefix="mlomega-pro-vision",
+                            ) as pool:
+                                futures = {
+                                    pool.submit(
+                                        copy_context().run, _analyze_cloud_frame, frame
+                                    ): observation_id
+                                    for observation_id, frame in pending_frames
+                                }
+                                for future in as_completed(futures):
+                                    parallel_results[futures[future]] = future.result()
+
                     for f in frames:
                         obs_id = stable_id("bldeep161", person_id, b.get("bundle_id"), f.get("frame_id") or f.get("image_path"), f.get("sample_index"), chosen_model)
                         existing = con.execute("SELECT status FROM brainlive_deep_vision_observations_v161 WHERE deep_observation_id=?", (obs_id,)).fetchone()
@@ -1482,7 +1569,31 @@ def run_offline_deep_vision_for_bundles(
                         status_row = "ok"
                         row_error = None
                         raw: dict[str, Any] = {}
-                        if use_vlm:
+                        if obs_id in parallel_results:
+                            result = parallel_results[obs_id]
+                            raw = dict(result.get("raw") or {})
+                            status_row = str(result.get("status") or "blocked")
+                            row_error = result.get("error")
+                            latency_ms = int(result.get("latency_ms") or 0)
+                            failure = result.get("failure")
+                            if failure is not None:
+                                frame_failures.append({
+                                    "bundle_id": b.get("bundle_id"),
+                                    "frame_id": f.get("frame_id"),
+                                    "error_code": failure.code,
+                                    "retryable": failure.retryable,
+                                    "error": row_error,
+                                })
+                                record_phase_event(
+                                    "deep_vision_frame_failed",
+                                    bundle_id=b.get("bundle_id"),
+                                    frame_id=f.get("frame_id"),
+                                    error_code=failure.code,
+                                    retryable=failure.retryable,
+                                )
+                                if fail_on_vlm_error:
+                                    raise result.get("exception") or RuntimeError(row_error)
+                        elif use_vlm:
                             try:
                                 raw = _deep_vlm_json(str(f.get("image_path")), model=chosen_model, timeout=timeout_per_image, personal_context={"bundle_title": b.get("title"), "place": _safe_json(b.get("place_json"), {}), "live_summary": f.get("live_summary")})
                             except Exception as exc:
@@ -1500,7 +1611,8 @@ def run_offline_deep_vision_for_bundles(
                             row_error = "use_vlm=false"
                             status_row = "skipped_no_vlm"
                         norm = _normalize_observation(raw) if raw else _fallback_from_live(f, row_error)
-                        latency_ms = int((time.time() - started) * 1000)
+                        if obs_id not in parallel_results:
+                            latency_ms = int((time.time() - started) * 1000)
                         upsert(con, "brainlive_deep_vision_observations_v161", {
                             "deep_observation_id": obs_id,
                             "run_id": run_id,

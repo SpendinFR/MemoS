@@ -22,6 +22,8 @@ here.
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
@@ -173,6 +175,10 @@ def run_windows(
     max_attempts: int = 3,
     subdivide_on_length: bool = True,
     sleeper: Callable[[float], None] | None = None,
+    parallel_workers: int = 1,
+    connection_factory: Callable[[], Any] | None = None,
+    _planned_windows: Sequence[PlannedWindow] | None = None,
+    _schema_ready: bool = False,
 ) -> StageResult:
     """Plan, execute and checkpoint every window for one stage.
 
@@ -181,7 +187,8 @@ def run_windows(
     output honours the stage contract. Returns a ``StageResult`` whose
     ``outputs`` are the validated per-window outputs, in window order.
     """
-    cp.ensure_schema(con)
+    if not _schema_ready:
+        cp.ensure_schema(con)
     # Checkpoints must survive a process kill or a later business-stage error.
     # The executor owns this connection while it runs; every state transition is
     # therefore committed deliberately instead of depending on an outer context
@@ -198,13 +205,67 @@ def run_windows(
     planning_input_budget = max(
         1, budget.max_input_tokens - max(0, int(prompt_overhead_tokens))
     )
-    planned = plan_windows(
+    planned = list(_planned_windows) if _planned_windows is not None else plan_windows(
         units,
         stage_name=scope.stage_name,
         max_input_tokens=planning_input_budget,
         target_units=target_units,
         overlap=overlap,
     )
+
+    # PRO-only callers may execute independent, already-planned top-level windows
+    # concurrently.  Every worker owns a separate SQLite connection and drives its
+    # own retry/subdivision tree; the parent merely rejoins StageResults in planner
+    # order.  Local callers do not pass these options and keep the historic loop
+    # below byte-for-byte in effect.
+    worker_count = max(1, int(parallel_workers or 1))
+    if worker_count > 1 and len(planned) > 1:
+        if connection_factory is None:
+            raise ValueError("parallel run_windows requires connection_factory")
+
+        def _run_one(window: PlannedWindow) -> StageResult:
+            with connection_factory() as worker_con:
+                return run_windows(
+                    (),
+                    con=worker_con,
+                    scope=scope,
+                    llm=llm,
+                    budget=budget,
+                    render=render,
+                    validate=validate,
+                    normalize_output=normalize_output,
+                    render_window=render_window,
+                    normalize_window_output=normalize_window_output,
+                    decorate_output=decorate_output,
+                    describe_contract_violation=describe_contract_violation,
+                    resolve_contract_rejection=resolve_contract_rejection,
+                    target_units=target_units,
+                    overlap=overlap,
+                    prompt_overhead_tokens=prompt_overhead_tokens,
+                    max_attempts=max_attempts,
+                    subdivide_on_length=subdivide_on_length,
+                    sleeper=sleeper,
+                    parallel_workers=1,
+                    _planned_windows=(window,),
+                    _schema_ready=True,
+                )
+
+        completed: dict[int, StageResult] = {}
+        with ThreadPoolExecutor(
+            max_workers=min(worker_count, len(planned)),
+            thread_name_prefix="mlomega-night-window",
+        ) as pool:
+            futures = {
+                pool.submit(copy_context().run, _run_one, window): index
+                for index, window in enumerate(planned)
+            }
+            for future in as_completed(futures):
+                completed[futures[future]] = future.result()
+        for index in range(len(planned)):
+            child = completed[index]
+            result.windows.extend(child.windows)
+            result.outputs.extend(child.outputs)
+        return result
 
     def _estimate_input(window: PlannedWindow, prompt: Mapping[str, Any]) -> int:
         # Enforce the budget against the concrete rendered request, not only the

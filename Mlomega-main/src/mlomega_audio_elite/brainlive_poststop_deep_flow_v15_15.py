@@ -189,13 +189,42 @@ def _compact_cloud_bundle_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _cloud_bundle_payload(bundle_id: str) -> dict[str, Any]:
-    """Return one stable, semantic, provenance-complete PRO cache prefix."""
+    """Return the legacy conversation-wide PRO cache prefix.
+
+    The payload remains available as an explicit rollback/debug path.  It must
+    not wrap the normal PRO CloseDay: Brain2 already supplies the complete
+    episode evidence to local engines and compact dependency projections to
+    global engines.  Repeating this transcript-heavy payload in every later
+    DeepSeek request added roughly 60k duplicate tokens per call while the
+    provider did not persist a common-prefix cache unit across varying schemas.
+    """
 
     with connect() as con:
         row = _one(con, "SELECT * FROM brainlive_event_bundles_v1514 WHERE bundle_id=?", (bundle_id,))
     if not row:
         raise StageGateError(f"missing bundle evidence for cloud prefix: {bundle_id}")
     return _compact_cloud_bundle_row(row)
+
+
+def _pro_conversation_prefix_context(bundle_id: str):
+    """Return the optional legacy outer prefix, disabled by default.
+
+    This switch is deliberately PRO-only and transport-only.  The default
+    ``nullcontext`` restores the same evidence ownership as the proven local
+    path: each business prompt receives its real bundle/projection exactly once.
+    Set ``MLOMEGA_PRO_REDUNDANT_CONVERSATION_PREFIX=1`` only to compare with or
+    roll back to the former expensive request shape.
+    """
+
+    backend = os.environ.get("MLOMEGA_LLM_BACKEND", "").strip().lower()
+    legacy = os.environ.get(
+        "MLOMEGA_PRO_REDUNDANT_CONVERSATION_PREFIX", "0"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if backend != "deepseek" or not legacy:
+        return nullcontext()
+    from .cloud_providers_v19 import cloud_bundle_prefix
+
+    return cloud_bundle_prefix(bundle_id, _cloud_bundle_payload(bundle_id))
 
 
 def _conversation_digest(con, conversation_id: str) -> str:
@@ -610,14 +639,8 @@ def run_brainlive_post_stop_deep_flow(
                         if skipped:
                             unit = {"conversation_id": cid, "bundle_id": item.get("bundle_id"), "status": "skipped_already_ok"}
                         else:
-                            prefix_context = nullcontext()
-                            if os.environ.get("MLOMEGA_LLM_BACKEND", "").strip().lower() == "deepseek":
-                                from .cloud_providers_v19 import cloud_bundle_prefix
-
-                                bundle_id = str(item.get("bundle_id") or "")
-                                prefix_context = cloud_bundle_prefix(
-                                    bundle_id, _cloud_bundle_payload(bundle_id)
-                                )
+                            bundle_id = str(item.get("bundle_id") or "")
+                            prefix_context = _pro_conversation_prefix_context(bundle_id)
                             with prefix_context:
                                 result = run_brain2_deep_stack_for_conversation(
                                     cid, person_id=person_id, trigger_type="brainlive_event_bundle_v18_7",

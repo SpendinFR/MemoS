@@ -22,6 +22,7 @@ from .llm import (
     EliteLLMError,
     LLMTruncatedOutputError,
     OllamaJsonClient,
+    json_schema_for_hint,
     llm_client_override,
 )
 from .utils import json_dumps, json_loads, now_iso, sha256_bytes, stable_id
@@ -2616,6 +2617,98 @@ def _pro_warm_episode_prefixes(episodes: Sequence[tuple[str, Mapping[str, Any]]]
             _time.sleep(settle)
 
 
+def _engine_window_schema(engine: str) -> dict[str, Any]:
+    """Return the exact schema ordering rendered by the one-window PRO executor."""
+
+    schema = dict(ENGINE_SCHEMAS[engine])
+    common_names = [
+        name
+        for name in ("evidence", "counter_evidence", "confidence")
+        if name in schema
+    ]
+    business_names = [name for name in schema if name not in common_names]
+    return {
+        **{name: schema[name] for name in business_names},
+        **{name: schema[name] for name in common_names},
+    }
+
+
+def _pro_prime_episode_engine_prefixes(
+    work_items: Sequence[Mapping[str, Any]],
+    *,
+    conversation_outputs: Mapping[str, Any],
+    outputs_by_episode: Mapping[str, Mapping[str, Any]],
+) -> bool:
+    """Prime the exact first real engine request for every episode bundle.
+
+    The former generic priming request cached itself but not production engines.
+    Here the seed prompt and provider JSON schema are built by the same helpers as
+    ``_run_engine_partitioned``.  Two discarded calls persist the long shared
+    prefix; the returned provider usage is the cache gate for concurrent fan-out.
+    Local CloseDay cannot reach this helper.
+    """
+
+    if not work_items:
+        return True
+    from .cloud_providers_v19 import prime_exact_deepseek_prefix
+
+    try:
+        timeout = float(os.environ.get("MLOMEGA_V13_ENGINE_TIMEOUT", "180"))
+    except ValueError:
+        timeout = 180.0
+    try:
+        observations = max(
+            2, int(os.environ.get("MLOMEGA_PRO_PREFIX_PRIME_OBS", "2"))
+        )
+    except ValueError:
+        observations = 2
+
+    all_hot = True
+    seen_digests: set[str] = set()
+    for work in work_items:
+        episode_id = str(work["episode_id"])
+        pending = [str(engine) for engine in work.get("pending") or ()]
+        if not pending:
+            continue
+        # Seed with the first pending engine in canonical ENGINE_ORDER. Its prompt
+        # is a genuine production request; only its tiny output is discarded.
+        engine = pending[0]
+        episode_outputs = outputs_by_episode.get(episode_id) or {}
+        prior = _direct_prior(engine, conversation_outputs, episode_outputs)
+        task_schema = _engine_window_schema(engine)
+        prompt = _engine_prompt(
+            engine,
+            dict(work["bundle"]),
+            prior,
+            schema_override=task_schema,
+            bundle_in_prefix=True,
+        )
+        result = prime_exact_deepseek_prefix(
+            episode_id,
+            dict(work["bundle"]),
+            system=_BRAIN2_STRICT_SYSTEM,
+            prompt=prompt,
+            json_schema=json_schema_for_hint(task_schema),
+            timeout=timeout,
+            observations=observations,
+        )
+        digest = str(result.get("digest") or "")
+        if digest in seen_digests:
+            continue
+        seen_digests.add(digest)
+        if not bool(result.get("cache_hit")):
+            all_hot = False
+            _LOG.warning(
+                "PRO exact prefix remained cold for episode=%s digest=%s "
+                "hit_tokens=%s required=%s; fan-out will stay sequential",
+                episode_id,
+                digest[:12],
+                result.get("hit_tokens"),
+                result.get("required_hit_tokens"),
+            )
+    return all_hot
+
+
 def _global_common_fact_core(
     projected_by_engine: Mapping[str, Sequence[Mapping[str, Any]]],
 ) -> list[dict[str, Any]]:
@@ -3558,19 +3651,15 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
             # episode-pack-v2 path above remains byte-for-byte unchanged.
             con.commit()
 
-            # CHANTIER 2 step 2-4: prime each UNIQUE episode prefix once, then wait
-            # a SINGLE cache propagation before the concurrent fan-out (never one
-            # wait per episode). Warm-up is deduplicated by digest, so a resume or
-            # a repeated episode never repays it. Only runs under PRO fan-out.
-            episode_prefixes = [
-                (str(work["episode_id"]), dict(work["bundle"]))
-                for work in pro_episode_work
-            ]
-            _pro_warm_episode_prefixes(episode_prefixes)
-            # Codex correction 5: gate the CONCURRENT fan-out on a real cache-hit
-            # probe (two warms + one probe).  When the probe is cold, degrade to a
-            # SEQUENTIAL fan-out instead of firing 8-12 cold concurrent calls.
-            fanout_ready = _pro_probe_fanout_ready(episode_prefixes)
+            # Prime the exact first production-engine request twice and use its
+            # real provider cache usage as the concurrency gate. This replaces the
+            # generic warm/probe shape that could be hot while every engine still
+            # missed the bundle. No blind cache-settle sleep is needed.
+            fanout_ready = _pro_prime_episode_engine_prefixes(
+                pro_episode_work,
+                conversation_outputs=conversation_outputs,
+                outputs_by_episode=outputs_by_episode,
+            )
 
             def run_engine_task(task: Mapping[str, Any]) -> dict[str, Any]:
                 with connect() as worker_con:
@@ -3793,8 +3882,13 @@ def build_strict_v13_for_conversation(conversation_id: str, *, max_episodes: int
                             engine: _facts_for_global_engine(engine, compact_facts)
                             for engine in pending_globals
                         }
-                        common_core = _global_common_fact_core(projected_by_engine)
-                        _pro_warm_global_fact_core(conversation_id, common_core)
+                        # Do not buy a detached "common facts" warm-up here.  The
+                        # global requests below do not execute under that prefix,
+                        # so the provider proved it cached only itself while every
+                        # real engine still missed.  Per-dependency projections are
+                        # retained unchanged; an exact global-prefix cache may be
+                        # reintroduced only when its bytes are also the real request
+                        # bytes (same invariant as the episode fan-out primer).
                         # Codex correction 3: the GLOBAL engines read their
                         # projected inputs (direct parents / per-dependency facts /
                         # similar_case prior), NEVER the transcript.  Ship them the

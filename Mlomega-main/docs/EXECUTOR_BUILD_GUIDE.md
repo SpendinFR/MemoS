@@ -4,6 +4,22 @@
 > diagnostic d'environnement, utiliser [`docs/OPERATOR_RUNBOOK.md`](OPERATOR_RUNBOOK.md).
 > Il fixe notamment la frontière `.venv-live`/`.venv` et évite les faux rouges.
 
+## PASSATION 2026-07-23 — Gate B PRO coût validé, temps encore ouvert
+
+Le jalon à ne pas régresser est
+`tools/harness/_run/gateb-pro-target-20260723-143534.db` : DB fraîche, vidéo 305 s,
+13/13 commandes, Deep Vision 11/11/11, tous les stages nocturnes, CloseDay et recovery
+`completed`, harnais **ALL PASS**. Coût complet **0,0575646 EUR** avec Flash et hard-stop
+0,10 EUR. Temps : **406,069 s CloseDay**, **463,475 s de la fin live au CloseDay**.
+
+Le gain vient de la suppression PRO-only de la copie conversationnelle externe répétée
+dans chaque appel. Ce wrapper transport doublait les bundles/projections métier et son
+cache ne mordait pas entre schémas variables. Ne pas le réintroduire; rollback diagnostic
+seulement : `MLOMEGA_PRO_REDUNDANT_CONVERSATION_PREFIX=1`. Ne modifier ni les prompts,
+ni les schémas, ni le chemin local. L'objectif coût est GO; l'objectif post-live ≤300 s
+reste ouvert. Toute suite part de ce commit et compare au ledger/timestamps de cette DB,
+sans refaire le chantier coût.
+
 ## PASSATION 2026-07-19 — Profil CloseDay PRO branché, fournisseurs réels validés
 
 > **Reprise prioritaire :** lire intégralement

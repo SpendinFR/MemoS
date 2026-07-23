@@ -1600,3 +1600,26 @@ Le run `gateb-rollback-20260718-215615` a prouvé cette frontière : live frais 
 reprise nocturne complète, Deep Vision 15=15=15, manifests complets et recovery produit
 reconciliée sans nouveau calcul. Le CLI force par ailleurs UTF-8 sur stdout Windows afin
 qu'un résultat durablement réussi ne sorte plus avec code 1 uniquement à cause de CP1252.
+
+## 2026-07-23 — PRO ne dépend pas d'un cache de préfixe non garanti
+
+Le Gate B `gateb-pro-target-20260723-143534` tranche la frontière coût/performance. Le
+préfixe conversationnel externe de `brainlive_poststop_deep_flow_v15_15` répétait le
+transcript compact complet dans chaque appel DeepSeek, en plus du bundle d'épisode ou de
+la projection canonique déjà fournie par le moteur. Ce n'était pas une preuve
+supplémentaire mais une duplication de transport.
+
+Les essais fournisseur réels ont montré qu'une requête répétée à l'identique obtient un
+cache hit, mais que le tronc commun n'est pas garanti entre des suffixes et schémas
+différents. La production ne budgète donc jamais un gain hypothétique. Par défaut, PRO
+envoie chaque preuve métier une seule fois par requête : les moteurs locaux d'épisode
+gardent leur bundle explicite/préfixé, les moteurs globaux gardent leur empreinte et leurs
+faits projetés, et V14 garde ses payloads historiques. Seul l'ancien wrapper redondant est
+désactivé; `MLOMEGA_PRO_REDUNDANT_CONVERSATION_PREFIX=1` reste un rollback diagnostic.
+Le chemin sans `MLOMEGA_PRO_CLOSEDAY` est inchangé.
+
+Preuve : chaîne complète ALL PASS, coût réel 0,0575646 EUR sous hard-stop 0,10 EUR,
+Deep Vision 11/11/11, CloseDay et recovery completed. Le temps mesuré est 406,069 s pour
+CloseDay et 463,475 s depuis la fin live : ce jalon est la base de non-régression; la
+cible post-live 300 s reste ouverte et ne justifie aucune suppression de moteur, preuve,
+champ ou writer.

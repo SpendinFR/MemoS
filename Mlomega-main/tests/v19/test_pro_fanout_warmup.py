@@ -6,6 +6,7 @@ any real DeepSeek call or wall-clock wait.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -107,3 +108,83 @@ def test_warmup_is_inert_without_episodes(cloud_env: Path, monkeypatch: pytest.M
     monkeypatch.setattr(_time, "sleep", lambda s: sleeps.append(s))
     strict._pro_warm_episode_prefixes([])
     assert sent == [] and sleeps == []
+
+
+def test_exact_prime_repeats_the_real_engine_request_and_verifies_cache(
+    cloud_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sent: list[dict] = []
+
+    def fake_json_request(url, payload, **kwargs):
+        sent.append(payload)
+        prompt_tokens = 1200
+        hit_tokens = 0 if len(sent) == 1 else 1100
+        return {
+            "choices": [{"message": {"content": '{"discarded":true}'}, "finish_reason": "length"}],
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "prompt_cache_hit_tokens": hit_tokens,
+                "prompt_cache_miss_tokens": prompt_tokens - hit_tokens,
+                "completion_tokens": 4,
+            },
+        }, 200, 0
+
+    monkeypatch.setattr(cloud, "_json_request", fake_json_request)
+    result = cloud.prime_exact_deepseek_prefix(
+        "ep-1",
+        {"episode": {"episode_id": "ep-1"}, "turns": [{"text": "x" * 1200}]},
+        system="REAL ENGINE SYSTEM",
+        prompt="REAL ENGINE PROMPT",
+        json_schema={"type": "object", "properties": {"facts": {"type": "array"}}},
+        observations=2,
+        timeout=5,
+    )
+
+    assert len(sent) == 2  # no third short warm-only request
+    assert sent[0]["messages"] == sent[1]["messages"]
+    assert any(
+        item["role"] == "system" and item["content"] == "REAL ENGINE SYSTEM"
+        for item in sent[0]["messages"]
+    )
+    assert any(
+        item["role"] == "user" and item["content"] == "REAL ENGINE PROMPT"
+        for item in sent[0]["messages"]
+    )
+    assert result["cache_hit"] is True
+    assert result["hit_tokens"] == 1100
+
+
+def test_pro_exact_episode_prime_uses_production_prompt_and_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict] = []
+
+    def fake_prime(bundle_id, bundle_payload, **kwargs):
+        calls.append({"bundle_id": bundle_id, "bundle": bundle_payload, **kwargs})
+        return {
+            "cache_hit": True,
+            "digest": "abc",
+            "hit_tokens": 1000,
+            "required_hit_tokens": 500,
+        }
+
+    monkeypatch.setattr(cloud, "prime_exact_deepseek_prefix", fake_prime)
+    work = [{
+        "episode_id": "ep-1",
+        "pending": ("capture_engine", "language_signature_engine"),
+        "bundle": {"episode": {"episode_id": "ep-1"}, "turns": [{"text": "bonjour"}]},
+    }]
+    ready = strict._pro_prime_episode_engine_prefixes(
+        work, conversation_outputs={}, outputs_by_episode={"ep-1": {}},
+    )
+    assert ready is True
+    assert len(calls) == 1
+    assert calls[0]["system"] == strict._BRAIN2_STRICT_SYSTEM
+    prompt = calls[0]["prompt"]
+    prompt_payload = json.loads(prompt)
+    assert prompt_payload["engine_name"] == "capture_engine"
+    assert prompt_payload["bundle"]["provided_in_shared_prefix"] is True
+    # Provider schema is the executable JSON schema used by OllamaJsonClient,
+    # not the generic priming {"type":"object"} from the old implementation.
+    assert calls[0]["json_schema"]["type"] == "object"
+    assert "capture" in str(calls[0]["json_schema"]).lower()

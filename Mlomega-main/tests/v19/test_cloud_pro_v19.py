@@ -152,6 +152,41 @@ def test_cloud_bundle_projection_keeps_lossless_manifests_without_raw_duplicatio
     assert sum(atom["frame_manifest"]["count"] for atom in projected["vision_atoms"]) == 20
 
 
+def test_pro_conversation_prefix_is_not_duplicated_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mlomega_audio_elite import brainlive_poststop_deep_flow_v15_15 as flow
+
+    monkeypatch.setenv("MLOMEGA_LLM_BACKEND", "deepseek")
+    monkeypatch.delenv("MLOMEGA_PRO_REDUNDANT_CONVERSATION_PREFIX", raising=False)
+    monkeypatch.setattr(
+        flow,
+        "_cloud_bundle_payload",
+        lambda _bundle_id: pytest.fail("default PRO path must not reload outer bundle"),
+    )
+    with flow._pro_conversation_prefix_context("bundle-1"):
+        assert cloud.current_bundle_prefix() is None
+
+
+def test_legacy_pro_conversation_prefix_remains_explicit_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mlomega_audio_elite import brainlive_poststop_deep_flow_v15_15 as flow
+
+    monkeypatch.setenv("MLOMEGA_LLM_BACKEND", "deepseek")
+    monkeypatch.setenv("MLOMEGA_PRO_REDUNDANT_CONVERSATION_PREFIX", "1")
+    monkeypatch.setattr(
+        flow,
+        "_cloud_bundle_payload",
+        lambda bundle_id: {"bundle_id": bundle_id, "transcript": ["legacy"]},
+    )
+    with flow._pro_conversation_prefix_context("bundle-1"):
+        context = cloud.current_bundle_prefix()
+        assert context is not None
+        assert context.bundle_id == "bundle-1"
+        assert "legacy" in context.canonical_json
+
+
 def test_deepseek_budget_policy_falls_back_to_flash_before_send(
     cloud_env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

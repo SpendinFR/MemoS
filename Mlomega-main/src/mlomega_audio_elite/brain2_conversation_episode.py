@@ -1651,6 +1651,34 @@ def _run_detail_windows(
         prompt_version=DETAIL_PROMPT_VERSION,
         model=model_name,
     )
+    parallel_workers = 1
+    connection_factory = None
+    if _pro_closeday_enabled() and len(detail_units) > 1:
+        try:
+            parallel_workers = max(
+                1, min(6, int(os.environ.get("MLOMEGA_PRO_EPISODE_DETAIL_WORKERS", "3")))
+            )
+        except ValueError:
+            parallel_workers = 3
+        if parallel_workers > 1:
+            # Reopen the EXACT database owned by the caller.  Tests and tools may
+            # pass an in-memory/custom connection that is not ``settings.db_path``;
+            # silently opening another DB would lose the checkpoint schema.  An
+            # in-memory DB cannot be shared safely, so it keeps the sequential path.
+            db_row = con.execute("PRAGMA database_list").fetchone()
+            db_file = (
+                db_row["file"]
+                if db_row is not None and hasattr(db_row, "keys") and "file" in db_row.keys()
+                else (db_row[2] if db_row is not None else "")
+            )
+            if db_file:
+                from pathlib import Path
+                from .db import connect as _connect
+
+                db_path = Path(str(db_file))
+                connection_factory = lambda: _connect(db_path)
+            else:
+                parallel_workers = 1
     stage = run_windows(
         list(detail_units),
         con=con,
@@ -1673,6 +1701,8 @@ def _run_detail_windows(
         overlap=0,
         prompt_overhead_tokens=_detail_prompt_overhead(safe_prompt, conversation),
         subdivide_on_length=True,
+        parallel_workers=parallel_workers,
+        connection_factory=connection_factory,
     )
     if not stage.all_completed:
         raise ConversationEpisodeContractError(

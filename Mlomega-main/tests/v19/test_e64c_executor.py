@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import sqlite3
 import json
+import threading
+import time
 
 import pytest
 
@@ -109,6 +111,63 @@ def test_executor_completes_and_checkpoints_all_windows():
     assert len(res.outputs) == 3
     rows = con.execute(f"SELECT state, COUNT(*) FROM {cp.WINDOWS_TABLE} GROUP BY state").fetchall()
     assert dict(rows) == {"completed": 3}
+
+
+def test_parallel_top_level_windows_keep_lossless_results_and_separate_connections(tmp_path):
+    db_path = tmp_path / "parallel-windows.db"
+    with sqlite3.connect(db_path) as setup:
+        cp.ensure_schema(setup)
+
+    class ConcurrentLLM:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.active = 0
+            self.max_active = 0
+
+        def generate(self, prompt, *, output_budget):
+            with self.lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            try:
+                time.sleep(0.03)
+                return LLMCallResult(ok=True, data={"episodes": prompt["units"]})
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    llm = ConcurrentLLM()
+
+    def connection_factory():
+        return sqlite3.connect(db_path, timeout=10.0)
+
+    with connection_factory() as con:
+        con.row_factory = sqlite3.Row
+        result = run_windows(
+            _units(8),
+            con=con,
+            scope=_scope("parallel"),
+            llm=llm,
+            budget=ModelBudget(context_window=1000, output_reserve=200),
+            render=_render,
+            validate=lambda value: True,
+            target_units=2,
+            overlap=0,
+            prompt_overhead_tokens=0,
+            parallel_workers=4,
+            connection_factory=connection_factory,
+        )
+
+    assert result.all_completed
+    assert llm.max_active > 1
+    assert sorted(
+        ref
+        for output in result.outputs
+        for ref in output["episodes"]
+    ) == [f"u{i}" for i in range(8)]
+    with connection_factory() as check:
+        assert check.execute(
+            f"SELECT COUNT(*) FROM {cp.WINDOWS_TABLE} WHERE state='completed'"
+        ).fetchone()[0] == 4
 
 
 def test_executor_normalizes_before_contract_and_persistence():

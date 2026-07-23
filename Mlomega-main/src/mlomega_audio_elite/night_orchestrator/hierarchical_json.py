@@ -8,9 +8,12 @@ survives transitively to the final envelope; no writer sees partial JSON.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from dataclasses import dataclass
 from contextlib import nullcontext
 import math
+import os
 from typing import Any, Mapping, Sequence
 
 from ..config import get_settings
@@ -437,35 +440,65 @@ def _run_hierarchical_json_single_schema(
                 target_units=target_units,
                 overlap=0,
             ))
-            stage = run_windows(
-                units,
-                con=con,
-                scope=StageScope(
-                    person_id=person_id,
-                    package_date=package_date,
-                    stage_name=scoped_stage,
-                    adapter_version="e64f-hierarchical-json-v4-dense-windows",
-                    prompt_version=f"{stage_name}:v3-dense-cardinality",
-                    model=model,
-                ),
-                llm=llm,
-                budget=budget,
-                render=render,
-                validate=lambda value: (
-                    _validate_schema_shape(value, schema)
-                    and _validate_top_level_cardinality(
-                        value, schema, cardinality_guard
+            parallel_workers = 1
+            connection_factory = None
+            if (
+                connection is None
+                and _os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower()
+                in {"1", "true", "yes", "on"}
+                and expected_planned_count > 1
+            ):
+                try:
+                    parallel_workers = max(
+                        1,
+                        min(
+                            12,
+                            int(_os.environ.get("MLOMEGA_PRO_WINDOW_WORKERS", "8")),
+                        ),
                     )
-                ),
-                decorate_output=envelope,
-                target_units=target_units,
-                overlap=0,
-                prompt_overhead_tokens=overhead_tokens,
-                # Leaf evidence can be divided safely. A merge already contains
-                # partial full-schema outputs; length there means split output
-                # responsibilities, which the calling adapter owns.
-                subdivide_on_length=(level == 0),
-            )
+                except ValueError:
+                    parallel_workers = 8
+                connection_factory = connect
+            if _os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower() in {
+                "1", "true", "yes", "on",
+            }:
+                from ..cloud_providers_v19 import cloud_engine_stage
+
+                stage_context = cloud_engine_stage(scoped_stage)
+            else:
+                stage_context = nullcontext()
+            with stage_context:
+                stage = run_windows(
+                    units,
+                    con=con,
+                    scope=StageScope(
+                        person_id=person_id,
+                        package_date=package_date,
+                        stage_name=scoped_stage,
+                        adapter_version="e64f-hierarchical-json-v4-dense-windows",
+                        prompt_version=f"{stage_name}:v3-dense-cardinality",
+                        model=model,
+                    ),
+                    llm=llm,
+                    budget=budget,
+                    render=render,
+                    validate=lambda value: (
+                        _validate_schema_shape(value, schema)
+                        and _validate_top_level_cardinality(
+                            value, schema, cardinality_guard
+                        )
+                    ),
+                    decorate_output=envelope,
+                    target_units=target_units,
+                    overlap=0,
+                    prompt_overhead_tokens=overhead_tokens,
+                    # Leaf evidence can be divided safely. A merge already contains
+                    # partial full-schema outputs; length there means split output
+                    # responsibilities, which the calling adapter owns.
+                    subdivide_on_length=(level == 0),
+                    parallel_workers=parallel_workers,
+                    connection_factory=connection_factory,
+                )
             if not stage.all_completed:
                 raise RuntimeError(
                     f"{scoped_stage} incomplete: "
@@ -776,12 +809,14 @@ def run_hierarchical_json(
     merged: dict[str, Any] = {}
     covered_responsibilities: list[str] = []
     expected_responsibilities: list[str] = []
-    for index, part in enumerate(parts):
+
+    def _run_responsibility(index: int, part: Mapping[str, Any]) -> tuple[
+        int, dict[str, Any], str
+    ]:
         keys = tuple(part)
         responsibility_ref = stable_id(
             "nightresponsibility", stage_name, index, *keys
         )
-        expected_responsibilities.append(responsibility_ref)
         part_payload = dict(payload)
         if part_payload.get("schema") == schema:
             # The executable schema is already supplied out-of-band.  Never
@@ -810,6 +845,48 @@ def run_hierarchical_json(
                 lossless_array_merge or _supports_lossless_window_union(part)
             ),
         )
+        return index, part_result, responsibility_ref
+
+    indexed_parts = list(enumerate(parts))
+    part_results: dict[int, tuple[dict[str, Any], str]] = {}
+    pro_parallel = (
+        connection is None
+        and len(indexed_parts) > 1
+        and os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+    if pro_parallel:
+        try:
+            responsibility_workers = max(
+                1,
+                min(
+                    8,
+                    int(os.environ.get(
+                        "MLOMEGA_PRO_RESPONSIBILITY_WORKERS", "4"
+                    )),
+                ),
+            )
+        except ValueError:
+            responsibility_workers = 4
+        with ThreadPoolExecutor(
+            max_workers=min(responsibility_workers, len(indexed_parts)),
+            thread_name_prefix="mlomega-pro-responsibility",
+        ) as pool:
+            futures = {
+                pool.submit(copy_context().run, _run_responsibility, index, part): index
+                for index, part in indexed_parts
+            }
+            for future in as_completed(futures):
+                index, part_result, responsibility_ref = future.result()
+                part_results[index] = (part_result, responsibility_ref)
+    else:
+        for index, part in indexed_parts:
+            _, part_result, responsibility_ref = _run_responsibility(index, part)
+            part_results[index] = (part_result, responsibility_ref)
+
+    for index, part in indexed_parts:
+        part_result, responsibility_ref = part_results[index]
+        expected_responsibilities.append(responsibility_ref)
         if set(part_result) != set(part):
             raise RuntimeError(
                 f"{stage_name} responsibility {index} returned wrong keys: "

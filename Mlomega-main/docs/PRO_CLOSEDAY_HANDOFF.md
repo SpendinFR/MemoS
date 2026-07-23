@@ -1,9 +1,22 @@
 # Passation CloseDay PRO — 19 juillet 2026
 
+## Jalon validé le 23 juillet 2026
+
+Le run frais `gateb-pro-target-20260723-143534` remplace les anciennes projections :
+**ALL PASS**, CloseDay/recovery completed, coût complet **0,0575646 EUR** sous plafond
+dur 0,10 EUR. La copie conversationnelle externe d'environ 60k tokens par appel est
+désactivée par défaut car elle doublait les bundles/projections métier et son cache ne
+se propageait pas entre schémas variables. Aucun prompt, schéma, writer ou chemin local
+n'a été retiré. Rollback diagnostic : `MLOMEGA_PRO_REDUNDANT_CONVERSATION_PREFIX=1`.
+
+Temps de référence : 406,069 s dans CloseDay, 463,475 s depuis la fin live. Le prochain
+travail porte uniquement sur la latence et doit préserver ce résultat fonctionnel/coût.
+
 ## But et règle de sécurité
 
 Le but du profil PRO est de conserver toute la qualité/provenance de CloseDay tout en
-ramenant la consolidation de la vidéo de référence de cinq minutes vers **deux minutes**.
+ramenant la consolidation post-live de la vidéo de référence de cinq minutes à **cinq minutes
+maximum**.
 Le chemin local est déjà validé en environ treize minutes et constitue le rollback.
 
 Règle absolue : **sans `-Pro` / `--pro` / `MLOMEGA_PRO_CLOSEDAY=1`, aucun nouveau

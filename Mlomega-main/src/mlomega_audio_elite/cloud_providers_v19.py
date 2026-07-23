@@ -54,6 +54,7 @@ except ValueError:
 _CLOUD_REQUEST_SLOTS = threading.BoundedSemaphore(_MAX_CLOUD_IN_FLIGHT)
 _BUNDLE_WARM_LOCK = threading.Lock()
 _BUNDLE_WARM_RESPONSES: dict[tuple[str, str], str] = {}
+_CANONICAL_WARM_RESPONSE = '{"bundle_loaded":true}'
 
 
 @dataclass
@@ -398,6 +399,90 @@ def probe_bundle_prefix(
     }
 
 
+def prime_exact_deepseek_prefix(
+    bundle_id: str,
+    bundle_payload: dict[str, Any],
+    *,
+    system: str,
+    prompt: str,
+    json_schema: dict[str, Any] | None,
+    timeout: float = 60.0,
+    model: str | None = None,
+    observations: int = 2,
+) -> dict[str, Any]:
+    """Prime and verify the exact request shape used by a real PRO engine.
+
+    A short ``warm_only`` request can prove that *its own* prompt is cached while
+    the following engine request still misses: DeepSeek only persisted the long
+    common prefix in production after seeing an identical full request shape.
+    This helper therefore sends the real engine system/prompt/schema twice under
+    the exact canonical evidence prefix.  Outputs are deliberately discarded;
+    business engines, contracts and prompts are not modified.
+
+    The canonical assistant acknowledgement is installed locally instead of
+    buying a third, shorter warm-up request.  Subsequent engine contexts reuse
+    the same byte string through ``_BUNDLE_WARM_RESPONSES``.
+    """
+
+    selected = (
+        model or os.environ.get("MLOMEGA_DEEPSEEK_MODEL") or "deepseek-v4-pro"
+    ).strip()
+    if selected not in DEEPSEEK_TARIFFS_USD_PER_M:
+        raise CloudProviderError(f"unsupported DeepSeek model: {selected}")
+    count = max(2, int(observations))
+    usages: list[dict[str, int]] = []
+    with cloud_bundle_prefix(bundle_id, bundle_payload) as context:
+        warm_key = (context.digest, selected)
+        context.warm_responses[selected] = _CANONICAL_WARM_RESPONSE
+        _BUNDLE_WARM_RESPONSES[warm_key] = _CANONICAL_WARM_RESPONSE
+        messages = _deepseek_messages(system, prompt, model=selected)
+        for _ in range(count):
+            outer = _deepseek_request(
+                messages=messages,
+                model=selected,
+                # The input must be exact; a tiny discarded output keeps priming
+                # cheap without changing the prompt-cache key.
+                max_output_tokens=32,
+                timeout=timeout,
+                stage_name="bundle_prefix_exact_prime",
+                json_schema=json_schema,
+            )
+            usage = outer.get("usage") if isinstance(outer.get("usage"), dict) else {}
+            details = (
+                usage.get("prompt_tokens_details")
+                if isinstance(usage.get("prompt_tokens_details"), dict)
+                else {}
+            )
+            prompt_tokens = int(usage.get("prompt_tokens") or 0)
+            hit_tokens = int(
+                usage.get("prompt_cache_hit_tokens")
+                or details.get("cached_tokens")
+                or 0
+            )
+            usages.append(
+                {
+                    "prompt_tokens": prompt_tokens,
+                    "hit_tokens": hit_tokens,
+                    "miss_tokens": int(
+                        usage.get("prompt_cache_miss_tokens")
+                        or max(0, prompt_tokens - hit_tokens)
+                    ),
+                }
+            )
+    last = usages[-1]
+    estimated_bundle_tokens = _estimated_tokens(context.canonical_json)
+    required_hit_tokens = max(128, int(estimated_bundle_tokens * 0.75))
+    return {
+        "cache_hit": last["hit_tokens"] >= required_hit_tokens,
+        "hit_tokens": last["hit_tokens"],
+        "miss_tokens": last["miss_tokens"],
+        "prompt_tokens": last["prompt_tokens"],
+        "required_hit_tokens": required_hit_tokens,
+        "digest": context.digest,
+        "observations": usages,
+    }
+
+
 def _deepseek_request(
     *, messages: list[dict[str, str]], model: str, max_output_tokens: int,
     timeout: float, stage_name: str, json_schema: dict[str, Any] | None,
@@ -649,5 +734,7 @@ __all__ = [
     "BundlePrefixContext", "CloudProviderError", "cloud_bundle_prefix",
     "cloud_engine_stage", "current_bundle_prefix", "current_engine_stage",
     "deepseek_chat_json", "gemini_vision_json",
-    "groq_transcribe", "probe_bundle_prefix", "warm_bundle_prefix",
+    "groq_transcribe",
+    "prime_exact_deepseek_prefix", "probe_bundle_prefix",
+    "warm_bundle_prefix",
 ]
