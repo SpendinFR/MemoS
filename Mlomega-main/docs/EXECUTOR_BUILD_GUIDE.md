@@ -1670,3 +1670,31 @@ XREAL (PrepareDefines puis BuildApk) : `prep=0`, `build=0`, sortie fraîche
 `build/android/mlomega-xreal.apk` 200 844 020 octets,
 SHA-256 `C891E36DF651BAF0120AB2171DB543C0D0C6D2155D0654F0EF08C80D6836D752`.
 Ne pas confondre avec l'ancien `mlomega-xreal-g1.apk` daté du 10 juillet.
+
+### PASSATION 2026-07-23 — Étape 3.6 chaos fermée, S25 toujours ouvert
+
+Ne pas refaire les chaos déjà traversés par les anciens Gate B. Les dernières frontières
+inconnues ont été prouvées séparément par `tools/harness/chaos.py`, sur ports et DB
+scratch : authentification/second device, perte réseau et remplacement du peer, perte de
+receipt après écriture DataChannel, panne de persistance vision, puis kill/recovery après
+ACK `/session/end`. Les commandes exactes et rapports sont dans
+`tools/harness/README.md`; le run PRO recovery a coûté **0,002652 €** avec plafond dur
+**0,10 €**.
+
+Verdicts : mauvais token `401`, second appareil `409`, même BrainLive ID au reconnect,
+ancien peer réellement fermé, aucun faux `displayed|seen|acted`, aucune duplication au
+reconnect, panne disque bloquante, et après kill/relaunch exactement un recovery, un
+CloseDay et une session BrainLive terminés. Le scénario Local WebRTC reconnect est aussi
+vert.
+
+Deux faux rouges Local ont été corrigés sans modifier les runs : le probe VLM utilisait
+un JSON non contraint avec seulement 32 tokens et ne relisait pas le JSON Qwen présent
+dans `thinking`; le fingerprint du receipt opposait `null` à chaîne vide pour un budget
+cloud désactivé. Le probe suit maintenant le schéma produit et le receipt normalise les
+valeurs optionnelles.
+
+Ne pas affaiblir la provenance Deep Audio : une mire à tonalité sinusoïdale traverse bien
+audio/vidéo/WebRTC mais doit bloquer un CloseDay exigeant SpeechBrain, car elle ne contient
+aucune voix enrôlable. Utiliser une vraie parole pour cette preuve. La vidéo réelle 30 min
+de 3.5 et les frontières physiques caméra/micro/permissions/rendu/receipts S25 restent les
+seuls gates ouverts; aucune nouvelle modification Local/PRO n'est requise par 3.6.

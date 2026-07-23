@@ -182,6 +182,12 @@ def test_production_gpu_mode_opens_pairing_after_deep_probe(tmp_path, monkeypatc
             "live_model": "qwen3.5:4b",
             "offline_vlm_model": "qwen3-vl:8b",
             "gpu_phase_orchestration": "1",
+            "pro_close_day": "0",
+            "pro_text_model": "",
+            "pro_audio_model": "",
+            "pro_vision_model": "",
+            "cloud_budget_eur": "1.5",
+            "cloud_budget_policy": "",
         },
         "checks": {"live_llm_warm": True},
     }), encoding="utf-8")
@@ -254,6 +260,47 @@ def test_deep_preflight_receipt_requires_fresh_matching_environment(tmp_path, mo
     ok2, detail2 = sessionhub_http._preflight_receipt_check(person_id="me")
     assert ok2 is False
     assert "llamacpp_model" in detail2["mismatches"]
+
+
+def test_local_preflight_receipt_treats_null_and_empty_budget_as_disabled(
+    tmp_path, monkeypatch
+):
+    receipt = tmp_path / "phoneonly_readiness.json"
+    monkeypatch.setenv("MLOMEGA_PREFLIGHT_RECEIPT", str(receipt))
+    monkeypatch.delenv("MLOMEGA_CLOUD_DAILY_BUDGET_EUR", raising=False)
+    fingerprint = {
+        "person_id": "me",
+        "llm_backend": "ollama",
+        "llamacpp_base_url": "http://127.0.0.1:8080",
+        "llamacpp_model": "",
+        "poststop_context": "16384",
+        "live_model": "qwen3.5:4b",
+        "offline_vlm_model": "qwen3-vl:8b",
+        "gpu_phase_orchestration": "0",
+        "pro_close_day": "0",
+        "pro_text_model": "",
+        "pro_audio_model": "",
+        "pro_vision_model": "",
+        "cloud_budget_eur": None,
+        "cloud_budget_policy": "",
+    }
+    receipt.write_text(
+        json.dumps(
+            {
+                "ready": True,
+                "created_at_epoch": time.time(),
+                "mode": "deep",
+                "fingerprint": fingerprint,
+                "checks": {"vlm_json_contract": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    ok, detail = sessionhub_http._preflight_receipt_check(person_id="me")
+
+    assert ok is True
+    assert detail["mismatches"] == {}
 
 
 def test_create_returns_session_token_and_stamp(client):

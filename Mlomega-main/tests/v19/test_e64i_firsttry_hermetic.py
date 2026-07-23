@@ -146,4 +146,32 @@ def test_vlm_probe_uses_real_product_json_mode_and_all_configured_models(monkeyp
 
     assert ok
     assert set(detail["probes"]) == {"vlm-live", "vlm-night"}
-    assert all(call["format"] == "json" and call["images"] for call in calls)
+    assert all(call["format"]["required"] == ["image_received"] and call["images"] for call in calls)
+    assert all(call["format"]["additionalProperties"] is False for call in calls)
+    assert all(call["options"]["num_predict"] >= 128 for call in calls)
+
+
+def test_vlm_probe_accepts_deployed_qwen_json_in_thinking(monkeypatch):
+    module = _load_preflight()
+    cfg = types.SimpleNamespace(ollama_base_url="http://127.0.0.1:11434")
+    monkeypatch.setenv("MLOMEGA_VLM_MODEL", "qwen3-vl:8b")
+    monkeypatch.setenv("MLOMEGA_OFFLINE_VLM_MODEL", "qwen3-vl:8b")
+    monkeypatch.setattr(
+        module,
+        "_ollama_tags",
+        lambda *_args, **_kwargs: ({"qwen3-vl:8b"}, {}),
+    )
+    monkeypatch.setattr(
+        module,
+        "_request_json",
+        lambda *_args, **_kwargs: {
+            "response": "",
+            "thinking": json.dumps({"image_received": True}),
+            "done_reason": "stop",
+        },
+    )
+
+    ok, detail = module._probe_vlm_contract(cfg)
+
+    assert ok
+    assert detail["probes"]["qwen3-vl:8b"]["parsed"] == {"image_received": True}

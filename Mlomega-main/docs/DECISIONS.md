@@ -1729,3 +1729,23 @@ La preuve finale est stratifiée, sans confondre simulation et matériel :
 Cette stratification ferme le câblage sans prétendre certifier caméra/micro, permissions,
 orientation physique, rendu et receipt S25 : ces frontières restent exclusivement au
 Gate matériel de l'Étape finale 4.
+
+## 2026-07-23 — Le chaos se prouve par frontière isolée, sans faux receipt ni faux CloseDay
+
+Les pannes finales sont exécutées sur un serveur, un port et une DB scratch distincts.
+Cela empêche une panne amont de masquer le verdict de la frontière suivante et évite de
+remplir le vrai disque. Une écriture DataChannel ne prouve que le statut transport
+`delivered`; sans UIReceipt, il est interdit d'inventer `displayed`, `seen` ou `acted`.
+Une reconnexion ne renvoie pas automatiquement ce message déjà livré au transport.
+
+L'ACK `/session/end` doit précéder le kill; le job durable est ensuite relu par un nouveau
+processus. Le gate n'est vert que s'il existe exactement un recovery, un CloseDay et une
+session BrainLive pour l'ID durable. Ces invariants ont été prouvés en PRO sous un plafond
+de 0,10 €, sans changer le chemin Local.
+
+Le préflight Local doit tester le même contrat VLM que la production : JSON Schema borné,
+budget de sortie suffisant et lecture `response` puis `thinking` pour le build Qwen
+déployé. Les champs optionnels d'un fingerprint (`null`, absent ou chaîne vide) sont
+équivalents uniquement lorsqu'ils représentent tous l'état désactivé; les valeurs actives
+restent comparées strictement. Une tonalité synthétique ne peut jamais servir de preuve
+SpeechBrain et ne justifie aucun contournement de ce gate.

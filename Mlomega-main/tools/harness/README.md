@@ -110,6 +110,28 @@ runtime active until its close-day finishes, so sharing a server would 409).
   `phoneonly_session_recovery_v19` job. Add `--with-recovery-close-day` to run the
   heavy close-day and assert `completed`; otherwise it asserts the durable
   recovery boundary exists after the kill.
+- `auth_second_device` — wrong-token end/offer must return 401; a second valid
+  paired device must return 409 while the first owns the runtime.
+- `lost_receipt` — disconnect after a real DataChannel UIIntent write but before
+  UIReceipt; transport delivery stays auditable without inventing
+  displayed/seen/acted or duplicating the intent on reconnect.
+- `disk_fault_injection` — execute the real VisionRT and Deep Vision persistence
+  failure tests under `.venv-live`; only scratch DB/media are used.
+
+Final bounded commands used for step 3.6 (each scenario has its own fresh DB):
+
+```powershell
+.\.venv-live\Scripts\python.exe tools\harness\chaos.py --port 8750 --pro --pro-text-model flash --cloud-budget-eur 0.10 --synth-seconds 12 --scenarios auth_second_device --out tools\harness\_chaos\final-auth.json
+.\.venv-live\Scripts\python.exe tools\harness\chaos.py --port 8752 --pro --pro-text-model flash --cloud-budget-eur 0.10 --synth-seconds 18 --scenarios net_drop_reconnect,lost_receipt --out tools\harness\_chaos\final-reconnect-receipt.json
+.\.venv-live\Scripts\python.exe tools\harness\chaos.py --scenarios disk_fault_injection --out tools\harness\_chaos\final-disk.json
+.\.venv-live\Scripts\python.exe tools\harness\chaos.py --port 8756 --pro --pro-text-model flash --cloud-budget-eur 0.10 --cloud-on-budget stop --synth-seconds 12 --scenarios kill_before_close_day --with-recovery-close-day --out tools\harness\_chaos\final-crash-recovery-pro.json
+.\.venv-live\Scripts\python.exe tools\harness\chaos.py --port 8762 --synth-seconds 18 --scenarios net_drop_reconnect --out tools\harness\_chaos\final-local-reconnect.json
+```
+
+The PRO budget is a hard per-run cap here. The validated crash/recovery run cost
+€0.002652. Do not replace the Local SpeechBrain provenance gate with a synthetic
+sine-wave exception: a tone can prove transport but cannot prove a voice-aware
+CloseDay.
 
 ## Scenario format (`scenarios/*.json`)
 

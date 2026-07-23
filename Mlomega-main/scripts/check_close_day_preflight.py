@@ -278,17 +278,34 @@ def _probe_vlm_contract(cfg: Any, *, timeout_s: float = 180.0) -> tuple[bool, di
         try:
             payload = {
                 "model": model,
-                "prompt": "Confirm that an image was supplied. Return JSON only.",
+                "prompt": (
+                    'Confirm that an image was supplied. Return exactly one JSON '
+                    'object shaped as {"image_received":true}.'
+                ),
                 "images": [_PREFLIGHT_PNG],
                 "stream": False,
-                # Match the real deep-vision product request exactly: it uses
-                # Ollama's JSON mode, then validates the object itself.
-                "format": "json",
-                "options": {"temperature": 0, "num_ctx": 2048, "num_predict": 32},
+                # Match LiveVLM.describe(format_schema=...) rather than the old
+                # unconstrained JSON mode. Moondream can otherwise spend the
+                # whole tiny probe describing the image and truncate its object.
+                "format": {
+                    "type": "object",
+                    "properties": {"image_received": {"type": "boolean"}},
+                    "required": ["image_received"],
+                    "additionalProperties": False,
+                },
+                # 32 tokens truncates moondream's otherwise valid JSON on the
+                # deployed build. This remains tiny versus the product's 900-token
+                # structured response budget while proving the actual contract.
+                "options": {"temperature": 0, "num_ctx": 2048, "num_predict": 128},
                 "keep_alive": "0",
             }
             outer = _request_json(f"{root}/api/generate", payload=payload, timeout_s=timeout_s)
-            parsed = json.loads(str(outer.get("response") or ""))
+            # Qwen3-VL on the deployed Ollama build may put its complete JSON in
+            # ``thinking`` and leave ``response`` empty. Both production VLM
+            # consumers already support this exact fallback; the preflight must
+            # validate the same wire contract instead of false-failing Local only.
+            body_text = str(outer.get("response") or outer.get("thinking") or "").strip()
+            parsed = json.loads(body_text)
             model_ok = parsed.get("image_received") is True
             detail["probes"][model] = {"ok": model_ok, "parsed": parsed, "done_reason": outer.get("done_reason")}
             ok = ok and model_ok

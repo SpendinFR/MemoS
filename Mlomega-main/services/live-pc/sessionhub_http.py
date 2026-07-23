@@ -396,12 +396,19 @@ def _preflight_receipt_check(*, person_id: str) -> tuple[bool, dict[str, Any]]:
             "cloud_budget_policy": os.environ.get("MLOMEGA_CLOUD_ON_BUDGET", ""),
         }
         def fingerprint_matches(key: str, observed: Any, wanted: Any) -> bool:
+            observed_text = "" if observed is None else str(observed).strip()
+            wanted_text = "" if wanted is None else str(wanted).strip()
             if key == "cloud_budget_eur":
+                # Local mode has no cloud budget. JSON serializes the preflight
+                # fingerprint's missing value as null while the live environment
+                # resolves it to "". They are the same disabled state.
+                if not observed_text and not wanted_text:
+                    return True
                 try:
-                    return float(observed) == float(wanted)
+                    return float(observed_text) == float(wanted_text)
                 except (TypeError, ValueError):
                     return False
-            return str(observed) == str(wanted)
+            return observed_text == wanted_text
 
         mismatches = {
             key: {"expected": value, "observed": fingerprint.get(key)}

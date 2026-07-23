@@ -1636,7 +1636,7 @@ réduction statique de JSON comme une validation modèle.
   tokens, cache, keyframes sélectionnées/lisibles/analysées, temps Deep Audio/Vision/texte,
   coût DeepSeek éventuel et durée jusqu'à CloseDay.
 
-- [ ] **3.6 Chaos uniquement sur les frontières encore inconnues, sans empiler les runs.**
+- [x] **3.6 Chaos uniquement sur les frontières encore inconnues, sans empiler les runs.**
   Dans ce même run 30 min, scénariser et horodater : coupure réseau puis reconnexion en
   milieu de session; tentative mauvais token/second device pendant la session; après ACK
   `/session/end`, arrêt brutal SessionHub/PC puis relance de RUN et recovery. Exiger même
@@ -1644,6 +1644,25 @@ réduction statique de JSON comme une validation modèle.
   attribuée au mauvais appareil, un seul CloseDay, checkpoints repris, recovery et
   manifests complets. Une panne disque se teste séparément par fault injection sur DB/
   média temporaire — ne jamais remplir le vrai disque.
+
+  > **Clôture 2026-07-23 — scénarios isolés à la demande, sans prétendre avoir exécuté
+  > la vidéo réelle 30 min de 3.5.** Les frontières inconnues ont été séparées sur DB/ports
+  > scratch afin qu'un défaut ne masque pas le suivant : mauvais token `end`/`offer` =
+  > `401`, second device valide = `409` et premier runtime intact; perte réseau/re-offre =
+  > même BrainLive ID durable et ancien peer fermé; UIIntent écrit sur DataChannel puis
+  > transport coupé avant receipt = état transport `delivered`, aucun faux
+  > `displayed|seen|acted` et aucun renvoi au reconnect; panne disque injectée dans les
+  > vrais writers VisionRT/Deep Vision = gate bloquant, jamais faux `complete`.
+  >
+  > Le scénario PRO `kill_before_close_day` a reçu l'ACK 200, tué SessionHub après la
+  > frontière durable, relancé le produit et obtenu exactement **1 recovery, 1 CloseDay,
+  > 1 BrainLive session**, tous terminés. Coût ledger réel : **0,002652 €**, très sous le
+  > plafond **0,10 €/run**. Un scénario Local WebRTC a aussi prouvé reconnexion/même ID/
+  > peer unique. Le CloseDay Local sur une mire sinusoïdale reste honnêtement bloqué faute
+  > de provenance SpeechBrain : ce média sans voix n'est pas une preuve négative produit
+  > et le garde-fou n'a pas été affaibli. Rapports : `tools/harness/_chaos/final-*.json`;
+  > DB recovery : `chaos_recovery_20260723212332.db`. **3.5 et le S25 physique restent
+  > ouverts.**
 
   Ne pas repayer les chaos déjà prouvés par les runs Gate B : backend 404, P1/VLM résident
   et famine VRAM, proxy/HF/cuDNN préflight, sortie LLM tronquée/contrat rejeté, JSON VLM

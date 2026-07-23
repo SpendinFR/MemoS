@@ -1067,3 +1067,27 @@ entrées externes synthétiques explicitement déclarées. Le gate séparé
 le code et les composants PC/Unity; le rendu, le micro, la caméra, les permissions et les
 receipts physiques restent à prouver sur S25, donc ne sont pas marqués comme matériellement
 validés.
+
+## OBS-74 — Le préflight VLM Local refusait le contrat réellement supporté (CORRIGÉ — 2026-07-23)
+
+Le probe utilisait `format="json"` sans schéma et seulement 32 tokens. Moondream
+tronquait alors son objet; sur le build Ollama déployé, Qwen3-VL pouvait placer le JSON
+complet dans `thinking` avec `response` vide, comportement déjà accepté par les
+consommateurs produit mais ignoré par le préflight. Résultat : Local rouge avant pairing
+alors que les VLM étaient fonctionnels.
+
+Correction : même JSON Schema borné que le produit, 128 tokens de sortie pour ce probe
+minuscule, puis parse `response` ou `thinking`. Les deux modèles ont répondu
+`{"image_received":true}` dans le préflight profond réel.
+
+## OBS-75 — Un budget cloud Local désactivé invalidait son propre receipt (CORRIGÉ — 2026-07-23)
+
+Le JSON du préflight persistait l'absence de budget sous `null`; SessionHub lisait
+l'environnement absent comme `""` et signalait un mismatch. La comparaison normalise
+désormais uniquement les valeurs optionnelles désactivées avant la comparaison numérique
+stricte des budgets actifs.
+
+Note non-bug : un CloseDay Local lancé sur la mire audio sinusoïdale du harnais est
+correctement bloqué par `offline SpeechBrain reconciliation returned no provenance`.
+Transport, archive et reconnexion peuvent être prouvés avec cette mire; la provenance
+vocale exige un média contenant une vraie voix. Le garde-fou n'a pas été contourné.
