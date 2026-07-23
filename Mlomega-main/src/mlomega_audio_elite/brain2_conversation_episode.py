@@ -549,11 +549,21 @@ def normalize_detail_window_output(
     if len(batch) == 1 and len(details) > 1:
         source_segment = batch[0]
         source_turn_ids = [str(item) for item in source_segment.get("turn_ids") or []]
+        source_turn_set = set(source_turn_ids)
         cited_partition: list[str] = []
         for detail in details:
             if not isinstance(detail, Mapping):
                 return None
-            evidence = _unique_strings(detail.get("evidence_turn_ids"))
+            # ``sensor_context`` entries carry durable addendum IDs, but the
+            # public field is deliberately named ``evidence_turn_ids`` and the
+            # final episode contract requires it to be a subset of membership.
+            # Some capable VLM-backed models cite both kinds.  Keep every valid
+            # speech citation, leave sensor provenance in its dedicated tables,
+            # and still fail closed when no speech evidence remains.
+            evidence = [
+                item for item in _unique_strings(detail.get("evidence_turn_ids"))
+                if item in source_turn_set
+            ]
             if not evidence:
                 return None
             cited_partition.extend(evidence)
@@ -571,6 +581,15 @@ def normalize_detail_window_output(
         if len(batch) == 1:
             source_segment = batch[0]
             ordinal = expected_ordinals[0]
+            source_turn_ids = [
+                str(item) for item in source_segment.get("turn_ids") or []
+            ]
+            evidence = [
+                item for item in _unique_strings(detail.get("evidence_turn_ids"))
+                if item in set(source_turn_ids)
+            ]
+            if not evidence:
+                return None
             # A sub-segment produced by the deterministic contract-rejection split
             # carries its parent's ``_source_ordinal`` and a ``_part_base`` so the
             # halves of ONE locked segment reassemble in order (part_index unique
@@ -585,10 +604,11 @@ def normalize_detail_window_output(
                 int(part_base) + index if part_base is not None else index
             )
             normalized["turn_ids"] = (
-                _unique_strings(detail.get("evidence_turn_ids"))
+                evidence
                 if len(details) > 1
-                else [str(item) for item in source_segment.get("turn_ids") or []]
+                else source_turn_ids
             )
+            normalized["evidence_turn_ids"] = evidence
             normalized["boundary_reason"] = (
                 str(source_segment.get("boundary_reason") or "")
                 if index == 0
@@ -604,11 +624,19 @@ def normalize_detail_window_output(
             source_segment = next(
                 segment for segment in batch if int(segment["ordinal"]) == ordinal
             )
-            normalized["source_ordinal"] = ordinal
-            normalized["part_index"] = 0
-            normalized["turn_ids"] = [
+            source_turn_ids = [
                 str(item) for item in source_segment.get("turn_ids") or []
             ]
+            evidence = [
+                item for item in _unique_strings(detail.get("evidence_turn_ids"))
+                if item in set(source_turn_ids)
+            ]
+            if not evidence:
+                return None
+            normalized["source_ordinal"] = ordinal
+            normalized["part_index"] = 0
+            normalized["turn_ids"] = source_turn_ids
+            normalized["evidence_turn_ids"] = evidence
             normalized["boundary_reason"] = str(
                 source_segment.get("boundary_reason") or ""
             )
@@ -702,6 +730,20 @@ def assemble_detail_window_outputs(
         raise ConversationEpisodeContractError("detail_window_outputs_missing")
 
     for ordinal, detail in enumerate(parts):
+        turn_ids = [str(item) for item in detail.get("turn_ids") or []]
+        turn_set = set(turn_ids)
+        speech_evidence = [
+            item for item in _unique_strings(detail.get("evidence_turn_ids"))
+            if item in turn_set
+        ]
+        if not speech_evidence:
+            raise ConversationEpisodeContractError(
+                f"detail_part_{ordinal}_missing_speech_evidence"
+            )
+        # Apply the same evidence type boundary while resuming older completed
+        # window checkpoints.  This is what makes a fixed contract resumable
+        # without paying the model again merely to remove a sensor addendum ID.
+        detail["evidence_turn_ids"] = speech_evidence
         detail["ordinal"] = ordinal
         detail.pop("source_ordinal", None)
         detail.pop("part_index", None)

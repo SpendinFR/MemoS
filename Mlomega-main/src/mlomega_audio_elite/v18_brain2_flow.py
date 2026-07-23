@@ -7,6 +7,8 @@ longitudinal or canonical model write.
 """
 from __future__ import annotations
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 from .db import connect, insert_only, upsert, write_transaction
@@ -319,7 +321,7 @@ def install(module: Any) -> dict[str, Any]:
                     person_id=person_id, anchor_case_ids=ids, as_of=None
                 )
 
-            engines: list[tuple[str, Callable[[], Any]]] = [
+            prefix_engines: list[tuple[str, Callable[[], Any]]] = [
                 ("v13_core", lambda: build_v13_for_conversation(
                     conversation_id, person_id=person_id, run_extensions=False
                 )),
@@ -337,6 +339,8 @@ def install(module: Any) -> dict[str, Any]:
                     conversation_id, person_id=person_id, trigger_type=trigger_type,
                     scope="post_conversation_long_horizon"
                 )),
+            ]
+            v14_engines: list[tuple[str, Callable[[], Any]]] = [
                 ("v14_people", lambda: run_v14_5_post_conversation(
                     conversation_id, person_id=person_id
                 )),
@@ -347,6 +351,8 @@ def install(module: Any) -> dict[str, Any]:
                     conversation_id, person_id=person_id, trigger_type=trigger_type
                 )),
                 ("v14_clarifications", _clarifications),
+            ]
+            v17_engines: list[tuple[str, Callable[[], Any]]] = [
                 ("v17_cases", _v17_cases),
                 ("v17_similarity", _v17_similarity),
             ]
@@ -357,7 +363,7 @@ def install(module: Any) -> dict[str, Any]:
             from .runtime_v18_7 import phase
             phase_name = "post_stop_brain2" if checkpoint_run_id else "brain2_direct"
             with phase(phase_name):
-                for name, fn in engines:
+                for name, fn in prefix_engines:
                     _checkpoint_engine(
                         pipeline_run_id=run_id,
                         conversation_id=conversation_id,
@@ -365,6 +371,64 @@ def install(module: Any) -> dict[str, Any]:
                         fn=fn,
                         result=result,
                     )
+
+                pro_v17_overlap = (
+                    os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower()
+                    in {"1", "true", "yes", "on"}
+                    and os.environ.get(
+                        "MLOMEGA_PRO_V17_PARALLEL", "1"
+                    ).strip().lower()
+                    not in {"0", "false", "no", "off"}
+                )
+                if pro_v17_overlap:
+                    # V17 observed cases read only the stable V13 episode/state/
+                    # outcome tables (no V14 dependency). Build them beside the
+                    # strictly ordered V14 chain, then join before similarity and
+                    # V15. Each side owns separate SQLite connections/checkpoints.
+                    v17_result: dict[str, Any] = {
+                        "steps": [],
+                        "resumed_steps": [],
+                        "step_results": {},
+                    }
+                    with ThreadPoolExecutor(
+                        max_workers=1, thread_name_prefix="mlomega-pro-v17"
+                    ) as pool:
+                        cases_future = pool.submit(
+                            _checkpoint_engine,
+                            pipeline_run_id=run_id,
+                            conversation_id=conversation_id,
+                            step_name=v17_engines[0][0],
+                            fn=v17_engines[0][1],
+                            result=v17_result,
+                        )
+                        for name, fn in v14_engines:
+                            _checkpoint_engine(
+                                pipeline_run_id=run_id,
+                                conversation_id=conversation_id,
+                                step_name=name,
+                                fn=fn,
+                                result=result,
+                            )
+                        cases_future.result()
+                    result["steps"].extend(v17_result["steps"])
+                    result["resumed_steps"].extend(v17_result["resumed_steps"])
+                    result["step_results"].update(v17_result["step_results"])
+                    _checkpoint_engine(
+                        pipeline_run_id=run_id,
+                        conversation_id=conversation_id,
+                        step_name=v17_engines[1][0],
+                        fn=v17_engines[1][1],
+                        result=result,
+                    )
+                else:
+                    for name, fn in v14_engines + v17_engines:
+                        _checkpoint_engine(
+                            pipeline_run_id=run_id,
+                            conversation_id=conversation_id,
+                            step_name=name,
+                            fn=fn,
+                            result=result,
+                        )
 
                 if run_v15_after:
                     result["v15"] = run_v15_post_brain2_consolidation(

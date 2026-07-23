@@ -1623,3 +1623,30 @@ Deep Vision 11/11/11, CloseDay et recovery completed. Le temps mesuré est 406,0
 CloseDay et 463,475 s depuis la fin live : ce jalon est la base de non-régression; la
 cible post-live 300 s reste ouverte et ne justifie aucune suppression de moteur, preuve,
 champ ou writer.
+
+## 2026-07-23 — La latence PRO se réduit par chevauchement de preuves, jamais par suppression
+
+Le run frais `gateb-pro-final2-20260723-160047` valide la politique : Deep Audio
+cloud et Deep Vision cloud peuvent démarrer ensemble, car leurs inférences sont
+indépendantes; l'append des observations visuelles attend néanmoins la
+publication de la conversation audio. Le fine-intel peut extraire des lots
+indépendants en parallèle, mais ses writers restent ordonnés. V17 cases peut
+chevaucher V14 puisqu'il ne lit que les tables V13 stables; la barrière reste
+avant ses consommateurs.
+
+Ces chemins n'existent que sous `MLOMEGA_PRO_CLOSEDAY`. EpisodeBuilder Flash est
+également un choix explicite (`MLOMEGA_PRO_EPISODE_BACKEND=deepseek`) qui réutilise
+les mêmes prompts, schémas, fenêtres, checkpoints et writers. Aucun réglage du
+serveur P1 ni du chemin local n'est modifié.
+
+Une citation `evidence_turn_ids` désigne uniquement des tours appartenant au
+segment. Si un modèle y ajoute un identifiant de preuve sensorielle, le
+normaliseur conserve les tours valides, laisse la preuve sensorielle dans sa
+table de provenance et bloque si aucun tour valide ne reste. Cela corrige une
+erreur de type; ce n'est ni une invention ni une perte de preuve.
+
+Preuve finale : ALL PASS, 13/13 commandes, 26/26/26 Deep Vision, coût
+0,088460618 EUR, `post_stop` 379,299 s et CloseDay 388,229 s. La cible 300 s
+n'est donc pas déclarée atteinte : la cardinalité visuelle réelle domine la
+variance. La prochaine comparaison de fournisseur (shadow/MiniMax M3) devra
+partir de ce jalon sans modifier les sorties validées.

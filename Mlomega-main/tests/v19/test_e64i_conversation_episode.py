@@ -168,6 +168,34 @@ def test_detail_window_rebinds_local_zero_to_single_locked_global_ordinal():
     assert normalized["subthemes"][0]["ordinal"] == 3
 
 
+def test_detail_window_keeps_speech_evidence_and_excludes_sensor_addendum_ids():
+    output = _model_output()
+    output["conversation_episode"]["subthemes"] = [
+        dict(
+            output["conversation_episode"]["subthemes"][3],
+            ordinal=0,
+            evidence_turn_ids=["t6", "v18deepaddendum_visual_1", "t7"],
+        )
+    ]
+
+    normalized = normalize_detail_window_output(
+        output,
+        [{"ordinal": 3, "turn_ids": ["t6", "t7"]}],
+    )
+
+    assert normalized is not None
+    assert normalized["subthemes"][0]["turn_ids"] == ["t6", "t7"]
+    assert normalized["subthemes"][0]["evidence_turn_ids"] == ["t6", "t7"]
+
+    output["conversation_episode"]["subthemes"][0]["evidence_turn_ids"] = [
+        "v18deepaddendum_visual_1"
+    ]
+    assert normalize_detail_window_output(
+        output,
+        [{"ordinal": 3, "turn_ids": ["t6", "t7"]}],
+    ) is None
+
+
 def test_detail_window_does_not_guess_multi_segment_ordinals():
     output = _model_output()
     output["conversation_episode"]["subthemes"] = [
@@ -244,7 +272,8 @@ def test_detail_window_assembly_preserves_exact_turn_coverage_after_split():
                 {
                     "ordinal": 0, "source_ordinal": 1, "part_index": 0,
                     "title": "Question", "summary": "Une question est posée.",
-                    "participants": ["Max"], "evidence_turn_ids": ["t2"],
+                    "participants": ["Max"],
+                    "evidence_turn_ids": ["t2", "v18deepaddendum_visual_1"],
                     "turn_ids": ["t2"], "confidence": 0.7,
                 },
                 {
@@ -262,6 +291,7 @@ def test_detail_window_assembly_preserves_exact_turn_coverage_after_split():
 
     subthemes = combined["conversation_episode"]["subthemes"]
     assert [item["turn_ids"] for item in subthemes] == [["t0", "t1"], ["t2"], ["t3"]]
+    assert subthemes[1]["evidence_turn_ids"] == ["t2"]
     assert combined["conversation_episode"]["participants"] == ["me", "Max"]
     assert "Rendez-vous avec Karim" in combined["conversation_episode"]["situation_summary"]
 

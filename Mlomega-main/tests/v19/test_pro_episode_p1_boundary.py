@@ -190,12 +190,22 @@ def test_local_episode_client_never_degrades_to_generic_model_label(monkeypatch)
 
 
 def test_boundary_decision_requires_pro_and_deepseek_backend(monkeypatch):
-    from mlomega_audio_elite.brain2_strict_v13_2 import _episode_builder_forces_local
+    from mlomega_audio_elite.brain2_strict_v13_2 import (
+        _episode_builder_forces_local,
+        _episode_builder_uses_cloud,
+    )
 
     monkeypatch.delenv("MLOMEGA_PRO_CLOSEDAY", raising=False)
+    monkeypatch.delenv("MLOMEGA_PRO_EPISODE_BACKEND", raising=False)
     monkeypatch.setenv("MLOMEGA_LLM_BACKEND", "deepseek")
     assert _episode_builder_forces_local() is False  # local mode: never
+    assert _episode_builder_uses_cloud() is False
     monkeypatch.setenv("MLOMEGA_PRO_CLOSEDAY", "1")
     assert _episode_builder_forces_local() is True
+    assert _episode_builder_uses_cloud() is False
+    monkeypatch.setenv("MLOMEGA_PRO_EPISODE_BACKEND", "deepseek")
+    assert _episode_builder_forces_local() is False
+    assert _episode_builder_uses_cloud() is True
     monkeypatch.setenv("MLOMEGA_LLM_BACKEND", "ollama")
     assert _episode_builder_forces_local() is False  # no cloud inheritance -> no frontier
+    assert _episode_builder_uses_cloud() is False

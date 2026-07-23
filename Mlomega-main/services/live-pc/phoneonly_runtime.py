@@ -516,6 +516,19 @@ class PhoneOnlyRuntime:
             "defer_fine_intel": True,
             "enable_help_mode": True,
         }
+        if (
+            product_pipeline
+            and os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower()
+            in {"1", "true", "yes", "on"}
+            and os.environ.get("MLOMEGA_PRO_FINE_INTEL_CLOUD", "1").strip().lower()
+            not in {"0", "false", "no", "off"}
+        ):
+            # PRO-only latency path: same E38 prompt/schema/checkpoint/writers,
+            # but batch extraction uses DeepSeek Flash and independent batches
+            # may run concurrently after the phone has disconnected.
+            pipeline_kwargs["fine_intel_llm"] = (
+                deferred_fine_intel.build_fine_intel_llm(cloud=True)
+            )
         if product_pipeline:
             pipeline_kwargs.update({
                 "arbiter": self.arbiter,

@@ -1,5 +1,52 @@
 # Passation CloseDay PRO — 19 juillet 2026
 
+## Jalon fonctionnel et latence du 23 juillet 2026, 16:00
+
+Le run frais `gateb-pro-final2-20260723-160047` est **ALL PASS** sur une DB
+neuve : 13/13 effets de commandes, 2 intents UI, 63 segments audio, 3 clips,
+Deep Vision 26/26/26, tous les moteurs Brain2/V14/V17/V18/Life, CloseDay,
+maintenance et recovery `completed`. Coût complet : **0,088460618 EUR**, sous
+hard-stop 0,10 EUR (DeepSeek Flash 0,052312972; Gemini 0,028791867; Groq
+0,007355779).
+
+Le temps s'améliore sans atteindre de façon robuste la cible de cinq minutes :
+`post_stop` **379,299 s**, CloseDay complet **388,229 s**, fin de session vers
+recovery **402,590 s**. La variance vient d'abord de la sélection visuelle :
+ce run dense a retenu 26 images, contre 9 à 15 sur les essais précédents.
+Les raisons persistées sont 24 `scene_object_person_change` + 2
+`safety_interval`, contre 13+2 sur le run à 15 et 6+3 sur le run à 9; aucun
+quota n'a été augmenté.
+Deep Audio (43,226 s) et Deep Vision (106,880 s) démarrent ensemble; seul le
+plus long reste sur le chemin critique. Il est donc interdit de présenter
+`<=300 s` comme validé ou de réduire les preuves pour verdir ce seuil.
+
+Le lot est strictement PRO :
+
+- EpisodeBuilder peut utiliser Flash avec
+  `MLOMEGA_PRO_EPISODE_BACKEND=deepseek`; prompts, schémas, fenêtre lossless,
+  writers et chemin local restent communs;
+- Deep Audio et Gemini sont chevauchés avec append Vision après publication
+  de la conversation audio;
+- le fine-intel PRO utilise Flash par lots indépendants concurrents, puis
+  applique les writers dans l'ordre;
+- V17 cases peut chevaucher la chaîne V14, puis les consommateurs attendent la
+  barrière;
+- sans les flags PRO, les chemins historiques restent séquentiels.
+
+Un premier run frais `gateb-pro-final-20260723-154417` avait bloqué honnêtement
+sur `subtheme_5_invalid_evidence` : Flash avait cité à la fois de vrais tours et
+un identifiant `v18deepaddendum_*` dans `evidence_turn_ids`. La frontière
+conserve désormais uniquement les citations de parole appartenant au segment,
+laisse les preuves visuelles dans leurs tables dédiées et bloque toujours si
+aucune preuve vocale ne reste. La reprise checkpointée de cette DB a ensuite
+terminé CloseDay/recovery sans repayer les médias.
+
+Qualité observée : Flash est plus prudent que le 9B local sur l'absence de
+contexte, les prédictions et les promotions Life Model (`watching` plutôt que
+promotion prématurée). L'identité reste le point faible tant que la voix du
+propriétaire n'est pas enrôlée : certaines relations entre voix inconnues sont
+encore sur-interprétées à faible confiance.
+
 ## Jalon validé le 23 juillet 2026
 
 Le run frais `gateb-pro-target-20260723-143534` remplace les anciennes projections :

@@ -9,6 +9,8 @@ later stage can consume a failed, incomplete or cross-session input.
 """
 
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from typing import Any, Callable
 
@@ -522,7 +524,125 @@ def run_brainlive_post_stop_deep_flow(
         if int(assembly.get("raw_rows", 0) or 0) > 0 and not exported:
             raise StageGateError("assembly has raw evidence but no retained Brain2 export")
 
-        if run_deep_audio:
+        pro_media_parallel = (
+            run_deep_audio
+            and run_deep_vision
+            and os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower()
+            in {"1", "true", "yes", "on"}
+            and os.environ.get("MLOMEGA_CLOUD_VLM_PROVIDER", "local").strip().lower()
+            == "gemini"
+            and os.environ.get("MLOMEGA_PRO_MEDIA_PARALLEL", "1").strip().lower()
+            not in {"0", "false", "no", "off"}
+        )
+
+        if pro_media_parallel:
+            # Gemini is remote, while Deep Audio owns the local GPU. Analyse
+            # pixels concurrently, but append its context turns only after Deep
+            # Audio has published the authoritative conversation export.
+            release_live_model_caches()
+            if gpu_orch is not None:
+                vision_transition = gpu_orch.enter_vision()
+                record_phase_event(
+                    "gpu_phase_transition", to="vision", detail=vision_transition
+                )
+            audio_done = threading.Event()
+            audio_state: dict[str, Any] = {}
+
+            def _parallel_audio() -> dict[str, Any]:
+                try:
+                    if os.environ.get(
+                        "MLOMEGA_DEEP_AUDIO_SUBPROCESS", "1"
+                    ).strip().lower() not in {"0", "false", "no", "off"}:
+                        from .deep_audio_subprocess import run_deep_audio_isolated
+
+                        result = stage(
+                            "deep_audio",
+                            lambda: run_deep_audio_isolated(
+                                person_id=person_id,
+                                package_date=day,
+                                live_session_id=live_session_id,
+                                language=deep_audio_language,
+                                max_bundle_audio_seconds=deep_audio_max_bundle_seconds,
+                            ),
+                        )
+                    else:
+                        from .brainlive_offline_deep_audio_v18_5 import (
+                            run_offline_deep_audio_for_bundles,
+                        )
+
+                        result = stage(
+                            "deep_audio",
+                            lambda: run_offline_deep_audio_for_bundles(
+                                person_id=person_id,
+                                package_date=day,
+                                live_session_id=live_session_id,
+                                language=deep_audio_language,
+                                max_bundle_audio_seconds=deep_audio_max_bundle_seconds,
+                            ),
+                        )
+                    audio_state["result"] = result
+                    return result
+                except BaseException as exc:
+                    audio_state["error"] = exc
+                    raise
+                finally:
+                    audio_done.set()
+
+            def _parallel_vision() -> dict[str, Any]:
+                from .brainlive_offline_deep_vision_v16_1 import (
+                    append_deep_vision_context_turns_to_brain2,
+                    run_offline_deep_vision_for_bundles,
+                )
+
+                def _work() -> dict[str, Any]:
+                    result = run_offline_deep_vision_for_bundles(
+                        person_id=person_id,
+                        package_date=day,
+                        live_session_id=live_session_id,
+                        model=deep_vision_model,
+                        timeout_per_image=deep_vision_timeout_per_image,
+                        max_keyframes_per_bundle=deep_vision_max_keyframes_per_bundle,
+                        append_to_brain2=False,
+                        fail_on_vlm_error=False,
+                        use_vlm=use_llm,
+                    )
+                    audio_done.wait()
+                    audio_error = audio_state.get("error")
+                    if audio_error is not None:
+                        raise audio_error
+                    appended = int(
+                        append_deep_vision_context_turns_to_brain2(
+                            person_id,
+                            package_date=day,
+                            only_status_ok=True,
+                        ).get("turns_appended", 0)
+                        or 0
+                    )
+                    result["appended_brain2_turns"] = appended
+                    with connect() as con, write_transaction(con):
+                        con.execute(
+                            "UPDATE brainlive_deep_vision_runs_v161 "
+                            "SET appended_brain2_turns=?,updated_at=? WHERE run_id=?",
+                            (appended, now_iso(), result.get("run_id")),
+                        )
+                    return result
+
+                return stage("deep_vision", _work)
+
+            with ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="mlomega-pro-media"
+            ) as pool:
+                audio_future = pool.submit(_parallel_audio)
+                vision_future = pool.submit(_parallel_vision)
+                deep_audio = audio_future.result()
+                deep = vision_future.result()
+            exported = _exported_bundle_conversations(
+                person_id, day, live_session_id=live_session_id
+            )
+            if int(assembly.get("bundles", 0)) != len(exported):
+                raise StageGateError("deep-audio export cardinality mismatch")
+
+        if run_deep_audio and not pro_media_parallel:
             # The live service and deep audio run in the same process after
             # stop. Release real-time-only models before loading WhisperX
             # large-v3 so an 8–12 GB GPU does not carry both stacks.
@@ -552,7 +672,7 @@ def run_brainlive_post_stop_deep_flow(
             exported = _exported_bundle_conversations(person_id, day, live_session_id=live_session_id)
             if int(assembly.get("bundles", 0)) != len(exported):
                 raise StageGateError("deep-audio export cardinality mismatch")
-        else:
+        elif not pro_media_parallel:
             from .brainlive_offline_deep_audio_v18_5 import bundles_require_deep_audio
             required_audio = bundles_require_deep_audio(person_id=person_id, package_date=day, live_session_id=live_session_id)
             deep_audio = {"status": "skipped_requires_retention" if required_audio else "skipped_no_audio", "cleanup_blocked": bool(required_audio)}
@@ -564,11 +684,11 @@ def run_brainlive_post_stop_deep_flow(
 
         # Boundary: text/deep-audio -> Deep Vision. Tear P1 down so Qwen3-VL owns
         # the GPU (chantier 2). No-op unless GPU phase orchestration is enabled.
-        if gpu_orch is not None:
+        if gpu_orch is not None and not pro_media_parallel:
             vision_transition = gpu_orch.enter_vision()
             record_phase_event("gpu_phase_transition", to="vision", detail=vision_transition)
 
-        if run_deep_vision:
+        if run_deep_vision and not pro_media_parallel:
             from .brainlive_offline_deep_vision_v16_1 import run_offline_deep_vision_for_bundles
             # The vision worker itself checkpoints each image. It returns a
             # retryable status only after all images have had their bounded
@@ -580,7 +700,7 @@ def run_brainlive_post_stop_deep_flow(
                 max_keyframes_per_bundle=deep_vision_max_keyframes_per_bundle,
                 append_to_brain2=True, fail_on_vlm_error=False, use_vlm=use_llm,
             ))
-        else:
+        elif not pro_media_parallel:
             with connect() as con, write_transaction(con):
                 start_stage(con, run_id=run_id, stage_name="deep_vision", required=False)
                 finish_stage(con, run_id=run_id, stage_name="deep_vision", result=deep, status="skipped")

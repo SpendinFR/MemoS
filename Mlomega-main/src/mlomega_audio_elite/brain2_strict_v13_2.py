@@ -2542,7 +2542,26 @@ def _episode_builder_forces_local() -> bool:
     """
     if not _pro_closeday_enabled():
         return False
+    if os.environ.get("MLOMEGA_PRO_EPISODE_BACKEND", "local").strip().lower() in {
+        "deepseek", "cloud",
+    }:
+        return False
     return os.environ.get("MLOMEGA_LLM_BACKEND", "").strip().lower() == "deepseek"
+
+
+def _episode_builder_uses_cloud() -> bool:
+    """Opt-in PRO-only EpisodeBuilder provider switch.
+
+    Prompts, schemas, lossless windows, checkpoints, coverage validation and
+    writers stay unchanged.  Without the explicit switch, the proven P1 path is
+    still the default and the local product path is byte-for-byte unchanged.
+    """
+    return (
+        _pro_closeday_enabled()
+        and os.environ.get("MLOMEGA_LLM_BACKEND", "").strip().lower() == "deepseek"
+        and os.environ.get("MLOMEGA_PRO_EPISODE_BACKEND", "local").strip().lower()
+        in {"deepseek", "cloud"}
+    )
 
 
 def _cache_settle_seconds() -> float:
@@ -2848,6 +2867,17 @@ def _build_local_episode_window_llm() -> Any:
     return OllamaWindowLLM(system=_BRAIN2_STRICT_SYSTEM, client=client)
 
 
+def _build_cloud_episode_window_llm() -> Any:
+    """Bind the existing EpisodeBuilder executor to the selected DeepSeek model."""
+    from .night_orchestrator.ollama_window_llm import OllamaWindowLLM
+
+    client = OllamaJsonClient(
+        backend="deepseek",
+        model=os.environ.get("MLOMEGA_DEEPSEEK_MODEL") or "deepseek-v4-flash",
+    )
+    return OllamaWindowLLM(system=_BRAIN2_STRICT_SYSTEM, client=client)
+
+
 def _conversation_has_complete_episodes(con, conversation_id: str) -> bool:
     """Read-only completeness predicate, mirror of ``_ensure_episodes_strict``'s head.
 
@@ -2925,8 +2955,11 @@ def _ensure_episodes_strict(con, conversation_id: str, *, person_id: str) -> int
     # ``force_local`` is False without the PRO flag, so both objects are None and
     # the local path below keeps its exact implicit client (byte-for-byte).
     force_local_episode = _episode_builder_forces_local()
+    use_cloud_episode = _episode_builder_uses_cloud()
     episode_window_llm = (
-        _build_local_episode_window_llm() if force_local_episode else None
+        _build_local_episode_window_llm()
+        if force_local_episode
+        else (_build_cloud_episode_window_llm() if use_cloud_episode else None)
     )
     episode_backend_override = (
         llm_client_override(
@@ -2935,7 +2968,15 @@ def _ensure_episodes_strict(con, conversation_id: str, *, person_id: str) -> int
             model=os.environ.get("MLOMEGA_LLAMACPP_MODEL"),
         )
         if force_local_episode
-        else nullcontext()
+        else (
+            llm_client_override(
+                backend="deepseek",
+                model=os.environ.get("MLOMEGA_DEEPSEEK_MODEL")
+                or "deepseek-v4-flash",
+            )
+            if use_cloud_episode
+            else nullcontext()
+        )
     )
     try:
         from .brain2_conversation_episode import (
@@ -2947,7 +2988,14 @@ def _ensure_episodes_strict(con, conversation_id: str, *, person_id: str) -> int
         use_conversation_episode = False
     if use_conversation_episode:
         conversation_package_date = str(bundle.get("conversation", {}).get("started_at") or now_iso())[:10]
-        with episode_backend_override:
+        if use_cloud_episode:
+            from .cloud_providers_v19 import cloud_engine_stage
+            episode_stage_context: Any = cloud_engine_stage(
+                f"episode_builder:{conversation_id}"
+            )
+        else:
+            episode_stage_context = nullcontext()
+        with episode_backend_override, episode_stage_context:
             stats = build_conversation_episode_v6(
                 con,
                 conversation_id,

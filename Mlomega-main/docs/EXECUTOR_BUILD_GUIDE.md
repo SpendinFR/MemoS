@@ -4,6 +4,31 @@
 > diagnostic d'environnement, utiliser [`docs/OPERATOR_RUNBOOK.md`](OPERATOR_RUNBOOK.md).
 > Il fixe notamment la frontière `.venv-live`/`.venv` et évite les faux rouges.
 
+## PASSATION 2026-07-23 16:00 — Gate B PRO final ALL PASS
+
+Preuve fraîche :
+`tools/harness/_run/gateb-pro-final2-20260723-160047.db` (artefact local
+ignoré). Résultat E63 : **ALL PASS**, 13/13 commandes, 2 UI, Deep Vision
+26=26=26, CloseDay et recovery `completed`. Coût **0,088460618 EUR** sous
+hard-stop 0,10 EUR.
+
+Chronos DB, à ne pas confondre avec les 305 s de replay :
+
+- `post_stop` : 379,299 s;
+- CloseDay complet : 388,229 s;
+- fin de session → recovery : 402,590 s.
+
+La cible `<=300 s` reste ouverte : la densité visuelle a produit 26 appels
+Gemini et 106,880 s de Deep Vision. Ne pas supprimer d'image sélectionnée, de
+moteur, de prompt ou de writer pour fabriquer ce chiffre. Le rollback
+fonctionnel/coût reste `ed6acaa`; le nouveau lot ajoute seulement des
+chevauchements PRO et une frontière de type pour `evidence_turn_ids`.
+
+Validation locale du lot : 55 tests EpisodeBuilder/exécuteur/PRO verts,
+puis 40/40 tests `test_phoneonly_runtime.py` dans `.venv-live`. Le run frais
+est la preuve produit finale. Les détails, la qualité Flash et le run de reprise
+sont consignés dans [`PRO_CLOSEDAY_HANDOFF.md`](PRO_CLOSEDAY_HANDOFF.md).
+
 ## PASSATION 2026-07-23 — Gate B PRO coût validé, temps encore ouvert
 
 Le jalon à ne pas régresser est

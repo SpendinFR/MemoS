@@ -12,7 +12,10 @@ source-addressed writers remain idempotent.
 
 import json
 import importlib.util
+import os
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -51,6 +54,69 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _pro_cloud_fine_intel_enabled() -> bool:
+    return (
+        os.environ.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower()
+        in {"1", "true", "yes", "on"}
+        and os.environ.get("MLOMEGA_PRO_FINE_INTEL_CLOUD", "1").strip().lower()
+        not in {"0", "false", "no", "off"}
+    )
+
+
+class _FineIntelClientAdapter:
+    """Strict fine-intel client with an explicit phase-owned backend."""
+
+    def __init__(self, *, cloud: bool | None = None) -> None:
+        from mlomega_audio_elite.config import get_settings
+        from mlomega_audio_elite.llm import OllamaJsonClient
+
+        use_cloud = _pro_cloud_fine_intel_enabled() if cloud is None else bool(cloud)
+        if use_cloud:
+            self.client = OllamaJsonClient(
+                backend="deepseek",
+                model=os.environ.get("MLOMEGA_DEEPSEEK_MODEL")
+                or "deepseek-v4-flash",
+            )
+        else:
+            settings = get_settings()
+            self.client = OllamaJsonClient(
+                base_url=settings.ollama_base_url,
+                model=settings.ollama_live_model,
+                backend="ollama",
+            )
+
+    def complete_json(
+        self,
+        system,
+        user,
+        *,
+        schema_hint=None,
+        timeout=None,
+        max_output_tokens=None,
+    ):
+        if str(getattr(self.client, "backend", "")) == "deepseek":
+            from mlomega_audio_elite.cloud_providers_v19 import cloud_engine_stage
+
+            stage_context: Any = cloud_engine_stage("post_stop_fine_intel")
+        else:
+            from contextlib import nullcontext
+
+            stage_context = nullcontext()
+        with stage_context:
+            return self.client.require_json(
+                system,
+                user,
+                schema_hint=schema_hint,
+                timeout=float(timeout or 60.0),
+                max_output_tokens=max_output_tokens,
+            )
+
+
+def build_fine_intel_llm(*, cloud: bool | None = None) -> Any:
+    """Factory shared by live finalization and crash recovery."""
+    return _FineIntelClientAdapter(cloud=cloud)
+
+
 class DeferredFineIntel:
     """Persist and process E38 turn analysis in bounded, replay-safe batches."""
 
@@ -78,6 +144,7 @@ class DeferredFineIntel:
         self.batch_size = max(1, int(batch_size))
         self.max_attempts = max(1, int(max_attempts))
         self.max_output_tokens = max(256, int(max_output_tokens))
+        self._metrics_lock = threading.Lock()
         self.metrics: dict[str, int] = {
             "enqueued": 0,
             "model_calls": 0,
@@ -90,6 +157,27 @@ class DeferredFineIntel:
             "failures": 0,
         }
         self._ensure_schema()
+
+    def _metric_add(self, name: str, amount: int = 1) -> None:
+        with self._metrics_lock:
+            self.metrics[name] += int(amount)
+
+    def _parallel_workers(self) -> int:
+        client = getattr(self.llm, "client", self.llm)
+        if not _pro_cloud_fine_intel_enabled() or str(
+            getattr(client, "backend", "")
+        ).strip().lower() != "deepseek":
+            return 1
+        try:
+            return max(
+                1,
+                min(
+                    8,
+                    int(os.environ.get("MLOMEGA_PRO_FINE_INTEL_WORKERS", "6")),
+                ),
+            )
+        except ValueError:
+            return 6
 
     def _connect(self):
         return connect(self.db_path)
@@ -163,7 +251,7 @@ class DeferredFineIntel:
             )
         inserted = bool(cur.rowcount)
         if inserted:
-            self.metrics["enqueued"] += 1
+            self._metric_add("enqueued")
         return inserted
 
     def pending_count(self) -> int:
@@ -177,11 +265,16 @@ class DeferredFineIntel:
 
     def process_pending(self, *, max_batches: int | None = None) -> dict[str, Any]:
         """Drain extracted rows first, then pay at most one LLM call per batch."""
+        workers = self._parallel_workers()
+        if workers > 1:
+            return self._process_pending_parallel(
+                workers=workers, max_batches=max_batches
+            )
         batches = 0
         while max_batches is None or batches < max_batches:
             extracted = self._load_rows("extracted", self.batch_size)
             if extracted:
-                self.metrics["reused_extractions"] += len(extracted)
+                self._metric_add("reused_extractions", len(extracted))
                 self._apply_rows(extracted)
                 continue
 
@@ -197,6 +290,66 @@ class DeferredFineIntel:
             "status": "completed" if remaining == 0 else "pending",
             "remaining": remaining,
             "metrics": dict(self.metrics),
+        }
+
+    def _process_pending_parallel(
+        self, *, workers: int, max_batches: int | None
+    ) -> dict[str, Any]:
+        """PRO-only parallel extraction; deterministic writers stay serialized."""
+        batches = 0
+        while max_batches is None or batches < max_batches:
+            extracted = self._load_rows(
+                "extracted", self.batch_size * max(1, workers)
+            )
+            if extracted:
+                self._metric_add("reused_extractions", len(extracted))
+                self._apply_rows(extracted)
+                continue
+
+            remaining_batches = (
+                workers
+                if max_batches is None
+                else min(workers, max(0, int(max_batches) - batches))
+            )
+            if remaining_batches <= 0:
+                break
+            pending = self._load_rows(
+                "pending",
+                self.batch_size * remaining_batches,
+                attempts_lt=self.max_attempts,
+            )
+            if not pending:
+                break
+            groups = [
+                pending[index:index + self.batch_size]
+                for index in range(0, len(pending), self.batch_size)
+            ]
+            batches += len(groups)
+            errors: list[Exception] = []
+            with ThreadPoolExecutor(
+                max_workers=min(workers, len(groups)),
+                thread_name_prefix="mlomega-pro-fine-intel",
+            ) as pool:
+                futures = {
+                    pool.submit(self._extract_batch, group): group
+                    for group in groups
+                }
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        errors.append(exc)
+            ordered_ids = [str(row["turn_id"]) for row in pending]
+            self._apply_rows(self._load_rows_by_ids(ordered_ids))
+            if errors:
+                raise errors[0]
+
+        remaining = self.pending_count()
+        return {
+            "status": "completed" if remaining == 0 else "pending",
+            "remaining": remaining,
+            "metrics": dict(self.metrics),
+            "parallel_workers": workers,
         }
 
     def _load_rows(
@@ -250,7 +403,7 @@ class DeferredFineIntel:
                         turn_id,
                     ),
                 )
-        self.metrics["turns_extracted"] += len(expected)
+        self._metric_add("turns_extracted", len(expected))
 
     def _record_contract_rejection(
         self,
@@ -282,10 +435,10 @@ class DeferredFineIntel:
                     _now(),
                 ),
             )
-        self.metrics["contract_rejections"] += 1
+        self._metric_add("contract_rejections")
 
     def _mark_failed(self, rows: Sequence[Mapping[str, Any]], exc: Exception) -> None:
-        self.metrics["failures"] += 1
+        self._metric_add("failures")
         with self._connect() as con, write_transaction(con):
             for row in rows:
                 con.execute(
@@ -325,7 +478,7 @@ class DeferredFineIntel:
                 f"copy this turn_id byte-for-byte: {payloads[0]['turn_id']}."
             )
         try:
-            self.metrics["model_calls"] += 1
+            self._metric_add("model_calls")
             result = self.llm.complete_json(
                 system,
                 prompt,
@@ -377,7 +530,7 @@ class DeferredFineIntel:
                 error_text=error_text,
                 strategy="singleton_id_rebind",
             )
-            self.metrics["singleton_id_rebinds"] += 1
+            self._metric_add("singleton_id_rebinds")
             self._save_extracted({expected[0]: fixed}, expected)
             return
 
@@ -397,7 +550,7 @@ class DeferredFineIntel:
         )
 
         if len(unresolved) > 1:
-            self.metrics["batch_splits"] += 1
+            self._metric_add("batch_splits")
             mid = len(unresolved) // 2
             self._extract_batch(unresolved[:mid])
             self._extract_batch(unresolved[mid:])
@@ -453,10 +606,10 @@ class DeferredFineIntel:
                        SET status='completed',completed_at=?,last_error=NULL WHERE turn_id=?""",
                     (_now(), str(row["turn_id"])),
                 )
-            self.metrics["turns_applied"] += 1
+            self._metric_add("turns_applied")
 
 
-__all__ = ["DeferredFineIntel"]
+__all__ = ["DeferredFineIntel", "build_fine_intel_llm"]
 
 
 def _load_service_sibling(name: str, filename: str):
@@ -543,7 +696,7 @@ def process_deferred_fine_intel_backlog(
         person_id=person_id,
         live_session_id=live_session_id,
         db_path=db_path,
-        llm=llm or _CoreClientAdapter(),
+        llm=llm or build_fine_intel_llm(),
         hypothesis_engine=hypothesis,
         attribute_memory=attributes,
         batch_size=int(__import__("os").environ.get("MLOMEGA_LIVE_FINE_INTEL_BATCH", "8")),

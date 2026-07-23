@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -218,3 +220,43 @@ def test_singleton_opaque_id_is_rebound_without_losing_semantics(tmp_path):
             "SELECT result_json FROM live_fine_intel_queue_v19 WHERE turn_id='turn-0'"
         ).fetchone()
         assert json.loads(row["result_json"])["turn_id"] == "turn-0"
+
+
+class _ParallelCloudLLM(_LLM):
+    def __init__(self) -> None:
+        super().__init__()
+        self.client = type("Client", (), {"backend": "deepseek"})()
+        self._lock = threading.Lock()
+        self.active = 0
+        self.peak = 0
+
+    def complete_json(self, system, prompt, **kwargs):
+        with self._lock:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        try:
+            time.sleep(0.03)
+            return super().complete_json(system, prompt, **kwargs)
+        finally:
+            with self._lock:
+                self.active -= 1
+
+
+def test_pro_cloud_fine_intel_extracts_independent_batches_in_parallel(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MLOMEGA_PRO_CLOSEDAY", "1")
+    monkeypatch.setenv("MLOMEGA_LLM_BACKEND", "deepseek")
+    monkeypatch.setenv("MLOMEGA_PRO_FINE_INTEL_CLOUD", "1")
+    monkeypatch.setenv("MLOMEGA_PRO_FINE_INTEL_WORKERS", "4")
+    llm = _ParallelCloudLLM()
+    batch = _batcher(tmp_path / "parallel.db", llm, size=2)
+    _enqueue(batch, 8)
+
+    result = batch.process_pending()
+
+    assert result["status"] == "completed"
+    assert result["remaining"] == 0
+    assert result["parallel_workers"] == 4
+    assert llm.calls == 4
+    assert llm.peak > 1
