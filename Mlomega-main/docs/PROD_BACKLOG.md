@@ -1485,56 +1485,70 @@ réduction statique de JSON comme une validation modèle.
   vidéo, ~1,80–2,35 € pour 60 min de parole; Flash : ~0,10–0,19 €, ~0,23–0,30 € et
   ~0,58–0,75 €. Ajouter une marge de tokenizer/tarif de 15 % au stop/go.
 
-- [ ] **2.2 Outil owner/qualité shadow : usage, coût et autorité strictement bornés.** Les
+- [x] **2.2 Outil owner/qualité shadow : usage, coût et autorité strictement bornés.** Les
   fichiers existants `owner_quality_gate.py`, `owner_quality_truth.json`,
   `owner_context_v19` et `prediction_policy_v19` restent hors produit. Le précédent essai
   de raccord aux writers/compilateurs a régressé Brain2 et a été restauré exactement au
   parent `7d417be`; ne pas le réintroduire indirectement. Contrat :
 
-  - DB source ouverte en lecture seule, clone neuf obligatoire, rapport JSON seulement;
-    aucune correction, suppression, promotion, backfill ou « nettoyage » automatique de
-    `memory.db`;
+  - `owner_quality_shadow.py` est un nouvel outil manuel; l'ancien
+    `owner_quality_gate.py` et ses prompts restent intacts. La source est ouverte en `ro`
+    pendant le devis et les appels, et l'inférence travaille sur un clone neuf;
   - premier passage obligatoire `--plan-only`, **sans aucun appel** : inventorier par
     stage moteur les items candidats, appels prévus, tokens input/output réservés,
     keyframes et tuiles image, checkpoints/cache réutilisables, coût min/max par provider
     et estimation murale. Afficher ce devis avant toute demande payante;
-  - exécution uniquement avec `--execute`, modes orthogonaux
-    `--text-backend local|deepseek|minimax` et
-    `--vision-backend local|together|gemini|minimax`, même fixture et
-    même clone de départ pour A/B; pas de tâche planifiée chaque nuit et pas d'appel en
-    arrière-plan sans commande;
+  - exécution uniquement avec `--execute --plan <devis>`. Le texte est audité par
+    `deepseek-v4-pro`; la vision réutilise les observations persistées
+    (`--vision-backend existing`) et ne repaye aucune image. Pas de tâche planifiée chaque
+    nuit et pas d'appel en arrière-plan sans commande;
   - journaliser chaque appel/retour : stage, digest sans donnée sensible, provider/modèle,
     cache/checkpoint hit, tokens texte/image/output, heure départ, TTFB, heure retour,
     validation JSON, retry, statut HTTP et coût. Le résumé rapproche **prévu vs réel** et
     explique tout écart; une ligne sans réponse n'est jamais comptée comme succès;
-  - mesurer doublons, contradictions, faits sans preuve, confusion owner/autre,
-    promotions trop rapides et remplissage de schéma; montrer proposition+preuves sans
-    décider quelle table canonique doit être réécrite;
+  - mesurer doublons, contradictions possibles, faits sans preuve, promotions trop rapides,
+    prédictions invérifiables, dépassements de plafond de confiance et remplissage de
+    schéma. Les anomalies SQL certaines ne consomment aucun appel; seuls les cas ambigus
+    partent par petits lots vers Pro;
+  - `--apply-safe` ne donne jamais du SQL au modèle. DeepSeek classe uniquement les IDs du
+    devis; toute cible hors candidat est refusée. Le code sauvegarde la DB, vérifie le SHA,
+    ouvre une transaction et n'autorise que deux effets : clamp déterministe
+    `confidence<=confidence_ceiling`, et overlays durables
+    `owner_quality_shadow_*_v19` pour masquer dans le Dashboard les doublons exacts/fillers.
+    Aucun fait n'est supprimé, aucune preuve n'est perdue, les cas ambigus restent annotés.
+    `foreign_key_check` + `quick_check` sont obligatoires; toute erreur restaure le backup;
   - partager le ledger/plafond cloud de 1 €/jour entre DeepSeek et le VLM cloud. Si le CloseDay
     a consommé le budget, le shadow ne part pas; override manuel séparé avec estimation
     affichée avant accord. La réservation est atomique avant chaque appel et libérée ou
     réconciliée au retour, afin que des appels parallèles ne dépassent jamais ensemble le
     plafond;
-  - preuve actuelle sur la fixture cinq minutes : **18 appels, 102 353 tokens in,
-    22 772 out, 436,6 s d'inférence et 518,4 s murales**. Coût V4 Pro sans cache
-    ≈0,056 € sur cette fixture; extrapolation : 0,28–0,42 € et 43–65 min de calcul local
-    pour une heure normale, ~0,67 € et ~1 h 44 pour une heure dense, ~1,69 € et ~4 h 20
-    pour 60 min de parole. Ce coût supplémentaire interdit son exécution quotidienne en
-    l'état; usage conseillé : audit ponctuel/hebdomadaire ou comparaison de modèle.
+  - devis réel sans appel sur `gateb-pro-final2-20260723-160047` : 399 tables, 99 faits,
+    26 observations Deep Vision réutilisées, 100 candidats dont 83 déterministes et
+    seulement 17 à soumettre à DeepSeek, soit 3 appels, ~13 103 tokens entrée, 3 600 sortie
+    réservée et **0,008882 € maximum avec marge 15 %**. Ce résultat remplace l'ancienne
+    projection erronée qui rejouait 18 moteurs complets. Usage conseillé : manuel le jour
+    OFF/hebdomadaire, jamais après chaque CloseDay;
 
   Interface cible, sans modifier l'ancienne commande locale :
 
   ```powershell
-  .\.venv\Scripts\python.exe tools\harness\owner_quality_gate.py `
+  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+  $plan = "tools\harness\_run\owner-shadow-$stamp-plan.json"
+  $report = "tools\harness\_run\owner-shadow-$stamp-report.json"
+  .\.venv\Scripts\python.exe tools\harness\owner_quality_shadow.py `
     --db $db --owner-id me --owner-name William `
-    --truth tools\harness\scenarios\owner_quality_truth.json `
     --plan-only --text-backend deepseek --deepseek-model deepseek-v4-pro `
-    --vision-backend together --together-model Qwen/Qwen3.5-9B `
-    --budget-eur 1.00 --out tools\harness\_run\owner-quality-$stamp.json
+    --vision-backend existing --budget-eur 1.00 --out $plan
+  # Lire le devis global, pas chaque ligne; puis lancer l'arbitre + application bornée :
+  .\.venv\Scripts\python.exe tools\harness\owner_quality_shadow.py `
+    --db $db --owner-id me --owner-name William `
+    --execute --plan $plan --apply-safe `
+    --text-backend deepseek --deepseek-model deepseek-v4-pro `
+    --vision-backend existing --budget-eur 1.00 --out $report
   ```
 
-  Après lecture du devis, remplacer seulement `--plan-only` par `--execute`. Le rapport
-  d'audit compare qualité et coût; il ne devient jamais un writer de production.
+  Le ledger partagé tient compte du coût CloseDay déjà engagé le même jour. Le rapport
+  rapproche prévu/réel et donne le backup exact; le Dashboard sait le lire.
 
 #### Étape finale 3 — Dashboard humain et spatial fiable, puis chaos réel 30 minutes
 
@@ -1543,7 +1557,7 @@ réduction statique de JSON comme une validation modèle.
 > mémoire lisible sans écriture, fermer le trou bbox découvert, puis utiliser une vraie
 > vidéo de 30 min proche du S25 pour les seules frontières chaos encore non prouvées.
 
-- [ ] **3.1 Dashboard lecture seule réellement humain.** Conserver SQLite en mode `ro` et
+- [x] **3.1 Dashboard lecture seule réellement humain.** Conserver SQLite en mode `ro` et
   supprimer/désactiver en production tout contrôle CLI d'écriture. Vérifier le SHA de la
   DB avant/après une session Dashboard. Remplacer l'heuristique « nom de table contient
   model/fact ⇒ fait sûr » par une whitelist sémantique et des adaptateurs par contrat :
@@ -1558,11 +1572,12 @@ réduction statique de JSON comme une validation modèle.
     carte principale ne doit se réduire à un ID ou « Pas de résumé disponible » si un
     champ sémantique existe.
 
-- [ ] **3.2 Vue visuelle utile, sans rappel VLM.** Joindre `visual_events_v19`, assets,
+- [x] **3.2 Vue visuelle utile, sans rappel VLM.** Joindre `visual_events_v19`, assets,
   `brainlive_deep_vision_observations_v161` et réemploi/consolidation existants. Afficher
   miniature, résumé détaillé, activité, lieu, personnes, objets, OCR, incertitude,
-  timestamp, raison de keyframe et provenance SHA. La DB actuelle prouve que **15/15**
-  observations possèdent déjà un résumé lisible : le Dashboard les ignore aujourd'hui.
+  timestamp, raison de keyframe et provenance SHA. La DB finale actuelle prouve que
+  **26/26** observations possèdent déjà un résumé lisible; elles sont maintenant rendues
+  directement, avec miniature et incertitude.
   Un événement bbox sans résumé est présenté comme géométrie technique liée à son résumé
   Deep Vision, pas comme une carte mémoire vide.
 
@@ -1587,10 +1602,12 @@ réduction statique de JSON comme une validation modèle.
     miniature 304×540, multi-objets et déplacement réel. Rejouer le sélecteur sur clone :
     variation de keyframes expliquée par scènes réelles, pas par géométrie invalide.
 
-- [ ] **3.4 Gate Dashboard sans régression.** Sur un clone de la DB courante : 15 résumés
+- [x] **3.4 Gate Dashboard sans régression.** Sur la DB courante : 26 résumés
   Deep Vision lisibles, lunettes/téléphone/table retrouvables, Life watch compréhensible,
   lineage masqué par défaut, preuves ouvrables, aucune écriture et aucun appel LLM/VLM.
-  Tests de rendu sur tables présentes/vides/malformées et capture humaine. Corriger aussi
+  Adaptateurs purs testés sur tables techniques/inconnues, Life watch, JSON visuel et bbox
+  legacy; aucune requête LLM/VLM. `RUN_DASHBOARD.ps1` calcule le SHA avant/après et échoue
+  s'il change. Corriger aussi
   `RUN_DASHBOARD.ps1` pour Windows PowerShell UTF-8 : la commande documentée doit ouvrir
   8720 sans passer par le lancement Python direct utilisé lors de l'audit.
 

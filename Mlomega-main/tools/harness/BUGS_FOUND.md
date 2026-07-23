@@ -1022,3 +1022,20 @@ frontière `reserved → in_flight` persistée immédiatement avant HTTP, repris
 Seule une non-émission prouvée devient `released`; un envoi possible devient `uncertain`
 et reste compté au pire cas. Tests crash avant/après envoi et concurrence obligatoires.
 Les lignes du run interrompu restent des preuves et ne doivent pas être éditées à la main.
+
+## OBS-71 — Le Dashboard présentait des artefacts techniques comme souvenirs (CORRIGÉ — 2026-07-23)
+
+La classification par nom de table envoyait lineage, checkpoints, consumed_sources et IDs
+dans « sûr / observé ». Les événements visuels affichaient une bbox brute et « Pas de
+résumé » alors que Deep Vision avait déjà persisté résumé, objets, OCR et incertitudes.
+
+Correction sans toucher aux runs : whitelist sémantique, adaptateurs Life/vision, expander
+Audit technique, 26 miniatures/résumés de la DB finale rendus sans appel VLM, bbox legacy
+invalide signalée explicitement. Le Dashboard n'expose plus aucune commande CLI ou
+écriture; son lanceur compare le SHA de la DB avant/après.
+
+L'audit owner devient un outil manuel séparé. Il ne rejoue pas CloseDay : devis zéro appel,
+anomalies SQL certaines locales, seulement les ambiguïtés vers DeepSeek Pro. L'application
+automatique reste bornée par du code (backup SQLite, cibles du devis, transaction,
+foreign-key/quick-check) : clamp de confiance ou overlay d'affichage, jamais SQL généré ni
+suppression de preuve.

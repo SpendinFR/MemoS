@@ -1650,3 +1650,40 @@ Preuve finale : ALL PASS, 13/13 commandes, 26/26/26 Deep Vision, coût
 n'est donc pas déclarée atteinte : la cardinalité visuelle réelle domine la
 variance. La prochaine comparaison de fournisseur (shadow/MiniMax M3) devra
 partir de ce jalon sans modifier les sorties validées.
+
+La variation visuelle 9→15→26 n'est pas une variation de quota : les runs
+comparés utilisent le même sélecteur. Le run final contient 24 raisons
+`scene_object_person_change` et 2 `safety_interval`, contre 13+2 sur le run à 15;
+la couverture totale variait également avec les frames réellement reçues. On ne
+restaure donc aucun ancien commit pour faire baisser artificiellement ce nombre.
+
+## 2026-07-23 — L'audit owner hebdomadaire est un arbitre borné, pas un second CloseDay
+
+`tools/harness/owner_quality_shadow.py` ne rejoue aucun moteur et ne relit aucune
+image. `--plan-only` ouvre la source en lecture seule, mesure les anomalies déjà
+matérialisées et établit le devis sans appel. Les invariants SQL certains
+(plafond de confiance, preuve annoncée mais absente, promotion invérifiable) sont
+validés localement; seuls les conflits/duplications sémantiques ambigus sont
+envoyés par petits lots à `deepseek-v4-pro`. Le ledger et le plafond partagé de
+1 EUR restent autoritaires.
+
+La demande produit est que l'utilisateur n'ait pas à valider cent lignes une à
+une. `--apply-safe` automatise donc la validation, mais ne donne jamais du SQL au
+modèle : DeepSeek ne peut citer que les cibles du devis. Le code sauvegarde la
+DB, vérifie les digests, applique en transaction une liste fermée d'opérations,
+puis exécute `foreign_key_check` et `quick_check`. La seule mutation canonique
+autorisée est `confidence=min(confidence,confidence_ceiling)`. Les doublons
+exacts et fillers ne sont pas supprimés : une décision durable
+`owner_quality_shadow_decisions_v19` les masque dans la lecture Dashboard tout
+en préservant provenance, writers et consommateurs historiques. Toute cible
+hors devis ou erreur restaure le backup.
+
+Le Dashboard est désormais strictement lecteur : plus de bouton CLI, chat,
+clarification ou feedback susceptible d'écrire des logs. Sa classification
+sûr/hypothèse/prédiction repose sur une whitelist de contrats; lineage,
+checkpoints, manifests et IDs vont dans « Audit technique ». Les watches Life
+portent leur clé humaine et leurs sources datées. Deep Vision affiche les
+résumés, activités, lieux, objets, personnes, OCR, incertitudes, miniature,
+raison et provenance déjà stockés, sans rappel VLM. Une bbox historique
+invalide reste signalée `bbox_invalid_legacy`; ce lot de lecture ne modifie pas
+VisionRT ni le chemin Local/PRO validé.

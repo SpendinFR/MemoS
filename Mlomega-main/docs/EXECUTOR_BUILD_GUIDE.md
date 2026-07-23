@@ -140,9 +140,55 @@ affecté ce run (`stack_status=ok`). Ils sont du bruit de permissions hors works
 proxies morts doivent néanmoins être retirés avant lancement. Les artefacts `_run` ne sont
 jamais commités.
 
-Prochaine étape : commit/push de ce lot, puis un **Gate B exact-HEAD neuf** pour la preuve
-de non-régression bout-en-bout; ensuite seulement Étape finale 3 Gate C. Ne toucher ni aux
-deux fichiers Unity locaux de l'utilisateur ni au prompt V13 stable entre ces preuves.
+### PASSATION 2026-07-23 — Shadow owner manuel + Dashboard strictement lecteur
+
+Ne relance ni Gate B ni CloseDay pour ce lot. Le shadow inspecte les tables déjà produites
+et réutilise Deep Vision. Toujours commencer par le devis zéro appel :
+
+```powershell
+$db = (Resolve-Path "tools\harness\_run\gateb-pro-final2-20260723-160047.db").Path
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$plan = "tools\harness\_run\owner-shadow-$stamp-plan.json"
+$report = "tools\harness\_run\owner-shadow-$stamp-report.json"
+.\.venv\Scripts\python.exe tools\harness\owner_quality_shadow.py `
+  --db $db --owner-id me --owner-name William `
+  --plan-only --text-backend deepseek --deepseek-model deepseek-v4-pro `
+  --vision-backend existing --budget-eur 1.00 --out $plan
+```
+
+Le JSON doit annoncer `mode=plan_only_zero_calls`, `source_unchanged=true` et un coût
+maximum inférieur au budget restant. Le jour OFF choisi par l'utilisateur :
+
+```powershell
+.\.venv\Scripts\python.exe tools\harness\owner_quality_shadow.py `
+  --db $db --owner-id me --owner-name William `
+  --execute --plan $plan --apply-safe `
+  --text-backend deepseek --deepseek-model deepseek-v4-pro `
+  --vision-backend existing --budget-eur 1.00 --out $report
+```
+
+Le modèle ne produit pas de SQL. Une cible hors devis bloque tout; un backup
+`*.pre-owner-shadow-*.db` précède l'application. Les seules mutations canoniques sont les
+clamps de confiance prouvés; doublons/fillers deviennent des overlays de lecture, jamais
+des suppressions. Vérifier dans le rapport `quick_check=ok`, le backup et le coût réel.
+
+Dashboard :
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\RUN_DASHBOARD.ps1 `
+  -Database $db -ShadowReport $report
+```
+
+Le script sert `http://localhost:8720`, imprime le SHA avant/après et échoue si la DB
+change. Il n'expose plus chat, clarification, feedback ou unlock CLI. Les tables techniques
+restent sous « Audit technique ». Le lot ne touche ni Live, ni CloseDay, ni prompts, ni
+providers, ni les fichiers Unity locaux. Tests ciblés :
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest `
+  tests\v19\test_owner_quality_shadow.py `
+  tests\v19\test_dashboard_read_model.py -q -p no:cacheprovider
+```
 
 Complément d'exécution de `docs/EXECUTOR_HANDOFF.md`. Le handoff dit **quoi** construire et pourquoi ; ce guide dit **comment**, étape par étape, avec les signatures réelles du code existant (extraites du dépôt le 2026-07-03 — recopiées, pas paraphrasées). Les références « guide §x » (TTL SceneCache, skills, composants UI, chaînes de scénarios, gates, tests, règles de vérité) résolvent dans `docs/GUIDE_V19_REFERENCE.md`. En cas de divergence entre ce guide et le code réel, **le code réel fait foi** : lire le module, consigner la divergence dans `docs/DECISIONS.md`, continuer.
 

@@ -7,17 +7,20 @@ lire le résultat d'une session réelle après le close-day.
 
 Adapté de MemoryLight Dashboard 2.0 (E50, 2026-07-08) : mêmes principes —
 **lecture seule stricte** (SQLite ouvert en `mode=ro`, aucune requête
-INSERT/UPDATE/DELETE), les rares interactions passent par la CLI officielle du
-cœur et sont verrouillées derrière la saisie du mot `ECRIRE`.
+INSERT/UPDATE/DELETE). Le chat, les clarifications, le feedback et l'ancien
+verrou `ECRIRE` ne sont plus exposés : aucun CLI n'est lancé par la page.
 
 ## Lancement (le plus simple)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\RUN_DASHBOARD.ps1
+powershell -ExecutionPolicy Bypass -File scripts\RUN_DASHBOARD.ps1 `
+  -Database "C:\chemin\vers\memory.db" `
+  -ShadowReport "tools\harness\_run\owner-shadow-...-report.json"
 ```
 
 Le script installe streamlit/pandas dans `.venv-live` s'ils manquent, lit
-`MLOMEGA_DB` depuis le `.env` du projet, et sert sur **http://localhost:8720**.
+`MLOMEGA_DB` depuis le `.env` du projet, sert sur **http://localhost:8720** et
+compare le SHA-256 de la DB avant/après la session.
 
 > Port **8720** — choisi pour ne pas entrer en collision avec le projet :
 > 8710 (SessionHub), 6333/6334 (Qdrant), 11434 (Ollama), 8766 (Phone Bridge,
@@ -44,16 +47,14 @@ $env:MLOMEGA_DB="C:\chemin\vers\memory.db"   # sinon lu depuis le .env du projet
    - entités/lieux/routines WorldBrain (`brain2_spatial_routine_models`,
      `scene_session_summaries_v19`) ;
    - sessions live + close-day runs (statut `reopened` des multi-sessions inclus).
-3. Chat mémoire (`v14-ask` — toujours valide dans la CLI actuelle du cœur, routé
-   sur `ask_brain2`), recherche globale, vue preuves, toutes les tables en
-   sections pliables, debug brut.
+3. Rapport owner/qualité shadow (constats, décisions, coût, backup), recherche
+   globale, vue preuves, toutes les tables en sections pliables, debug brut.
 
 Toute table absente de la base s'affiche « absent » — jamais une erreur.
 
 ## Sécurité
 
 - Base ouverte `file:...?mode=ro` ; le dashboard n'écrit jamais directement.
-- Les seules actions modificatrices possibles sont `v14-answer` (répondre à une
-  clarification) et `v14-intervention-feedback`, via la CLI du cœur
-  (`python -m mlomega_audio_elite.cli`), désactivées tant que le verrou `ECRIRE`
-  n'est pas saisi dans la barre latérale.
+- Aucun contrôle d'écriture ou appel modèle n'est disponible dans le Dashboard.
+- Les décisions shadow déjà validées peuvent masquer un doublon exact ou un
+  filler dans la vue humaine; la ligne brute reste accessible dans l'audit.

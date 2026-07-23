@@ -4,8 +4,7 @@ MemoryLight Omega — Dashboard 2.0
 =================================
 
 One-page Streamlit dashboard for the MemoryLight / mlomega_audio_elite SQLite database.
-It is read-only by default. Optional interactions call the official CLI and require an
-explicit write-mode unlock, so the dashboard itself never performs direct SQLite writes.
+It is strictly read-only: no CLI bridge and no write unlock are exposed.
 
 Run:
     streamlit run app.py -- --db /path/to/memory.db --person-id me
@@ -16,6 +15,7 @@ Optional CLI bridge:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -29,6 +29,17 @@ from typing import Any, Iterable, Optional
 
 import pandas as pd
 import streamlit as st
+
+from read_model import (
+    TECHNICAL_TABLES,
+    bbox_audit,
+    certainty_bucket,
+    deep_vision_view,
+    human_title,
+    life_watch_view,
+    parse_json,
+    semantic_text,
+)
 
 APP_TITLE = "MemoryLight Dashboard"
 APP_SUBTITLE = "Self-model visible • mémoire 2.0 • cockpit une-page"
@@ -430,8 +441,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--person-id", default=os.environ.get("MLOMEGA_PERSON_ID", DEFAULT_PERSON_ID))
     parser.add_argument("--limit", type=int, default=int(os.environ.get("MLOMEGA_DASHBOARD_LIMIT", "14")))
     parser.add_argument("--project-root", default=os.environ.get("MLOMEGA_PROJECT_ROOT", ""))
-    # Default CLI: run the in-repo module so no global install is required.
-    parser.add_argument("--cli", default=os.environ.get("MLOMEGA_CLI", "python -m mlomega_audio_elite.cli"))
+    parser.add_argument("--shadow-report", default=os.environ.get("MLOMEGA_SHADOW_REPORT", ""))
     args, _ = parser.parse_known_args()
     return args
 
@@ -481,6 +491,49 @@ def connect_readonly(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+@st.cache_data(show_spinner=False, ttl=5)
+def file_sha256(db_path: str) -> str:
+    digest = hashlib.sha256()
+    with Path(db_path).expanduser().resolve().open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+@st.cache_data(show_spinner=False, ttl=2)
+def shadow_hidden_ids(db_path: str) -> dict[str, set[str]]:
+    hidden: dict[str, set[str]] = {}
+    if "owner_quality_shadow_decisions_v19" not in set(list_tables_cached(db_path)):
+        return hidden
+    con = connect_readonly(db_path)
+    try:
+        rows = con.execute(
+            """SELECT target_table,target_id
+               FROM owner_quality_shadow_decisions_v19
+               WHERE verdict='confirmed'
+                 AND action IN ('suppress_duplicate','suppress_filler')"""
+        ).fetchall()
+        for row in rows:
+            hidden.setdefault(str(row[0]), set()).add(str(row[1]))
+    finally:
+        con.close()
+    return hidden
+
+
+def filter_shadow_hidden(db_path: str, table: str, df: pd.DataFrame) -> pd.DataFrame:
+    ids = shadow_hidden_ids(db_path).get(table) or set()
+    if not ids or df.empty:
+        return df
+    id_columns = [
+        column for column in df.columns
+        if column == "id" or column.endswith("_id")
+    ]
+    if not id_columns:
+        return df
+    id_column = id_columns[0]
+    return df[~df[id_column].astype(str).isin(ids)]
 
 
 @st.cache_data(show_spinner=False, ttl=2)
@@ -834,8 +887,6 @@ def card_html(label: str, title: str, body: str, meta: str = "", tight: bool = F
 
 
 def render_hero(db_path: str, person_id: str, filters: DashFilters, cli: CliConfig) -> None:
-    status = "CLI interactif actif" if cli.enabled else "lecture seule stricte"
-    write = "écriture CLI déverrouillée" if cli.write_enabled else "aucune écriture directe"
     date_span = "toutes dates"
     if filters.date_start or filters.date_end:
         date_span = f"{filters.date_start or 'début'} → {filters.date_end or 'fin'}"
@@ -843,7 +894,8 @@ def render_hero(db_path: str, person_id: str, filters: DashFilters, cli: CliConf
 <div class="hero">
   <h1>🧠 {APP_TITLE}</h1>
   <p>{APP_SUBTITLE} — personne: <b>{html_escape(person_id)}</b> — DB: <code>{html_escape(Path(db_path).name)}</code></p>
-  <p><span class="chip">{html_escape(status)}</span><span class="chip">{html_escape(write)}</span><span class="chip">{html_escape(date_span)}</span></p>
+  <p><span class="chip">lecture seule stricte</span><span class="chip">aucun CLI / aucun appel modèle</span><span class="chip">{html_escape(date_span)}</span></p>
+  <p class="small-muted">SHA-256 DB : <code>{html_escape(file_sha256(db_path))}</code></p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -992,28 +1044,22 @@ def render_certainty_panel(db_path: str, infos: list[TableInfo], filters: DashFi
     hyps: list[tuple[str, pd.Series]] = []
     preds: list[tuple[str, pd.Series]] = []
     for i in infos:
-        if i.count == 0:
+        if i.count == 0 or i.name in TECHNICAL_TABLES:
             continue
-        table_l = i.name.lower()
-        if not any(k in table_l for k in ["fact", "memory", "hypothesis", "pattern", "prediction", "forecast", "causal", "simulation", "model", "loop"]):
+        declared_bucket = certainty_bucket(i.name, {})
+        if declared_bucket is None:
             continue
         df = load_rows_filtered_cached(db_path, i.name, min(limit, 8), filters.person_id, filters.date_start, filters.date_end, filters.min_confidence, filters.person_query, filters.status_query)
+        df = filter_shadow_hidden(db_path, i.name, df)
         if df.empty or "error" in df.columns:
             continue
         for _, r in df.iterrows():
-            status = str(pick_status(r) or "").lower()
-            blob = " ".join([i.name.lower(), status, str(first_existing(r, ["truth_status", "validity_status", "current_status", "status"]) or "").lower()])
-            if any(k in blob for k in ["prediction", "forecast", "future", "simulation", "trajectory"]):
+            bucket = certainty_bucket(i.name, r)
+            if bucket == "prediction":
                 preds.append((i.name, r))
-            elif any(k in blob for k in ["hypothesis", "candidate", "inferred", "uncertain", "watching", "possible"]):
+            elif bucket == "hypothesis":
                 hyps.append((i.name, r))
-            elif any(k in blob for k in ["confirmed", "observed", "fact", "verified", "valid", "resolved"]):
-                facts.append((i.name, r))
-            elif "causal" in i.name.lower() or "pattern" in i.name.lower():
-                hyps.append((i.name, r))
-            elif "prediction" in i.name.lower() or "forecast" in i.name.lower():
-                preds.append((i.name, r))
-            else:
+            elif bucket == "fact":
                 facts.append((i.name, r))
             if len(facts) >= 10 and len(hyps) >= 10 and len(preds) >= 10:
                 break
@@ -1025,7 +1071,9 @@ def render_certainty_panel(db_path: str, infos: list[TableInfo], filters: DashFi
             col.caption("Aucun élément détecté avec les filtres actuels.")
             continue
         for table, r in rows:
-            col.markdown(card_html(table, pick_title(r), pick_body(r) or evidence_preview_from_row(r), f"{pick_status(r) or '—'} · {fmt_conf(pick_confidence(r))}", tight=True), unsafe_allow_html=True)
+            title_text = human_title(table, r)
+            body_text = semantic_text(r, fallback=evidence_preview_from_row(r))
+            col.markdown(card_html(table, title_text, body_text, f"{pick_status(r) or '—'} · {fmt_conf(pick_confidence(r))}", tight=True), unsafe_allow_html=True)
 
 
 def render_reliability_panel(db_path: str, filters: DashFilters) -> None:
@@ -1161,6 +1209,7 @@ def render_section(db_path: str, filters: DashFilters, section: str, tables: lis
         shown = 0
         for t in non_empty[:8 if compact else 18]:
             df = load_rows_filtered_cached(db_path, t, limit, filters.person_id, filters.date_start, filters.date_end, filters.min_confidence, filters.person_query, filters.status_query)
+            df = filter_shadow_hidden(db_path, t, df)
             if df.empty or "error" in df.columns:
                 continue
             st.markdown(f"**{t}**")
@@ -1442,6 +1491,47 @@ def render_v19_life_model(db_path: str, filters: DashFilters, limit: int) -> Non
     st.markdown('<div class="section-title">Life Model V19</div>', unsafe_allow_html=True)
     st.caption("Entrées typées, historique/transitions, prédictions + verification_spec + outcomes + calibration.")
 
+    watches = _v19_load(
+        db_path, "brain2_life_model_watch_candidates", filters,
+        max(limit, 40), order_desc_on="last_seen_at",
+    )
+    with st.expander("👀 Candidats Life en observation", expanded=True):
+        if watches is None:
+            _v19_absent("brain2_life_model_watch_candidates")
+        elif watches.empty:
+            st.caption("Aucun candidat Life en observation.")
+        else:
+            for _, raw in watches.iterrows():
+                view = life_watch_view(raw)
+                promoted = (
+                    f" · promu vers {view['promoted_to']}"
+                    if view["promoted_to"] else ""
+                )
+                meta = (
+                    f"{view['status']} · {view['occurrences']} occurrence(s) · "
+                    f"{view['independent_sources']} source(s) indépendante(s){promoted}"
+                )
+                source_lines = []
+                for source in view["sources"][:5]:
+                    if isinstance(source, dict):
+                        source_lines.append(
+                            f"{source.get('occurred_at') or 'date inconnue'} · "
+                            f"{source.get('source_table') or 'source'}:{source.get('source_id') or '—'}"
+                        )
+                st.markdown(
+                    card_html(
+                        "watch",
+                        view["title"],
+                        " | ".join(source_lines) or "Preuve en attente.",
+                        meta,
+                        tight=True,
+                    ),
+                    unsafe_allow_html=True,
+                )
+                with st.expander("Preuves et identifiant technique", expanded=False):
+                    st.code(str(view["watch_id"] or ""))
+                    st.json(view["sources"])
+
     with st.expander("🧬 Entrées typées & schéma de soi", expanded=True):
         entries = _v19_load(db_path, "life_model_entries_v19", filters, max(limit, 40), order_desc_on="updated_at")
         if entries is None:
@@ -1502,35 +1592,131 @@ def render_v19_life_model(db_path: str, filters: DashFilters, limit: int) -> Non
 
 
 def render_v19_visual(db_path: str, filters: DashFilters, limit: int) -> None:
-    st.markdown('<div class="section-title">Événements visuels & chaîne de preuve</div>', unsafe_allow_html=True)
-    st.caption("`visual_events_v19` + `visual_evidence_assets_v19` (frame/clip, sha256).")
+    st.markdown('<div class="section-title">Ce qui a réellement été vu</div>', unsafe_allow_html=True)
+    st.caption("Réutilise les observations Deep Vision déjà persistées : aucun rappel VLM.")
     ev = _v19_load(db_path, "visual_events_v19", filters, max(limit, 60), order_desc_on="occurred_at")
     assets = _v19_load(db_path, "visual_evidence_assets_v19", filters, 500, order_desc_on="captured_at")
-    if ev is None:
-        _v19_absent("visual_events_v19")
-        return
-    if ev.empty:
-        st.info("Aucun événement visuel.")
-        return
+    deep = _v19_load(
+        db_path, "brainlive_deep_vision_observations_v161", filters,
+        max(limit, 80), order_desc_on="frame_time",
+    )
+    reuse = _v19_load(
+        db_path, "visual_consolidation_deep_reuse_v19", filters,
+        500, order_desc_on="updated_at",
+    )
     asset_by_id: dict[str, pd.Series] = {}
+    asset_by_frame: dict[str, pd.Series] = {}
     if assets is not None and not assets.empty and "visual_asset_id" in assets.columns:
         for _, a in assets.iterrows():
             asset_by_id[str(a.get("visual_asset_id"))] = a
-    for _, r in ev.head(max(limit, 20)).iterrows():
-        meta = f"{r.get('event_type') or '—'} · {r.get('truth_level') or '—'} · conf {fmt_conf(r.get('confidence'))} · {truncate(r.get('occurred_at'), 20)}"
-        body = safe_json_preview(r.get("observation_json")) or safe_json_preview(r.get("entity_json")) or safe_json_preview(r.get("place_json"))
-        st.markdown(card_html("visual", truncate(body, 200) or str(r.get("visual_event_id")), "", meta, tight=True), unsafe_allow_html=True)
-        aid = str(r.get("asset_id") or "")
-        a = asset_by_id.get(aid)
-        if a is not None:
-            st.markdown(f'<div class="evidence"><span class="small-muted">preuve {html_escape(a.get("asset_kind"))} · sha256 {html_escape(truncate(a.get("sha256"), 16))}</span><br/>{html_escape(truncate(a.get("uri"), 160))}</div>', unsafe_allow_html=True)
-    with st.expander("Assets de preuve visuelle", expanded=False):
+            if a.get("frame_id"):
+                asset_by_frame[str(a.get("frame_id"))] = a
+
+    deep_by_frame: dict[str, dict[str, Any]] = {}
+    if deep is None:
+        _v19_absent("brainlive_deep_vision_observations_v161")
+    elif deep.empty:
+        st.info("Aucune observation Deep Vision persistée.")
+    else:
+        for _, r in deep.head(max(limit, 30)).iterrows():
+            view = deep_vision_view(r)
+            deep_by_frame[str(view["frame_id"] or "")] = view
+            cols = st.columns([1, 3])
+            image_path = Path(str(view["image_path"] or ""))
+            if image_path.is_file():
+                cols[0].image(str(image_path), use_container_width=True)
+            else:
+                cols[0].caption("Miniature absente ou déplacée.")
+            people_count = view["people"].get("people_count") if view["people"] else None
+            details = []
+            if view["activity"]:
+                details.append(f"activité : {view['activity']}")
+            if view["location"]:
+                details.append(f"lieu : {view['location']}")
+            if people_count is not None:
+                details.append(f"personnes : {people_count}")
+            if view["objects"]:
+                details.append("objets : " + ", ".join(map(str, view["objects"][:8])))
+            if view["visible_text"]:
+                details.append("OCR : " + " | ".join(map(str, view["visible_text"][:5])))
+            meta = (
+                f"{truncate(view['frame_time'], 20)} · raison {view['sample_reason'] or '—'} · "
+                f"{view['status'] or '—'} · {view['model'] or '—'}"
+            )
+            cols[1].markdown(
+                card_html(
+                    "vision prouvée",
+                    truncate(view["title"], 500),
+                    " · ".join(details),
+                    meta,
+                    tight=True,
+                ),
+                unsafe_allow_html=True,
+            )
+            if view["uncertainty"]:
+                cols[1].caption(
+                    "Incertitudes : " + " | ".join(map(str, view["uncertainty"][:4]))
+                )
+            asset = asset_by_frame.get(str(view["frame_id"] or ""))
+            if asset is not None:
+                cols[1].caption(
+                    f"SHA-256 preuve : {asset.get('sha256') or '—'}"
+                )
+            with cols[1].expander("Provenance technique", expanded=False):
+                st.code(str(view["frame_id"] or ""))
+                st.code(str(view["image_path"] or ""))
+                st.json({key: r.get(key) for key in r.index if key.endswith("_json")})
+
+    with st.expander("Géométrie VisionRT et événements techniques", expanded=False):
+        if ev is None:
+            _v19_absent("visual_events_v19")
+        elif ev.empty:
+            st.caption("Aucun événement géométrique.")
+        else:
+            invalid = 0
+            rows = []
+            for _, r in ev.head(max(limit, 80)).iterrows():
+                audit = bbox_audit(r.get("observation_json"))
+                if audit.get("present") and audit.get("valid") is False:
+                    invalid += 1
+                refs = parse_json(r.get("evidence_refs_json"), [])
+                refs = refs if isinstance(refs, list) else []
+                frame_ids = [
+                    str(ref).split("frame:", 1)[1]
+                    for ref in refs if str(ref).startswith("frame:")
+                ]
+                linked = next(
+                    (deep_by_frame[frame_id]["title"] for frame_id in frame_ids if frame_id in deep_by_frame),
+                    "",
+                )
+                entity = parse_json(r.get("entity_json"), {})
+                entity = entity if isinstance(entity, dict) else {}
+                rows.append({
+                    "date": r.get("occurred_at"),
+                    "type": r.get("event_type"),
+                    "objet": entity.get("label"),
+                    "confiance": r.get("confidence"),
+                    "bbox": audit.get("bbox"),
+                    "géométrie": audit.get("label"),
+                    "résumé Deep Vision lié": linked,
+                })
+            st.caption(
+                f"{len(rows)} événement(s) affiché(s) · {invalid} bbox legacy invalide(s), "
+                "signalées mais jamais réparées silencieusement."
+            )
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    with st.expander("Audit technique : assets et réemploi", expanded=False):
         if assets is None:
             _v19_absent("visual_evidence_assets_v19")
         elif assets.empty:
             st.caption("Aucun asset.")
         else:
             st.dataframe(pretty_df(assets), use_container_width=True, hide_index=True)
+        if reuse is None:
+            _v19_absent("visual_consolidation_deep_reuse_v19")
+        elif not reuse.empty:
+            st.dataframe(pretty_df(reuse), use_container_width=True, hide_index=True)
 
 
 def render_v19_world(db_path: str, filters: DashFilters, limit: int) -> None:
@@ -1626,6 +1812,90 @@ def render_data_coverage(infos: list[TableInfo]) -> None:
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
+def render_shadow_report(report_path: str) -> None:
+    st.markdown('<div class="section-title">Audit owner / qualité</div>', unsafe_allow_html=True)
+    if not report_path:
+        st.caption(
+            "Aucun rapport shadow sélectionné. Le Dashboard n’exécute jamais l’audit lui-même."
+        )
+        return
+    path = Path(report_path).expanduser().resolve()
+    if not path.is_file():
+        st.warning(f"Rapport shadow introuvable : {path}")
+        return
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        st.error(f"Rapport shadow illisible : {exc}")
+        return
+    summary = report.get("summary") or {}
+    application = report.get("application") or {}
+    cols = st.columns(5)
+    cols[0].metric("Candidats", summary.get("candidates", 0))
+    cols[1].metric("Confirmés", summary.get("confirmed", 0))
+    cols[2].metric("À revoir", summary.get("needs_human", 0))
+    cols[3].metric("Coût", f"{float(summary.get('actual_cost_eur') or 0):.4f} €")
+    cols[4].metric("Écritures canoniques", application.get("canonical_updates", 0))
+    st.caption(
+        "Décision DeepSeek → validation codée → opérations bornées. "
+        f"Backup : {application.get('backup_db') or 'aucune application'}"
+    )
+    candidates = {
+        str(item.get("candidate_id")): item
+        for item in report.get("candidates") or []
+    }
+    findings = report.get("findings") or []
+    for finding in findings:
+        if not isinstance(finding, dict) or finding.get("verdict") == "not_issue":
+            continue
+        candidate = candidates.get(str(finding.get("candidate_id"))) or {}
+        verdict = str(finding.get("verdict") or "needs_human")
+        st.markdown(
+            card_html(
+                verdict,
+                str(candidate.get("title") or candidate.get("kind") or "Constat"),
+                str(finding.get("reason") or candidate.get("reason") or ""),
+                f"{candidate.get('kind') or 'audit'} · {finding.get('recommended_action') or 'review'}",
+                tight=True,
+            ),
+            unsafe_allow_html=True,
+        )
+        with st.expander("Preuves et cibles", expanded=False):
+            st.json({
+                "refs": candidate.get("refs") or [],
+                "evidence": candidate.get("evidence"),
+                "suggested_action": candidate.get("suggested_action"),
+            })
+    with st.expander("Rapport brut et appels", expanded=False):
+        st.json({
+            "source": report.get("source_db"),
+            "source_sha256_before": report.get("source_sha256_before"),
+            "source_sha256_after": report.get("source_sha256_after"),
+            "calls": report.get("calls") or [],
+            "application": application,
+        })
+
+
+def render_technical_audit(
+    db_path: str, infos: list[TableInfo], filters: DashFilters, limit: int
+) -> None:
+    existing = {info.name: info for info in infos}
+    technical = [table for table in sorted(TECHNICAL_TABLES) if table in existing]
+    with st.expander("🔧 Audit technique — lineage, checkpoints, manifests", expanded=False):
+        st.caption(
+            "Ces lignes prouvent le fonctionnement du pipeline; elles ne sont jamais "
+            "présentées comme des souvenirs certains."
+        )
+        for table in technical:
+            st.markdown(f"**{table}** — {existing[table].count} ligne(s)")
+            if existing[table].count:
+                df = load_rows_filtered_cached(
+                    db_path, table, min(limit, 20), filters.person_id,
+                    filters.date_start, filters.date_end, 0.0, "", "",
+                )
+                st.dataframe(pretty_df(df), use_container_width=True, hide_index=True)
+
+
 def render_debug(db_path: str, infos: list[TableInfo], filters: DashFilters, limit: int) -> None:
     st.markdown('<div class="section-title">Mode debug — toutes les tables</div>', unsafe_allow_html=True)
     st.caption("Chaque table existante est accessible. Le chargement reste en lecture seule.")
@@ -1659,7 +1929,7 @@ def render_debug(db_path: str, infos: list[TableInfo], filters: DashFilters, lim
                     st.code(df2.head(12).to_string())
 
 
-def setup_sidebar(args: argparse.Namespace) -> tuple[str, DashFilters, int, bool, CliConfig]:
+def setup_sidebar(args: argparse.Namespace) -> tuple[str, DashFilters, int, bool, CliConfig, str]:
     st.sidebar.markdown("### Base & filtres")
     candidates = find_candidate_dbs()
     default_db = args.db or (str(candidates[0]) if candidates else "")
@@ -1679,28 +1949,23 @@ def setup_sidebar(args: argparse.Namespace) -> tuple[str, DashFilters, int, bool
     compact = st.sidebar.toggle("Mode compact", value=True)
     filters = DashFilters(person_id=person_id, date_start=start.isoformat() if start else "", date_end=end.isoformat() if end else "", min_confidence=float(min_conf), person_query=person_query.strip(), status_query=status_query.strip())
     st.sidebar.markdown("---")
-    st.sidebar.markdown("### Interactions CLI")
-    cli_enabled = st.sidebar.toggle("Activer le chat/CLI", value=False)
-    cli_command = st.sidebar.text_input("Commande CLI", value=args.cli or "mlomega-audio")
-    project_root = st.sidebar.text_input("Racine projet", value=args.project_root, placeholder="optionnel, contient src/")
-    timeout_seconds = st.sidebar.slider("Timeout CLI", 15, 300, 120, 15)
-    st.sidebar.caption("Le dashboard n’écrit jamais directement dans SQLite. Les interactions passent par la CLI officielle.")
-    st.sidebar.markdown("### Verrou écriture")
-    unlock = st.sidebar.text_input("Tape ECRIRE pour répondre/feedback", value="", type="password")
-    write_enabled = bool(cli_enabled and unlock == "ECRIRE")
-    if write_enabled:
-        st.sidebar.warning("Écriture CLI activée : clarifications et feedback interventions peuvent modifier la base via le projet.")
-    else:
-        st.sidebar.caption("Mode sûr : aucune action de correction/feedback ne sera envoyée.")
-    cli = CliConfig(cli_enabled, write_enabled, cli_command, project_root, timeout_seconds)
-    return db_path, filters, limit, compact, cli
+    st.sidebar.markdown("### Audit shadow (lecture)")
+    shadow_report = st.sidebar.text_input(
+        "Rapport JSON", value=args.shadow_report or "",
+        placeholder="tools/harness/_run/owner-shadow-....json",
+    )
+    st.sidebar.caption(
+        "Aucun bouton d’écriture ni CLI n’existe dans ce Dashboard."
+    )
+    cli = CliConfig(False, False, "", args.project_root, 0)
+    return db_path, filters, limit, compact, cli, shadow_report
 
 
 def main() -> None:
     args = parse_args()
     st.set_page_config(page_title=APP_TITLE, page_icon="🧠", layout="wide", initial_sidebar_state="collapsed")
     render_css()
-    db_path, filters, limit, compact, cli = setup_sidebar(args)
+    db_path, filters, limit, compact, cli, shadow_report = setup_sidebar(args)
     if not db_path:
         st.warning("Indique le chemin de la base SQLite MemoryLight dans la barre latérale.")
         return
@@ -1724,8 +1989,8 @@ def main() -> None:
     # real V19 tables; anything absent renders as "absent", never an error).
     render_v19_block(db_path, filters, limit)
     st.markdown("---")
-    render_chat(db_path, filters, cli)
-    st.markdown("---")
+    render_shadow_report(shadow_report)
+    render_technical_audit(db_path, infos, filters, limit)
     render_search(db_path, infos, limit)
     render_evidence_view(db_path, filters, limit)
     st.markdown("---")
@@ -1733,9 +1998,6 @@ def main() -> None:
     st.caption("Une seule page : le self-model reste visible en haut, les couches profondes s’ouvrent ici, et le debug complet reste en bas.")
     for section, tables in CORE_TABLES.items():
         render_section(db_path, filters, section, tables, infos_by_name, limit, compact)
-    st.markdown("---")
-    render_clarification_write(db_path, filters, cli, limit)
-    render_intervention_feedback(db_path, filters, cli, limit)
     st.markdown("---")
     render_data_coverage(infos)
     render_debug(db_path, infos, filters, limit)
