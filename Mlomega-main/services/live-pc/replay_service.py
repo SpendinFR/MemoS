@@ -378,6 +378,8 @@ class ReplayService:
             "component": "context_card",
             "content": {
                 "kind": "replay_timeline",
+                "title": "Replay",
+                "text": summary + (("\n" + "\n".join(lines)) if lines else ""),
                 "window": window,
                 "summary": summary,
                 "timeline": lines,

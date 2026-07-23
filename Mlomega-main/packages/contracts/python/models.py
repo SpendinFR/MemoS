@@ -29,16 +29,21 @@ class LocalTrack(StrictModel):
 class SceneDelta(StrictModel):
     session_id: str; source_frame_id: str; entities: list[dict[str, Any]] = Field(default_factory=list)
     relations: list[dict[str, Any]] = Field(default_factory=list); changes: list[dict[str, Any]] = Field(default_factory=list)
+    frame_width: int | None = None; frame_height: int | None = None
+    rotation: Literal[0,90,180,270] = 0; mirrored: bool = False
+    coordinate_space: str = "detector_pixels"
     map_quality: float = 0.0; evidence_refs: list[str] = Field(default_factory=list); expires_at: str | None = None
 
 class ReflexEvent(StrictModel):
     session_id: str; source_frame_id: str; skill: str; prediction: dict[str, Any]
     horizon_ms: int; confidence: float; severity: str; evidence_refs: list[str] = Field(default_factory=list); aggregate_key: str
 
-TruthLevel = Literal['observed','probable','remembered','inferred','replay']
+TruthLevel = Literal['observed','probable','remembered','inferred','replay','unknown']
 class UIIntent(StrictModel):
+    type: Literal['ui_intent'] = 'ui_intent'
     ui_intent_id: str; producer: Literal['ultralive','visionrt','brainlive']; source_frame_id: str | None = None
-    target_track_id: str | None = None; entity_id: str | None = None; component: str; anchor: dict[str, Any]
+    target_track_id: str | None = None; entity_id: str | None = None; component: str
+    anchor: dict[str, Any] = Field(default_factory=dict)
     content: dict[str, Any]; truth_level: TruthLevel; confidence: float; priority: float; ttl_ms: int
     ui_hint: dict[str, Any] = Field(default_factory=dict); evidence_refs: list[str] = Field(default_factory=list); delivery_id: str | None = None
 

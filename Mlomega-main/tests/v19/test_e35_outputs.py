@@ -153,6 +153,7 @@ def test_replay_bundle_and_intents_from_seeded_window(tmp_path, monkeypatch):
     assert vscreen["component"] == "virtual_screen"
     assert len(vscreen["content"]["frames"]) == 1
     assert res["timeline"]["content"]["kind"] == "replay_timeline"
+    assert res["timeline"]["content"]["text"].startswith("Replay 14:30")
     # Both intents were pushed to the (companion/device) sink.
     kinds = [i.get("component") for i in emitted]
     assert "virtual_screen" in kinds and "context_card" in kinds

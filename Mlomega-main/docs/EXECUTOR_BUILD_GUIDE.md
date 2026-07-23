@@ -1616,3 +1616,57 @@ font pas partie du commit.
 jugement humain 1.5, puis Gate C synthétique si le résultat est acceptable. Ne réactiver
 ni les prompts owner ni un nettoyeur LLM dans le hot path. L'enrôlement réel et les ponts
 matériels restent le Gate S25; Gate C/D restent nécessaires pour la capacité 1 h/8 h.
+
+### PASSATION 2026-07-23 — Étape 3BIS code/composants GO, matériel encore ouvert
+
+Le dernier trou spatial n'était pas seulement un affichage : des bbox inversées/hors cadre
+pouvaient alimenter `change_moved`, et le fallback open-vocabulary ne fournissait aucune
+géométrie réelle à Unity. Le lot final impose le validateur partagé
+`spatial_bbox_v19.py`, enrichit SceneDelta, remappe detector/VLM crop→écran, persiste le
+sighting sémantique durable et fait consommer `screen_bbox` par `ObjectOutline`. Ne jamais
+réintroduire de bbox centrale par défaut ni transformer `location="right"` en géométrie.
+Le hit initial amorce le tracker optique local : update UI stable ≤10 Hz, persistence
+WorldBrain ≤1 Hz, zéro rappel VLM et hide immédiat quand le suivi est perdu.
+
+Les routes mémoire demandées sont dans
+`src/mlomega_audio_elite/structured_memory_resolver_v19.py`; elles sont appelées depuis
+`MemoryQuery.ask` avant Brain2. Elles sélectionnent et comptent en code, avec preuves et
+abstention. ContextCard reçoit toujours `content.text`; PersonTag relit le relation pack;
+les attributs d'apparence sont backfillés vers `person:<canonical_person_id>`.
+
+Validation courte reproductible :
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\v19\test_spatial_bbox_v19.py tests\v19\test_final_all_scenarios.py tests\v19\test_contracts.py -q -p no:cacheprovider
+.\.venv\Scripts\python.exe tools\harness\final_all_scenarios.py --db tools\harness\_run\final-all-scenarios.db --report tools\harness\_run\final-all-scenarios.json
+```
+
+Validation avec modèles/pixels réels (Ollama `qwen3-vl:8b` disponible) :
+
+```powershell
+.\.venv-live\Scripts\python.exe tools\harness\final_real_vision_gate.py `
+  --image storage\media\keyframes\2026-07-23\deep_materialized\deep_c83e169873f98538eacb.jpg `
+  --ocr-image storage\media\keyframes\2026-07-23\deep_materialized\deep_af90bf9fb4f72cecc140.jpg `
+  --db tools\harness\_run\final-real-vision-pipeline.db `
+  --report tools\harness\_run\final-real-vision-pipeline.json
+```
+
+Preuve obtenue : lunettes réellement visibles, bbox écran
+`x=.784,y=.445,w=.139,h=.101`, entité WorldBrain durable
+`worldentity_3ea8c4b1f31dce62`, vérité `probable`, aucun bearing 3D inventé; RapidOCR
+non vide et commande `translate_text` capturée. Un déplacement artificiel de 12 pixels
+appliqué aux pixels réels a déplacé le même intent de `x=.784` à `x=.823355`, sans rappel
+VLM, et WorldBrain a persisté cette seconde bbox. Unity 6000.0.23f1 : **88/88 EditMode**,
+le test C# relit le payload produit par ce gate, pas une intention réécrite à la main.
+
+Ne pas committer les rapports `_run`, XML Unity, scènes/XR locales ni artifacts de build.
+La prochaine action produit est l'Étape finale 4 : rebuild APK puis vrai S25 pour caméra,
+micro, permissions, orientation, rendu, gestes et receipts physiques. Aucun nouveau
+CloseDay/fan-out n'est requis pour fermer ce lot.
+
+**Builds issus de ce lot.** PhoneOnly : exit 0, 94 767 670 octets,
+SHA-256 `6D0C3DB8649134C6E82175DC72CFB24CEB09D4D53C2B291EB61ABF045036CA14`.
+XREAL (PrepareDefines puis BuildApk) : `prep=0`, `build=0`, sortie fraîche
+`build/android/mlomega-xreal.apk` 200 844 020 octets,
+SHA-256 `C891E36DF651BAF0120AB2171DB543C0D0C6D2155D0654F0EF08C80D6836D752`.
+Ne pas confondre avec l'ancien `mlomega-xreal-g1.apk` daté du 10 juillet.

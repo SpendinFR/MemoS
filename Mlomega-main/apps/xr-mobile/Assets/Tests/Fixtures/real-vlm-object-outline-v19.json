@@ -1,0 +1,48 @@
+{
+  "type": "ui_intent",
+  "contracts_version": "v19.0",
+  "ui_intent_id": "visionrt-final-real-vlm-transport-1",
+  "producer": "visionrt",
+  "source_frame_id": "deep_c83e169873f98538eacb",
+  "component": "object_outline",
+  "anchor": {
+    "type": "screen_bbox",
+    "bbox": {
+      "x": 0.784,
+      "y": 0.445,
+      "w": 0.139,
+      "h": 0.101
+    }
+  },
+  "content": {
+    "kind": "find",
+    "state": "visible",
+    "query": "lunettes de soleil",
+    "label": "lunettes de soleil",
+    "matches": 1,
+    "source": "vlm_targeted",
+    "location": "right middle",
+    "screen_bbox": {
+      "x": 0.784,
+      "y": 0.445,
+      "w": 0.139,
+      "h": 0.101
+    },
+    "bbox": [238.3, 240.3, 280.6, 294.8],
+    "frame_width": 304,
+    "frame_height": 540,
+    "text": "lunettes de soleil est visible maintenant (right middle).",
+    "entity_id": "worldentity_3ea8c4b1f31dce62"
+  },
+  "truth_level": "probable",
+  "confidence": 0.55,
+  "priority": 0.6,
+  "ttl_ms": 5000,
+  "ui_hint": {
+    "focus": "find"
+  },
+  "evidence_refs": [
+    "frame:deep_c83e169873f98538eacb"
+  ],
+  "entity_id": "worldentity_3ea8c4b1f31dce62"
+}

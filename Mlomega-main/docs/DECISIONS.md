@@ -1687,3 +1687,45 @@ résumés, activités, lieux, objets, personnes, OCR, incertitudes, miniature,
 raison et provenance déjà stockés, sans rappel VLM. Une bbox historique
 invalide reste signalée `bbox_invalid_legacy`; ce lot de lecture ne modifie pas
 VisionRT ni le chemin Local/PRO validé.
+
+## 2026-07-23 — Passe finale scénarios : une position UI exige une géométrie prouvée
+
+Un résultat VLM textuel « à droite » ne suffit pas à afficher une flèche ou un contour.
+La frontière spatiale canonique valide désormais toute bbox (`finite`, ordre min/max,
+clamp aux dimensions du frame détecteur, aire non nulle) et transporte explicitement
+dimensions, rotation, miroir et espace de coordonnées. Une détection rejetée garde son
+label et sa preuve, mais ne participe ni aux mouvements, ni aux relations, ni à une
+géométrie UI.
+
+Pour une recherche open-vocabulary, le VLM ciblé doit produire `bbox_1000`; VisionRT la
+remappe du crop vers l'écran, WorldBrain la persiste comme sighting `probable`, et
+`ObjectOutline` consomme directement `anchor.type=screen_bbox`. Si la bbox manque, la
+réponse est un miss honnête : aucun rectangle central de secours. Sur PhoneOnly 2D, une
+dernière position est textuelle; bearing/distance restent interdits sans pose et qualité
+de carte XREAL suffisantes.
+
+La bbox initiale amorce un KLT local : il suit les pixels entre les frames, rafraîchit le
+même UIIntent au plus à 10 Hz et le même sighting durable au plus à 1 Hz, sans autre appel
+VLM. Perte de points, changement de taille de frame ou bbox invalide éteignent le contour
+en 250 ms; une ancienne position n'est jamais maintenue comme visible.
+
+Les requêtes exactes ne sont plus abandonnées au top-k/LLM : `MemoryQuery` appelle d'abord
+un registre structuré (date civile Europe/Paris, dernière rencontre, historique de sujet,
+conflit faits/hypothèses, dernier attribut, langage courant, épisode flou, replay
+sémantique). SQL/code choisit la date, la personne, le compteur, la valeur et les preuves;
+le modèle ne peut qu'expliquer un paquet déjà borné. `IntentRouter` reste l'unique frontière
+d'émission UI pour éviter les doubles envois.
+
+La preuve finale est stratifiée, sans confondre simulation et matériel :
+
+- `final_all_scenarios.py` injecte un historique synthétique déclaré, mais traverse les
+  vrais `IntentRouter`, `MemoryQuery`, WorldBrain, ChangeAttention, identité, proactive,
+  delivery et receipt;
+- `final_real_vision_gate.py` utilise de vrais pixels capturés, Qwen3-VL et RapidOCR, puis
+  rouvre WorldBrain pour prouver la durabilité;
+- le payload VLM réellement obtenu est versionné comme fixture et relu par le parseur C#;
+  Unity EditMode est vert 88/88.
+
+Cette stratification ferme le câblage sans prétendre certifier caméra/micro, permissions,
+orientation physique, rendu et receipt S25 : ces frontières restent exclusivement au
+Gate matériel de l'Étape finale 4.

@@ -107,6 +107,7 @@ def _build_rules() -> list[tuple[re.Pattern[str], str, dict[str, Any]]]:
 
     # --- replay ---
     add(r"\b(?:rejoue|replay|revois|montre[- ]moi)\b.*?(\d{1,2}\s*[h:]\s*\d{0,2}|\d{1,2}\s*heures?)", "replay")
+    add(r"\b(?:rejoue|replay|revois)\b\s+(.+)", "ask_memory")
 
     # --- owner voice setup (E37 §3) — BEFORE set_tts: its "parle"/"voix" words
     # would otherwise swallow "c'est moi qui parle" / "configure ma voix".
@@ -157,6 +158,7 @@ _HIGH_CONFIDENCE: list[tuple[re.Pattern[str], str]] = [
         (r"agrandis?\b", "zoom"),
         (r"(?:trouve|cherche)\b", "find"),
         (r"where\s+(?:is|are)\b", "find"),
+        (r"(?:rejoue|replay|revois)\b", "ask_memory"),
         # Explicit sensor/memory orders are just as unambiguous as ``zoom`` or
         # ``trouve``. Letting the small live classifier override them caused a
         # real Gate-B run to turn "c'est quoi cet objet" into replay and
@@ -362,6 +364,8 @@ class IntentRouter:
         self.context.note(track_id=track_id, entity_id=entity_id, bbox=bbox)
 
     def _ui(self, intent: dict[str, Any]) -> None:
+        if isinstance(intent, dict) and intent.get("type") == "ui_intent":
+            intent.setdefault("anchor", {"type": "panel", "position": "side"})
         if self._emit is not None:
             try:
                 self._emit(intent)
@@ -403,6 +407,22 @@ class IntentRouter:
                 return self._dispatch({"intent": "ask_memory", "question": raw}, raw)
             if pending == "replay":
                 return self._dispatch({"intent": "replay", "time": raw}, raw)
+
+        # An explicit "interroge ma mémoire: <question>" owns everything after
+        # the prefix. Without this boundary, an embedded "où sont..." or "rejoue"
+        # matched an earlier vision/replay regex and silently bypassed MemoryQuery.
+        explicit_memory = re.match(
+            r"^(?:interroge\s+ma\s+m[ée]moire|demande\s+[àa]\s+ma\s+m[ée]moire|"
+            r"ask\s+my\s+memory)\b\s*[:,]?\s*(.*)$",
+            raw,
+            re.IGNORECASE,
+        )
+        if explicit_memory is not None:
+            question = _clean_target(explicit_memory.group(1)) or raw
+            self.metrics["grammar_hits"] += 1
+            return self._dispatch(
+                {"intent": "ask_memory", "question": question}, raw
+            )
 
         # 1) Identity commands first (absorbed E32 pre-router) — enroll/correction.
         if self.enrollment is not None:
@@ -794,6 +814,11 @@ class IntentRouter:
                 result = self.vision_focus(request)
             except Exception:
                 result = None
+        # The focus handler returns a UIIntent; routing is the single delivery
+        # boundary. Previously OCR/zoom/what_is were only returned to a command
+        # trace and never sent to Unity.
+        if isinstance(result, dict) and result.get("type") == "ui_intent":
+            self._ui(result)
         # Note the target so a follow-up deixis resolves on it.
         self.context.note(intent=intent, track_id=request.get("track_id"), bbox=request.get("bbox"))
         return RoutedIntent(intent=intent, request=request, result=result, handled=self.vision_focus is not None)

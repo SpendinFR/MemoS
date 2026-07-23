@@ -29,6 +29,24 @@ namespace MLOmega.Contracts.V19
         [JsonProperty("changes")]
         public List<Dictionary<string, object>> Changes { get; set; }
 
+        [JsonProperty("frame_width")]
+        public long? FrameWidth { get; set; }
+
+        [JsonProperty("frame_height")]
+        public long? FrameHeight { get; set; }
+
+        // enum: 0 | 90 | 180 | 270; default: 0
+        [JsonProperty("rotation")]
+        public long Rotation { get; set; }
+
+        // default: False
+        [JsonProperty("mirrored")]
+        public bool Mirrored { get; set; }
+
+        // default: detector_pixels
+        [JsonProperty("coordinate_space")]
+        public string CoordinateSpace { get; set; }
+
         // default: 0.0
         [JsonProperty("map_quality")]
         public double MapQuality { get; set; }

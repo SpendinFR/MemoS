@@ -355,14 +355,40 @@ class AttributeMemory:
         )
 
     def observe_person_appearance(
-        self, *, entity_id: str, descriptor: Mapping[str, Any], session: str, evidence_ref: str | None = None
+        self, *, entity_id: str, descriptor: Mapping[str, Any], session: str,
+        evidence_ref: str | None = None, canonical_person_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """A known person's light appearance descriptor per encounter → attribute
         observations, so an inter-session diff is an ``attribute_changed`` via the
         SAME mechanism (no special person path)."""
+        subject = entity_id
+        if canonical_person_id:
+            subject = f"person:{_norm(canonical_person_id)}"
+            self.promote_person_entity(
+                entity_id=entity_id, canonical_person_id=canonical_person_id
+            )
         return self.observe_vlm_attributes(
-            subject=entity_id, attributes=descriptor, session=session, evidence_ref=evidence_ref,
+            subject=subject, attributes=descriptor, session=session,
+            evidence_ref=evidence_ref,
         )
+
+    def promote_person_entity(
+        self, *, entity_id: str, canonical_person_id: str,
+    ) -> int:
+        """Backfill provisional visual observations after identity fusion."""
+        entity_id = _norm(entity_id)
+        canonical_person_id = _norm(canonical_person_id)
+        if not entity_id or not canonical_person_id:
+            return 0
+        canonical = f"person:{canonical_person_id}"
+        with self._db_lock:
+            cur = self._svc_db.execute(
+                """UPDATE attribute_memory_observations SET subject=?
+                   WHERE person_id=? AND subject=?""",
+                (canonical, self.person_id, entity_id),
+            )
+            self._svc_db.commit()
+            return int(cur.rowcount or 0)
 
     def history(self, *, subject: str, attribute: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
         clauses = ["person_id=?", "subject=?"]

@@ -9,6 +9,10 @@ namespace MLOmega.Contracts.V19;
 
 public sealed class UIIntent
 {
+    // default: ui_intent
+    [JsonPropertyName("type")]
+    public string Type { get; set; }
+
     // default: v19.0
     [JsonPropertyName("contracts_version")]
     public string ContractsVersion { get; set; }
@@ -38,7 +42,7 @@ public sealed class UIIntent
     [JsonPropertyName("content")]
     public Dictionary<string, object> Content { get; set; }
 
-    // enum: observed | probable | remembered | inferred | replay
+    // enum: observed | probable | remembered | inferred | replay | unknown
     [JsonPropertyName("truth_level")]
     public string TruthLevel { get; set; }
 

@@ -564,15 +564,62 @@ class BrainLiveSceneAdapter:
             from mlomega_audio_elite import brainlive_v15  # type: ignore
 
             ac = brainlive_v15.build_active_context(self.live_session_id, active_people=[person_id], limit=5)
-            b2 = ac.get("brain2_context") if isinstance(ac, Mapping) else None
+            # ``build_active_context`` returns an audit wrapper whose live
+            # payload is under ``context``. Reading the wrapper directly made
+            # every relation pack empty even though V14.6 had valid rows.
+            payload = ac.get("context") if isinstance(ac, Mapping) else None
+            if not isinstance(payload, Mapping):
+                payload = ac if isinstance(ac, Mapping) else None
+            b2 = payload.get("brain2_context") if isinstance(payload, Mapping) else None
             packs = (b2 or {}).get("active_relationship_packs") if isinstance(b2, Mapping) else None
+            # The current bounded context compiler exposes sources through the
+            # manifest rather than repeating the raw ``brain2_context`` object.
+            # Consume those same audited items so this bridge survives both the
+            # legacy and compiled context shapes.
+            if not packs and isinstance(payload, Mapping):
+                import json
+
+                manifest = payload.get("context_manifest")
+                items = manifest.get("items") if isinstance(manifest, Mapping) else []
+                compiled_packs: list[dict[str, Any]] = []
+                for item in items or []:
+                    if not isinstance(item, Mapping):
+                        continue
+                    if item.get("source_table") not in {
+                        "v14_6_relationship_state_models",
+                        "v14_5_people_context_profiles",
+                    }:
+                        continue
+                    try:
+                        candidate = json.loads(str(item.get("text") or "{}"))
+                    except Exception:
+                        continue
+                    if not isinstance(candidate, dict):
+                        continue
+                    known = str(candidate.get("known_person_id") or "")
+                    hint = str(candidate.get("person_hint") or "")
+                    if known == person_id or hint.casefold() == str(person_id).casefold():
+                        compiled_packs.append(candidate)
+                packs = compiled_packs
             out: list[dict[str, Any]] = []
             for p in (packs or [])[:4]:
                 if not isinstance(p, Mapping):
                     continue
-                out.append({k: p.get(k) for k in ("known_person_id", "person_hint", "summary",
-                                                   "last_topics", "open_promises", "relationship_type")
-                            if p.get(k) is not None})
+                compact = {
+                    k: p.get(k)
+                    for k in (
+                        "known_person_id", "person_hint", "summary",
+                        "last_topics", "open_promises", "relationship_type",
+                    )
+                    if p.get(k) is not None
+                }
+                # V14.6 persists the human-readable relationship statement under
+                # ``relationship_state_summary``.  The device contract consumes
+                # the stable compact key ``summary``; without this bridge the
+                # CardProfil received a pack but rendered no useful context.
+                if not compact.get("summary") and p.get("relationship_state_summary"):
+                    compact["summary"] = p.get("relationship_state_summary")
+                out.append(compact)
             return out
         except Exception:
             return []

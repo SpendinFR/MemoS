@@ -42,9 +42,24 @@ def delivery_row_to_ui_intent(row: sqlite3.Row | dict[str, Any]) -> UIIntent:
     if isinstance(refs, str):
         refs = [refs]
     kind = str(candidate.get("kind") or "")
+    message = str(data.get("message") or candidate.get("message") or "").strip()
+    titles = {
+        "attribute_changed": "Changement observé",
+        "clarification": "Précision nécessaire",
+        "conflict_warning": "Attention",
+        "found_object": "Objet retrouvé",
+        "prediction": "Suggestion",
+    }
     component = "context_card"
     content: dict[str, Any] = {
-        "message": data.get("message") or "",
+        # ContextCard renders ``text|body``. Keep ``message`` for historical
+        # consumers, but make the canonical UI contract complete at the PC edge.
+        "text": message,
+        "body": message,
+        "message": message,
+        "title": str(candidate.get("title") or titles.get(kind) or "Contexte"),
+        "kind": kind or "context",
+        "source": str(candidate.get("source") or "brainlive"),
         "action_type": data.get("action_type") or "notify",
     }
     producer = "brainlive"

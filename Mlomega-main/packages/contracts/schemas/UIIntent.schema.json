@@ -1,6 +1,12 @@
 {
   "additionalProperties": false,
   "properties": {
+    "type": {
+      "const": "ui_intent",
+      "default": "ui_intent",
+      "title": "Type",
+      "type": "string"
+    },
     "contracts_version": {
       "default": "v19.0",
       "title": "Contracts Version",
@@ -75,7 +81,8 @@
         "probable",
         "remembered",
         "inferred",
-        "replay"
+        "replay",
+        "unknown"
       ],
       "title": "Truth Level",
       "type": "string"
@@ -121,7 +128,6 @@
     "ui_intent_id",
     "producer",
     "component",
-    "anchor",
     "content",
     "truth_level",
     "confidence",

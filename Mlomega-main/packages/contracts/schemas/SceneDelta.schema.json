@@ -38,6 +38,51 @@
       "title": "Changes",
       "type": "array"
     },
+    "frame_width": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Frame Width"
+    },
+    "frame_height": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Frame Height"
+    },
+    "rotation": {
+      "default": 0,
+      "enum": [
+        0,
+        90,
+        180,
+        270
+      ],
+      "title": "Rotation",
+      "type": "integer"
+    },
+    "mirrored": {
+      "default": false,
+      "title": "Mirrored",
+      "type": "boolean"
+    },
+    "coordinate_space": {
+      "default": "detector_pixels",
+      "title": "Coordinate Space",
+      "type": "string"
+    },
     "map_quality": {
       "default": 0.0,
       "title": "Map Quality",

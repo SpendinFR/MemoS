@@ -276,6 +276,7 @@ class LivePipeline:
         self.rotation_corrections = 0
         self._latest_frame_bgr: np.ndarray | None = None
         self._latest_envelope: Any = None
+        self._semantic_focus_last_persist: dict[str, float] = {}
         vcfg = self.profile.get("vision", {}) if isinstance(self.profile, dict) else {}
         acfg = self.profile.get("audio", {}) if isinstance(self.profile, dict) else {}
 
@@ -315,7 +316,14 @@ class LivePipeline:
             arbiter=arbiter,
             session_id=session_id,
             on_scene_delta=self._on_scene_delta,
-            on_ui_intent=self._push_intent,
+            # IntentRouter is the single downlink boundary for focus results.
+            # VisionRT returns the UIIntent; letting it push as well delivered every
+            # OCR/find/zoom result twice.
+            on_ui_intent=None,
+            # A detector/VLM focus hit seeds a lightweight optical tracker. Its
+            # stable-id refreshes are the only VisionRT intents pushed directly;
+            # the initial command response still goes through IntentRouter once.
+            on_focus_update=self._on_focus_tracking_update,
             keyframe_sink=keyframe_sink,
             on_error=self._report_error,
         )
@@ -399,6 +407,7 @@ class LivePipeline:
                     promote_min_confidence=float(wcfg.get("promote_min_confidence", 0.35)),
                 ),
                 db_path=db_path,
+                service_db_path=db_path,
                 spatial=self.spatial,
             )
             self.scene_adapter = scene_adapter.BrainLiveSceneAdapter(
@@ -682,7 +691,11 @@ class LivePipeline:
                     profile=self.user_profile,
                     on_cloud_event=self._push_intent,
                 )
-            self.memory_query = memory_query.MemoryQuery(person_id=self.person_id)
+            self.memory_query = memory_query.MemoryQuery(
+                person_id=self.person_id,
+                db_path=self.db_path,
+                replay_service=self.replay,
+            )
             self.intents = intent_router.IntentRouter(
                 vision_focus=self._route_vision_focus,
                 on_device_command=self._push_device_command,
@@ -862,6 +875,8 @@ class LivePipeline:
         return result.to_dict()
 
     def _push_intent(self, intent: dict[str, Any]) -> None:
+        if isinstance(intent, dict) and intent.get("type") == "ui_intent":
+            intent.setdefault("anchor", {"type": "panel", "position": "side"})
         # E64-i Gate B #5: honest cancellation. If this call runs inside a command
         # worker whose command has been abandoned after the grace, refuse the
         # effect — the reply would target an already-closed DataChannel and the
@@ -1390,13 +1405,67 @@ class LivePipeline:
     def _route_vision_focus(self, request: dict[str, Any]) -> Any:
         """Bridge a router vision intent (what_is/find/ocr/zoom) to the vision handler.
 
-        ``find`` is different from ``what_is``: it first consults WorldBrain's
-        owner-scoped durable registry.  A current-frame scan alone cannot answer
-        "where did I last see X?" after the object or session disappeared.
+        ``find`` scans the current frame first, then falls back to WorldBrain's
+        owner-scoped durable registry. This keeps "where is X?" live while still
+        answering "where did I last see X?" when it is no longer visible.
         """
-        if str(request.get("kind") or "") == "find":
+        kind = str(request.get("kind") or "")
+        is_find = kind == "find"
+        if is_find:
             self.spatial_find_metrics["queries"] += 1
-            query = str(request.get("query") or "").strip()
+
+        current_result = None
+        if self.vision_focus_handler is not None:
+            try:
+                current_result = self.vision_focus_handler(request)
+            except Exception as exc:
+                self._report_error("vision_focus_handler", exc)
+        elif self._latest_frame_bgr is not None and self._latest_envelope is not None:
+            current_result = self.on_focus_request(
+                request, self._latest_frame_bgr, self._latest_envelope
+            )
+
+        if not is_find:
+            return self._forward_visual_translation(request, current_result)
+
+        current_content = (
+            current_result.get("content")
+            if isinstance(current_result, dict)
+            else None
+        )
+        if isinstance(current_content, dict) and current_content.get("matches"):
+            self.spatial_find_metrics["current_frame_hits"] += 1
+            if (
+                current_content.get("source") == "vlm_targeted"
+                and self.worldbrain is not None
+                and hasattr(self.worldbrain, "record_semantic_sighting")
+            ):
+                try:
+                    record = self.worldbrain.record_semantic_sighting(
+                        label=str(current_content.get("label") or request.get("query") or ""),
+                        bbox=current_content.get("bbox") or (),
+                        frame_width=int(current_content.get("frame_width") or 0),
+                        frame_height=int(current_content.get("frame_height") or 0),
+                        frame_id=str(current_result.get("source_frame_id") or "unknown"),
+                        observed_at=getattr(
+                            self._latest_envelope, "captured_at_utc", None
+                        ),
+                        confidence=float(current_result.get("confidence") or 0.55),
+                        evidence_refs=list(current_result.get("evidence_refs") or []),
+                    )
+                    current_result["entity_id"] = record.get("entity_id")
+                    current_content["entity_id"] = record.get("entity_id")
+                    current_result["content"] = current_content
+                    self.vision.bind_focus_entity(
+                        str(current_result.get("ui_intent_id") or ""),
+                        str(record.get("entity_id") or "") or None,
+                    )
+                except Exception as exc:
+                    self._report_error("worldbrain.record_semantic_sighting", exc)
+            return self._forward_visual_translation(request, current_result)
+
+        query = str(request.get("query") or "").strip()
+        if query:
             record = None
             if query and self.worldbrain is not None and hasattr(self.worldbrain, "find_entity_record"):
                 try:
@@ -1404,7 +1473,9 @@ class LivePipeline:
                 except Exception as exc:
                     self._report_error("worldbrain.find_entity_record", exc)
             if record:
-                visible = bool(record.get("visible"))
+                # We reached the registry only because the current-frame scan did
+                # not prove visibility. Never resurrect a recent bbox as "visible".
+                visible = False
                 result = spatial.answer_find(
                     entity_id=str(record.get("entity_id") or "") or None,
                     entity=record,
@@ -1435,43 +1506,23 @@ class LivePipeline:
                     )
                     self.spatial_find_metrics["durable_hits"] += 1
                 result["content"] = content
-                self._push_intent(result)
                 return result
-        if self.vision_focus_handler is not None:
-            result = self.vision_focus_handler(request)
-            if str(request.get("kind") or "") == "find":
-                content = result.get("content") if isinstance(result, dict) else None
-                if isinstance(content, dict) and content.get("matches"):
-                    self.spatial_find_metrics["current_frame_hits"] += 1
-                else:
-                    self.spatial_find_metrics["honest_misses"] += 1
-            return self._forward_visual_translation(request, result)
-        if self._latest_frame_bgr is not None and self._latest_envelope is not None:
-            result = self.on_focus_request(request, self._latest_frame_bgr, self._latest_envelope)
-            if str(request.get("kind") or "") == "find":
-                content = result.get("content") if isinstance(result, dict) else None
-                if isinstance(content, dict) and content.get("matches"):
-                    self.spatial_find_metrics["current_frame_hits"] += 1
-                else:
-                    self.spatial_find_metrics["honest_misses"] += 1
-            return self._forward_visual_translation(request, result)
-        if str(request.get("kind") or "") == "find":
-            miss = {
-                "type": "ui_intent",
-                "ui_intent_id": f"spatial-find-{self.live_session_id}-{time.time_ns()}",
-                "producer": "worldbrain",
-                "component": "context_card",
-                "content": {
-                    "kind": "find", "state": "unknown", "query": request.get("query"),
-                    "text": "Je n'ai aucune observation suffisamment fiable de cet objet.",
-                },
-                "truth_level": "unknown", "confidence": 0.0,
-                "priority": 0.7, "ttl_ms": 7000, "evidence_refs": [],
-            }
-            self.spatial_find_metrics["honest_misses"] += 1
-            self._push_intent(miss)
-            return miss
-        return None
+        self.spatial_find_metrics["honest_misses"] += 1
+        if isinstance(current_result, dict):
+            return current_result
+        return {
+            "type": "ui_intent",
+            "ui_intent_id": f"spatial-find-{self.live_session_id}-{time.time_ns()}",
+            "producer": "worldbrain",
+            "component": "context_card",
+            "anchor": {"type": "head_locked"},
+            "content": {
+                "kind": "find", "state": "unknown", "query": request.get("query"),
+                "text": "Je n'ai aucune observation suffisamment fiable de cet objet.",
+            },
+            "truth_level": "unknown", "confidence": 0.0,
+            "priority": 0.7, "ttl_ms": 7000, "evidence_refs": [],
+        }
 
     def _forward_visual_translation(
         self, request: dict[str, Any], result: Any,
@@ -1560,6 +1611,45 @@ class LivePipeline:
                 self._external_scene_cb(delta)
             except Exception as exc:
                 self._report_error("scene_delta.external_callback", exc)
+
+    def _on_focus_tracking_update(self, intent: dict[str, Any]) -> None:
+        """Refresh a VLM-seeded outline while the camera moves.
+
+        UI refreshes are bounded to 10 Hz by VisionRT. Durable last-seen writes
+        are further bounded to 1 Hz; they reuse the semantic entity and never
+        manufacture 3D pose/bearing.
+        """
+        content = intent.get("content") if isinstance(intent, dict) else None
+        if not isinstance(content, dict):
+            return
+        entity_id = str(intent.get("entity_id") or content.get("entity_id") or "")
+        now = time.monotonic()
+        if (
+            content.get("state") == "visible"
+            and entity_id
+            and self.worldbrain is not None
+            and hasattr(self.worldbrain, "record_semantic_sighting")
+            and now - self._semantic_focus_last_persist.get(entity_id, -1e9) >= 1.0
+        ):
+            try:
+                self.worldbrain.record_semantic_sighting(
+                    label=str(content.get("label") or content.get("query") or "objet"),
+                    bbox=content.get("bbox") or (),
+                    frame_width=int(content.get("frame_width") or 0),
+                    frame_height=int(content.get("frame_height") or 0),
+                    frame_id=str(intent.get("source_frame_id") or "unknown"),
+                    observed_at=getattr(
+                        self._latest_envelope, "captured_at_utc", None
+                    ),
+                    confidence=float(intent.get("confidence") or 0.5),
+                    evidence_refs=list(intent.get("evidence_refs") or []),
+                    source="visual_tracker",
+                    truth_level="probable",
+                )
+                self._semantic_focus_last_persist[entity_id] = now
+            except Exception as exc:
+                self._report_error("worldbrain.semantic_track", exc)
+        self._push_intent(intent)
 
     # ------------------------------------------------------------------ degraded
     def update_degraded(self, signals: Any) -> dict[str, Any]:
@@ -1661,7 +1751,10 @@ class LivePipeline:
 
     def _run_stranger_profiles(self, frame_bgr: np.ndarray, delta: dict[str, Any]) -> None:
         """Feed each visible person track to the StrangerProfiler (E36 §3)."""
-        named_tracks = set(getattr(self.fusion, "_track_identity", {}) if self.fusion is not None else {})
+        identity_by_track = (
+            getattr(self.fusion, "_track_identity", {}) if self.fusion is not None else {}
+        )
+        named_tracks = set(identity_by_track)
         for ent in delta.get("entities") or []:
             if ent.get("label") != "person":
                 continue
@@ -1699,6 +1792,10 @@ class LivePipeline:
                         entity_id=entity_id, descriptor=descriptor,
                         session=self._brainlive_session_id() or self.live_session_id,
                         evidence_ref=f"vlm:{track_id}",
+                        canonical_person_id=(
+                            (identity_by_track.get(track_id) or {}).get("person_id")
+                            if isinstance(identity_by_track, Mapping) else None
+                        ),
                     )
                     # The appearance diff is appended after the scene callback
                     # already ran for this frame. Surface a real inter-session

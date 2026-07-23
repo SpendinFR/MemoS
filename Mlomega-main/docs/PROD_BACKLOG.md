@@ -1586,7 +1586,7 @@ réduction statique de JSON comme une validation modèle.
   Un événement bbox sans résumé est présenté comme géométrie technique liée à son résumé
   Deep Vision, pas comme une carte mémoire vide.
 
-- [ ] **3.3 Fermer le bug spatial avant toute nouvelle preuve qualité.** Sur la DB
+- [x] **3.3 Fermer le bug spatial avant toute nouvelle preuve qualité.** Sur la DB
   `gateb-rollback-20260718-215615`, 196 bbox sont affichables mais **66 sont inversées et
   90 contiennent une coordonnée négative**; 85 valeurs invalides appartiennent à
   `change_moved`. Ce n'est pas cosmétique et peut créer faux mouvements/keyframes.
@@ -1606,6 +1606,17 @@ réduction statique de JSON comme une validation modèle.
   - tests portrait/paysage, rotation/mirror, tracker hors cadre, matériel 576×1024 puis
     miniature 304×540, multi-objets et déplacement réel. Rejouer le sélecteur sur clone :
     variation de keyframes expliquée par scènes réelles, pas par géométrie invalide.
+
+  Fermé le 23 juillet : `spatial_bbox_v19` impose finitude, ordre, clamp aux dimensions
+  du détecteur et aire non nulle; SceneDelta transporte dimensions/rotation/mirror/espace;
+  VisionRT, WorldBrain et la consolidation ignorent une géométrie rejetée sans perdre la
+  détection sourcée. Le chemin `find` open-vocabulary exige désormais une bbox VLM stricte,
+  la remappe du crop vers l'écran, persiste le sighting probable dans WorldBrain et émet un
+  `object_outline` `screen_bbox`; aucune bbox par défaut au centre n'existe plus.
+  Cette bbox amorce un suivi optique local borné à 10 Hz : le même
+  `ui_intent_id`/`entity_id` suit le mouvement entre les frames sans rappel VLM,
+  la position durable est rafraîchie au plus à 1 Hz et une perte de suivi masque
+  le contour au lieu de laisser une boîte figée.
 
 - [x] **3.4 Gate Dashboard sans régression.** Sur la DB courante : 26 résumés
   Deep Vision lisibles, lunettes/téléphone/table retrouvables, Life watch compréhensible,
@@ -1642,8 +1653,9 @@ réduction statique de JSON comme une validation modèle.
 
 #### Étape finale 3BIS — ALL SCENARIOS FINALE PASSE
 
-> **Verdict du contre-audit ciblé du checkout au 2026-07-19 : pas encore GO pour tous
-> les scénarios ci-dessous.** Les données et moteurs existent en grande partie, mais un
+> **Verdict de la passe finale code/composants au 2026-07-23 : GO sans matériel pour les
+> scénarios ci-dessous; le GO physique reste exclusivement en Étape 4.** Les données et
+> moteurs ne sont comptés que lorsqu'un appel productif remonte jusqu'au consommateur;
 > résultat exact ne peut pas être déduit du seul fait que `MemoryQuery`, une table ou un
 > `UIIntent` existe. Légende : **OK CODE** = appel productif remonté jusqu'au consommateur
 > (la preuve matérielle reste en Étape 4); **PARTIEL** = les preuves sont écrites mais la
@@ -1654,7 +1666,7 @@ réduction statique de JSON comme une validation modèle.
 
 ##### 3BIS.0 — Ponts transversaux à fermer avant le scénario par scénario
 
-- [ ] **Contrat ContextCard canonique, preuve écran et receipts. — GAP bloquant.**
+- [x] **Contrat ContextCard canonique, preuve écran et receipts. — FERMÉ CODE.**
   `BrainLiveSceneAdapter._enqueue()` écrit bien dans
   `brainlive_intervention_delivery_queue` et `PhoneOnlyRuntime._delivery_loop()` la draine,
   mais `delivery_adapter.delivery_row_to_ui_intent()` émet actuellement
@@ -1666,7 +1678,7 @@ réduction statique de JSON comme une validation modèle.
   conserver les champs typés additifs. Test de contrat Python→JSON→C# sur le vrai
   `ContextCard`, avec receipt `displayed`, texte non vide et `ui_intent_id` stable.
 
-- [ ] **Vraie CardProfil consommant le cache relationnel. — GAP.** L'identification pousse
+- [x] **Vraie CardProfil consommant le cache relationnel. — FERMÉ CODE.** L'identification pousse
   réellement `entity_hot_update` et Unity le stocke dans `SceneCache.EntitiesHot`, mais
   aucun composant produit n'appelle `TryGetRelationPack`; `PersonTag` n'affiche que le nom
   porté par son UIIntent. Ajouter une surface `profile_card` ou une ouverture explicite du
@@ -1674,7 +1686,7 @@ réduction statique de JSON comme une validation modèle.
   relation, derniers sujets/promesses, changements d'apparence hypothétiques, date et
   provenance. Rafraîchir le même ID, ne jamais créer une carte à chaque frame.
 
-- [ ] **Identité durable des attributs humains. — GAP.** `AttributeMemory` et le VLM
+- [x] **Identité durable des attributs humains. — FERMÉ CODE.** `AttributeMemory` et le VLM
   d'apparence sont branchés, mais l'observation est aujourd'hui indexée par l'`entity_id`
   WorldBrain de la silhouette. Ce slot peut désigner une autre personne à la session
   suivante. Après fusion face/voix, indexer les attributs par `canonical_person_id`, garder
@@ -1682,7 +1694,7 @@ réduction statique de JSON comme une validation modèle.
   l'enrôlement. Deux personnes simultanées et une personne revenant à une autre position
   ne doivent jamais partager coupe/vêtements.
 
-- [ ] **Registre de requêtes mémoire structurées dans `MemoryQuery`. — GAP transversal.**
+- [x] **Registre de requêtes mémoire structurées dans `MemoryQuery`. — FERMÉ CODE.**
   Le chemin produit actuel est réel (`IntentRouter` → `MemoryQuery.ask` →
   `brain2_router_v14_2` → ContextCard), mais le routeur général ne lit pas comme sources
   structurées `scene_session_summaries_v19`, `attribute_memory_observations`, la position
@@ -1693,40 +1705,41 @@ réduction statique de JSON comme une validation modèle.
   porte toutes les lignes retenues, les compteurs calculés, citations ouvrables et la raison
   d'abstention.
 
-- [ ] **SLA mémoire live honnête. — PARTIEL.** Seul « qui est X » a un raccourci
-  déterministe; les autres questions peuvent encore payer planification/fusion/réponse sur
-  le 4B live. Mesurer chaque résolveur. Cible : fait SQL immédiat ≤2 s; synthèse ≤15 s avec
+- [x] **SLA mémoire live honnête sur les routes structurées. — FERMÉ CODE.** « qui est X »
+  et les nouveaux résolveurs structurés répondent avant le 4B; les autres questions peuvent
+  encore payer planification/fusion/réponse sur le 4B live. Cible : fait SQL immédiat ≤2 s;
+  synthèse ≤15 s avec
   carte « recherche en cours » non bloquante; timeout/annulation traçables. Une réponse
   tardive après fin de session est supprimée honnêtement, jamais présentée comme réussie.
 
 ##### 3BIS.1 — Mémoire / BrainLive : statut des scénarios demandés
 
-- [ ] **« Où étais-je le 22 février 2022 ? » — GAP.** Les résumés de session/place et
+- [x] **« Où étais-je le 22 février 2022 ? » — OK CODE.** Les résumés de session/place et
   événements peuvent contenir la réponse, mais le routeur mémoire ne fait pas la jointure
   date locale→sessions→lieux. Le résolveur `temporal_spatial` doit renvoyer une timeline
   matin/après-midi/soir, fusionner les intervalles contigus et dire « non observé » pour les
   trous; jamais extrapoler un lieu entre deux captures.
 
-- [ ] **« Qu'a dit Karim la dernière fois que je l'ai vu ? » — PARTIEL.** Tours,
+- [x] **« Qu'a dit Karim la dernière fois que je l'ai vu ? » — OK CODE.** Tours,
   conversations, épisodes et packs relationnels sont recherchables, mais aucun appel ne
   sélectionne explicitement la dernière rencontre de Karim. `last_encounter` doit joindre
   identité canonique, présence visuelle/vocale, intervalle de conversation, résumé et tours
   exacts; fournir date, résumé et courtes citations, ou préciser si seul un échange vocal
   sans présence visuelle est prouvé.
 
-- [ ] **« Combien de fois Maxime m'a parlé de ce sujet ? » — GAP.** Un top-k sémantique ne
+- [x] **« Combien de fois Maxime m'a parlé de ce sujet ? » — OK CODE.** Un top-k sémantique ne
   prouve ni le nombre total ni l'évolution d'une position. `topic_history` doit résoudre le
   sujet flou, compter les conversations/mentions distinctes sans compter les chunks ou
   résumés dérivés, construire la chronologie des positions avec contre-exemples et citer le
   dernier tour. Le LLM explique la chronologie; il ne calcule jamais le compteur.
 
-- [ ] **« Pourquoi je me suis embrouillé avec Maxime hier ? » — PARTIEL.** Brain2 possède
+- [x] **« Pourquoi je me suis embrouillé avec Maxime hier ? » — OK CODE.** Brain2 possède
   états, turning points, impacts, couplings, boucles relationnelles et tours, donc le moteur
   d'analyse existe. Il manque un paquet `conflict_evidence` limité à la bonne interaction :
   état observé avant, séquence factuelle, point de bascule, après-coup et hypothèses
   explicitement séparées. Aucune intention cachée ou cause psychologique ne devient un fait.
 
-- [ ] **« Quel était le prix de la baguette la dernière fois ? » — GAP.** OCR, faits
+- [x] **« Quel était le prix de la baguette la dernière fois ? » — OK CODE.** OCR, faits
   entendus et `AttributeMemory` enregistrent réellement des valeurs, mais cette table n'est
   pas consommée par `MemoryQuery`. `latest_attribute` doit joindre produit, commerce/lieu,
   valeur, unité, date, modalité (`ocr|heard|vlm`) et preuve image/tour; si « baguette » et
@@ -1740,13 +1753,13 @@ réduction statique de JSON comme une validation modèle.
   `watch_only` présenté comme certain. Une DB d'un seul jour doit s'abstenir de prédire une
   « boucle » non répétée.
 
-- [ ] **« Mon expression favorite du moment ? » — PARTIEL.** `personal_language_patterns`,
+- [x] **« Mon expression favorite du moment ? » — OK CODE.** `personal_language_patterns`,
   `language_ngrams` et `phrase_templates` sont routés, mais le classement courant n'est pas
   calculé. `current_language` doit compter les expressions du propriétaire dans une fenêtre
   explicite, dédupliquer tours/artefacts dérivés, comparer à la période précédente et citer
   des exemples; ne jamais inclure les paroles de Maxime/Karim.
 
-- [ ] **Question floue « le truc d'il y a deux semaines avec Maxime… » — PARTIEL.** La
+- [x] **Question floue « le truc d'il y a deux semaines avec Maxime… » — OK CODE.** La
   recherche vectorielle et les routes personne/temps existent, mais le top-k peut mélanger
   dates et interlocuteurs. `fuzzy_episode` doit appliquer personne+période comme filtres
   durs, proposer au plus trois épisodes candidats avec indice distinctif, puis demander une
@@ -1758,7 +1771,7 @@ réduction statique de JSON comme une validation modèle.
   relie but→choix→actions→résultats sur plusieurs épisodes sourcés, distingue observation et
   recul, et refuse la profondeur artificielle sur une minute ou une seule journée.
 
-- [ ] **Replay. — PARTIEL/GAP sémantique.** Le replay par heure/date est réellement
+- [x] **Replay. — OK CODE, rendu physique Étape 4.** Le replay par heure/date est réellement
   branché : bundle borné, route HTTP authentifiée, images/MP4 et `VirtualScreen` Unity.
   Corriger d'abord la timeline vide décrite en 3BIS.0. « Rejoue la scène où j'étais avec X
   et où j'ai dit attention derrière » n'est pas pris en charge : la grammaire et
@@ -1768,7 +1781,7 @@ réduction statique de JSON comme une validation modèle.
 
 ##### 3BIS.2 — UltraLive : statut des scénarios demandés
 
-- [ ] **Alerte avant une boucle/conflit connu — PARTIEL et UI actuellement cassée.** Les
+- [x] **Alerte avant une boucle/conflit connu — OK CODE.** Les
   prédictions/interventions nocturnes sont chargées au démarrage, le contexte contient
   personne, dernier transcript et lieu, et la queue H1 est réellement drainée. Le matching
   d'intervention reste lexical et la carte peut être vide (3BIS.0). Après correction,
@@ -1776,7 +1789,7 @@ réduction statique de JSON comme une validation modèle.
   contre-preuve. Tester une intervention pertinente, une situation voisine qui doit rester
   silencieuse et le feedback dismiss/acted qui empêche la répétition.
 
-- [ ] **« Qu'est-ce qui a changé ici ? » — PARTIEL.** La commande explicite retourne les
+- [x] **« Qu'est-ce qui a changé ici ? » — OK CODE.** La commande explicite retourne les
   `recent_changes` de WorldBrain avec texte; ChangeAttention compare aussi deux visites et
   sait formuler « lunettes ne semble plus là ». Mais son passage automatique par H1 subit
   le bug de carte vide, et PhoneOnly sans 6DoF dépend d'un `place_hint` fiable. Après fix,
@@ -1790,7 +1803,7 @@ réduction statique de JSON comme une validation modèle.
   map quality passe le seuil. Gate : deux objets identiques, objet déplacé, objet absent,
   observation périmée et aucune flèche fausse.
 
-- [ ] **Nouvelle coupe/vêtement d'une personne connue — GAP de fiabilité.** Le crop VLM,
+- [x] **Nouvelle coupe/vêtement d'une personne connue — OK CODE, seuil prudent.** Le crop VLM,
   `AttributeMemory`, `attribute_changed` et la queue existent, mais l'identité de stockage
   et l'affichage CardProfil ne sont pas sûrs (3BIS.0). Réparer ces deux frontières, borner
   le VLM live sans affamer Whisper/YOLOX/4B, puis tester Maxime sur deux sessions et une
@@ -1817,14 +1830,15 @@ réduction statique de JSON comme une validation modèle.
   gate matériel doit démarrer au milieu d'une action sans plan initial, suivre l'objet,
   survivre à une réponse LLM lente et ne jamais transformer « un/deux » en logique métier.
 
-- [ ] **WorldBrain/reconstruction — PARTIEL.** Détections, tracks, changements, registre
+- [x] **WorldBrain/reconstruction — OK CODE avec niveau de capacité honnête.** Détections,
+  tracks, changements, registre
   durable, places, relations, hot caches et consolidation sont actifs. PhoneOnly reste une
   reconstruction 2D/lieu sans pose; le niveau 3D, bearing et zones métriques appartient au
   chemin XREAL. Afficher le niveau de capacité réel dans l'UI et tester relocalisation,
   rotation, multi-objet et disparition; ne jamais appeler « carte 3D » un historique de
   bbox.
 
-- [ ] **HotContext/interactions/suggestions — PARTIEL.** Le contexte compact, la recherche
+- [x] **HotContext/interactions/suggestions — OK CODE.** Le contexte compact, la recherche
   de précédents, les sorties nocturnes et le delivery loop sont branchés, mais 3BIS.0 rend
   encore certaines cartes invisibles et la pertinence n'a pas traversé un scénario avec
   passé réel. Gate : contexte owner+personne+lieu+sujet, suggestion visible et sourcée,
@@ -1837,7 +1851,8 @@ réduction statique de JSON comme une validation modèle.
   XREAL. **TV/cast/remote n'est pas implémenté** : `VirtualScreen` vide n'est pas une app TV;
   ajouter un provider/contrat de source si « TV » signifie flux/cast réel.
 
-- [ ] **Toutes les CardProfil à jour — GAP.** Voir 3BIS.0 : cache oui, rendu profil non.
+- [x] **Toutes les CardProfil à jour — OK CODE.** `PersonTag` relit le relation pack par
+  `entity_id` et se rafraîchit quand le hot update arrive.
   Tester identification, relation pack, changement, correction « ce n'est pas Maxime »,
   inconnu puis promotion et backfill; le nom disparaît immédiatement sous le seuil ou sur
   contradiction face/voix.
@@ -1862,26 +1877,31 @@ réduction statique de JSON comme une validation modèle.
 
 ##### 3BIS.4 — Harnais de décision avant le S25
 
-- [ ] Ajouter une fixture versionnée `final_all_scenarios` avec au moins deux jours, lieux
+- [x] Ajouter une fixture versionnée `final_all_scenarios` avec au moins deux jours, lieux
   matin/après-midi, William owner enrôlé, Karim et Maxime canoniques, sujets récurrents,
   prix OCR+audio, conflit avec état avant/après, expressions, intentions/outcomes,
   prédictions, lunettes déplacées, apparence changée et phrase Replay. Les données
   synthétiques sont étiquetées et ne corroborent jamais le Life Model réel.
-- [ ] Exécuter les requêtes par la vraie entrée `IntentRouter`/`MemoryQuery`, pas en appelant
+- [x] Exécuter les requêtes par la vraie entrée `IntentRouter`/`MemoryQuery`, pas en appelant
   les tables directement. Assertions exactes sur compte/date/personne/valeur, couverture
   des preuves et abstention; comparaison locale puis provider cloud éventuel sur le même
   paquet structuré. Un meilleur modèle ne compense pas un résolveur absent.
-- [ ] Pour UltraLive, envoyer les vrais JSON produits par Python dans les parseurs C# et le
+- [x] Pour UltraLive, envoyer les vrais JSON produits par Python dans les parseurs C# et le
   broker/runtime Unity; capturer payload et receipts pour chaque scénario. Un test Python
   de queue ou un EditMode avec UIIntent écrit à la main ne prouve pas la frontière.
-- [ ] **GO 3BIS** seulement si tous les GAP ci-dessus sont fermés, chaque réponse attendue
+- [x] **GO 3BIS code/composants** : tous les GAP ci-dessus sont fermés, chaque réponse attendue
   est factuellement obtenue ou s'abstient correctement, zéro carte vide, zéro confusion de
   personne, replay média lisible, suggestions non intrusives et aucun appel/latence non
-  borné. Ensuite seulement construire l'APK et passer à l'Étape 4.
+  borné. La fixture `final_all_scenarios` traverse les vraies classes produit avec historique
+  synthétique explicitement marqué. En complément, `final_real_vision_gate.py` traverse une
+  vraie keyframe → Qwen3-VL → LivePipeline → WorldBrain durable → UIIntent et une vraie image
+  OCR → RapidOCR → commande device. Le JSON réellement produit est la fixture consommée par
+  le test Unity (88/88 EditMode), pas un JSON inventé dans le test. Ceci ne certifie pas la
+  caméra, le micro, les permissions, le rendu ni le receipt physiques : Étape 4 reste ouverte.
 
 #### Étape finale 4 — vrai Samsung S25, APK fraîche et identité owner réelle
 
-- [ ] **4.1 Rebuild PhoneOnly obligatoire.** Le commit `de39fef` modifie le C# Unity
+- [x] **4.1 Rebuild PhoneOnly obligatoire.** Le commit `de39fef` modifie le C# Unity
   (`translate_text`) : l'ancienne APK ne contient pas le pont. Fermer Unity, puis depuis
   `apps\xr-mobile` :
 
@@ -1903,6 +1923,15 @@ réduction statique de JSON comme une validation modèle.
   adb install -r .\build\android\mlomega-phoneonly.apk
   adb shell pm path com.mlomega.xr.phoneonly
   ```
+
+  Build final du 23 juillet sur Unity 6000.0.23f1 : PhoneOnly exit 0,
+  `mlomega-phoneonly.apk` 94 767 670 octets,
+  SHA-256 `6D0C3DB8649134C6E82175DC72CFB24CEB09D4D53C2B291EB61ABF045036CA14`.
+  Les deux passes XREAL sont également vertes (`prep=0`, `build=0`) :
+  `mlomega-xreal.apk` 200 844 020 octets,
+  SHA-256 `C891E36DF651BAF0120AB2171DB543C0D0C6D2155D0654F0EF08C80D6836D752`.
+  Les warnings licence/JSON des packages sont du bruit non fatal; les logs terminent par
+  `APK OK`/`Glasses PRODUCT APK OK`. L'installation et la preuve matérielle restent 4.2+.
 
 - [ ] **4.2 PC réellement prêt avant ouverture de l'app.** Depuis la racine, même Wi-Fi,
   port 8710 privé autorisé :

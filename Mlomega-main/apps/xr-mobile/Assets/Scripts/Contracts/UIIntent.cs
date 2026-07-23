@@ -10,6 +10,9 @@ namespace MLOmega.Contracts.V19
 {
     public sealed class UIIntent
     {
+        [JsonProperty("type")]
+        public string Type { get; set; }
+
         // default: v19.0
         [JsonProperty("contracts_version")]
         public string ContractsVersion { get; set; }

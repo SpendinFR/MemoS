@@ -257,6 +257,46 @@ def test_person_appearance_change_same_mechanism(tmp_path):
     assert changes[0]["after"]["value"] == "courte"
 
 
+def test_person_appearance_survives_visual_entity_change_after_fusion(tmp_path):
+    world = FakeWorld({})
+    mem = attribute_memory.AttributeMemory(
+        worldbrain=world, service_db_path=str(tmp_path / "canonical-person.db")
+    )
+    mem.observe_person_appearance(
+        entity_id="visual-session-1",
+        canonical_person_id="maxime",
+        descriptor={"coiffure": "longue"},
+        session="day-1",
+    )
+    changes = mem.observe_person_appearance(
+        entity_id="visual-session-2",
+        canonical_person_id="maxime",
+        descriptor={"coiffure": "courte"},
+        session="day-2",
+    )
+
+    assert len(changes) == 1
+    assert changes[0]["subject"] == "person:maxime"
+    assert len(mem.history(subject="person:maxime")) == 2
+
+
+def test_identity_promotion_backfills_provisional_appearance(tmp_path):
+    mem = attribute_memory.AttributeMemory(
+        worldbrain=FakeWorld({}), service_db_path=str(tmp_path / "promote-person.db")
+    )
+    mem.observe_person_appearance(
+        entity_id="visual-before-name",
+        descriptor={"chaussures": "blanches"},
+        session="day-1",
+    )
+
+    assert mem.promote_person_entity(
+        entity_id="visual-before-name", canonical_person_id="karim"
+    ) == 1
+    assert mem.history(subject="visual-before-name") == []
+    assert mem.history(subject="person:karim")[0]["value"] == "blanches"
+
+
 # ============================================================ §3 routine→object
 def _seed_visual_and_routines(db_path, person_id="me"):
     from mlomega_audio_elite import v19_visual_store as store  # type: ignore

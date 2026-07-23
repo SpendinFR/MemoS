@@ -28,6 +28,24 @@ public sealed class SceneDelta
     [JsonPropertyName("changes")]
     public List<Dictionary<string, object>> Changes { get; set; }
 
+    [JsonPropertyName("frame_width")]
+    public long? FrameWidth { get; set; }
+
+    [JsonPropertyName("frame_height")]
+    public long? FrameHeight { get; set; }
+
+    // enum: 0 | 90 | 180 | 270; default: 0
+    [JsonPropertyName("rotation")]
+    public long Rotation { get; set; }
+
+    // default: False
+    [JsonPropertyName("mirrored")]
+    public bool Mirrored { get; set; }
+
+    // default: detector_pixels
+    [JsonPropertyName("coordinate_space")]
+    public string CoordinateSpace { get; set; }
+
     // default: 0.0
     [JsonPropertyName("map_quality")]
     public double MapQuality { get; set; }

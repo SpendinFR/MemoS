@@ -4,10 +4,13 @@
 // is the Unity-side proof that the [JsonProperty] rewrite in the synced contracts
 // serializes to the same shape as the Python pydantic models.
 using System.Collections.Generic;
+using System.IO;
 using MLOmega.Contracts.V19;
+using MLOmega.XR.UI.Components;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
+using UnityEngine;
 
 namespace MLOmega.XR.Tests
 {
@@ -52,6 +55,29 @@ namespace MLOmega.XR.Tests
         }
 
         [Test]
+        public void ObjectOutline_DownlinkParsesValidatedDirectScreenBbox()
+        {
+            string json = File.ReadAllText(Path.Combine(
+                Application.dataPath,
+                "Tests/Fixtures/real-vlm-object-outline-v19.json"));
+
+            UIIntent intent = ContractJson.Deserialize<UIIntent>(json);
+            Assert.IsTrue(IntentRead.TryRect(intent.Anchor, "bbox", out Rect bbox));
+            Assert.AreEqual("visionrt-final-real-vlm-transport-1", intent.UiIntentId);
+            Assert.AreEqual("frame:deep_c83e169873f98538eacb", intent.EvidenceRefs[0]);
+            Assert.AreEqual(0.784f, bbox.x, 1e-6f);
+            Assert.AreEqual(0.445f, bbox.y, 1e-6f);
+            Assert.AreEqual(0.139f, bbox.width, 1e-6f);
+            Assert.AreEqual(0.101f, bbox.height, 1e-6f);
+
+            intent.Anchor["bbox"] = new Dictionary<string, object>
+            {
+                { "x", 0.5 }, { "y", 0.5 }, { "w", 0.0 }, { "h", 0.2 }
+            };
+            Assert.IsFalse(IntentRead.TryRect(intent.Anchor, "bbox", out _));
+        }
+
+        [Test]
         public void UIReceipt_RoundTrips_WithSnakeCaseKeys()
         {
             var receipt = new UIReceipt
@@ -91,7 +117,7 @@ namespace MLOmega.XR.Tests
                 PoseValid = false,
                 Rotation = 90,
                 Source = "phone_camera",
-                Pose = new Pose
+                Pose = new MLOmega.Contracts.V19.Pose
                 {
                     ContractsVersion = "v19.0",
                     Position = new List<double> { 1, 2, 3 },

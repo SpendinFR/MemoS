@@ -80,6 +80,38 @@ namespace MLOmega.XR.UI.Components
             return false;
         }
 
+        /// <summary>Read a normalised {x,y,w,h} rectangle from a contract dictionary.</summary>
+        public static bool TryRect(Dictionary<string, object> d, string key, out Rect rect)
+        {
+            rect = default;
+            if (d == null || !d.TryGetValue(key, out object value) || value == null)
+                return false;
+
+            Dictionary<string, object> box = value as Dictionary<string, object>;
+            if (box == null && value is JObject obj)
+                box = obj.ToObject<Dictionary<string, object>>();
+            if (box == null) return false;
+
+            float x = (float)Num(box, "x", double.NaN);
+            float y = (float)Num(box, "y", double.NaN);
+            float w = (float)Num(box, "w", Num(box, "width", double.NaN));
+            float h = (float)Num(box, "h", Num(box, "height", double.NaN));
+            if (float.IsNaN(x) || float.IsInfinity(x) ||
+                float.IsNaN(y) || float.IsInfinity(y) ||
+                float.IsNaN(w) || float.IsInfinity(w) ||
+                float.IsNaN(h) || float.IsInfinity(h) ||
+                w <= 0f || h <= 0f)
+                return false;
+
+            x = Mathf.Clamp01(x);
+            y = Mathf.Clamp01(y);
+            w = Mathf.Clamp(w, 0f, 1f - x);
+            h = Mathf.Clamp(h, 0f, 1f - y);
+            if (w <= 0f || h <= 0f) return false;
+            rect = new Rect(x, y, w, h);
+            return true;
+        }
+
         private static float ToFloat(object o)
         {
             if (o == null) return 0f;

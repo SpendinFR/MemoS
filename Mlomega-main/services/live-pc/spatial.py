@@ -251,6 +251,8 @@ def answer_find(
 
     bearing = spatial.bearing_to(entity_id) if entity_id else None
     ent = dict(entity or {})
+    source_truth = str(ent.get("truth_level") or "observed")
+    recalled_truth = "remembered" if source_truth == "observed" else source_truth
     card = {
         "component": "context_card",
         "content": {
@@ -264,7 +266,7 @@ def answer_find(
             "place_hint": ent.get("place_hint"),
             "source": ent.get("source"),
         },
-        "truth_level": "remembered",
+        "truth_level": recalled_truth,
         "confidence": float(ent.get("confidence") or 0.0),
         "bearing": bearing,  # None unless the map qualifies — never a false arrow
     }

@@ -6,6 +6,7 @@
 // no name. A relational note stays a sourced hypothesis (§17.3). Follows the track
 // each frame; the broker removes it if the track is lost.
 using MLOmega.XR.Scene;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace MLOmega.XR.UI.Components
@@ -63,14 +64,46 @@ namespace MLOmega.XR.UI.Components
             bool nameAllowed = !string.IsNullOrEmpty(name) && confidence >= threshold;
             if (_panel.Body != null)
             {
-                _panel.Body.text = nameAllowed ? name : "person";
+                string relation = nameAllowed ? RelationSummary(intent.EntityId) : null;
+                _panel.Body.text = nameAllowed
+                    ? (string.IsNullOrEmpty(relation)
+                        ? name
+                        : $"{name}\n<size=72%><color=#9FB3C8>{relation}</color></size>")
+                    : "person";
             }
+        }
+
+        private string RelationSummary(string entityId)
+        {
+            if (string.IsNullOrEmpty(entityId) || Context == null ||
+                Context.SceneCache == null ||
+                !Context.SceneCache.EntitiesHot.TryGetRelationPack(entityId, out EntityHotUpdate pack) ||
+                pack?.RelationPack == null)
+            {
+                return null;
+            }
+            foreach (Dictionary<string, object> item in pack.RelationPack)
+            {
+                if (item == null) continue;
+                foreach (string key in new[] { "summary", "relationship_type", "person_hint" })
+                {
+                    if (item.TryGetValue(key, out object value) && value != null)
+                    {
+                        string text = value.ToString();
+                        if (!string.IsNullOrWhiteSpace(text)) return text;
+                    }
+                }
+            }
+            return null;
         }
 
         protected override void Update()
         {
             base.Update();
             if (Phase == UIComponentPhase.Idle) return;
+            // entity_hot_update can arrive after the tag itself; refresh locally
+            // so the prefetched CardProfil relation is actually consumed.
+            if (Intent != null) RenderName(Intent);
             FollowFace();
             _panel?.SetAlpha(CurrentAlpha);
         }

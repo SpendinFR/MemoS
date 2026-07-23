@@ -111,11 +111,21 @@ def _explicit_person_route(question: str, person_id: str) -> dict[str, Any] | No
 class MemoryQuery:
     """Route a memory question to the rich Brain2 router with an honest fallback."""
 
-    def __init__(self, *, person_id: str = "me", limit: int = 80) -> None:
+    def __init__(
+        self, *, person_id: str = "me", limit: int = 80,
+        db_path: str | Path | None = None, replay_service: Any = None,
+    ) -> None:
         self.person_id = person_id or "me"
         self.limit = int(limit)
+        from mlomega_audio_elite.structured_memory_resolver_v19 import (
+            StructuredMemoryResolver,
+        )
+        self.structured = StructuredMemoryResolver(
+            person_id=self.person_id, db_path=db_path, replay_service=replay_service,
+        )
         self.metrics: dict[str, Any] = {
             "asks": 0,
+            "structured_answers": 0,
             "brain2_answers": 0,
             "fast_person_routes": 0,
             "retrieval_fallbacks": 0,
@@ -175,6 +185,32 @@ class MemoryQuery:
         truth_level: str
         evidence: list[str]
         source: str
+
+        structured = self.structured.resolve(question)
+        if structured is not None:
+            self.metrics["structured_answers"] += 1
+            ready_intent = structured.get("ui_intent")
+            if isinstance(ready_intent, dict):
+                return ready_intent
+            return {
+                "type": "ui_intent",
+                "ui_intent_id": str(uuid.uuid4()),
+                "producer": "brainlive",
+                "component": "context_card",
+                "content": {
+                    "kind": str(structured.get("kind") or "memory_answer"),
+                    "title": str(structured.get("title") or "Mémoire"),
+                    "question": question,
+                    "text": str(structured.get("text") or ""),
+                    "source": "structured_memory",
+                    "data": dict(structured.get("data") or {}),
+                },
+                "truth_level": str(structured.get("truth_level") or "remembered"),
+                "confidence": float(structured.get("confidence") or 0.0),
+                "priority": 0.6,
+                "ttl_ms": 15000,
+                "evidence_refs": list(structured.get("evidence_refs") or []),
+            }
 
         try:
             answer = self._ask_brain2(question)

@@ -40,6 +40,8 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
+from mlomega_audio_elite.spatial_bbox_v19 import sanitize_detector_bbox
+
 # COCO-80 class names (YOLOX output order).
 COCO_CLASSES = (
     "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
@@ -398,13 +400,21 @@ class VlmCrop:
             # ``response`` blank on the deployed Ollama build (same behaviour as
             # the post-stop Deep Vision backend).
             text = (data.get("response") or data.get("thinking") or "").strip()
+            structured: dict[str, Any] | None = None
             if format_schema is not None and text:
                 try:
                     decoded = json.loads(text)
-                    text = str(decoded.get("text") or "").strip()
+                    if isinstance(decoded, dict):
+                        structured = decoded
+                        text = str(decoded.get("text") or "").strip()
+                    else:
+                        text = ""
                 except (TypeError, ValueError):
                     text = ""
-            return {"status": "ok", "text": text, "model": self.model}
+            return {
+                "status": "ok", "text": text, "json": structured,
+                "model": self.model,
+            }
         except (urllib.error.URLError, TimeoutError, OSError, ValueError):
             # Ollama unreachable / timed out: degrade honestly, never block.
             return {"status": "vlm_unavailable", "text": None, "model": self.model}
@@ -421,6 +431,8 @@ class VisionMetrics:
     scene_delta_count: int = 0
     detector_frames: int = 0
     tracker_frames: int = 0
+    focus_track_updates: int = 0
+    focus_track_lost: int = 0
     keyframes_recorded: int = 0
     drops: int = 0
     errors: int = 0
@@ -440,6 +452,8 @@ class VisionMetrics:
             "scene_delta_rate": self.scene_delta_count,
             "detector_frames": self.detector_frames,
             "tracker_frames": self.tracker_frames,
+            "focus_track_updates": self.focus_track_updates,
+            "focus_track_lost": self.focus_track_lost,
             "keyframes_recorded": self.keyframes_recorded,
             "drops": self.drops,
             "vision_errors": self.errors,
@@ -471,6 +485,7 @@ class VisionRT:
         scene_ttl_ms: int = 2000,
         on_scene_delta: Callable[[dict[str, Any]], Any] | None = None,
         on_ui_intent: Callable[[dict[str, Any]], Any] | None = None,
+        on_focus_update: Callable[[dict[str, Any]], Any] | None = None,
         keyframe_sink: Callable[[np.ndarray, Any], Any] | None = None,
         on_error: Callable[[str, Any], Any] | None = None,
     ) -> None:
@@ -500,6 +515,7 @@ class VisionRT:
         self.scene_ttl_ms = scene_ttl_ms
         self.on_scene_delta = on_scene_delta
         self.on_ui_intent = on_ui_intent
+        self.on_focus_update = on_focus_update
         self.keyframe_sink = keyframe_sink
         self.on_error = on_error
         self.metrics = VisionMetrics()
@@ -509,6 +525,7 @@ class VisionRT:
         self._changes_paused = False
         self._vlm_refused = False
         self._ui_intent_seq = 0
+        self._focus_visual_track: dict[str, Any] | None = None
 
     def _report_error(self, scope: str, exc: Any) -> None:
         self.metrics.errors += 1
@@ -550,6 +567,9 @@ class VisionRT:
         now = time.monotonic() if now is None else now
         self.metrics.tracker_frames += 1
         frame_id = getattr(envelope, "frame_id", None) or "unknown"
+        self._update_focus_visual_track(
+            frame_bgr, frame_id=str(frame_id), now=float(now)
+        )
 
         motion = self.cadence.motion_score(frame_bgr)
         interval = self.cadence.interval_s(
@@ -580,25 +600,56 @@ class VisionRT:
         if not ran_detector:
             return None  # SceneDelta emitted only on detection frames
 
-        return self._emit_scene_delta(frame_id, tracks)
+        intrinsics = getattr(envelope, "intrinsics", None)
+        mirrored = bool(
+            isinstance(intrinsics, dict)
+            and (intrinsics.get("mirrored") or intrinsics.get("mirror"))
+        )
+        return self._emit_scene_delta(
+            frame_id,
+            tracks,
+            frame_width=int(frame_bgr.shape[1]),
+            frame_height=int(frame_bgr.shape[0]),
+            rotation=int(getattr(envelope, "rotation", 0) or 0),
+            mirrored=mirrored,
+        )
 
-    def _emit_scene_delta(self, frame_id: str, tracks: list[Any]) -> dict[str, Any]:
+    def _emit_scene_delta(
+        self,
+        frame_id: str,
+        tracks: list[Any],
+        *,
+        frame_width: int,
+        frame_height: int,
+        rotation: int = 0,
+        mirrored: bool = False,
+    ) -> dict[str, Any]:
         entities = []
         current_ids: set[str] = set()
         for t in tracks:
             current_ids.add(t.track_id)
-            x1, y1, x2, y2 = t.box
-            entities.append(
-                {
-                    "track_id": t.track_id,
-                    "kind": t.kind,
-                    "label": t.label,
-                    "bbox": [round(x1, 1), round(y1, 1), round(x2, 1), round(y2, 1)],
-                    "confidence": round(float(t.score), 3),
-                    "visibility": round(float(t.visibility), 3),
-                    "age": int(t.age),
-                }
+            checked = sanitize_detector_bbox(
+                t.box,
+                frame_width=frame_width,
+                frame_height=frame_height,
+                require_dimensions=True,
             )
+            entity = {
+                "track_id": t.track_id,
+                "kind": t.kind,
+                "label": t.label,
+                "bbox": (
+                    [round(value, 1) for value in checked.bbox]
+                    if checked.bbox is not None else None
+                ),
+                "bbox_status": checked.status,
+                "confidence": round(float(t.score), 3),
+                "visibility": round(float(t.visibility), 3),
+                "age": int(t.age),
+            }
+            if checked.status != "valid":
+                entity["bbox_audit"] = checked.audit_dict()
+            entities.append(entity)
         appeared = current_ids - self._prev_track_ids
         disappeared = self._prev_track_ids - current_ids
         changes = (
@@ -614,6 +665,11 @@ class VisionRT:
         delta = {
             "session_id": self.session_id,
             "source_frame_id": frame_id,
+            "frame_width": frame_width,
+            "frame_height": frame_height,
+            "rotation": rotation if rotation in (0, 90, 180, 270) else 0,
+            "mirrored": bool(mirrored),
+            "coordinate_space": "detector_pixels",
             "entities": entities,
             "relations": [],
             "changes": changes,
@@ -712,13 +768,111 @@ class VisionRT:
             hits = [d for d in dets if target in d.label.lower()] if target else dets
             hits.sort(key=lambda d: d.score, reverse=True)
             if hits:
+                screen_bbox = self._crop_pixel_bbox_to_screen(
+                    hits[0].box,
+                    crop_bbox=bbox,
+                    frame_width=frame_bgr.shape[1],
+                    frame_height=frame_bgr.shape[0],
+                )
+                if screen_bbox is None:
+                    hits = []
+            if hits:
                 content = {
                     "kind": "find", "state": "visible", "query": request.get("query"),
                     "label": hits[0].label, "matches": len(hits),
+                    "source": "detector",
+                    "screen_bbox": screen_bbox,
+                    "bbox": self._screen_bbox_to_pixels(
+                        screen_bbox, frame_bgr.shape[1], frame_bgr.shape[0]
+                    ),
+                    "frame_width": int(frame_bgr.shape[1]),
+                    "frame_height": int(frame_bgr.shape[0]),
                     "text": f"{hits[0].label} est visible maintenant.",
                 }
                 truth_level = "observed"
                 confidence = float(hits[0].score)
+            elif target and not self._vlm_refused and self._admit("vlm"):
+                # COCO-80 cannot represent long-tail objects (eyeglasses, keys,
+                # personal devices, etc.) and its English labels cannot match
+                # arbitrary spoken languages. A *user-triggered* targeted VLM
+                # lookup is the generic fallback; it is not run per frame.
+                self.metrics.vlm_queue_depth += 1
+                lookup = self.vlm.describe(
+                    crop,
+                    prompt=(
+                        f"Search this image for the object requested by the user: {target!r}. "
+                        "Return strict JSON. found=true only when it is clearly visible. "
+                        "label is the visible object's short name in the user's language. "
+                        "location is a short image-relative description (left/center/right, "
+                        "top/middle/bottom). bbox_1000 is [x1,y1,x2,y2] in 0..1000 "
+                        "coordinates relative to this exact image crop; use [0,0,0,0] "
+                        "when absent. Do not guess."
+                    ),
+                    format_schema={
+                        "type": "object",
+                        "properties": {
+                            "found": {"type": "boolean"},
+                            "label": {"type": "string"},
+                            "location": {"type": "string"},
+                            "bbox_1000": {
+                                "type": "array",
+                                "items": {"type": "number"},
+                                "minItems": 4,
+                                "maxItems": 4,
+                            },
+                        },
+                        "required": ["found", "label", "location", "bbox_1000"],
+                        "additionalProperties": False,
+                    },
+                )
+                self.metrics.vlm_queue_depth = max(0, self.metrics.vlm_queue_depth - 1)
+                decoded = lookup.get("json") if isinstance(lookup, dict) else None
+                found = bool(decoded.get("found")) if isinstance(decoded, dict) else False
+                if lookup.get("status") == "ok" and found:
+                    label = str(decoded.get("label") or target)
+                    location = str(decoded.get("location") or "").strip()
+                    screen_bbox = self._vlm_bbox_to_screen(
+                        decoded.get("bbox_1000"),
+                        crop_bbox=bbox,
+                        frame_width=frame_bgr.shape[1],
+                        frame_height=frame_bgr.shape[0],
+                    )
+                    # A text-only "left" answer cannot drive the UltraLive
+                    # outline and must not be sold as a spatially localised hit.
+                    if screen_bbox is None:
+                        found = False
+                if lookup.get("status") == "ok" and found:
+                    content = {
+                        "kind": "find", "state": "visible", "query": request.get("query"),
+                        "label": label, "matches": 1, "source": "vlm_targeted",
+                        "location": location or None,
+                        "screen_bbox": screen_bbox,
+                        "bbox": self._screen_bbox_to_pixels(
+                            screen_bbox, frame_bgr.shape[1], frame_bgr.shape[0]
+                        ),
+                        "frame_width": int(frame_bgr.shape[1]),
+                        "frame_height": int(frame_bgr.shape[0]),
+                        "text": (
+                            f"{label} est visible maintenant"
+                            + (f" ({location})" if location else "")
+                            + "."
+                        ),
+                    }
+                    truth_level = "probable"
+                    confidence = 0.55
+                else:
+                    content = {
+                        "kind": "find", "state": "unknown", "query": request.get("query"),
+                        "label": None, "matches": 0,
+                        "source": "vlm_targeted",
+                        "status": lookup.get("status") if isinstance(lookup, dict) else "unavailable",
+                        "text": (
+                            "Je ne le vois pas maintenant et je n'ai pas de position "
+                            "durable fiable."
+                        ),
+                    }
+                    truth_level = "unknown"
+                    confidence = 0.0
             else:
                 content = {
                     "kind": "find", "state": "unknown", "query": request.get("query"),
@@ -736,7 +890,12 @@ class VisionRT:
                 if dets:
                     label, conf = dets[0].label, float(dets[0].score)
             if label is not None:
-                content = {"kind": "what_is", "label": label, "source": "detector"}
+                content = {
+                    "kind": "what_is",
+                    "label": label,
+                    "source": "detector",
+                    "text": f"Je vois {label}.",
+                }
                 truth_level = "observed"
                 confidence = conf
             elif not self._vlm_refused and self._admit("vlm"):
@@ -744,7 +903,12 @@ class VisionRT:
                 vlm = self.vlm.describe(crop)
                 self.metrics.vlm_queue_depth = max(0, self.metrics.vlm_queue_depth - 1)
                 if vlm["status"] == "ok" and vlm["text"]:
-                    content = {"kind": "what_is", "label": vlm["text"], "source": "vlm"}
+                    content = {
+                        "kind": "what_is",
+                        "label": vlm["text"],
+                        "source": "vlm",
+                        "text": f"Je vois probablement {vlm['text']}.",
+                    }
                     truth_level = "probable"
                     confidence = 0.5
                 else:
@@ -754,21 +918,42 @@ class VisionRT:
                         "label": None,
                         "source": "vlm",
                         "status": vlm["status"],
+                        "text": "Je n'ai pas pu identifier cet objet de façon fiable.",
                     }
                     truth_level = "inferred"
                     confidence = 0.0
             else:
-                content = {"kind": "what_is", "label": None, "status": "vlm_refused"}
+                content = {
+                    "kind": "what_is",
+                    "label": None,
+                    "status": "vlm_refused",
+                    "text": "Je n'ai pas pu identifier cet objet de façon fiable.",
+                }
                 truth_level = "inferred"
                 confidence = 0.0
 
         intent = {
+            "type": "ui_intent",
             "ui_intent_id": self._next_ui_id(),
             "producer": "visionrt",
             "source_frame_id": frame_id,
             "target_track_id": track_id,
-            "component": "lens_window" if kind == "ocr" else "context_card",
-            "anchor": {"type": "track", "track_id": track_id} if track_id else {"type": "crop", "bbox": bbox},
+            "component": (
+                "lens_window" if kind == "ocr"
+                else "object_outline"
+                if kind == "find" and content.get("state") == "visible"
+                else "context_card"
+            ),
+            "anchor": (
+                {"type": "track", "track_id": track_id}
+                if track_id
+                else {
+                    "type": "screen_bbox",
+                    "bbox": content.get("screen_bbox"),
+                }
+                if content.get("screen_bbox")
+                else {"type": "crop", "bbox": bbox}
+            ),
             "content": content,
             "truth_level": truth_level,
             "confidence": round(float(confidence), 3),
@@ -777,12 +962,347 @@ class VisionRT:
             "ui_hint": {"focus": kind},
             "evidence_refs": [f"frame:{frame_id}"] if frame_id else [],
         }
+        if (
+            kind == "find"
+            and content.get("state") == "visible"
+            and not track_id
+            and content.get("screen_bbox")
+        ):
+            self._start_focus_visual_track(intent, frame_bgr)
         if self.on_ui_intent:
             try:
                 self.on_ui_intent(intent)
             except Exception as exc:
                 self._report_error("vision.on_ui_intent", exc)
         return intent
+
+    def bind_focus_entity(self, ui_intent_id: str, entity_id: str | None) -> None:
+        """Attach the durable WorldBrain identity after the initial VLM sighting."""
+        active = self._focus_visual_track
+        if (
+            active is not None
+            and str(active.get("ui_intent_id") or "") == str(ui_intent_id or "")
+            and entity_id
+        ):
+            active["entity_id"] = str(entity_id)
+
+    def _start_focus_visual_track(
+        self, intent: dict[str, Any], frame_bgr: np.ndarray,
+    ) -> None:
+        """Seed a cheap KLT tracker from a detector/VLM bbox.
+
+        The expensive model runs once. Subsequent camera motion is followed from
+        pixels, with the same UIIntent/entity identity. Failure hides the outline
+        instead of leaving a stale rectangle on screen.
+        """
+        import cv2
+
+        content = intent.get("content") or {}
+        screen = content.get("screen_bbox")
+        if not isinstance(screen, dict):
+            return
+        h, w = frame_bgr.shape[:2]
+        pixels = self._screen_bbox_to_pixels(screen, w, h)
+        checked = sanitize_detector_bbox(
+            pixels, frame_width=w, frame_height=h, require_dimensions=True
+        )
+        if not checked.usable or checked.bbox is None:
+            return
+        x1, y1, x2, y2 = (int(round(v)) for v in checked.bbox)
+        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        mask = np.zeros_like(gray)
+        mask[max(0, y1):min(h, y2), max(0, x1):min(w, x2)] = 255
+        points = cv2.goodFeaturesToTrack(
+            gray, maxCorners=48, qualityLevel=0.01, minDistance=3,
+            blockSize=5, mask=mask,
+        )
+        if points is None or len(points) < 4:
+            content["tracking_status"] = "insufficient_features"
+            intent["content"] = content
+            intent["ttl_ms"] = min(int(intent.get("ttl_ms") or 1000), 1000)
+            return
+        self._focus_visual_track = {
+            "ui_intent_id": str(intent.get("ui_intent_id") or self._next_ui_id()),
+            "entity_id": str(intent.get("entity_id") or content.get("entity_id") or ""),
+            "query": str(content.get("query") or content.get("label") or ""),
+            "label": str(content.get("label") or content.get("query") or "objet"),
+            "bbox": tuple(float(v) for v in checked.bbox),
+            "prev_gray": gray,
+            "points": points.astype(np.float32),
+            "expires_at": time.monotonic() + 5.0,
+            "last_emit": 0.0,
+            "evidence_refs": list(intent.get("evidence_refs") or []),
+            "confidence": float(intent.get("confidence") or 0.5),
+        }
+        content["tracking_status"] = "active"
+        intent["content"] = content
+
+    def _update_focus_visual_track(
+        self, frame_bgr: np.ndarray, *, frame_id: str, now: float,
+    ) -> None:
+        active = self._focus_visual_track
+        if active is None:
+            return
+        if now >= float(active.get("expires_at") or 0.0):
+            self._focus_visual_track = None
+            return
+        import cv2
+
+        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        previous = active.get("prev_gray")
+        points = active.get("points")
+        if (
+            not isinstance(previous, np.ndarray)
+            or previous.shape != gray.shape
+            or not isinstance(points, np.ndarray)
+            or len(points) < 4
+        ):
+            self._lose_focus_visual_track(frame_id, reason="tracking_state_invalid")
+            return
+        next_points, status, errors = cv2.calcOpticalFlowPyrLK(
+            previous, gray, points, None,
+            winSize=(21, 21), maxLevel=3,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 0.01),
+        )
+        if next_points is None or status is None:
+            self._lose_focus_visual_track(frame_id, reason="optical_flow_failed")
+            return
+        keep = status.reshape(-1).astype(bool)
+        if errors is not None:
+            keep &= errors.reshape(-1) < 40.0
+        old_good = points.reshape(-1, 2)[keep]
+        new_good = next_points.reshape(-1, 2)[keep]
+        if len(new_good) < 4:
+            self._lose_focus_visual_track(frame_id, reason="tracking_lost")
+            return
+
+        transform = None
+        if len(new_good) >= 6:
+            transform, _ = cv2.estimateAffinePartial2D(
+                old_good, new_good, method=cv2.RANSAC, ransacReprojThreshold=3.0
+            )
+        x1, y1, x2, y2 = active["bbox"]
+        corners = np.array(
+            [[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.float32
+        )
+        if transform is not None:
+            mapped = cv2.transform(corners.reshape(1, -1, 2), transform)[0]
+            candidate = (
+                float(mapped[:, 0].min()), float(mapped[:, 1].min()),
+                float(mapped[:, 0].max()), float(mapped[:, 1].max()),
+            )
+        else:
+            dx, dy = np.median(new_good - old_good, axis=0)
+            candidate = (x1 + float(dx), y1 + float(dy), x2 + float(dx), y2 + float(dy))
+        h, w = gray.shape
+        checked = sanitize_detector_bbox(
+            candidate, frame_width=w, frame_height=h, require_dimensions=True
+        )
+        if not checked.usable or checked.bbox is None:
+            self._lose_focus_visual_track(frame_id, reason="tracked_bbox_invalid")
+            return
+
+        active["bbox"] = tuple(checked.bbox)
+        active["prev_gray"] = gray
+        active["points"] = new_good.reshape(-1, 1, 2).astype(np.float32)
+        if len(new_good) < 12:
+            bx1, by1, bx2, by2 = (int(round(v)) for v in checked.bbox)
+            mask = np.zeros_like(gray)
+            mask[max(0, by1):min(h, by2), max(0, bx1):min(w, bx2)] = 255
+            replenished = cv2.goodFeaturesToTrack(
+                gray, maxCorners=48, qualityLevel=0.01, minDistance=3,
+                blockSize=5, mask=mask,
+            )
+            if replenished is not None and len(replenished) >= 4:
+                active["points"] = replenished.astype(np.float32)
+
+        if now - float(active.get("last_emit") or 0.0) < 0.1:
+            return
+        active["last_emit"] = now
+        bx1, by1, bx2, by2 = checked.bbox
+        screen_bbox = {
+            "x": round(bx1 / w, 6),
+            "y": round(by1 / h, 6),
+            "w": round((bx2 - bx1) / w, 6),
+            "h": round((by2 - by1) / h, 6),
+        }
+        update = {
+            "type": "ui_intent",
+            "ui_intent_id": active["ui_intent_id"],
+            "producer": "visionrt",
+            "source_frame_id": frame_id,
+            "component": "object_outline",
+            "anchor": {"type": "screen_bbox", "bbox": screen_bbox},
+            "content": {
+                "kind": "find",
+                "state": "visible",
+                "query": active["query"],
+                "label": active["label"],
+                "source": "visual_tracker",
+                "tracking_status": "active",
+                "screen_bbox": screen_bbox,
+                "bbox": [round(v, 1) for v in checked.bbox],
+                "frame_width": int(w),
+                "frame_height": int(h),
+                "entity_id": active.get("entity_id") or None,
+            },
+            "truth_level": "probable",
+            "confidence": round(float(active["confidence"]), 3),
+            "priority": 0.6,
+            "ttl_ms": 500,
+            "evidence_refs": [f"frame:{frame_id}"],
+            "entity_id": active.get("entity_id") or None,
+        }
+        self.metrics.focus_track_updates += 1
+        if self.on_focus_update is not None:
+            try:
+                self.on_focus_update(update)
+            except Exception as exc:
+                self._report_error("vision.on_focus_update", exc)
+
+    def _lose_focus_visual_track(self, frame_id: str, *, reason: str) -> None:
+        active = self._focus_visual_track
+        self._focus_visual_track = None
+        if active is None:
+            return
+        self.metrics.focus_track_lost += 1
+        if self.on_focus_update is not None:
+            try:
+                self.on_focus_update({
+                    "type": "ui_intent",
+                    "ui_intent_id": active["ui_intent_id"],
+                    "producer": "visionrt",
+                    "source_frame_id": frame_id,
+                    "component": "object_outline",
+                    "anchor": {"type": "none"},
+                    "content": {
+                        "kind": "find", "state": "unknown",
+                        "query": active["query"], "label": active["label"],
+                        "tracking_status": reason,
+                    },
+                    "truth_level": "unknown",
+                    "confidence": 0.0,
+                    "priority": 0.2,
+                    "ttl_ms": 250,
+                    "evidence_refs": [f"frame:{frame_id}"],
+                    "entity_id": active.get("entity_id") or None,
+                })
+            except Exception as exc:
+                self._report_error("vision.on_focus_update", exc)
+
+    @staticmethod
+    def _screen_bbox_to_pixels(
+        screen_bbox: dict[str, float],
+        frame_width: int,
+        frame_height: int,
+    ) -> list[float]:
+        return [
+            round(screen_bbox["x"] * frame_width, 1),
+            round(screen_bbox["y"] * frame_height, 1),
+            round((screen_bbox["x"] + screen_bbox["w"]) * frame_width, 1),
+            round((screen_bbox["y"] + screen_bbox["h"]) * frame_height, 1),
+        ]
+
+    @staticmethod
+    def _crop_pixel_bbox_to_screen(
+        raw_bbox: Any,
+        *,
+        crop_bbox: Any,
+        frame_width: int,
+        frame_height: int,
+    ) -> dict[str, float] | None:
+        """Map detector pixels in a focus crop back to the full source frame."""
+        if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+            return None
+        try:
+            x1, y1, x2, y2 = [float(value) for value in raw_bbox]
+        except (TypeError, ValueError):
+            return None
+        if not all(math.isfinite(value) for value in (x1, y1, x2, y2)):
+            return None
+        origin_x = origin_y = 0.0
+        crop_width, crop_height = float(frame_width), float(frame_height)
+        if isinstance(crop_bbox, (list, tuple)) and len(crop_bbox) == 4:
+            try:
+                cx1, cy1, cx2, cy2 = [float(value) for value in crop_bbox]
+                cx1 = max(0.0, min(float(frame_width), cx1))
+                cy1 = max(0.0, min(float(frame_height), cy1))
+                cx2 = max(0.0, min(float(frame_width), cx2))
+                cy2 = max(0.0, min(float(frame_height), cy2))
+                if cx2 > cx1 and cy2 > cy1:
+                    origin_x, origin_y = cx1, cy1
+                    crop_width, crop_height = cx2 - cx1, cy2 - cy1
+            except (TypeError, ValueError):
+                pass
+        checked = sanitize_detector_bbox(
+            [origin_x + x1, origin_y + y1, origin_x + x2, origin_y + y2],
+            frame_width=frame_width,
+            frame_height=frame_height,
+            require_dimensions=True,
+        )
+        if not checked.usable or checked.bbox is None:
+            return None
+        px1, py1, px2, py2 = checked.bbox
+        return {
+            "x": round(px1 / float(frame_width), 6),
+            "y": round(py1 / float(frame_height), 6),
+            "w": round((px2 - px1) / float(frame_width), 6),
+            "h": round((py2 - py1) / float(frame_height), 6),
+        }
+
+    @staticmethod
+    def _vlm_bbox_to_screen(
+        raw_bbox: Any,
+        *,
+        crop_bbox: Any,
+        frame_width: int,
+        frame_height: int,
+    ) -> dict[str, float] | None:
+        """Validate a VLM 0..1000 bbox and map it to full-frame 0..1.
+
+        The VLM never gets authority to invent geometry outside the frame. A
+        missing, non-finite or degenerate box turns the whole spatial hit into
+        ``unknown`` rather than falling back to a decorative centre box.
+        """
+        if not isinstance(raw_bbox, (list, tuple)) or len(raw_bbox) != 4:
+            return None
+        try:
+            values = [float(value) for value in raw_bbox]
+        except (TypeError, ValueError):
+            return None
+        if not all(math.isfinite(value) for value in values):
+            return None
+        x1, y1, x2, y2 = values
+        x1, x2 = sorted((max(0.0, min(1000.0, x1)), max(0.0, min(1000.0, x2))))
+        y1, y2 = sorted((max(0.0, min(1000.0, y1)), max(0.0, min(1000.0, y2))))
+        if x2 - x1 < 2.0 or y2 - y1 < 2.0:
+            return None
+
+        origin_x = origin_y = 0.0
+        crop_width, crop_height = float(frame_width), float(frame_height)
+        if isinstance(crop_bbox, (list, tuple)) and len(crop_bbox) == 4:
+            try:
+                cx1, cy1, cx2, cy2 = [float(value) for value in crop_bbox]
+                cx1 = max(0.0, min(float(frame_width), cx1))
+                cy1 = max(0.0, min(float(frame_height), cy1))
+                cx2 = max(0.0, min(float(frame_width), cx2))
+                cy2 = max(0.0, min(float(frame_height), cy2))
+                if cx2 > cx1 and cy2 > cy1:
+                    origin_x, origin_y = cx1, cy1
+                    crop_width, crop_height = cx2 - cx1, cy2 - cy1
+            except (TypeError, ValueError):
+                pass
+
+        px1 = origin_x + (x1 / 1000.0) * crop_width
+        py1 = origin_y + (y1 / 1000.0) * crop_height
+        px2 = origin_x + (x2 / 1000.0) * crop_width
+        py2 = origin_y + (y2 / 1000.0) * crop_height
+        return {
+            "x": round(px1 / max(1.0, float(frame_width)), 6),
+            "y": round(py1 / max(1.0, float(frame_height)), 6),
+            "w": round((px2 - px1) / max(1.0, float(frame_width)), 6),
+            "h": round((py2 - py1) / max(1.0, float(frame_height)), 6),
+        }
 
     def _crop(self, frame_bgr: np.ndarray, bbox: Any) -> np.ndarray:
         if not bbox:

@@ -1039,3 +1039,31 @@ anomalies SQL certaines locales, seulement les ambiguïtés vers DeepSeek Pro. L
 automatique reste bornée par du code (backup SQLite, cibles du devis, transaction,
 foreign-key/quick-check) : clamp de confiance ou overlay d'affichage, jamais SQL généré ni
 suppression de preuve.
+
+## OBS-72 — Bbox invalides et recherche VLM sans géométrie pouvaient créer de faux mouvements (CORRIGÉ — 2026-07-23)
+
+Les bbox detector/tracker n'étaient pas validées dans un espace explicite et une réponse
+VLM « trouvé à droite » ne donnait aucune géométrie consommable. Un contour Unity pouvait
+alors reposer sur une bbox centrale inventée, tandis que WorldBrain pouvait dériver des
+mouvements depuis des coordonnées négatives/inversées.
+
+Correction : validateur bbox unique, dimensions/orientation/espace dans SceneDelta,
+remapping crop→écran, rejet des aires nulles, sighting VLM persistant `probable`,
+`screen_bbox` direct dans l'UIIntent et suppression du rectangle de secours. Preuve réelle :
+keyframe capturée → Qwen3-VL → LivePipeline → WorldBrain rouvert → payload C#; aucune pose
+2D n'est convertie en bearing. La bbox VLM amorce en plus un tracker optique qui rafraîchit
+le même intent/entity sans rappel VLM; perte de suivi = contour masqué, jamais boîte figée.
+
+## OBS-73 — Plusieurs scénarios existaient par morceaux mais sans dernier consommateur (CORRIGÉ CODE — 2026-07-23)
+
+Les principales ruptures étaient : ContextCard lisait `text` mais le delivery envoyait
+`message`; PersonTag ne consommait jamais le relation pack; apparence indexée par track
+provisoire; MemoryQuery ne joignait pas dates, rencontres, chronologies de sujet, OCR,
+langage courant ou replay sémantique; VisionRT renvoyait certains UIIntent sans émission.
+
+Les ponts sont fermés et le gate `final_all_scenarios` traverse les vrais composants avec
+entrées externes synthétiques explicitement déclarées. Le gate séparé
+`final_real_vision_gate` prouve les sorties VLM/OCR réelles. Statut honnête : corrigé pour
+le code et les composants PC/Unity; le rendu, le micro, la caméra, les permissions et les
+receipts physiques restent à prouver sur S25, donc ne sont pas marqués comme matériellement
+validés.

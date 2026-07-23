@@ -24,6 +24,8 @@ namespace MLOmega.XR.UI.Components
         private TextMeshPro _chip;
         private Color _accent = Color.white;
         private string _trackId;
+        private Rect _directBbox;
+        private bool _hasDirectBbox;
 
         public override string ComponentKey => "object_outline";
 
@@ -49,6 +51,7 @@ namespace MLOmega.XR.UI.Components
         protected override void Bind(Contracts.V19.UIIntent intent)
         {
             _trackId = intent.TargetTrackId;
+            _hasDirectBbox = IntentRead.TryRect(intent.Anchor, "bbox", out _directBbox);
             if (_chip != null) _chip.text = IntentRead.Content(intent, "label", "");
         }
 
@@ -76,14 +79,32 @@ namespace MLOmega.XR.UI.Components
             Camera cam = Context != null ? Context.Camera : Camera.main;
             if (cam == null || _line == null) return;
 
-            // Screen-space bbox from the live track (normalised 0..1). If the track
-            // is gone we simply stop drawing; the broker handles removal.
-            Rect bbox = new Rect(0.4f, 0.4f, 0.2f, 0.2f);
+            // Prefer the live track. Open-vocabulary VLM hits do not have a COCO
+            // track, so they carry one validated direct screen_bbox instead.
+            // Never invent a decorative centre box when neither exists.
+            Rect bbox = default;
+            bool hasBbox = false;
             if (Context != null && Context.SceneCache != null &&
+                !string.IsNullOrEmpty(_trackId) &&
                 Context.SceneCache.Tracks.TryGet(_trackId, out SceneCache.TrackEntry entry))
             {
-                bbox = BboxToRect(entry.Track.BboxOrMask, bbox);
+                bbox = BboxToRect(entry.Track.BboxOrMask, default);
+                hasBbox = bbox.width > 0f && bbox.height > 0f;
             }
+            else if (_hasDirectBbox)
+            {
+                bbox = _directBbox;
+                hasBbox = true;
+            }
+
+            if (!hasBbox)
+            {
+                _line.enabled = false;
+                if (_chip != null) _chip.enabled = false;
+                return;
+            }
+            _line.enabled = true;
+            if (_chip != null) _chip.enabled = true;
 
             // Project the 4 corners onto a plane _planeDistance in front of the cam.
             Vector3 c0 = ViewportToPlane(cam, new Vector2(bbox.xMin, bbox.yMin));

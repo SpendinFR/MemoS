@@ -45,6 +45,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from mlomega_audio_elite.spatial_bbox_v19 import BBoxValidation, sanitize_detector_bbox
+
 _HERE = Path(__file__).resolve().parent
 _ROOT = _HERE.parents[1]
 for _p in (_ROOT, _ROOT / "src"):
@@ -123,6 +125,8 @@ class WorldEntity:
     last_bbox: tuple[float, float, float, float] | None = None
     observation_count: int = 0
     evidence_refs: list[str] = field(default_factory=list)
+    truth_level: str = "observed"
+    source: str = "visionrt"
 
     def age_seconds(self, now: datetime | None = None) -> float:
         now = now or _utc_now()
@@ -148,6 +152,8 @@ class WorldEntity:
             "observation_count": self.observation_count,
             "age_seconds": round(self.age_seconds(now), 1),
             "evidence": list(self.evidence_refs),
+            "truth_level": self.truth_level,
+            "source": self.source,
         }
 
 
@@ -309,6 +315,8 @@ class WorldBrain:
             "change_events": 0,
             "relations": 0,
             "world_state_published": 0,
+            "bbox_normalized": 0,
+            "bbox_rejected": 0,
         }
 
     # -------------------------------------------------------- service-local store
@@ -327,8 +335,55 @@ class WorldBrain:
                  change_seq INTEGER PRIMARY KEY AUTOINCREMENT, live_session_id TEXT,
                  change_type TEXT, entity_id TEXT, label TEXT, observed_at TEXT)"""
         )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS worldbrain_bbox_audit(
+                 audit_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                 live_session_id TEXT NOT NULL, frame_id TEXT NOT NULL,
+                 track_id TEXT, label TEXT, status TEXT NOT NULL,
+                 raw_bbox_json TEXT, normalized_bbox_json TEXT,
+                 reasons_json TEXT NOT NULL, frame_width INTEGER,
+                 frame_height INTEGER, rotation INTEGER, mirrored INTEGER,
+                 coordinate_space TEXT NOT NULL, created_at TEXT NOT NULL)"""
+        )
         conn.commit()
         return conn
+
+    def _record_bbox_audit(
+        self,
+        *,
+        frame_id: str,
+        track_id: str,
+        label: str,
+        checked: Any,
+        rotation: int,
+        mirrored: bool,
+        created_at: str,
+    ) -> None:
+        with self._db_lock:
+            self._svc_db.execute(
+                """INSERT INTO worldbrain_bbox_audit(
+                     live_session_id,frame_id,track_id,label,status,raw_bbox_json,
+                     normalized_bbox_json,reasons_json,frame_width,frame_height,
+                     rotation,mirrored,coordinate_space,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    self.live_session_id,
+                    frame_id,
+                    track_id,
+                    label,
+                    checked.status,
+                    json.dumps(list(checked.raw) if checked.raw is not None else None),
+                    json.dumps(list(checked.bbox) if checked.bbox is not None else None),
+                    json.dumps(list(checked.reasons)),
+                    checked.frame_width,
+                    checked.frame_height,
+                    rotation,
+                    int(bool(mirrored)),
+                    checked.coordinate_space,
+                    created_at,
+                ),
+            )
+            self._svc_db.commit()
 
     def _persist_entity(self, e: WorldEntity) -> None:
         import json as _json
@@ -377,8 +432,24 @@ class WorldBrain:
             con.execute(
                 """CREATE INDEX IF NOT EXISTS idx_worldbrain_registry_owner_label
                    ON worldbrain_entity_registry_v19(
-                     person_id,kind,normalized_label,last_seen)"""
+                      person_id,kind,normalized_label,last_seen)"""
             )
+            columns = {
+                str(row["name"])
+                for row in con.execute(
+                    "PRAGMA table_info(worldbrain_entity_registry_v19)"
+                ).fetchall()
+            }
+            for name, ddl in (
+                ("truth_level", "TEXT NOT NULL DEFAULT 'observed'"),
+                ("source", "TEXT NOT NULL DEFAULT 'visionrt'"),
+                ("evidence_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ):
+                if name not in columns:
+                    con.execute(
+                        f"ALTER TABLE worldbrain_entity_registry_v19 "
+                        f"ADD COLUMN {name} {ddl}"
+                    )
 
     @staticmethod
     def _identity_label(label: str) -> str:
@@ -450,25 +521,153 @@ class WorldBrain:
                 first_seen = str(existing["first_seen"])
             con.execute(
                 """INSERT INTO worldbrain_entity_registry_v19(
-                     entity_id,person_id,kind,normalized_label,display_label,
-                     entity_slot,first_seen,last_seen,last_session_id,last_track_id,
-                     last_bbox_json,observation_count,confidence)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                      entity_id,person_id,kind,normalized_label,display_label,
+                      entity_slot,first_seen,last_seen,last_session_id,last_track_id,
+                      last_bbox_json,observation_count,confidence,truth_level,source,
+                      evidence_json)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(entity_id) DO UPDATE SET
-                     display_label=excluded.display_label,
-                     last_seen=excluded.last_seen,
-                     last_session_id=excluded.last_session_id,
-                     last_track_id=excluded.last_track_id,
-                     last_bbox_json=excluded.last_bbox_json,
-                     observation_count=worldbrain_entity_registry_v19.observation_count+1,
-                     confidence=MAX(worldbrain_entity_registry_v19.confidence,excluded.confidence)""",
+                      display_label=excluded.display_label,
+                      last_seen=excluded.last_seen,
+                      last_session_id=excluded.last_session_id,
+                      last_track_id=excluded.last_track_id,
+                      last_bbox_json=excluded.last_bbox_json,
+                      observation_count=worldbrain_entity_registry_v19.observation_count+1,
+                      confidence=MAX(worldbrain_entity_registry_v19.confidence,excluded.confidence),
+                      truth_level=excluded.truth_level,
+                      source=excluded.source,
+                      evidence_json=excluded.evidence_json""",
                 (
                     e.entity_id, self.person_id, e.kind, normalized, e.label, slot,
                     first_seen, e.last_seen, self.live_session_id, e.track_id,
                     _json.dumps(list(e.last_bbox) if e.last_bbox else None),
                     max(1, int(e.observation_count)), float(e.confidence),
+                    e.truth_level, e.source, _json.dumps(list(e.evidence_refs)),
                 ),
             )
+
+    def record_semantic_sighting(
+        self,
+        *,
+        label: str,
+        bbox: Sequence[float],
+        frame_width: int,
+        frame_height: int,
+        frame_id: str,
+        observed_at: str | None = None,
+        confidence: float = 0.55,
+        evidence_refs: Sequence[str] | None = None,
+        source: str = "targeted_vlm",
+        truth_level: str = "probable",
+    ) -> dict[str, Any]:
+        """Persist one user-triggered open-vocabulary sighting.
+
+        This is deliberately separate from detector promotion: a targeted VLM hit
+        is current and useful, but remains ``probable`` rather than masquerading as
+        a repeated detector observation. Geometry must already be tied to the real
+        source frame and is validated again here.
+        """
+        checked = sanitize_detector_bbox(
+            bbox,
+            frame_width=frame_width,
+            frame_height=frame_height,
+            require_dimensions=True,
+        )
+        if not checked.usable or checked.bbox is None:
+            raise ValueError("semantic_sighting_bbox_invalid")
+        clean_label = str(label or "").strip()
+        if not clean_label:
+            raise ValueError("semantic_sighting_label_missing")
+
+        now_iso = str(observed_at or _iso(_utc_now()))
+        evidence = [
+            str(ref) for ref in (evidence_refs or [f"frame:{frame_id}"]) if str(ref)
+        ]
+        track_id = f"semantic:{self._identity_label(clean_label)}"
+        observation = Observation(
+            observation_id=self._next_obs_id(),
+            frame_id=str(frame_id or "unknown"),
+            track_id=track_id,
+            kind="object",
+            label=clean_label,
+            state="visible",
+            model=source,
+            confidence=float(confidence),
+            bbox=checked.bbox,
+            observed_at=now_iso,
+            evidence_refs=evidence,
+        )
+        entity_id = self._track_to_entity.get(track_id) or self._claim_entity_id(
+            observation
+        )
+        entity = self.entities.get(entity_id)
+        if entity is None:
+            entity = WorldEntity(
+                entity_id=entity_id,
+                kind="object",
+                label=clean_label,
+                confidence=float(confidence),
+                lifecycle="confirmed",
+                track_id=track_id,
+                first_seen=now_iso,
+                last_seen=now_iso,
+                last_bbox=checked.bbox,
+                observation_count=1,
+                evidence_refs=evidence,
+                truth_level=truth_level,
+                source=source,
+            )
+            self.entities[entity_id] = entity
+            self._track_to_entity[track_id] = entity_id
+            self.metrics["entities_promoted"] += 1
+        else:
+            entity.label = clean_label
+            entity.last_seen = now_iso
+            entity.last_bbox = checked.bbox
+            entity.observation_count += 1
+            entity.confidence = max(entity.confidence, float(confidence))
+            entity.lifecycle = "confirmed"
+            entity.truth_level = truth_level
+            entity.source = source
+            for ref in evidence:
+                if ref not in entity.evidence_refs:
+                    entity.evidence_refs.append(ref)
+        self._persist_entity(entity)
+
+        _load_store().store_visual_event(
+            {
+                "memory_owner_id": self.person_id,
+                "live_session_id": self.live_session_id,
+                "event_type": "entity_last_seen",
+                "occurred_at": now_iso,
+                "entity": {
+                    "entity_id": entity.entity_id,
+                    "kind": entity.kind,
+                    "label": entity.label,
+                    "lifecycle": entity.lifecycle,
+                },
+                "observation": {
+                    "bbox": list(entity.last_bbox or ()),
+                    "frame_width": int(frame_width),
+                    "frame_height": int(frame_height),
+                    "observation_count": entity.observation_count,
+                },
+                "truth_level": truth_level,
+                "confidence": float(confidence),
+                "evidence": evidence,
+                "provenance": {"producer": source},
+            },
+            db_path=self.db_path,
+        )
+        result = entity.to_dict()
+        result.update(
+            {
+                "visible": True,
+                "place_hint": self.session.place_hint,
+                "last_session_id": self.live_session_id,
+            }
+        )
+        return result
 
     # --------------------------------------------------------------- ingest
     def _next_obs_id(self) -> str:
@@ -483,6 +682,12 @@ class WorldBrain:
         frame_id = str(delta.get("source_frame_id") or "unknown")
         evidence_ref = f"frame:{frame_id}"
         map_quality = float(delta.get("map_quality") or 0.0)
+        frame_width = delta.get("frame_width")
+        frame_height = delta.get("frame_height")
+        rotation = int(delta.get("rotation") or 0)
+        mirrored = bool(delta.get("mirrored"))
+        coordinate_space = str(delta.get("coordinate_space") or "legacy_unbounded")
+        require_dimensions = coordinate_space == "detector_pixels"
 
         # map quality: prefer the spatial provider's measured value when present.
         if self.spatial is not None:
@@ -521,12 +726,75 @@ class WorldBrain:
                 continue
             kind = str(ent.get("kind") or "object")
             conf = float(ent.get("confidence") or 0.0)
-            bbox = tuple(float(v) for v in (ent.get("bbox") or (0, 0, 0, 0)))  # type: ignore[assignment]
+            checked = sanitize_detector_bbox(
+                ent.get("bbox"),
+                frame_width=frame_width,
+                frame_height=frame_height,
+                require_dimensions=require_dimensions,
+            )
+            upstream_audit = ent.get("bbox_audit")
+            if isinstance(upstream_audit, Mapping):
+                try:
+                    upstream_raw = tuple(
+                        float(value) for value in (upstream_audit.get("bbox_raw") or ())
+                    )
+                    if len(upstream_raw) != 4:
+                        upstream_raw = checked.raw or ()
+                except (TypeError, ValueError):
+                    upstream_raw = checked.raw or ()
+                audit_checked = BBoxValidation(
+                    checked.bbox,
+                    upstream_raw if len(upstream_raw) == 4 else checked.raw,
+                    str(upstream_audit.get("bbox_status") or checked.status),
+                    tuple(upstream_audit.get("bbox_reasons") or checked.reasons),
+                    checked.frame_width,
+                    checked.frame_height,
+                    coordinate_space,
+                )
+            else:
+                audit_checked = checked
+            if audit_checked.status not in {"valid", "legacy_valid"}:
+                self._record_bbox_audit(
+                    frame_id=frame_id,
+                    track_id=track_id,
+                    label=label,
+                    checked=audit_checked,
+                    rotation=rotation,
+                    mirrored=mirrored,
+                    created_at=now_iso,
+                )
+            if checked.status == "normalized":
+                self.metrics["bbox_normalized"] += 1
+            if not checked.usable:
+                self.metrics["bbox_rejected"] += 1
+                self._track_last[track_id] = {
+                    "label": label,
+                    "kind": kind,
+                    "confidence": conf,
+                    "bbox": None,
+                    "bbox_status": "rejected",
+                    "observed_at": now_iso,
+                    "frame_id": frame_id,
+                }
+                # The sourced label/detection still refreshes an already promoted
+                # entity, but geometry is deliberately left untouched.
+                entity_id = self._track_to_entity.get(track_id)
+                if entity_id is not None:
+                    e = self.entities[entity_id]
+                    e.last_seen = now_iso
+                    e.confidence = max(e.confidence, conf)
+                    e.lifecycle = "confirmed"
+                    if evidence_ref not in e.evidence_refs:
+                        e.evidence_refs.append(evidence_ref)
+                    self._persist_entity(e)
+                continue
+            bbox = checked.bbox
+            assert bbox is not None
 
             obs = Observation(
                 observation_id=self._next_obs_id(), frame_id=frame_id,
                 track_id=track_id, kind=kind, label=label, state="visible",
-                model="visionrt", confidence=conf, bbox=bbox,  # type: ignore[arg-type]
+                model="visionrt", confidence=conf, bbox=bbox,
                 observed_at=now_iso, evidence_refs=[evidence_ref],
             )
             observations.append(obs)
@@ -895,7 +1163,7 @@ class WorldBrain:
                 "visible": entity.lifecycle == "confirmed",
                 "place_hint": self.session.place_hint,
                 "last_session_id": self.live_session_id,
-                "source": "live_worldbrain",
+                "source": entity.source or "live_worldbrain",
             })
             candidates.append((score + 1.0, entity.last_seen, item))
 
@@ -934,6 +1202,10 @@ class WorldBrain:
             except (TypeError, ValueError, json.JSONDecodeError):
                 last_bbox = None
             session_id = str(row.get("last_session_id") or "")
+            try:
+                durable_evidence = json.loads(row.get("evidence_json") or "[]")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                durable_evidence = []
             candidates.append((score, last_seen, {
                 "entity_id": entity_id,
                 "kind": row.get("kind"),
@@ -949,9 +1221,93 @@ class WorldBrain:
                 "age_seconds": round(age_seconds, 1) if age_seconds is not None else None,
                 "place_hint": self._last_place_for_session(session_id),
                 "last_session_id": session_id,
-                "evidence": [f"worldbrain_entity_registry_v19:{entity_id}"],
-                "source": "durable_registry",
+                "evidence": [
+                    f"worldbrain_entity_registry_v19:{entity_id}",
+                    *[str(ref) for ref in durable_evidence if str(ref)],
+                ],
+                "source": (
+                    row.get("source")
+                    if row.get("source") not in {None, "", "visionrt"}
+                    else "durable_registry"
+                ),
+                "truth_level": row.get("truth_level") or "observed",
             }))
+        # Open-vocabulary objects (keys, eyeglasses, personal tools, etc.) are
+        # outside the fixed COCO-80 detector.  The nightly Deep Vision pass does
+        # observe them on selected, coverage-proven keyframes.  Reuse its audited
+        # object list as a *coarse last-seen* fallback: no bbox and therefore no
+        # arrow/bearing, but a real time/place/evidence answer instead of losing
+        # the observation completely.  Latest matching observation wins.
+        try:
+            with connect(self.db_path) as con:
+                deep_rows = [
+                    dict(row) for row in con.execute(
+                        """SELECT deep_observation_id,live_session_id,frame_id,
+                                  frame_time,location_hint,objects_json
+                           FROM brainlive_deep_vision_observations_v161
+                           WHERE person_id=? AND status='ok'
+                           ORDER BY COALESCE(frame_time,created_at) DESC LIMIT 500""",
+                        (self.person_id,),
+                    ).fetchall()
+                ]
+        except sqlite3.Error:
+            deep_rows = []
+        for row in deep_rows:
+            try:
+                objects = json.loads(row.get("objects_json") or "[]")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                objects = []
+            if not isinstance(objects, list):
+                continue
+            for raw_object in objects:
+                if isinstance(raw_object, dict):
+                    label = str(
+                        raw_object.get("label")
+                        or raw_object.get("name")
+                        or raw_object.get("object")
+                        or ""
+                    )
+                else:
+                    label = str(raw_object or "")
+                if not label or self.is_label_suspended(label):
+                    continue
+                score = self._label_match_score(query, label)
+                if score <= 0:
+                    continue
+                last_seen = str(row.get("frame_time") or "")
+                try:
+                    observed = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+                    if observed.tzinfo is None:
+                        observed = observed.replace(tzinfo=timezone.utc)
+                    age_seconds = max(0.0, (now - observed).total_seconds())
+                except (TypeError, ValueError):
+                    age_seconds = None
+                observation_id = str(row.get("deep_observation_id") or "")
+                frame_id = str(row.get("frame_id") or "")
+                candidates.append((score, last_seen, {
+                    "entity_id": f"deepvision:{observation_id}:{label.casefold()}",
+                    "kind": "object",
+                    "label": label,
+                    "confidence": 0.55,
+                    "visible": False,
+                    "lifecycle": "last_seen",
+                    "track_id": None,
+                    "first_seen": last_seen,
+                    "last_seen": last_seen,
+                    "last_bbox": None,
+                    "observation_count": 1,
+                    "age_seconds": (
+                        round(age_seconds, 1) if age_seconds is not None else None
+                    ),
+                    "place_hint": row.get("location_hint"),
+                    "last_session_id": row.get("live_session_id"),
+                    "evidence": [
+                        f"brainlive_deep_vision_observations_v161:{observation_id}",
+                        *( [f"frame:{frame_id}"] if frame_id else [] ),
+                    ],
+                    "source": "deep_vision_last_seen",
+                    "truth_level": "probable",
+                }))
         if not candidates:
             return None
         candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)

@@ -25,6 +25,9 @@ def test_delivery_row_maps_to_brainlive_context_card_ui_intent():
     assert intent.component == 'context_card'
     assert intent.delivery_id == 'd1'
     assert intent.evidence_refs == ['x']
+    assert intent.content['text'] == 'hello'
+    assert intent.content['body'] == 'hello'
+    assert intent.content['title'] == 'Contexte'
 
 def test_h1_task_panel_keeps_component_content_stable_id_and_ttl():
     candidate = {
