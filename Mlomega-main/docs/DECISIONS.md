@@ -235,9 +235,10 @@ retient et qui guide l'implémentation `apps/xr-mobile/` :
   on ne le committe PAS. `Packages/manifest.json` le référence en `file:` vers
   `Packages/xreal-sdk/com.xreal.xr.tar.gz` (chemin ignoré par git, documenté dans le README).
 - **XR Plug-in Management** : cocher le provider **« XREAL »** sous l'onglet Android
-  (`Edit → Project Settings → XR Plug-in Management`). Reflété dans
-  `ProjectSettings/XRPackageSettings.asset` et `Packages/manifest.json`
-  (`com.unity.xr.management`).
+  (`Edit → Project Settings → XR Plug-in Management`). Le loader est porté par
+  `XRGeneralSettingsPerBuildTarget`; `ProjectSettings/XRPackageSettings.asset` est,
+  malgré son extension, un JSON interne XR Management (`m_Settings`) et ne doit jamais
+  contenir un faux asset YAML de loader.
 - **Project Settings Android requis** (doc XREAL) :
   Default Orientation = **Landscape** (doc dit Portrait pour le sample générique, mais notre app
   stéréo XR impose Landscape Left — noté comme divergence assumée ci-dessous) ;
@@ -1771,6 +1772,16 @@ afin qu'un mode 3DoF ne pollue jamais WorldBrain avec une position zéro présen
 6DoF. Cette fermeture est prouvée par build/APK, mais la compatibilité S23 + One Pro +
 Eye reste une frontière matérielle : le SDK 3.1 ne liste officiellement que S25 et Beam
 Pro comme hôtes testés.
+
+Un exit code Unity 0 n'est pas une preuve suffisante : le SDK pouvait lever une
+`NullReferenceException` dans ses callbacks puis laisser le build continuer. Le profil
+XREAL doit enregistrer explicitement `com.unity.xr.management.xrealsettings` dans
+`EditorBuildSettings` avant le build. Ce settings est configuré
+SinglePassInstanced/MODE_6DOF/MultiResume avec les catégories Reality+Vision, puis la
+registration antérieure est restaurée après le build. Le manifeste livré doit contenir
+`nreal_sdk`, `com.nreal.supportDevices`, `autoLog` et lancer
+`ai.nreal.activitylife.NRXRActivity`; leur absence rend l'APK non certifiable, même si
+Unity affiche `Build succeeded`.
 
 Le mode capture-only XREAL utilise la gravité reconstruite depuis la pose des lunettes
 avant l'accéléromètre du téléphone : accrocher les lunettes verticalement doit faire

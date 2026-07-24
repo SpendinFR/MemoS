@@ -1102,7 +1102,16 @@ un readback GPU synchrone et une conversion C# par pixel à 30 FPS.
 Correction XREAL-only : ancre de ressource sérialisée, shader aligné sur celui du SDK,
 rig XR avec tracking state strict, plans Eye Y/U/V directement empaquetés en I420 et
 portée de réglages build restaurable. Preuve APK : GLES3/portrait, shader réellement
-compilé, rig présent, service fantôme absent, 90/90 EditMode, hash
-`E5EBD383198A8F8DAA47E03CEAE0C44E4B26D58B8A5A727F97CE6077E8D52920`.
+compilé, rig présent, service fantôme absent, 90/90 EditMode.
+
+Le contre-audit suivant a fermé un cinquième faux vert : le SDK levait deux
+`NullReferenceException` dans ses callbacks, mais Unity rendait quand même exit 0.
+`XREALSettings.asset` n'était pas enregistré comme config object et
+`ProjectSettings/XRPackageSettings.asset` était un faux YAML alors que le package le lit
+avec `JsonUtility`. Le builder enregistre/configure désormais le settings officiel et
+valide le manifeste ControlGlasses. Rebuild propre sans exception : launchable
+`ai.nreal.activitylife.NRXRActivity`, `nreal_sdk`/supportDevices/autoLog présents,
+**201 365 183 octets**, hash
+`19DE5A94245B972BC5EB841DC3281A92F99746A822AFCEFB78643FEC692B2AE2`.
 Statut matériel honnête : One Pro + Eye sur S23 reste à exécuter; aucune preuve statique
 ne remplace la négociation USB, le firmware, ControlGlasses et le tracking 6DoF réel.

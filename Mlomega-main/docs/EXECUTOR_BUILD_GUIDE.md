@@ -1704,8 +1704,8 @@ seuls gates ouverts; aucune nouvelle modification Local/PRO n'est requise par 3.
 Ne pas réutiliser l'APK XREAL du 23 juillet. La release courante est :
 
 - `apps/xr-mobile/build/android/mlomega-xreal.apk`
-- 200 816 784 octets
-- SHA-256 `E5EBD383198A8F8DAA47E03CEAE0C44E4B26D58B8A5A727F97CE6077E8D52920`
+- 201 365 183 octets
+- SHA-256 `19DE5A94245B972BC5EB841DC3281A92F99746A822AFCEFB78643FEC692B2AE2`
 - package `com.mlomega.xr.glasses`, label `MLOmega XREAL`
 - GLES3, portrait, ARM64, API 29/34.
 
@@ -1713,6 +1713,17 @@ Le builder XREAL crée désormais XR Origin/TrackedPoseDriver, sérialise le sha
 utilise son canal Alpha8 correct et envoie les plans natifs I420 à WebRTC. Il restaure
 les réglages PhoneOnly après le build. Validation déjà payée : 90/90 EditMode et build
 `exit=0`; ne les relancer que si ces fichiers changent.
+
+Le contre-audit final a trouvé un faux vert supplémentaire : les callbacks du SDK
+levaient une `NullReferenceException` car `XREALSettings.asset` existait mais n'était pas
+enregistré dans `EditorBuildSettings`, et `ProjectSettings/XRPackageSettings.asset`
+contenait du YAML alors que XR Management le parse en JSON. Le builder enregistre
+maintenant le settings SDK réel (SinglePassInstanced, MODE_6DOF, MultiResume,
+Reality+Vision) et valide sa présence. Le build final `prep=0/build=0` ne contient plus
+aucune de ces exceptions. Contrôle obligatoire avec `aapt` : launchable activity
+`ai.nreal.activitylife.NRXRActivity` et métadonnées `nreal_sdk`,
+`com.nreal.supportDevices`, `autoLog`. Ne jamais classer une erreur JSON/XREAL comme
+« bruit licence ».
 
 Commande de rebuild, toujours depuis `apps/xr-mobile`, sans fenêtre Unity ouverte :
 
@@ -1728,9 +1739,11 @@ $p = Start-Process $u -ArgumentList '-batchmode','-quit','-projectPath','.', `
 "build=$($p.ExitCode)"
 ```
 
-Avant le test : One Pro + XREAL Eye monté, firmware lunettes à jour, ControlGlasses
-installé, Android inférieur à 16, permissions caméra/micro et « afficher par-dessus »
-accordées. Installer puis ouvrir depuis ControlGlasses :
+Avant le test : ne pas mettre le S23 sous Android 16; installer ControlGlasses 1.1.0,
+monter l'XREAL Eye, connecter d'abord les lunettes au PC et appliquer le dernier firmware
+avec l'outil OTA XREAL, puis utiliser le câble d'origine vers le téléphone. Accorder les
+permissions caméra/micro et « afficher par-dessus ». Installer l'APK, débrancher le PC,
+brancher les lunettes au S23 et ouvrir depuis ControlGlasses :
 
 ```powershell
 adb install -r .\build\android\mlomega-xreal.apk

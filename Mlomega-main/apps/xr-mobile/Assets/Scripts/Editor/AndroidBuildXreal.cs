@@ -19,7 +19,9 @@
 // PrepareDefines is a separate entry point so a first pass can set the define + import
 // the SDK before the compile that exercises the real adapter path.
 using System;
+using System.Collections;
 using System.IO;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using UnityEditor;
 using UnityEditor.Android;
@@ -36,6 +38,9 @@ namespace MLOmega.XR.Editor
         private const string TarballRel = "Packages/xreal-sdk/com.xreal.xr.tar.gz";
         private const string XrealDep = "\"com.xreal.xr\": \"file:xreal-sdk/com.xreal.xr.tar.gz\"";
         private const string XrealLoader = "Unity.XR.XREAL.XREALXRLoader";
+        private const string XrealSettingsType = "Unity.XR.XREAL.XREALSettings";
+        private const string XrealSettingsKey = "com.unity.xr.management.xrealsettings";
+        private const string XrealSettingsAssetPath = "Assets/XR/Settings/XREALSettings.asset";
         private const string NdkVersion = "23.1.7779620";
         private const string AndroidManifestPath = "Assets/Plugins/Android/AndroidManifest.xml";
 
@@ -60,6 +65,7 @@ namespace MLOmega.XR.Editor
             using (var xrealSettings = new XrealBuildSettingsScope())
             {
                 ConfigurePlayerSettings();
+                ConfigureXrealSdkSettings();
                 EnableXrealLoader();
                 EnsureScene();
                 AndroidBuild.EmbedSmallDeviceModels();
@@ -167,6 +173,159 @@ namespace MLOmega.XR.Editor
             }
         }
 
+        /// <summary>
+        /// XRPackageMetadataStore may create the XREAL settings asset without
+        /// registering it as an EditorBuildSettings config object in batchmode.
+        /// The SDK's own build processor then dereferences null but Unity still
+        /// emits a superficially successful APK. Configure and register the exact
+        /// SDK 3.1 settings explicitly so its official build/manifest callbacks run.
+        /// Reflection keeps a clean PhoneOnly checkout compilable without the
+        /// proprietary XREAL package installed.
+        /// </summary>
+        private static void ConfigureXrealSdkSettings()
+        {
+            Type settingsType = FindLoadedType(XrealSettingsType);
+            if (settingsType == null || !typeof(ScriptableObject).IsAssignableFrom(settingsType))
+            {
+                throw new Exception(
+                    $"[AndroidBuildXreal] SDK type '{XrealSettingsType}' is unavailable. " +
+                    "Run PrepareDefines, let Unity import com.xreal.xr 3.1.0, then run the build pass.");
+            }
+
+            Directory.CreateDirectory(Path.GetDirectoryName(XrealSettingsAssetPath));
+            var settings = AssetDatabase.LoadAssetAtPath(
+                XrealSettingsAssetPath, settingsType) as ScriptableObject;
+            if (settings == null)
+            {
+                settings = ScriptableObject.CreateInstance(settingsType);
+                settings.name = "XREALSettings";
+                AssetDatabase.CreateAsset(settings, XrealSettingsAssetPath);
+            }
+
+            SetEnumField(settings, "StereoRendering", "SinglePassInstanced");
+            SetEnumField(settings, "InitialTrackingType", "MODE_6DOF");
+            // MLOmega's hand interaction is driven by its own Eye/MediaPipe
+            // pipeline. Keep the official phone controller available as a safe
+            // secondary input and ControlGlasses-compatible launch surface.
+            SetEnumField(settings, "InitialInputSource", "Controller");
+            SetBoolField(settings, "SupportMultiResume", true);
+            SetBoolField(settings, "EnableNativeSessionManager", false);
+            SetBoolField(
+                settings,
+                "EnableAutoLogcat",
+                !string.Equals(
+                    Env("MLOMEGA_XREAL_AUTO_LOGCAT", "1"),
+                    "0",
+                    StringComparison.OrdinalIgnoreCase));
+            SetEnumListField(
+                settings,
+                "SupportDevices",
+                "XREAL_DEVICE_CATEGORY_REALITY",
+                "XREAL_DEVICE_CATEGORY_VISION");
+            AssignXrealVirtualController(settings);
+
+            EditorUtility.SetDirty(settings);
+            AssetDatabase.SaveAssets();
+            EditorBuildSettings.AddConfigObject(XrealSettingsKey, settings, true);
+            if (!EditorBuildSettings.TryGetConfigObject(
+                    XrealSettingsKey, out ScriptableObject registered) ||
+                registered == null)
+            {
+                throw new Exception(
+                    "[AndroidBuildXreal] XREALSettings registration did not persist.");
+            }
+            Debug.Log(
+                "[AndroidBuildXreal] XREAL SDK settings registered: " +
+                "SinglePassInstanced, MODE_6DOF, Controller, MultiResume, " +
+                $"AutoLogcat={GetFieldValue(settings, "EnableAutoLogcat")}.");
+        }
+
+        private static Type FindLoadedType(string fullName)
+        {
+            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                Type type = assembly.GetType(fullName, false);
+                if (type != null) return type;
+            }
+            return null;
+        }
+
+        private static FieldInfo RequireField(ScriptableObject target, string fieldName)
+        {
+            FieldInfo field = target.GetType().GetField(
+                fieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (field == null)
+                throw new Exception(
+                    $"[AndroidBuildXreal] XREAL SDK field missing: {fieldName}.");
+            return field;
+        }
+
+        private static object GetFieldValue(ScriptableObject target, string fieldName) =>
+            RequireField(target, fieldName).GetValue(target);
+
+        private static void SetBoolField(
+            ScriptableObject target,
+            string fieldName,
+            bool value)
+        {
+            FieldInfo field = RequireField(target, fieldName);
+            if (field.FieldType != typeof(bool))
+                throw new Exception(
+                    $"[AndroidBuildXreal] XREAL field {fieldName} is not Boolean.");
+            field.SetValue(target, value);
+        }
+
+        private static void SetEnumField(
+            ScriptableObject target,
+            string fieldName,
+            string valueName)
+        {
+            FieldInfo field = RequireField(target, fieldName);
+            if (!field.FieldType.IsEnum)
+                throw new Exception(
+                    $"[AndroidBuildXreal] XREAL field {fieldName} is not an enum.");
+            field.SetValue(target, Enum.Parse(field.FieldType, valueName));
+        }
+
+        private static void SetEnumListField(
+            ScriptableObject target,
+            string fieldName,
+            params string[] valueNames)
+        {
+            FieldInfo field = RequireField(target, fieldName);
+            if (!(field.GetValue(target) is IList list) ||
+                !field.FieldType.IsGenericType)
+            {
+                throw new Exception(
+                    $"[AndroidBuildXreal] XREAL field {fieldName} is not an enum list.");
+            }
+            Type elementType = field.FieldType.GetGenericArguments()[0];
+            if (!elementType.IsEnum)
+                throw new Exception(
+                    $"[AndroidBuildXreal] XREAL field {fieldName} element is not enum.");
+            list.Clear();
+            foreach (string valueName in valueNames)
+                list.Add(Enum.Parse(elementType, valueName));
+        }
+
+        private static void AssignXrealVirtualController(ScriptableObject settings)
+        {
+            FieldInfo field = RequireField(settings, "VirtualController");
+            if (field.GetValue(settings) != null) return;
+            string[] guids = AssetDatabase.FindAssets(
+                "XREALVirtualController t:Prefab",
+                new[] { "Packages/com.xreal.xr" });
+            if (guids.Length == 0)
+                throw new Exception(
+                    "[AndroidBuildXreal] XREALVirtualController prefab missing from SDK.");
+            GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(
+                AssetDatabase.GUIDToAssetPath(guids[0]));
+            if (prefab == null)
+                throw new Exception(
+                    "[AndroidBuildXreal] XREALVirtualController prefab could not be loaded.");
+            field.SetValue(settings, prefab);
+        }
+
         private static UnityEngine.XR.Management.XRGeneralSettings GetOrCreateAndroidBuildSettings()
         {
             UnityEditor.EditorBuildSettings.TryGetConfigObject(
@@ -259,6 +418,28 @@ namespace MLOmega.XR.Editor
             {
                 throw new Exception("[AndroidBuildXreal] XREAL YUV shader asset missing.");
             }
+            if (!EditorBuildSettings.TryGetConfigObject(
+                    XrealSettingsKey, out ScriptableObject xrealSettings) ||
+                xrealSettings == null)
+            {
+                throw new Exception(
+                    "[AndroidBuildXreal] XREALSettings is not registered; " +
+                    "the SDK manifest/build callbacks would silently fail.");
+            }
+            if (!string.Equals(
+                    GetFieldValue(xrealSettings, "StereoRendering").ToString(),
+                    "SinglePassInstanced",
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    GetFieldValue(xrealSettings, "InitialTrackingType").ToString(),
+                    "MODE_6DOF",
+                    StringComparison.Ordinal) ||
+                !Equals(GetFieldValue(xrealSettings, "SupportMultiResume"), true))
+            {
+                throw new Exception(
+                    "[AndroidBuildXreal] XREAL settings are not " +
+                    "SinglePassInstanced + MODE_6DOF + MultiResume.");
+            }
         }
 
         private static void EnsureScene()
@@ -288,6 +469,8 @@ namespace MLOmega.XR.Editor
             private readonly int _activeQuality;
             private readonly int[] _vSync;
             private readonly string _manifest;
+            private readonly bool _hadXrealSettingsConfig;
+            private readonly ScriptableObject _previousXrealSettingsConfig;
             private bool _disposed;
 
             public XrealBuildSettingsScope()
@@ -305,6 +488,10 @@ namespace MLOmega.XR.Editor
                 _minSdkVersion = PlayerSettings.Android.minSdkVersion;
                 _targetSdkVersion = PlayerSettings.Android.targetSdkVersion;
                 _runInBackground = PlayerSettings.runInBackground;
+                _hadXrealSettingsConfig =
+                    EditorBuildSettings.TryGetConfigObject(
+                        XrealSettingsKey,
+                        out _previousXrealSettingsConfig);
                 _activeQuality = QualitySettings.GetQualityLevel();
                 _vSync = new int[QualitySettings.names.Length];
                 for (int i = 0; i < _vSync.Length; i++)
@@ -358,6 +545,15 @@ namespace MLOmega.XR.Editor
                     PlayerSettings.Android.minSdkVersion = _minSdkVersion;
                     PlayerSettings.Android.targetSdkVersion = _targetSdkVersion;
                     PlayerSettings.runInBackground = _runInBackground;
+                    if (_hadXrealSettingsConfig && _previousXrealSettingsConfig != null)
+                    {
+                        EditorBuildSettings.AddConfigObject(
+                            XrealSettingsKey, _previousXrealSettingsConfig, true);
+                    }
+                    else
+                    {
+                        EditorBuildSettings.RemoveConfigObject(XrealSettingsKey);
+                    }
                     for (int i = 0; i < _vSync.Length; i++)
                     {
                         QualitySettings.SetQualityLevel(i, false);

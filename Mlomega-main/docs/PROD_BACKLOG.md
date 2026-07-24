@@ -1949,8 +1949,9 @@ réduction statique de JSON comme une validation modèle.
   Les deux passes XREAL sont également vertes (`prep=0`, `build=0`) :
   `mlomega-xreal.apk` 200 844 020 octets,
   SHA-256 `C891E36DF651BAF0120AB2171DB543C0D0C6D2155D0654F0EF08C80D6836D752`.
-  Les warnings licence/JSON des packages sont du bruit non fatal; les logs terminent par
-  `APK OK`/`Glasses PRODUCT APK OK`. L'installation et la preuve matérielle restent 4.2+.
+  Les warnings licence peuvent être du bruit non fatal, mais une exception JSON/XREAL ne
+  doit jamais être ignorée même si Unity retourne 0. L'installation et la preuve
+  matérielle restent 4.2+.
 
 - [x] **4.1b Contre-audit pré-matériel XREAL One Pro + Eye fermé.** L'APK du 23 juillet
   était bien complète côté contrats, mais quatre frontières matérielles n'étaient pas
@@ -1967,19 +1968,31 @@ réduction statique de JSON comme une validation modèle.
   applique temporairement Portrait + OpenGL ES3 + VSync Don't Sync, restaure ensuite les
   réglages partagés et retire du seul manifeste XREAL le service fantôme G1.
 
-  Preuves du 24 juillet : **90/90 EditMode**, build XREAL `exit=0`; l'APK réelle annonce
+  Preuves finales du 25 juillet : **90/90 EditMode**, deux passes XREAL `prep=0/build=0`,
+  sans `NullReferenceException` XREAL ni `JSON parse error`; l'APK réelle annonce
   `com.mlomega.xr.glasses`, label `MLOmega XREAL`, `glEsVersion=0x00030000`,
   `screenOrientation=1`, contient XR Origin/TrackedPoseDriver et compile
-  `Hidden/MLOmega/YUV420ToRGB`; seul le vrai
-  `ai.nreal.sdk.MediaProjectionService` subsiste. APK :
-  **200 816 784 octets**, SHA-256
-  `E5EBD383198A8F8DAA47E03CEAE0C44E4B26D58B8A5A727F97CE6077E8D52920`.
+  `Hidden/MLOmega/YUV420ToRGB`. Le builder enregistre désormais explicitement le vrai
+  `XREALSettings` SDK (SinglePassInstanced, MODE_6DOF, MultiResume, Reality+Vision);
+  le manifeste final contient `nreal_sdk`, `com.nreal.supportDevices`, `autoLog`, les
+  permissions MultiResume et l'activité de lancement ControlGlasses
+  `ai.nreal.activitylife.NRXRActivity`. Le faux placeholder YAML
+  `ProjectSettings/XRPackageSettings.asset`, lu comme JSON par XR Management, a été
+  remplacé par son format officiel minimal. APK :
+  **201 365 183 octets**, SHA-256
+  `19DE5A94245B972BC5EB841DC3281A92F99746A822AFCEFB78643FEC692B2AE2`.
   L'ancien hash XREAL ci-dessus est supersédé. Le S23 Snapdragon reste hors matrice
   officiellement testée du SDK 3.1 (S25/Beam Pro) : ce n'est pas une incompatibilité
   démontrée, mais 4.4 doit encore prouver USB/firmware/ControlGlasses/Eye/6DoF réels.
   En capture-only, l'orientation vient en priorité de la pose des lunettes XREAL
   (et non de l'accéléromètre du téléphone hôte), puis est portée dans
   `FrameEnvelope.rotation` et annulée côté PC avant Vision/OCR.
+  Préconditions one-shot officielles : ne pas passer le téléphone sous Android 16,
+  installer **ControlGlasses 1.1.0**, monter l'Eye, mettre le firmware One Pro/Eye à
+  jour par l'outil OTA XREAL, utiliser le câble d'origine, accorder caméra/micro/
+  affichage par-dessus puis lancer l'APK depuis ControlGlasses. Le S23 possède bien
+  USB-C/DP, mais le SDK 3.1 n'a été qualifié officiellement que sur S25/Beam Pro :
+  cette dernière compatibilité reste un gate matériel, pas un raccord logiciel ouvert.
 
 - [ ] **4.2 PC réellement prêt avant ouverture de l'app.** Depuis la racine, même Wi-Fi,
   port 8710 privé autorisé :
