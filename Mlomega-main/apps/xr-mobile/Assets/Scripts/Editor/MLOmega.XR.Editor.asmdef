@@ -10,6 +10,8 @@
         "MLOmega.Contracts",
         "Unity.TextMeshPro",
         "UnityEngine.UI",
+        "Unity.InputSystem",
+        "Unity.XR.CoreUtils",
         "Unity.XR.Management",
         "Unity.XR.Management.Editor"
     ],

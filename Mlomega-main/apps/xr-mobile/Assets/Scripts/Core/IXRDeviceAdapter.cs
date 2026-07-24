@@ -49,17 +49,36 @@ namespace MLOmega.XR.Core
     public readonly struct EyeFrame
     {
         public readonly Texture Texture;
+        /// <summary>
+        /// Optional native XREAL Eye Y/U/V planes. They are owned and reused by
+        /// the SDK. Phone/simulator frames leave these null.
+        /// </summary>
+        public readonly Texture2D PlaneY;
+        public readonly Texture2D PlaneU;
+        public readonly Texture2D PlaneV;
         /// <summary>Monotonically increasing per-session frame counter.</summary>
         public readonly long FrameId;
         /// <summary>Monotonic capture timestamp in nanoseconds.</summary>
         public readonly long CaptureMonotonicNs;
 
-        public EyeFrame(Texture texture, long frameId, long captureMonotonicNs)
+        public EyeFrame(
+            Texture texture,
+            long frameId,
+            long captureMonotonicNs,
+            Texture2D planeY = null,
+            Texture2D planeU = null,
+            Texture2D planeV = null)
         {
             Texture = texture;
             FrameId = frameId;
             CaptureMonotonicNs = captureMonotonicNs;
+            PlaneY = planeY;
+            PlaneU = planeU;
+            PlaneV = planeV;
         }
+
+        public bool HasNativeI420 =>
+            PlaneY != null && PlaneU != null && PlaneV != null;
     }
 
     /// <summary>

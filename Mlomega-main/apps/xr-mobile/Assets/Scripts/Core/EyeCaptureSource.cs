@@ -78,6 +78,23 @@ namespace MLOmega.XR.Core
         /// </summary>
         public event Action<Texture, FrameEnvelope> OnFrame;
 
+        // Valid only while OnFrame subscribers are being invoked. XREAL Eye
+        // supplies these native Alpha8 planes; phone/simulator adapters do not.
+        private Texture2D _currentPlaneY;
+        private Texture2D _currentPlaneU;
+        private Texture2D _currentPlaneV;
+
+        public bool TryGetCurrentNativeI420(
+            out Texture2D planeY,
+            out Texture2D planeU,
+            out Texture2D planeV)
+        {
+            planeY = _currentPlaneY;
+            planeU = _currentPlaneU;
+            planeV = _currentPlaneV;
+            return planeY != null && planeU != null && planeV != null;
+        }
+
         /// <summary>Total frames published this session.</summary>
         public long PublishedFrameCount { get; private set; }
 
@@ -155,6 +172,9 @@ namespace MLOmega.XR.Core
             FrameEnvelope env = BuildEnvelope(frame, pose);
             PublishedFrameCount++;
 
+            _currentPlaneY = frame.PlaneY;
+            _currentPlaneU = frame.PlaneU;
+            _currentPlaneV = frame.PlaneV;
             try
             {
                 OnFrame?.Invoke(frame.Texture, env);
@@ -162,6 +182,12 @@ namespace MLOmega.XR.Core
             catch (Exception ex)
             {
                 Debug.LogError($"[EyeCaptureSource] frame handler threw: {ex}");
+            }
+            finally
+            {
+                _currentPlaneY = null;
+                _currentPlaneU = null;
+                _currentPlaneV = null;
             }
         }
 

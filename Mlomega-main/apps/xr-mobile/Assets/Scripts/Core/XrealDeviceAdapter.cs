@@ -99,11 +99,15 @@ namespace MLOmega.XR.Core
                 }
                 _headTransform = head.transform;
 
-                Shader yuv = Shader.Find(YuvShaderName);
+                XrealRuntimeAssets runtimeAssets =
+                    UnityEngine.Object.FindAnyObjectByType<XrealRuntimeAssets>();
+                Shader yuv = runtimeAssets != null
+                    ? runtimeAssets.Yuv420ToRgb
+                    : null;
                 if (yuv == null)
                 {
                     throw new InvalidOperationException(
-                        $"Shader '{YuvShaderName}' not found. Ensure YUV420ToRGB.shader is in the build.");
+                        $"Shader '{YuvShaderName}' not serialized in the XREAL product scene.");
                 }
                 _yuvMaterial = new Material(yuv);
 
@@ -211,6 +215,34 @@ namespace MLOmega.XR.Core
 #endif
         }
 
+        /// <summary>
+        /// Returns the glasses rotation when the HMD reports rotational tracking,
+        /// even if positional tracking is temporarily unavailable. This is kept
+        /// separate from GetPose(): WorldBrain still requires full 6DoF, while
+        /// capture-only frame orientation only needs a trustworthy rotation.
+        /// </summary>
+        public bool TryGetTrackedRotation(out Quaternion rotation)
+        {
+            rotation = Quaternion.identity;
+#if XREAL_SDK_PRESENT
+            if (_state != DeviceConnectionState.Connected || _headTransform == null)
+                return false;
+            InputDevice head = InputDevices.GetDeviceAtXRNode(XRNode.Head);
+            if (!head.isValid ||
+                !head.TryGetFeatureValue(CommonUsages.isTracked, out bool tracked) ||
+                !tracked ||
+                !head.TryGetFeatureValue(CommonUsages.trackingState, out InputTrackingState state) ||
+                (state & InputTrackingState.Rotation) == 0)
+            {
+                return false;
+            }
+            rotation = _headTransform.rotation;
+            return true;
+#else
+            return false;
+#endif
+        }
+
         public EyeFrame? TryGetLatestFrame()
         {
 #if XREAL_SDK_PRESENT
@@ -253,7 +285,9 @@ namespace MLOmega.XR.Core
                 long monotonicNs = nativeTs > 0 ? nativeTs : _clock.ElapsedTicks * NanosPerTick;
 
                 _frameId++;
-                return new EyeFrame(_rgbTarget, _frameId, monotonicNs);
+                return new EyeFrame(
+                    _rgbTarget, _frameId, monotonicNs,
+                    planes[0], planes[1], planes[2]);
             }
             catch (Exception ex)
             {
@@ -273,9 +307,16 @@ namespace MLOmega.XR.Core
         private static bool ReadHeadTracked()
         {
             InputDevice head = InputDevices.GetDeviceAtXRNode(XRNode.Head);
-            return head.isValid
-                && head.TryGetFeatureValue(CommonUsages.isTracked, out bool tracked)
-                && tracked;
+            if (!head.isValid ||
+                !head.TryGetFeatureValue(CommonUsages.isTracked, out bool tracked) ||
+                !tracked ||
+                !head.TryGetFeatureValue(CommonUsages.trackingState, out InputTrackingState state))
+            {
+                return false;
+            }
+            const InputTrackingState required =
+                InputTrackingState.Position | InputTrackingState.Rotation;
+            return (state & required) == required;
         }
 #endif
 

@@ -1698,3 +1698,47 @@ audio/vidéo/WebRTC mais doit bloquer un CloseDay exigeant SpeechBrain, car elle
 aucune voix enrôlable. Utiliser une vraie parole pour cette preuve. La vidéo réelle 30 min
 de 3.5 et les frontières physiques caméra/micro/permissions/rendu/receipts S25 restent les
 seuls gates ouverts; aucune nouvelle modification Local/PRO n'est requise par 3.6.
+
+### PASSATION 2026-07-24 — APK XREAL One Pro + Eye pré-matériel corrigée
+
+Ne pas réutiliser l'APK XREAL du 23 juillet. La release courante est :
+
+- `apps/xr-mobile/build/android/mlomega-xreal.apk`
+- 200 816 784 octets
+- SHA-256 `E5EBD383198A8F8DAA47E03CEAE0C44E4B26D58B8A5A727F97CE6077E8D52920`
+- package `com.mlomega.xr.glasses`, label `MLOmega XREAL`
+- GLES3, portrait, ARM64, API 29/34.
+
+Le builder XREAL crée désormais XR Origin/TrackedPoseDriver, sérialise le shader Eye,
+utilise son canal Alpha8 correct et envoie les plans natifs I420 à WebRTC. Il restaure
+les réglages PhoneOnly après le build. Validation déjà payée : 90/90 EditMode et build
+`exit=0`; ne les relancer que si ces fichiers changent.
+
+Commande de rebuild, toujours depuis `apps/xr-mobile`, sans fenêtre Unity ouverte :
+
+```powershell
+$u = "C:\Program Files\Unity\Hub\Editor\6000.0.23f1\Editor\Unity.exe"
+$p = Start-Process $u -ArgumentList '-batchmode','-quit','-projectPath','.', `
+  '-executeMethod','MLOmega.XR.Editor.AndroidBuildXreal.PrepareDefines', `
+  '-logFile',"$pwd\xreal-prep.log" -Wait -PassThru -NoNewWindow
+"prep=$($p.ExitCode)"
+$p = Start-Process $u -ArgumentList '-batchmode','-quit','-projectPath','.', `
+  '-executeMethod','MLOmega.XR.Editor.AndroidBuildXreal.BuildApk', `
+  '-logFile',"$pwd\xreal-build.log" -Wait -PassThru -NoNewWindow
+"build=$($p.ExitCode)"
+```
+
+Avant le test : One Pro + XREAL Eye monté, firmware lunettes à jour, ControlGlasses
+installé, Android inférieur à 16, permissions caméra/micro et « afficher par-dessus »
+accordées. Installer puis ouvrir depuis ControlGlasses :
+
+```powershell
+adb install -r .\build\android\mlomega-xreal.apk
+adb shell pm path com.mlomega.xr.glasses
+adb logcat | Select-String 'XrealDeviceAdapter|Eye capture|LiveTransport|tracking'
+```
+
+Attendre dans le log `Eye capture started` puis transport connecté; aucune erreur shader,
+aucun `pose_valid` positionnel avant tracking 6DoF. Le S23 Snapdragon n'est pas déclaré
+incompatible, mais n'est pas dans la matrice testée SDK 3.1 : seul ce test physique peut
+fermer la compatibilité hôte.

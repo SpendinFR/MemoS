@@ -1952,6 +1952,35 @@ réduction statique de JSON comme une validation modèle.
   Les warnings licence/JSON des packages sont du bruit non fatal; les logs terminent par
   `APK OK`/`Glasses PRODUCT APK OK`. L'installation et la preuve matérielle restent 4.2+.
 
+- [x] **4.1b Contre-audit pré-matériel XREAL One Pro + Eye fermé.** L'APK du 23 juillet
+  était bien complète côté contrats, mais quatre frontières matérielles n'étaient pas
+  valides : shader YUV seulement atteint par `Shader.Find` donc strippé, lecture erronée
+  du canal `.r` des textures XREAL `Alpha8`, build Vulkan/paysage/VSync contraire au SDK
+  3.1, et caméra sans XR Origin/TrackedPoseDriver. En plus, l'Eye repassait par
+  `ReadPixels` puis deux boucles RGB→I420 à 30 FPS.
+
+  Correction exclusivement activée par la scène/capacité XREAL : référence shader
+  sérialisée et canal `.a`; XR Origin + Camera Offset + TrackedPoseDriver Input System
+  avec position/rotation/tracking state; pose valide seulement si position ET rotation
+  sont suivies; plans Y/U/V Eye empaquetés directement et losslessly en I420. PhoneOnly
+  ne fournit jamais ces plans et garde donc son chemin antérieur. Le builder lunettes
+  applique temporairement Portrait + OpenGL ES3 + VSync Don't Sync, restaure ensuite les
+  réglages partagés et retire du seul manifeste XREAL le service fantôme G1.
+
+  Preuves du 24 juillet : **90/90 EditMode**, build XREAL `exit=0`; l'APK réelle annonce
+  `com.mlomega.xr.glasses`, label `MLOmega XREAL`, `glEsVersion=0x00030000`,
+  `screenOrientation=1`, contient XR Origin/TrackedPoseDriver et compile
+  `Hidden/MLOmega/YUV420ToRGB`; seul le vrai
+  `ai.nreal.sdk.MediaProjectionService` subsiste. APK :
+  **200 816 784 octets**, SHA-256
+  `E5EBD383198A8F8DAA47E03CEAE0C44E4B26D58B8A5A727F97CE6077E8D52920`.
+  L'ancien hash XREAL ci-dessus est supersédé. Le S23 Snapdragon reste hors matrice
+  officiellement testée du SDK 3.1 (S25/Beam Pro) : ce n'est pas une incompatibilité
+  démontrée, mais 4.4 doit encore prouver USB/firmware/ControlGlasses/Eye/6DoF réels.
+  En capture-only, l'orientation vient en priorité de la pose des lunettes XREAL
+  (et non de l'accéléromètre du téléphone hôte), puis est portée dans
+  `FrameEnvelope.rotation` et annulée côté PC avant Vision/OCR.
+
 - [ ] **4.2 PC réellement prêt avant ouverture de l'app.** Depuis la racine, même Wi-Fi,
   port 8710 privé autorisé :
 

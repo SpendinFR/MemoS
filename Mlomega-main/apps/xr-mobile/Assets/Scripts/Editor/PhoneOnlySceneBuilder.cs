@@ -11,7 +11,10 @@ using MLOmega.XR.UI.Components;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.XR;
 using UnityEngine.SceneManagement;
+using Unity.XR.CoreUtils;
 
 namespace MLOmega.XR.Editor
 {
@@ -21,6 +24,7 @@ namespace MLOmega.XR.Editor
         private const string ConfigPath = "Assets/Config/MLOmegaPhoneOnly.asset";
         public const string XrealScenePath = "Assets/Scenes/XrealProduct.unity";
         public const string XrealConfigPath = "Assets/Config/MLOmegaXreal.asset";
+        public const string XrealYuvShaderPath = "Assets/Shaders/YUV420ToRGB.shader";
         private const string CacheConfigPath = "Assets/Settings/PhoneOnlySceneCacheConfig.asset";
         private const string ThemePath = "Assets/Settings/PhoneOnlyUITheme.asset";
 
@@ -44,8 +48,21 @@ namespace MLOmega.XR.Editor
             camera.clearFlags = CameraClearFlags.SolidColor;
             camera.backgroundColor = Color.black;
             cameraGo.AddComponent<AudioListener>();
+            if (adapterKind == XrAdapterKind.Xreal)
+            {
+                BuildXrealRig(cameraGo, camera);
+            }
 
             var root = new GameObject(adapterKind == XrAdapterKind.Xreal ? "XREAL Product Session" : "PhoneOnly Session");
+            if (adapterKind == XrAdapterKind.Xreal)
+            {
+                Shader yuv = AssetDatabase.LoadAssetAtPath<Shader>(XrealYuvShaderPath);
+                if (yuv == null)
+                    throw new FileNotFoundException(
+                        $"XREAL YUV shader missing: {XrealYuvShaderPath}");
+                var runtimeAssets = root.AddComponent<XrealRuntimeAssets>();
+                Assign(runtimeAssets, "_yuv420ToRgb", yuv);
+            }
             var permissions = root.AddComponent<PermissionGate>();
             var session = root.AddComponent<XrSessionController>();
             var pairing = root.AddComponent<SessionPairing>();
@@ -115,6 +132,7 @@ namespace MLOmega.XR.Editor
             Assign(capture, "_pose", pose);
             Assign(orientation, "_capture", capture);
             Assign(orientation, "_pose", pose);
+            Assign(orientation, "_session", session);
             Assign(transport, "_pairing", pairing);
             Assign(transport, "_capture", capture);
             Assign(coordinator, "_pairing", pairing);
@@ -201,6 +219,40 @@ namespace MLOmega.XR.Editor
             EditorBuildSettings.scenes = scenes.ToArray();
             AssetDatabase.SaveAssets();
             Debug.Log($"[PhoneOnlySceneBuilder] {adapterKind} product scene ready: {scenePath}");
+        }
+
+        private static void BuildXrealRig(GameObject cameraGo, Camera camera)
+        {
+            var originGo = new GameObject("XR Origin (XREAL)");
+            var cameraOffset = new GameObject("Camera Offset");
+            cameraOffset.transform.SetParent(originGo.transform, false);
+            cameraGo.transform.SetParent(cameraOffset.transform, false);
+
+            var origin = originGo.AddComponent<XROrigin>();
+            origin.Origin = originGo;
+            origin.Camera = camera;
+            origin.CameraFloorOffsetObject = cameraOffset;
+            origin.RequestedTrackingOriginMode = XROrigin.TrackingOriginMode.Device;
+
+            // Embedded actions are enabled automatically by TrackedPoseDriver;
+            // no external Starter Assets/InputActionManager is required.
+            var trackedPose = cameraGo.AddComponent<TrackedPoseDriver>();
+            trackedPose.trackingType = TrackedPoseDriver.TrackingType.RotationAndPosition;
+            trackedPose.updateType = TrackedPoseDriver.UpdateType.UpdateAndBeforeRender;
+            trackedPose.ignoreTrackingState = false;
+            trackedPose.positionInput = new InputActionProperty(new InputAction(
+                "XREAL Head Position", InputActionType.Value,
+                "<XRHMD>/centerEyePosition", expectedControlType: "Vector3"));
+            trackedPose.rotationInput = new InputActionProperty(new InputAction(
+                "XREAL Head Rotation", InputActionType.Value,
+                "<XRHMD>/centerEyeRotation", expectedControlType: "Quaternion"));
+            trackedPose.trackingStateInput = new InputActionProperty(new InputAction(
+                "XREAL Head Tracking State", InputActionType.Value,
+                "<XRHMD>/trackingState", expectedControlType: "Integer"));
+
+            // XREAL's documented AR camera comfort defaults.
+            camera.fieldOfView = 25f;
+            camera.nearClipPlane = 0.1f;
         }
 
         private static MLOmegaConfig LoadOrCreateConfig(string configPath, XrAdapterKind adapterKind)

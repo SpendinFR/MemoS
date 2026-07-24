@@ -20,10 +20,12 @@
 // the SDK before the compile that exercises the real adapter path.
 using System;
 using System.IO;
+using System.Text.RegularExpressions;
 using UnityEditor;
 using UnityEditor.Android;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace MLOmega.XR.Editor
 {
@@ -35,6 +37,7 @@ namespace MLOmega.XR.Editor
         private const string XrealDep = "\"com.xreal.xr\": \"file:xreal-sdk/com.xreal.xr.tar.gz\"";
         private const string XrealLoader = "Unity.XR.XREAL.XREALXRLoader";
         private const string NdkVersion = "23.1.7779620";
+        private const string AndroidManifestPath = "Assets/Plugins/Android/AndroidManifest.xml";
 
         // Pass 1: ensure the SDK is referenced + the define is on, so the next compile
         // exercises the real XrealDeviceAdapter path. Safe to run repeatedly.
@@ -54,34 +57,38 @@ namespace MLOmega.XR.Editor
             EnsureXrealPackage();
             SetDefine();
             ConfigureExternalTools();
-            ConfigurePlayerSettings();
-            EnableXrealLoader();
-            EnsureScene();
-            AndroidBuild.EmbedSmallDeviceModels();
-            AndroidBuild.ApplyEndpointOverride(PhoneOnlySceneBuilder.XrealConfigPath);
-
-            string outPath = Env("MLOMEGA_APK_OUT",
-                Path.GetFullPath(Path.Combine("build", "android", "mlomega-xreal.apk")));
-            Directory.CreateDirectory(Path.GetDirectoryName(outPath));
-
-            var options = new BuildPlayerOptions
+            using (var xrealSettings = new XrealBuildSettingsScope())
             {
-                scenes = new[] { ScenePath },
-                locationPathName = outPath,
-                target = BuildTarget.Android,
-                targetGroup = BuildTargetGroup.Android,
-                options = BuildOptions.None,
-            };
+                ConfigurePlayerSettings();
+                EnableXrealLoader();
+                EnsureScene();
+                AndroidBuild.EmbedSmallDeviceModels();
+                AndroidBuild.ApplyEndpointOverride(PhoneOnlySceneBuilder.XrealConfigPath);
+                ValidateXrealBuildSettings();
 
-            BuildReport report = BuildPipeline.BuildPlayer(options);
-            BuildSummary summary = report.summary;
-            if (summary.result != BuildResult.Succeeded)
-            {
-                throw new Exception(
-                    $"[AndroidBuildXreal] Glasses APK build failed: {summary.result} " +
-                    $"({summary.totalErrors} errors) -> {outPath}");
+                string outPath = Env("MLOMEGA_APK_OUT",
+                    Path.GetFullPath(Path.Combine("build", "android", "mlomega-xreal.apk")));
+                Directory.CreateDirectory(Path.GetDirectoryName(outPath));
+
+                var options = new BuildPlayerOptions
+                {
+                    scenes = new[] { ScenePath },
+                    locationPathName = outPath,
+                    target = BuildTarget.Android,
+                    targetGroup = BuildTargetGroup.Android,
+                    options = BuildOptions.None,
+                };
+
+                BuildReport report = BuildPipeline.BuildPlayer(options);
+                BuildSummary summary = report.summary;
+                if (summary.result != BuildResult.Succeeded)
+                {
+                    throw new Exception(
+                        $"[AndroidBuildXreal] Glasses APK build failed: {summary.result} " +
+                        $"({summary.totalErrors} errors) -> {outPath}");
+                }
+                Debug.Log($"[AndroidBuildXreal] Glasses PRODUCT APK OK: {outPath} ({summary.totalSize} bytes)");
             }
-            Debug.Log($"[AndroidBuildXreal] Glasses PRODUCT APK OK: {outPath} ({summary.totalSize} bytes)");
         }
 
         // --- SDK package injection (keeps the committed manifest XREAL-free) -------
@@ -213,7 +220,45 @@ namespace MLOmega.XR.Editor
             PlayerSettings.Android.minSdkVersion = AndroidSdkVersions.AndroidApiLevel29;
             PlayerSettings.Android.targetSdkVersion = AndroidSdkVersions.AndroidApiLevel34;
             PlayerSettings.runInBackground = true;
+            PlayerSettings.productName = "MLOmega XREAL";
             PlayerSettings.SetApplicationIdentifier(BuildTargetGroup.Android, "com.mlomega.xr.glasses");
+        }
+
+        private static void ValidateXrealBuildSettings()
+        {
+            GraphicsDeviceType[] graphics =
+                PlayerSettings.GetGraphicsAPIs(BuildTarget.Android);
+            if (PlayerSettings.GetUseDefaultGraphicsAPIs(BuildTarget.Android) ||
+                graphics == null ||
+                graphics.Length != 1 ||
+                graphics[0] != GraphicsDeviceType.OpenGLES3)
+            {
+                throw new Exception(
+                    "[AndroidBuildXreal] XREAL build requires OpenGLES3 only.");
+            }
+            if (PlayerSettings.defaultInterfaceOrientation != UIOrientation.Portrait)
+                throw new Exception(
+                    "[AndroidBuildXreal] XREAL build requires Portrait orientation.");
+            if (QualitySettings.vSyncCount != 0)
+                throw new Exception(
+                    "[AndroidBuildXreal] XREAL build requires VSync Don't Sync.");
+            if (!File.ReadAllText(AndroidManifestPath)
+                    .Contains("android:screenOrientation=\"portrait\""))
+            {
+                throw new Exception(
+                    "[AndroidBuildXreal] XREAL manifest orientation was not isolated to portrait.");
+            }
+            if (File.ReadAllText(AndroidManifestPath)
+                    .Contains("com.mlomega.xrg1gate.EyeCaptureService"))
+            {
+                throw new Exception(
+                    "[AndroidBuildXreal] Stale EyeCaptureService leaked into XREAL manifest.");
+            }
+            if (AssetDatabase.LoadAssetAtPath<Shader>(
+                    PhoneOnlySceneBuilder.XrealYuvShaderPath) == null)
+            {
+                throw new Exception("[AndroidBuildXreal] XREAL YUV shader asset missing.");
+            }
         }
 
         private static void EnsureScene()
@@ -221,6 +266,114 @@ namespace MLOmega.XR.Editor
             PhoneOnlySceneBuilder.BuildXrealScene();
             if (!File.Exists(ScenePath))
                 throw new Exception($"[AndroidBuildXreal] XREAL product scene missing after build: {ScenePath}");
+        }
+
+        /// <summary>
+        /// Applies XREAL's documented Android graphics/orientation/VSync settings
+        /// only while the glasses player is built. Dispose restores the exact
+        /// PhoneOnly project state, including on build failure.
+        /// </summary>
+        private sealed class XrealBuildSettingsScope : IDisposable
+        {
+            private readonly bool _automaticGraphics;
+            private readonly GraphicsDeviceType[] _graphics;
+            private readonly UIOrientation _orientation;
+            private readonly string _productName;
+            private readonly string _applicationIdentifier;
+            private readonly ScriptingImplementation _scriptingBackend;
+            private readonly AndroidArchitecture _targetArchitectures;
+            private readonly AndroidSdkVersions _minSdkVersion;
+            private readonly AndroidSdkVersions _targetSdkVersion;
+            private readonly bool _runInBackground;
+            private readonly int _activeQuality;
+            private readonly int[] _vSync;
+            private readonly string _manifest;
+            private bool _disposed;
+
+            public XrealBuildSettingsScope()
+            {
+                _automaticGraphics =
+                    PlayerSettings.GetUseDefaultGraphicsAPIs(BuildTarget.Android);
+                _graphics = PlayerSettings.GetGraphicsAPIs(BuildTarget.Android);
+                _orientation = PlayerSettings.defaultInterfaceOrientation;
+                _productName = PlayerSettings.productName;
+                _applicationIdentifier =
+                    PlayerSettings.GetApplicationIdentifier(BuildTargetGroup.Android);
+                _scriptingBackend =
+                    PlayerSettings.GetScriptingBackend(BuildTargetGroup.Android);
+                _targetArchitectures = PlayerSettings.Android.targetArchitectures;
+                _minSdkVersion = PlayerSettings.Android.minSdkVersion;
+                _targetSdkVersion = PlayerSettings.Android.targetSdkVersion;
+                _runInBackground = PlayerSettings.runInBackground;
+                _activeQuality = QualitySettings.GetQualityLevel();
+                _vSync = new int[QualitySettings.names.Length];
+                for (int i = 0; i < _vSync.Length; i++)
+                {
+                    QualitySettings.SetQualityLevel(i, false);
+                    _vSync[i] = QualitySettings.vSyncCount;
+                    QualitySettings.vSyncCount = 0;
+                }
+                QualitySettings.SetQualityLevel(_activeQuality, false);
+
+                _manifest = File.ReadAllText(AndroidManifestPath);
+                string xrealManifest = _manifest.Replace(
+                    "android:screenOrientation=\"landscape\"",
+                    "android:screenOrientation=\"portrait\"");
+                if (xrealManifest == _manifest)
+                    throw new Exception(
+                        "[AndroidBuildXreal] Expected landscape orientation marker missing.");
+                xrealManifest = Regex.Replace(
+                    xrealManifest,
+                    @"\s*<!-- Foreground service used by the Eye capture path \(media projection class\)\. -->\s*" +
+                    @"<service\s+android:name=""com\.mlomega\.xrg1gate\.EyeCaptureService""[\s\S]*?/>\s*",
+                    Environment.NewLine,
+                    RegexOptions.CultureInvariant);
+                File.WriteAllText(AndroidManifestPath, xrealManifest);
+
+                PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, false);
+                PlayerSettings.SetGraphicsAPIs(
+                    BuildTarget.Android,
+                    new[] { GraphicsDeviceType.OpenGLES3 });
+                PlayerSettings.defaultInterfaceOrientation = UIOrientation.Portrait;
+                AssetDatabase.SaveAssets();
+            }
+
+            public void Dispose()
+            {
+                if (_disposed) return;
+                _disposed = true;
+                try
+                {
+                    PlayerSettings.SetUseDefaultGraphicsAPIs(
+                        BuildTarget.Android, _automaticGraphics);
+                    if (_graphics != null && _graphics.Length > 0)
+                        PlayerSettings.SetGraphicsAPIs(BuildTarget.Android, _graphics);
+                    PlayerSettings.defaultInterfaceOrientation = _orientation;
+                    PlayerSettings.productName = _productName;
+                    PlayerSettings.SetApplicationIdentifier(
+                        BuildTargetGroup.Android, _applicationIdentifier);
+                    PlayerSettings.SetScriptingBackend(
+                        BuildTargetGroup.Android, _scriptingBackend);
+                    PlayerSettings.Android.targetArchitectures = _targetArchitectures;
+                    PlayerSettings.Android.minSdkVersion = _minSdkVersion;
+                    PlayerSettings.Android.targetSdkVersion = _targetSdkVersion;
+                    PlayerSettings.runInBackground = _runInBackground;
+                    for (int i = 0; i < _vSync.Length; i++)
+                    {
+                        QualitySettings.SetQualityLevel(i, false);
+                        QualitySettings.vSyncCount = _vSync[i];
+                    }
+                    QualitySettings.SetQualityLevel(_activeQuality, false);
+                    File.WriteAllText(AndroidManifestPath, _manifest);
+                    AssetDatabase.SaveAssets();
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError(
+                        $"[AndroidBuildXreal] Failed to restore PhoneOnly settings: {ex}");
+                    throw;
+                }
+            }
         }
 
         private static string Env(string key, string fallback)

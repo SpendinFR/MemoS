@@ -1749,3 +1749,30 @@ déployé. Les champs optionnels d'un fingerprint (`null`, absent ou chaîne vid
 équivalents uniquement lorsqu'ils représentent tous l'état désactivé; les valeurs actives
 restent comparées strictement. Une tonalité synthétique ne peut jamais servir de preuve
 SpeechBrain et ne justifie aucun contournement de ce gate.
+
+## 2026-07-24 — Le player XREAL est un profil de build isolé, pas PhoneOnly avec un define
+
+Les réglages XREAL 3.1 incompatibles avec le profil partagé (Portrait, OpenGL ES3,
+VSync Don't Sync) sont appliqués par une portée transactionnelle uniquement autour de
+`AndroidBuildXreal.BuildApk`, puis les valeurs PhoneOnly sont restaurées même sur échec.
+Le manifeste source reste paysage pour PhoneOnly; sa copie XREAL devient portrait et
+n'embarque pas l'ancien `com.mlomega.xrg1gate.EyeCaptureService` inexistant. Le service
+du SDK `ai.nreal.sdk.MediaProjectionService` reste autoritaire.
+
+Une ressource atteinte seulement par `Shader.Find` n'est jamais une preuve d'inclusion.
+La scène XREAL porte donc `XrealRuntimeAssets` avec le shader YUV sérialisé. Les textures
+Eye sont `Alpha8` et doivent être échantillonnées sur `.a`, conformément au shader SDK.
+Pour WebRTC, les plans natifs Y/U/V sont copiés directement en I420; le coûteux fallback
+RGB de PhoneOnly reste inchangé et n'est jamais sélectionné lorsque ces plans existent.
+
+La pose XREAL vient d'un XR Origin et d'un TrackedPoseDriver à actions embarquées.
+`pose_valid=true` exige les bits tracking position+rotation, pas seulement `isTracked`,
+afin qu'un mode 3DoF ne pollue jamais WorldBrain avec une position zéro présentée comme
+6DoF. Cette fermeture est prouvée par build/APK, mais la compatibilité S23 + One Pro +
+Eye reste une frontière matérielle : le SDK 3.1 ne liste officiellement que S25 et Beam
+Pro comme hôtes testés.
+
+Le mode capture-only XREAL utilise la gravité reconstruite depuis la pose des lunettes
+avant l'accéléromètre du téléphone : accrocher les lunettes verticalement doit faire
+tourner le flux Eye même si le S23 reste droit dans une poche. PhoneOnly conserve son
+garde accélérométrique historique.

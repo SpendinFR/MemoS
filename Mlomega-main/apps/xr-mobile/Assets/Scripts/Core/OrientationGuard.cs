@@ -24,6 +24,7 @@ namespace MLOmega.XR.Core
     {
         [SerializeField] private EyeCaptureSource _capture;
         [SerializeField] private PosePublisher _pose;
+        [SerializeField] private XrSessionController _session;
 
         [Tooltip("Optional StatusBar to flag capture-only (rotation != 0). Wired by name to avoid a UI asmdef dependency.")]
         [SerializeField] private MonoBehaviour _statusBar; // duck-typed: has a bool CaptureOnly
@@ -47,6 +48,7 @@ namespace MLOmega.XR.Core
         {
             if (_capture == null) _capture = FindAnyObjectByType<EyeCaptureSource>();
             if (_pose == null) _pose = FindAnyObjectByType<PosePublisher>();
+            if (_session == null) _session = FindAnyObjectByType<XrSessionController>();
             if (_statusBar != null)
             {
                 _captureOnlyProp = _statusBar.GetType().GetProperty("CaptureOnly");
@@ -74,6 +76,16 @@ namespace MLOmega.XR.Core
             }
         }
 
+        private bool TryReadTrackedPoseGravity(out Vector3 gravity)
+        {
+            gravity = Vector3.zero;
+            if (_pose == null) return false;
+            StampedPose sp = _pose.SampleNow();
+            if (!sp.IsTracking) return false;
+            gravity = Quaternion.Inverse(sp.Rotation) * Vector3.down;
+            return true;
+        }
+
         /// <summary>
         /// Read the gravity direction in device space. Prefers the hardware
         /// accelerometer; falls back to the adapter pose's world-down transformed
@@ -81,19 +93,24 @@ namespace MLOmega.XR.Core
         /// </summary>
         private Vector3 ReadGravity()
         {
+            // The Eye camera rotates with the glasses, not with the host phone.
+            // Prefer the HMD pose only for XREAL; PhoneOnly retains the host
+            // accelerometer behavior below.
+            if (_session != null &&
+                _session.Adapter is XrealDeviceAdapter xreal &&
+                xreal.TryGetTrackedRotation(out Quaternion xrealRotation))
+            {
+                return Quaternion.Inverse(xrealRotation) * Vector3.down;
+            }
+
             Vector3 a = Input.acceleration;
             if (a.sqrMagnitude >= _minGravity * _minGravity)
             {
                 return a;
             }
-            if (_pose != null)
+            if (TryReadTrackedPoseGravity(out Vector3 poseGravity))
             {
-                StampedPose sp = _pose.SampleNow();
-                if (sp.IsTracking)
-                {
-                    // World "down" (0,-1,0) expressed in device space via the pose.
-                    return Quaternion.Inverse(sp.Rotation) * Vector3.down;
-                }
+                return poseGravity;
             }
             return a; // may be ~zero → DecideBucket keeps the current bucket
         }

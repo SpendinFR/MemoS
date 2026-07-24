@@ -1091,3 +1091,18 @@ Note non-bug : un CloseDay Local lancé sur la mire audio sinusoïdale du harnai
 correctement bloqué par `offline SpeechBrain reconciliation returned no provenance`.
 Transport, archive et reconnexion peuvent être prouvés avec cette mire; la provenance
 vocale exige un média contenant une vraie voix. Le garde-fou n'a pas été contourné.
+
+## OBS-76 — L'APK XREAL compilait mais son chemin Eye/6DoF n'était pas exécutable proprement (CORRIGÉ CODE — 2026-07-24)
+
+Le build vert masquait quatre ruptures : shader YUV strippé car seulement recherché par
+nom, canal `.r` au lieu de `.a` sur les textures XREAL `Alpha8`, player Vulkan/paysage/
+VSync, et caméra nue sans XR Origin/TrackedPoseDriver. Le transport Eye payait en plus
+un readback GPU synchrone et une conversion C# par pixel à 30 FPS.
+
+Correction XREAL-only : ancre de ressource sérialisée, shader aligné sur celui du SDK,
+rig XR avec tracking state strict, plans Eye Y/U/V directement empaquetés en I420 et
+portée de réglages build restaurable. Preuve APK : GLES3/portrait, shader réellement
+compilé, rig présent, service fantôme absent, 90/90 EditMode, hash
+`E5EBD383198A8F8DAA47E03CEAE0C44E4B26D58B8A5A727F97CE6077E8D52920`.
+Statut matériel honnête : One Pro + Eye sur S23 reste à exécuter; aucune preuve statique
+ne remplace la négociation USB, le firmware, ControlGlasses et le tracking 6DoF réel.

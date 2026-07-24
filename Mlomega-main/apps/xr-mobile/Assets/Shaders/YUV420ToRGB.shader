@@ -39,9 +39,12 @@ Shader "Hidden/MLOmega/YUV420ToRGB"
 
             half4 frag (Varyings IN) : SV_Target
             {
-                float y = SAMPLE_TEXTURE2D(_YTex, sampler_YTex, IN.uv).r;
-                float u = SAMPLE_TEXTURE2D(_UTex, sampler_UTex, IN.uv).r - 0.5;
-                float v = SAMPLE_TEXTURE2D(_VTex, sampler_VTex, IN.uv).r - 0.5;
+                // XREALRGBCameraTexture creates TextureFormat.Alpha8 planes.
+                // The SDK's own CaptureBackgroundYUV shader samples `.a`; `.r`
+                // does not contain the camera byte on these textures.
+                float y = SAMPLE_TEXTURE2D(_YTex, sampler_YTex, IN.uv).a;
+                float u = SAMPLE_TEXTURE2D(_UTex, sampler_UTex, IN.uv).a - 0.5;
+                float v = SAMPLE_TEXTURE2D(_VTex, sampler_VTex, IN.uv).a - 0.5;
 
                 // BT.601, limited range Y in [16/255, 235/255].
                 y = (y - 0.0625) * 1.164;

@@ -17,6 +17,7 @@ using System.Collections.Generic;
 using MLOmega.Contracts.V19;
 using MLOmega.XR.Core;
 using Newtonsoft.Json;
+using Unity.Collections;
 using UnityEngine;
 
 namespace MLOmega.XR.Transport
@@ -250,6 +251,16 @@ namespace MLOmega.XR.Transport
                 _plugin.Call<bool>("sendContractMessage", ContractJson.Serialize(envelope));
             long tsNs = envelope != null ? envelope.CaptureMonotonicNs : 0L;
             long rotation = envelope != null ? envelope.Rotation : 0L;
+            if (_capture != null &&
+                _capture.TryGetCurrentNativeI420(
+                    out Texture2D planeY,
+                    out Texture2D planeU,
+                    out Texture2D planeV) &&
+                TryPackNativeI420(planeY, planeU, planeV, ref _i420))
+            {
+                PushPackedI420(_i420, planeY.width, planeY.height, (int)rotation, tsNs);
+                return;
+            }
             if (_textureBacked)
             {
                 // GetNativeTexturePtr() -> GL texture name for the OES feeder path.
@@ -342,8 +353,18 @@ namespace MLOmega.XR.Transport
                 _i420[ySize + uv] = (byte)Mathf.Clamp(((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128, 0, 255);
                 _i420[ySize + uvSize + uv] = (byte)Mathf.Clamp(((112 * r - 94 * g - 18 * b + 128) >> 8) + 128, 0, 255);
             }
+            PushPackedI420(_i420, width, height, rotation, timestampNs);
+        }
+
+        private void PushPackedI420(
+            byte[] packed,
+            int width,
+            int height,
+            int rotation,
+            long timestampNs)
+        {
             using var byteBufferClass = new AndroidJavaClass("java.nio.ByteBuffer");
-            using var byteBuffer = byteBufferClass.CallStatic<AndroidJavaObject>("wrap", _i420);
+            using var byteBuffer = byteBufferClass.CallStatic<AndroidJavaObject>("wrap", packed);
             _feeder.Call("pushI420Frame", byteBuffer, width, height, rotation, timestampNs);
         }
 
@@ -364,6 +385,43 @@ namespace MLOmega.XR.Transport
             lock (_queueLock) { _mainThreadQueue.Enqueue(action); }
         }
 #endif
+
+        /// <summary>
+        /// Packs the native XREAL Eye Alpha8 Y/U/V textures directly as I420.
+        /// This avoids the PhoneOnly fallback's synchronous GPU readback and
+        /// per-pixel RGB conversion. It stays platform-neutral for EditMode.
+        /// </summary>
+        public static bool TryPackNativeI420(
+            Texture2D planeY,
+            Texture2D planeU,
+            Texture2D planeV,
+            ref byte[] packed)
+        {
+            if (planeY == null || planeU == null || planeV == null)
+                return false;
+            int width = planeY.width, height = planeY.height;
+            int chromaWidth = (width + 1) / 2;
+            int chromaHeight = (height + 1) / 2;
+            if (planeU.width != chromaWidth || planeU.height != chromaHeight ||
+                planeV.width != chromaWidth || planeV.height != chromaHeight)
+                return false;
+
+            int ySize = width * height;
+            int uvSize = chromaWidth * chromaHeight;
+            NativeArray<byte> y = planeY.GetRawTextureData<byte>();
+            NativeArray<byte> u = planeU.GetRawTextureData<byte>();
+            NativeArray<byte> v = planeV.GetRawTextureData<byte>();
+            if (y.Length < ySize || u.Length < uvSize || v.Length < uvSize)
+                return false;
+
+            int total = ySize + uvSize * 2;
+            if (packed == null || packed.Length != total)
+                packed = new byte[total];
+            NativeArray<byte>.Copy(y, 0, packed, 0, ySize);
+            NativeArray<byte>.Copy(u, 0, packed, ySize, uvSize);
+            NativeArray<byte>.Copy(v, 0, packed, ySize + uvSize, uvSize);
+            return true;
+        }
 
         internal void OnNativeState(string stateName, string detail)
         {

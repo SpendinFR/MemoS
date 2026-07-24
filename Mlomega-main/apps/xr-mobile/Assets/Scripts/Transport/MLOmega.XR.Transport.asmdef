@@ -3,7 +3,8 @@
     "rootNamespace": "MLOmega.XR.Transport",
     "references": [
         "MLOmega.XR.Core",
-        "MLOmega.Contracts"
+        "MLOmega.Contracts",
+        "Unity.Collections"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
