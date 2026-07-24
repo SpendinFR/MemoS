@@ -1787,3 +1787,18 @@ Le mode capture-only XREAL utilise la gravité reconstruite depuis la pose des l
 avant l'accéléromètre du téléphone : accrocher les lunettes verticalement doit faire
 tourner le flux Eye même si le S23 reste droit dans une poche. PhoneOnly conserve son
 garde accélérométrique historique.
+
+## 2026-07-25 — Le Beam Pro partage le profil produit, pas les valeurs par défaut du type
+
+`MLOmegaXreal.asset` est un artefact généré, pas une seconde source de configuration.
+Le builder doit le recopier depuis `MLOmegaPhoneOnly.asset` à chaque génération, puis
+ne changer que `adapter=Xreal` et `device_id=xreal-primary`. Cela garantit que les
+endpoints LAN/Tailscale, le wake word, la langue et les budgets restent identiques entre
+les deux surfaces sans partager leur identité de transport.
+
+Cette décision vient d'une preuve négative dans l'APK : avant correction, la scène
+lunettes embarquait `192.168.1.10` et aucun endpoint durable, malgré un code XREAL
+correct. Après correction, l'archive compilée contient `192.168.1.199` puis
+`100.113.42.19`, et plus l'adresse de développement. Un build vert ou un fichier de
+configuration bien nommé n'est donc jamais une preuve suffisante : les endpoints sont
+contrôlés dans `sharedassets0.assets`.

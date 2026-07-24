@@ -1115,3 +1115,17 @@ valide le manifeste ControlGlasses. Rebuild propre sans exception : launchable
 `19DE5A94245B972BC5EB841DC3281A92F99746A822AFCEFB78643FEC692B2AE2`.
 Statut matériel honnête : One Pro + Eye sur S23 reste à exécuter; aucune preuve statique
 ne remplace la négociation USB, le firmware, ControlGlasses et le tracking 6DoF réel.
+
+## OBS-77 — L'APK XREAL utilisait une IP de développement sans fallback (CORRIGÉ — 2026-07-25)
+
+Le builder créait `MLOmegaXreal.asset` à partir des valeurs par défaut du type, pas à
+partir du profil PhoneOnly autoritaire. Le code de pairing et Tailscale existait donc
+bien, mais l'APK livrée contenait seulement `192.168.1.10` et aucune liste d'endpoints :
+sur Beam Pro, le pairing produit aurait échoué sans modification manuelle.
+
+Correction : toute génération XREAL copie d'abord `MLOmegaPhoneOnly.asset`, puis change
+uniquement l'adaptateur et le device ID. Preuve binaire après rebuild :
+`sharedassets0.assets` contient `192.168.1.199` et `100.113.42.19`, l'ancien défaut est
+absent. APK 201 365 231 octets, SHA-256
+`EFA4AEC207CA2BFB1602FDDB39D348447F75B560DE475A8CE1D4160405C891C9`,
+90/90 EditMode, prep/build XREAL verts.

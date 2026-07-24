@@ -1,17 +1,22 @@
 # FIRST TRY ANDROID — Ta première session MLOmega (PhoneOnly)
 
+> **Beam Pro + XREAL One Pro + Eye :** utilise le guide opérateur courant
+> [`FIRST_TRY_XREAL_BEAM_PRO.md`](FIRST_TRY_XREAL_BEAM_PRO.md). Il couvre
+> installation, lancement Local/PRO, LAN/Tailscale, fin de session, CloseDay,
+> Dashboard, audit et diagnostic matériel.
+
 Guide complet de la première session réelle : lancement PC + téléphone, tout ce que tu peux
 dire et tester aujourd'hui, comment voir les suggestions, comment quitter.
 Build : `mlomega-phoneonly.apk` (54,6 Mo) — endpoint injecté `192.168.1.199:8710`.
 
 ---
 
-## 1. Lancement — côté PC (3 commandes)
+## 1. Lancement — côté PC
 
 ```powershell
 cd C:\Users\wabad\Downloads\ProjetMemobyFABLE\Mlomega-main
-powershell -ExecutionPolicy Bypass -File scripts\START_QDRANT.ps1
-# Ollama : doit tourner (vérifie avec: ollama list — le modèle du .env doit apparaître)
+# Ollama doit tourner ; le lanceur démarre/vérifie Qdrant lui-même.
+ollama list
 .\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -BindHost 0.0.0.0 -Port 8710
 ```
 
@@ -49,8 +54,9 @@ fois : Windows demande d'autoriser Python sur le réseau **privé** → accepte 
 **Le bouton « Terminer la session et lancer CloseDay » à l'écran.** Ce clic :
 draine l'audio/vidéo proprement → termine la session → **déclenche automatiquement le
 close-day sur le PC** (la consolidation nocturne complète : re-transcription HQ, diarisation,
-Brain2, Life Model, prédictions). Suis son avancement dans la fenêtre PC ou via
-`http://localhost:8710/session/status`.
+Brain2, Life Model, prédictions). Suis son avancement dans la fenêtre PC ou avec
+`Invoke-RestMethod http://localhost:8710/metrics | ConvertTo-Json -Depth 8`.
+`/session/status` est une route POST authentifiée utilisée par l'app, pas une page navigateur.
 
 ⚠️ Fermer l'app sans le bouton (swipe/crash) NE termine PAS la session (résilience voulue :
 tu peux rouvrir et reprendre la même session). Seul le bouton clôt et consolide.

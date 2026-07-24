@@ -1994,6 +1994,21 @@ réduction statique de JSON comme une validation modèle.
   USB-C/DP, mais le SDK 3.1 n'a été qualifié officiellement que sur S25/Beam Pro :
   cette dernière compatibilité reste un gate matériel, pas un raccord logiciel ouvert.
 
+- [x] **4.1c Profil réseau Beam Pro réellement embarqué.** Le dernier contrôle de
+  l'APK a trouvé un faux raccord : `BuildXrealScene()` créait `MLOmegaXreal.asset`
+  depuis les valeurs de développement de `MLOmegaConfig` (`192.168.1.10`, aucun
+  fallback), alors que le produit PhoneOnly possède le vrai profil LAN/Tailscale.
+  Le builder rafraîchit désormais le profil XREAL depuis
+  `MLOmegaPhoneOnly.asset`, puis ne surcharge que l'adaptateur et l'identité device.
+  Wake word, langue, budgets et endpoints restent donc communs sans confondre les
+  deux devices. Preuve dans l'APK, et non dans le YAML source :
+  `sharedassets0.assets` contient `192.168.1.199` et `100.113.42.19`, et ne contient
+  plus `192.168.1.10`. Rebuild du 25 juillet : **90/90 EditMode**,
+  `prep=0/build=0`, package `com.mlomega.xr.glasses`, activité
+  `ai.nreal.activitylife.NRXRActivity`, **201 365 231 octets**, SHA-256
+  `EFA4AEC207CA2BFB1602FDDB39D348447F75B560DE475A8CE1D4160405C891C9`.
+  Le guide opérateur Beam Pro complet est `FIRST_TRY_XREAL_BEAM_PRO.md`.
+
 - [ ] **4.2 PC réellement prêt avant ouverture de l'app.** Depuis la racine, même Wi-Fi,
   port 8710 privé autorisé :
 

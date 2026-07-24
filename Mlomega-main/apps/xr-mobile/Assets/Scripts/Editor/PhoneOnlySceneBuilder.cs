@@ -264,6 +264,20 @@ namespace MLOmega.XR.Editor
                 Directory.CreateDirectory(Path.GetDirectoryName(configPath));
                 config = ScriptableObject.CreateInstance<MLOmegaConfig>();
             }
+            // The glasses are another presentation/capture surface for the same
+            // product, not a second deployment profile. Refresh every generated
+            // XREAL config from the authoritative PhoneOnly asset so LAN/Tailscale
+            // endpoints, wake word, language and timing knobs cannot silently fall
+            // back to MLOmegaConfig's development defaults.
+            if (adapterKind == XrAdapterKind.Xreal)
+            {
+                var phoneConfig = AssetDatabase.LoadAssetAtPath<MLOmegaConfig>(ConfigPath);
+                if (phoneConfig == null)
+                    throw new FileNotFoundException(
+                        $"Authoritative PhoneOnly config missing: {ConfigPath}");
+                EditorUtility.CopySerialized(phoneConfig, config);
+                config.name = Path.GetFileNameWithoutExtension(configPath);
+            }
             var so = new SerializedObject(config);
             so.FindProperty("_adapter").enumValueIndex = (int)adapterKind;
             so.FindProperty("_deviceId").stringValue = adapterKind == XrAdapterKind.Xreal

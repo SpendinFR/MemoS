@@ -1714,6 +1714,21 @@ utilise son canal Alpha8 correct et envoie les plans natifs I420 à WebRTC. Il r
 les réglages PhoneOnly après le build. Validation déjà payée : 90/90 EditMode et build
 `exit=0`; ne les relancer que si ces fichiers changent.
 
+**Supersédé le 25 juillet pour le profil réseau.** Le contrôle binaire a montré que
+la release ci-dessus embarquait encore le défaut `192.168.1.10` et aucun fallback :
+`BuildXrealScene()` créait un config XREAL neuf au lieu de reprendre le profil produit.
+`PhoneOnlySceneBuilder.LoadOrCreateConfig()` copie maintenant l'asset PhoneOnly
+autoritaire avant de poser l'adaptateur/ID XREAL. Nouvelle release :
+
+- `apps/xr-mobile/build/android/mlomega-xreal.apk`
+- 201 365 231 octets
+- SHA-256 `EFA4AEC207CA2BFB1602FDDB39D348447F75B560DE475A8CE1D4160405C891C9`
+- endpoints prouvés dans `sharedassets0.assets` :
+  `192.168.1.199:8710`, puis `100.113.42.19:8710`;
+- `192.168.1.10` absent; 90/90 EditMode et deux passes XREAL vertes.
+
+Le guide d'exploitation autoritaire est `FIRST_TRY_XREAL_BEAM_PRO.md`.
+
 Le contre-audit final a trouvé un faux vert supplémentaire : les callbacks du SDK
 levaient une `NullReferenceException` car `XREALSettings.asset` existait mais n'était pas
 enregistré dans `EditorBuildSettings`, et `ProjectSettings/XRPackageSettings.asset`
