@@ -1660,7 +1660,7 @@ VLM, et WorldBrain a persisté cette seconde bbox. Unity 6000.0.23f1 : **88/88 E
 le test C# relit le payload produit par ce gate, pas une intention réécrite à la main.
 
 Ne pas committer les rapports `_run`, XML Unity, scènes/XR locales ni artifacts de build.
-La prochaine action produit est l'Étape finale 4 : rebuild APK puis vrai S25 pour caméra,
+La prochaine action produit est l'Étape finale 4 : rebuild APK puis vrai S24 pour caméra,
 micro, permissions, orientation, rendu, gestes et receipts physiques. Aucun nouveau
 CloseDay/fan-out n'est requis pour fermer ce lot.
 
@@ -1671,7 +1671,7 @@ XREAL (PrepareDefines puis BuildApk) : `prep=0`, `build=0`, sortie fraîche
 SHA-256 `C891E36DF651BAF0120AB2171DB543C0D0C6D2155D0654F0EF08C80D6836D752`.
 Ne pas confondre avec l'ancien `mlomega-xreal-g1.apk` daté du 10 juillet.
 
-### PASSATION 2026-07-23 — Étape 3.6 chaos fermée, S25 toujours ouvert
+### PASSATION 2026-07-23 — Étape 3.6 chaos fermée, S24 toujours ouvert
 
 Ne pas refaire les chaos déjà traversés par les anciens Gate B. Les dernières frontières
 inconnues ont été prouvées séparément par `tools/harness/chaos.py`, sur ports et DB
@@ -1696,7 +1696,7 @@ valeurs optionnelles.
 Ne pas affaiblir la provenance Deep Audio : une mire à tonalité sinusoïdale traverse bien
 audio/vidéo/WebRTC mais doit bloquer un CloseDay exigeant SpeechBrain, car elle ne contient
 aucune voix enrôlable. Utiliser une vraie parole pour cette preuve. La vidéo réelle 30 min
-de 3.5 et les frontières physiques caméra/micro/permissions/rendu/receipts S25 restent les
+de 3.5 et les frontières physiques caméra/micro/permissions/rendu/receipts S24 restent les
 seuls gates ouverts; aucune nouvelle modification Local/PRO n'est requise par 3.6.
 
 ### PASSATION 2026-07-24 — APK XREAL One Pro + Eye pré-matériel corrigée
@@ -1727,7 +1727,7 @@ autoritaire avant de poser l'adaptateur/ID XREAL. Nouvelle release :
   `192.168.1.199:8710`, puis `100.113.42.19:8710`;
 - `192.168.1.10` absent; 90/90 EditMode et deux passes XREAL vertes.
 
-Le guide d'exploitation autoritaire est `FIRST_TRY_XREAL_BEAM_PRO.md`.
+Le guide d'exploitation autoritaire est `FIRST_TRY_XREAL_S24.md`.
 
 Le contre-audit final a trouvé un faux vert supplémentaire : les callbacks du SDK
 levaient une `NullReferenceException` car `XREALSettings.asset` existait mais n'était pas
@@ -1754,11 +1754,11 @@ $p = Start-Process $u -ArgumentList '-batchmode','-quit','-projectPath','.', `
 "build=$($p.ExitCode)"
 ```
 
-Avant le test : ne pas mettre le S23 sous Android 16; installer ControlGlasses 1.1.0,
-monter l'XREAL Eye, connecter d'abord les lunettes au PC et appliquer le dernier firmware
-avec l'outil OTA XREAL, puis utiliser le câble d'origine vers le téléphone. Accorder les
-permissions caméra/micro et « afficher par-dessus ». Installer l'APK, débrancher le PC,
-brancher les lunettes au S23 et ouvrir depuis ControlGlasses :
+Avant le test : monter l'XREAL Eye, connecter d'abord les lunettes au PC et appliquer
+le dernier firmware One Pro/Eye avec Chrome 89+ sur `https://www.xreal.com/ota/`.
+Installer ControlGlasses 1.1.0 sur le S24, puis utiliser le câble d'origine vers le
+téléphone. Accorder les permissions caméra/micro et « afficher par-dessus ». Installer
+l'APK, débrancher le PC, brancher les lunettes au S24 et ouvrir depuis ControlGlasses :
 
 ```powershell
 adb install -r .\build\android\mlomega-xreal.apk
@@ -1767,6 +1767,6 @@ adb logcat | Select-String 'XrealDeviceAdapter|Eye capture|LiveTransport|trackin
 ```
 
 Attendre dans le log `Eye capture started` puis transport connecté; aucune erreur shader,
-aucun `pose_valid` positionnel avant tracking 6DoF. Le S23 Snapdragon n'est pas déclaré
-incompatible, mais n'est pas dans la matrice testée SDK 3.1 : seul ce test physique peut
-fermer la compatibilité hôte.
+aucun `pose_valid` positionnel avant tracking 6DoF. Le S24 est officiellement compatible
+SDK 3.0, mais n'est pas dans la matrice publiée des hôtes testés SDK 3.1 (S25/Beam Pro) :
+seul ce test physique peut fermer la compatibilité hôte.

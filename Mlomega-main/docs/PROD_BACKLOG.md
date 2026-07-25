@@ -1918,7 +1918,7 @@ réduction statique de JSON comme une validation modèle.
   le test Unity (88/88 EditMode), pas un JSON inventé dans le test. Ceci ne certifie pas la
   caméra, le micro, les permissions, le rendu ni le receipt physiques : Étape 4 reste ouverte.
 
-#### Étape finale 4 — vrai Samsung S25, APK fraîche et identité owner réelle
+#### Étape finale 4 — vrai Samsung S24, APK fraîche et identité owner réelle
 
 - [x] **4.1 Rebuild PhoneOnly obligatoire.** Le commit `de39fef` modifie le C# Unity
   (`translate_text`) : l'ancienne APK ne contient pas le pont. Fermer Unity, puis depuis
@@ -1981,20 +1981,22 @@ réduction statique de JSON comme une validation modèle.
   remplacé par son format officiel minimal. APK :
   **201 365 183 octets**, SHA-256
   `19DE5A94245B972BC5EB841DC3281A92F99746A822AFCEFB78643FEC692B2AE2`.
-  L'ancien hash XREAL ci-dessus est supersédé. Le S23 Snapdragon reste hors matrice
-  officiellement testée du SDK 3.1 (S25/Beam Pro) : ce n'est pas une incompatibilité
-  démontrée, mais 4.4 doit encore prouver USB/firmware/ControlGlasses/Eye/6DoF réels.
+  L'ancien hash XREAL ci-dessus est supersédé. Le Galaxy S24 est officiellement
+  compatible avec le SDK XREAL 3.0; la matrice publiée du SDK 3.1 utilisé par
+  MLOmega ne cite toutefois que S25/Beam Pro comme hôtes testés. Ce n'est pas une
+  incompatibilité démontrée : 4.4 doit encore prouver
+  USB/firmware/ControlGlasses/Eye/6DoF réels sur ce S24.
   En capture-only, l'orientation vient en priorité de la pose des lunettes XREAL
   (et non de l'accéléromètre du téléphone hôte), puis est portée dans
   `FrameEnvelope.rotation` et annulée côté PC avant Vision/OCR.
-  Préconditions one-shot officielles : ne pas passer le téléphone sous Android 16,
-  installer **ControlGlasses 1.1.0**, monter l'Eye, mettre le firmware One Pro/Eye à
-  jour par l'outil OTA XREAL, utiliser le câble d'origine, accorder caméra/micro/
-  affichage par-dessus puis lancer l'APK depuis ControlGlasses. Le S23 possède bien
-  USB-C/DP, mais le SDK 3.1 n'a été qualifié officiellement que sur S25/Beam Pro :
-  cette dernière compatibilité reste un gate matériel, pas un raccord logiciel ouvert.
+  Préconditions one-shot officielles : monter l'Eye, mettre le firmware One Pro/Eye
+  à jour depuis un PC avec Chrome 89+ sur `https://www.xreal.com/ota/`, installer
+  **ControlGlasses 1.1.0**, utiliser le câble d'origine, accorder caméra/micro/
+  affichage par-dessus puis lancer l'APK depuis ControlGlasses. Le S24 possède bien
+  USB-C/DisplayPort; la compatibilité physique SDK 3.1/Eye/6DoF reste un gate
+  matériel, pas un raccord logiciel ouvert.
 
-- [x] **4.1c Profil réseau Beam Pro réellement embarqué.** Le dernier contrôle de
+- [x] **4.1c Profil réseau S24/XREAL réellement embarqué.** Le dernier contrôle de
   l'APK a trouvé un faux raccord : `BuildXrealScene()` créait `MLOmegaXreal.asset`
   depuis les valeurs de développement de `MLOmegaConfig` (`192.168.1.10`, aucun
   fallback), alors que le produit PhoneOnly possède le vrai profil LAN/Tailscale.
@@ -2007,18 +2009,18 @@ réduction statique de JSON comme une validation modèle.
   `prep=0/build=0`, package `com.mlomega.xr.glasses`, activité
   `ai.nreal.activitylife.NRXRActivity`, **201 365 231 octets**, SHA-256
   `EFA4AEC207CA2BFB1602FDDB39D348447F75B560DE475A8CE1D4160405C891C9`.
-  Le guide opérateur Beam Pro complet est `FIRST_TRY_XREAL_BEAM_PRO.md`.
+  Le guide opérateur S24 complet est `FIRST_TRY_XREAL_S24.md`.
 
 - [ ] **4.2 PC réellement prêt avant ouverture de l'app.** Depuis la racine, même Wi-Fi,
   port 8710 privé autorisé :
 
   ```powershell
-  powershell -ExecutionPolicy Bypass -File scripts\START_QDRANT.ps1
+  ollama list
   .\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -BindHost 0.0.0.0 -Port 8710
   ```
 
-  RUN exécute le preflight profond : aucun contournement manuel si rouge. Garder cette
-  console ouverte; elle est le journal live.
+  RUN démarre/vérifie Qdrant et exécute le preflight profond : aucun contournement
+  manuel si rouge. Garder cette console ouverte; elle est le journal live.
 
 - [ ] **4.3 Première action = enrôlement propriétaire.** Dire « configure ma voix » ou
   Menu → Ma voix, suivre la capture, puis vérifier en DB que les tours du porteur portent
@@ -2040,14 +2042,14 @@ réduction statique de JSON comme une validation modèle.
   le dashboard sur cette DB. Contrôler perspective William, séparation des autres,
   souvenirs, positions, clips/replay, Life watch sans psychologie inventée et prédictions
   avec précédents. Conserver APK hash, version Android, réseau, températures, batterie,
-  latences, logs et anomalies. S25 GO ne ferme pas Gate D capacité huit heures.
+  latences, logs et anomalies. S24 GO ne ferme pas Gate D capacité huit heures.
 
 #### Étape finale 5 — Gate D huit heures et décision production
 
 - [ ] **5.1 Deux preuves, sans demander huit heures de tournage.** (a) test capacité
   accéléré sur une journée temporelle de 8 h/multi-session issue du générateur Gate C;
   (b) soak temps réel overnight avec faux device, puis un pilote réel longue durée après
-  le S25 court. Les répétitions synthétiques restent liées à leur source et ne corroborent
+  le S24 court. Les répétitions synthétiques restent liées à leur source et ne corroborent
   jamais un trait. Ajouter un outil `tools/harness/run_gate_d_day.py` qui crée DB neuve,
   sessions matin/midi/soir, redémarrage PC entre deux sessions et rapport final.
 
@@ -2057,7 +2059,7 @@ réduction statique de JSON comme une validation modèle.
   mesurés. Seulement après Gate D annoncer une durée nocturne et fixer backend/modèles/
   contextes FIRST_TRY.
 
-- [ ] **5.3 Verdict Codex indépendant.** Relire rapports B/qualité/C/S25/D et le code des
+- [ ] **5.3 Verdict Codex indépendant.** Relire rapports B/qualité/C/S24/D et le code des
   frontières réellement exercées. GO production uniquement si zéro blocker fonctionnel,
   qualité propriétaire non régressive, SLA accepté et cas négatifs prouvés. Sinon produire
   une liste bornée de corrections avec preuve; ne pas rouvrir un audit intégral ni cocher

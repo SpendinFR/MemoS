@@ -1,281 +1,253 @@
-# FIRST TRY ANDROID — Ta première session MLOmega (PhoneOnly)
+# Première utilisation — PhoneOnly sur Galaxy S24
 
-> **Beam Pro + XREAL One Pro + Eye :** utilise le guide opérateur courant
-> [`FIRST_TRY_XREAL_BEAM_PRO.md`](FIRST_TRY_XREAL_BEAM_PRO.md). Il couvre
-> installation, lancement Local/PRO, LAN/Tailscale, fin de session, CloseDay,
-> Dashboard, audit et diagnostic matériel.
+Ce document est le guide opérateur courant. Les anciennes sections v1–v5 ont
+été retirées : elles décrivaient des APK historiques et se contredisaient.
 
-Guide complet de la première session réelle : lancement PC + téléphone, tout ce que tu peux
-dire et tester aujourd'hui, comment voir les suggestions, comment quitter.
-Build : `mlomega-phoneonly.apk` (54,6 Mo) — endpoint injecté `192.168.1.199:8710`.
+Pour les XREAL One Pro + Eye, utilise
+[`FIRST_TRY_XREAL_S24.md`](FIRST_TRY_XREAL_S24.md).
 
----
+## 1. Ce qui tourne où
 
-## 1. Lancement — côté PC
+Le S24 exécute l'app Unity, la caméra arrière, WebRTC, l'interface, les gestes,
+le wake word, les sous-titres et la traduction Reflex. Le PC exécute VisionRT,
+AudioRT, BrainLive, la mémoire et CloseDay.
+
+L'APK PhoneOnly courante :
+
+- fichier : `apps\xr-mobile\build\android\mlomega-phoneonly.apk` ;
+- package : `com.mlomega.xr.phoneonly` ;
+- taille : 94 767 670 octets ;
+- SHA-256 :
+  `6D0C3DB8649134C6E82175DC72CFB24CEB09D4D53C2B291EB61ABF045036CA14` ;
+- endpoints embarqués : LAN `192.168.1.199:8710`, puis Tailscale
+  `100.113.42.19:8710`.
+
+## 2. Préparation unique du S24
+
+1. Installe Tailscale et connecte le S24 au même tailnet que le PC.
+2. Dans Paramètres > Applications, retire l'optimisation batterie pour MLOmega
+   et Tailscale.
+3. Active les options développeur et le débogage USB.
+4. Depuis la racine du projet :
 
 ```powershell
 cd C:\Users\wabad\Downloads\ProjetMemobyFABLE\Mlomega-main
-# Ollama doit tourner ; le lanceur démarre/vérifie Qdrant lui-même.
+adb devices
+adb install -r apps\xr-mobile\build\android\mlomega-phoneonly.apk
+adb shell pm path com.mlomega.xr.phoneonly
+```
+
+Accepte l'empreinte RSA sur le S24. Au premier lancement, autorise caméra,
+micro, notifications et affichage par-dessus les autres applications.
+
+## 3. Base réellement fraîche — première production seulement
+
+Ferme RUN et le Dashboard. Si l'ancienne base ne contient que des tests :
+
+```powershell
+cd C:\Users\wabad\Downloads\ProjetMemobyFABLE\Mlomega-main
+$db = ".mlomega_audio_elite\memory.db"
+Remove-Item -LiteralPath $db -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath "$db-wal","$db-shm" -Force -ErrorAction SilentlyContinue
+Test-Path $db
+```
+
+Le résultat doit être `False`. Le prochain RUN recrée la base. Ne répète jamais
+cette étape après avoir commencé à enregistrer ta vraie mémoire.
+
+## 4. Lancer le PC — Local
+
+Ferme les anciens serveurs MLOmega, puis :
+
+```powershell
+cd C:\Users\wabad\Downloads\ProjetMemobyFABLE\Mlomega-main
 ollama list
 .\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -BindHost 0.0.0.0 -Port 8710
 ```
 
-> **Gate exploitation encore ouvert (E64-F0).** Le lanceur doit rendre le même
-> environnement disponible au live ET aux subprocess CloseDay/recovery : refuser
-> un proxy loopback mort tel que `127.0.0.1:9`, vérifier réellement le scope gated
-> Hugging Face/cache Pyannote et préparer les répertoires DLL CUDA/cuDNN (dont
-> `cudnn_ops_infer64_8.dll`). Le vrai entrypoint CloseDay sait actuellement
-> charger cuDNN, mais une commande Python directe ne l'hérite pas forcément.
-> Tant que cette case backlog n'est pas close, exécuter `DOCTOR -Full` et `/ready`
-> juste avant la première capture ; ne pas considérer un simple token HF ou une
-> DLL présente sur disque comme une preuve.
+RUN démarre/vérifie Qdrant lui-même. Ollama doit déjà répondre ; sinon ouvre
+Ollama ou lance `ollama serve`, puis recommence.
 
-La 3ᵉ commande exécute d'abord un préflight strict (DB, environnement CloseDay, modèles
-device, vraie session YOLOX CUDA, Whisper GPU, TTS, Ollama, Qdrant, ffmpeg et disque).
-Elle **refuse de lancer** SessionHub si une brique manque, avec la liste exacte. Quand le
-préflight passe, elle lance SessionHub + pipeline vision/audio + identité + delivery en un
-seul process. Laisse la fenêtre ouverte : c'est aussi ton journal en direct.
+Le préflight contrôle DB, modèles, Hugging Face/Pyannote, CUDA/cuDNN, Whisper,
+YOLOX, VLM, Ollama, Qdrant, disque et environnement CloseDay. Ne contourne pas
+un rouge : applique sa ligne `[FIX]`. Avant d'ouvrir l'app, exige :
 
-**Pré-vols :** `http://localhost:8710/health` distingue `pairing_ready` de la chaîne IA ;
-`http://localhost:8710/ready` ne répond 200 que si la chaîne complète est prête. Première
-fois : Windows demande d'autoriser Python sur le réseau **privé** → accepte (port 8710 entrant).
+- `pairing_ready=true` ;
+- `ai_ready=true` ;
+- <http://localhost:8710/ready> en HTTP 200.
 
-## 2. Lancement — côté téléphone
+Garde cette console ouverte pendant la capture et CloseDay. Autorise le port
+TCP 8710 sur le réseau privé Windows.
 
-1. Installe l'APK (`adb install -r apps\xr-mobile\build\android\mlomega-phoneonly.apk` ou copie le fichier et ouvre-le).
-2. Ouvre l'app → accorde **micro** et **caméra**.
-3. **Rien d'autre à faire** : pairing automatique vers le PC. La StatusBar (bandeau discret)
-   affiche l'état : `Paired` puis `Connected`.
-4. À la connexion de ta **première session du jour** : la carte **« Bonjour — aujourd'hui... »**
-   (briefing du matin) doit apparaître. Jour 1 elle sera quasi vide — normal, ta mémoire naît.
+## 5. Lancer le PC — PRO optionnel
 
-## 3. Comment quitter (IMPORTANT)
+PRO ne change pas le Live local. Il utilise DeepSeek, Groq Whisper et Gemini
+après la fin de session.
 
-**Le bouton « Terminer la session et lancer CloseDay » à l'écran.** Ce clic :
-draine l'audio/vidéo proprement → termine la session → **déclenche automatiquement le
-close-day sur le PC** (la consolidation nocturne complète : re-transcription HQ, diarisation,
-Brain2, Life Model, prédictions). Suis son avancement dans la fenêtre PC ou avec
-`Invoke-RestMethod http://localhost:8710/metrics | ConvertTo-Json -Depth 8`.
-`/session/status` est une route POST authentifiée utilisée par l'app, pas une page navigateur.
+Les clés restent uniquement dans `.env` :
 
-⚠️ Fermer l'app sans le bouton (swipe/crash) NE termine PAS la session (résilience voulue :
-tu peux rouvrir et reprendre la même session). Seul le bouton clôt et consolide.
-
----
-
-## 4. Tout ce que tu peux dire (parle naturellement — pas de mot d'éveil dans ce build, le PC écoute toute la session)
-
-### ⭐ À faire EN PREMIER
-| Dis | Effet |
-|---|---|
-| « **Configure ma voix** » (puis parle ~10 s) | T'enrôle comme OWNER — tes paroles iront sous ton personID (et la nuit re-vérifie) |
-
-### Vision / scène
-| Dis | Effet attendu à l'écran |
-|---|---|
-| « **C'est quoi ça ?** » (vise un objet) | ContextCard avec le label (moondream si Ollama, sinon dégradé honnête) |
-| « **Où est mon téléphone ?** » (ou clés/sac) | Contour si visible, sinon carte « dernier vu » avec l'âge |
-| « **Lis le texte** » (vise un texte) | OCR affiché |
-| « **Traduis-le** » | Traduction du dernier texte/parole ciblé |
-| « **Zoom** » | LensWindow sur la zone visée |
-
-### Personnes (le grand test)
-| Dis / fais | Effet |
-|---|---|
-| Cadre une personne | **PersonTag anonyme** qui la suit (jamais de nom inventé) |
-| Reste sur elle ~10 s (Ollama actif) | Possible « **? boulanger** »-style : hypothèse d'apparence/rôle |
-| « **Retiens : c'est Karim** » | Enrollment visage+voix → PersonTag « Karim » + ContextCard profil |
-| « **Non, ce n'est pas Karim** » | Correction durable, le nom saute |
-| Reparle de Karim plus tard dans la session | La mémoire conversationnelle l'apprend (relations naissantes) |
-
-### Mémoire (jour 1 : teste sur CE QUE TU AS DIT DANS LA SESSION — l'historique se construit)
-| Dis | Effet |
-|---|---|
-| « **Interroge ma mémoire : qu'est-ce que j'ai dit sur [sujet évoqué il y a 10 min] ?** » | Réponse ContextCard sourcée (routeur Brain2) |
-| « **Rappelle-moi ce que je devais faire** » | Ce qu'il a capté comme intentions/promesses |
-| « **Rejoue 14h** » (après avoir capturé à 14h) | Diaporama VirtualScreen de la plage horaire |
-
-### Suggestions automatiques (tu ne demandes rien — elles ARRIVENT)
-- **Pendant une conversation** : si tu évoques un sujet/une promesse déjà en mémoire →
-  une **ContextCard suggestion** apparaît d'elle-même (la boucle BrainLive H1). Jour 1 :
-  rare (mémoire vide) ; le test réaliste : parle d'un truc, change de sujet 15 min, r'évoque-le.
-- **Proactif** : prédiction du jour qui matche la scène, question de clarification posée
-  dans un moment calme. Ces cards portent leurs sources (evidence).
-- **Où les voir** : elles s'affichent SEULES à l'écran (priorité 6 du broker). Pour vérifier
-  la tuyauterie : `http://localhost:8710/metrics` (compteurs `conversation_turns`,
-  `h1_candidates`, `hypotheses_active`) et la table delivery dans les logs PC.
-- **Latence normale** : la suggestion conversationnelle arrive 15-45 s après la parole
-  (fenêtre de la policy — c'est voulu, pas un bug).
-
-### Contrôle de l'UI / apps / modes
-| Dis | Effet |
-|---|---|
-| « **Cache tout** » | Ne garde que la StatusBar |
-| « **Affiche tout** » / « **mode Free Guy** » | Densité max |
-| « **Ouvre le menu** » | MenuPanel (modes, apps, mémoire, replay...) |
-| « **Ouvre Maps vers [destination]** » | Google Maps navigation (vraie app) |
-| « **Lance YouTube [recherche]** » | YouTube |
-| « **Mode payant avec OpenAI** » / « **mode local** » | Bascule cloud (refusée poliment si profil local_only) |
-| « **Réponds à voix haute** » / « **tais-toi** » | TTS on/off (synthétisé PC, joué au téléphone) |
-
-### Multi-tour (contexte 25 s)
-« C'est quoi ça ? » … puis « **zoom dessus** » … puis « **traduis-le** » → même cible.
-
----
-
-## 5. Ce qui NE marche PAS dans ce build (prévu E47, ne cherche pas un bug)
-- **Wake word** (« Hey MLOmega ») — tout est écouté pendant la session, sans mot d'éveil.
-- **Gestes** (pincer/paume/balayage) — utilise la voix ou le tap.
-- **Autonomie sans PC** — coupe le PC = plus de sous-titres/reco (l'Ultra-Live local arrive en E47).
-- **Dehors sans Tailscale** — cette session = même Wi-Fi que le PC.
-
-## 6. Checklist de session (coche mentalement)
-1. ☐ Briefing du matin reçu à la connexion
-2. ☐ « Configure ma voix » fait
-3. ☐ what_is sur 3 objets différents
-4. ☐ PersonTag suit une personne ; enrollment « c'est X » ; correction « non c'est pas X »
-5. ☐ Question mémoire sur un sujet évoqué plus tôt dans la session
-6. ☐ Une suggestion spontanée reçue (r'évoque un sujet après 15 min)
-7. ☐ « Où est mon téléphone » après l'avoir posé hors champ
-8. ☐ Un toggle UI + « ouvre Maps »
-9. ☐ `/metrics` regardé une fois (compteurs qui bougent)
-10. ☐ **Fin par LE BOUTON** → close-day `running` → `completed` (fenêtre PC)
-
-## 7. Si ça coince
-- App bloquée sur Pairing → PC lancé ? `http://192.168.1.199:8710/health` depuis le
-  navigateur du téléphone. Pare-feu Windows → autoriser Python (privé).
-- Pas de réponse aux commandes → fenêtre PC : les transcripts défilent ? Sinon micro/permission.
-- RUN refuse de démarrer et cite `ollama`/`qdrant` → lance `ollama serve` et
-  `powershell -ExecutionPolicy Bypass -File scripts\START_QDRANT.ps1`, puis relance RUN.
-- Close-day en erreur → il est repris automatiquement au prochain déclenchement (stages checkpointés) ;
-  garde la sortie PC, on lira ensemble.
-
-**Au réveil du close-day : ta mémoire aura ses premières routines candidates, entités, et
-peut-être sa première prédiction. C'est là que tout commence.**
-
----
-
-# MISE À JOUR — APK v2 (E47 : wake word, gestes, offline)
-
-**Nouvel APK** : même fichier `mlomega-phoneonly.apk` (54,6 Mo, SHA-256 `BCC68997…5A0C`) — réinstalle par-dessus (`adb install -r ...`).
-
-## ⚠️ Avant la session : pousser les modèles device (une fois)
-```powershell
-python scripts\fetch_models_v19.py --device
-adb push models\device\. /sdcard/Android/data/com.mlomega.xr.phoneonly/files/models/
+```text
+DEEPSEEK_API_KEY=...
+GROQ_API_KEY=...
+GEMINI_API_KEY=...
 ```
-(Le nom exact du package est visible via `adb shell pm list packages | findstr mlomega`. Client de téléchargement automatique = prochain petit ajout.)
 
-## 🆕 Nouveautés à tester
+Commande :
 
-### Wake word (TON mot)
-- Par défaut la politique est **open** : tu parles naturellement comme avant, pas de mot requis.
-- Pour tester le mode gated : mets `wake_word_policy: gated` dans `configs\user_profile.yaml` (PC) → seules les phrases dites **après ton mot d'éveil** (défaut « omega », changeable dans MLOmegaConfig Unity) deviennent des commandes : « **omega… c'est quoi ça ?** ». Tout le reste continue d'alimenter ta mémoire — rien ne s'arrête jamais d'écouter.
-- Fenêtre de commande : ~quelques secondes après le mot (configurable), StatusBar « à l'écoute ».
-
-### Gestes (activés à la demande — lève la main devant la caméra)
-| Geste | Effet |
-|---|---|
-| **Paume ouverte** tenue | Ouvre/ferme le menu |
-| **Balayage latéral** | Cache toute l'UI |
-| **Pincement** (pouce-index) | Zoom continu dans la LensWindow (dis « zoom » d'abord) |
-
-### Sous-titres OFFLINE (le test d'autonomie)
-Coupe le PC (ou le Wi-Fi) en pleine session → **les sous-titres continuent** (ASR sherpa local). Reconnecte → tout reprend.
-
-### Multi-sessions le même jour
-Tu peux maintenant faire 2-3 sessions dans la journée : chaque « Terminer la session » relance un close-day qui **reconsolide tout le jour** (plus de skip silencieux).
-
-## Checklist ajoutée
-11. ☐ « omega » (mode gated) → StatusBar écoute → commande routée ; phrase sans le mot → PAS routée mais bien en mémoire
-12. ☐ Paume → menu ; balayage → UI cachée ; pinch → zoom
-13. ☐ PC coupé → sous-titres toujours là ; retour PC → reconnexion auto
-14. ☐ 2e session du jour → close-day relancé (`--allow-rerun` visible dans les logs PC)
-
----
-
-# MISE À JOUR — APK v3 (E48 : modèles auto, traduction live, mode dehors, cue changement)
-
-**Nouvel APK** : même fichier `mlomega-phoneonly.apk` (90,1 Mo — les petits modèles sont dedans) — réinstalle par-dessus (`adb install -r ...`). SHA-256 : `172394C67CBD451523E10D8CB6EF9140C8210D1BA0843BE5E7B7EA713199846B`.
-
-⚠️ **v3 répare un bug invisible de v2** : la couche réflexe (wake word, gestes, sous-titres offline) n'était pas câblée dans la scène — ces features E47 ne pouvaient pas démarrer sur v2. **Refais les tests 11-13 sur v3** : c'est la première fois qu'ils peuvent vraiment passer.
-
-## 🆕 Plus d'`adb push` : les modèles s'installent tout seuls
-- Les petits modèles (wake word, gestes, VAD) sont **dans l'APK** → marchent dès l'installation.
-- Les 2 gros modèles de reconnaissance vocale (~680 Mo) se **téléchargent automatiquement** depuis le PC au premier lancement (Wi-Fi conseillé) — suis la ligne `dl:<modèle> NN%` dans la StatusBar. En attendant la fin du download, les sous-titres offline restent indisponibles (dégradé normal, rien ne plante).
-- Le `adb push models\device\.` manuel marche toujours si tu préfères.
-
-## 🆕 Traduction live (offline, sur le téléphone)
-- **Menu** (paume) → « **Traduire** » pour activer/couper, ou à la voix : « **traduis en direct** » / « **stop traduction** » (la voix passe par le PC ; hors connexion, utilise le menu).
-- Effet : chaque phrase finale dans l'autre langue s'affiche **traduite sous le sous-titre original**. FR↔EN. Marche PC coupé.
-- **Wake word (E58, APK v4)** : défaut « **viki** », **détecté dans l'ASR français** (prononciation naturelle — dis « viki », pas « vaïki »). Change-le **quand tu veux sans rebuild** : édite `wake_word:` dans `configs\user_profile.yaml` → poussé au téléphone à la prochaine session. Choisis un mot **rare** (on scanne tout ce que tu dis → un mot courant = faux déclenchements).
-
-## 🆕 Mode dehors (Tailscale)
-- L'app essaie maintenant les endpoints **dans l'ordre : LAN → Tailscale** (`100.113.42.19`, déjà dans le build).
-- À faire une fois sur le téléphone : Play Store → **Tailscale** → connexion avec **le même compte** que le PC (contact.phonelib@) → activer le VPN. Ensuite : dehors en 4G/5G tout marche via le tunnel ; retour maison → re-bascule LAN automatique.
-- Guide complet + checklist 4G : `docs/OUTSIDE_ACCESS.md` §8.
-
-## 🆕 Cue de changement (ChangeAttention)
-- Pendant une session, si tu quittes une zone puis y reviens et qu'un objet a disparu/changé → petite carte discrète « quelque chose a changé ici ». Anti-bruit volontaire : un seul cue par retour, cooldown, silence si la carte spatiale est incertaine. Jour 1 : rare (les zones se construisent).
-
-## Checklist ajoutée (v3)
-15. ☐ Premier lancement → `dl:` visible dans la StatusBar → download des ASR terminé → sous-titres offline OK **sans adb push**
-16. ☐ Menu → « Traduire » → phrase en anglais → traduction française sous le sous-titre (puis teste PC coupé)
-17. ☐ « traduis en direct » à la voix → activé ; « stop traduction » → coupé
-18. ☐ Tailscale actif sur le tél, Wi-Fi coupé (4G) → `http://100.113.42.19:8710/health` répond → session dehors OK (`active_endpoint = tailscale` sur `/metrics`)
-19. ☐ Quitte une pièce, déplace un objet, reviens → cue « quelque chose a changé »
-
----
-
-# MISE À JOUR — APK v5 (E53 mode aide + E59 fenêtres à la main)
-
-**Nouvel APK E61** : même fichier `mlomega-phoneonly.apk` (94 759 838 octets) — réinstalle par-dessus (`adb install -r ...`). SHA-256 : `C569EE4596B7E47B755FB8AA027E242577F48C140F6EBD1378C84DCE0EFB975B`. WELCOME la télécharge depuis la GitHub Release avec vérification SHA-256 si elle manque localement. L'APK lunettes produit séparée est `mlomega-xreal.apk` (SHA-256 `945F5D38AC9E3FB72A905B371A5BF20BA2144672D2AB61111A31EB774D360DDF`) ; l'ancien `-g1` reste diagnostic.
-
-## 🆕 « Viki, mode aide » (E53) — l'assistant de tâche pas-à-pas
-- Dis « **viki… mode aide** » (ou « **aide-moi à faire des crêpes** » directement). Viki jette UN coup d'œil à la scène (elle devine le contexte), te demande la tâche si besoin, puis génère un **plan de micro-actions** (1 action = 1 geste).
-- À l'écran : le **panneau de tâche** (fait ✓ / en cours / suivant en fantôme) + des **ancres sur les objets** (anneau qui SUIT l'objet même si tu le déplaces, **trajectoire animée du geste** : verser=arc, visser=cercle, essuyer=va-et-vient, appuyer=pulse), minuteur, quantités, « prends celui-là » si plusieurs candidats, flèche si l'objet est hors-champ.
-- Avance à la voix : « **c'est fait** », « **étape suivante** », « **répète** », « **pause la tâche** », « **reprends la tâche** », « **termine la tâche** ». Si tu n'avances plus, Viki propose un indice toute seule.
-- **Cloud opt-in** : avec ta clé OpenAI dans `.env` + « mode payant », le plan et les indices visuels passent par gpt-5.4-mini (coût affiché). Sans clé : LLM local, honnête.
-
-## 🆕 Fenêtres à la main (E59)
-- **Pince SUR un panneau** (fenêtre vidéo/replay en premier) → il colle à ta main → déplace-le où tu veux, relâche pour poser.
-- **Pince sur un COIN** → redimensionne (la vidéo garde ses proportions).
-- Boutons glass au coin : **✕** ferme, **–** réduit en pastille (re-pince la pastille pour restaurer). Position/taille mémorisées.
-- Le pincement AILLEURS que sur un panneau = zoom, comme avant. Les éléments collés aux objets (tags personnes, ancres de tâche) ne se déplacent pas — ils suivent le monde.
-
-## Checklist ajoutée (v5)
-20. ☐ « viki… aide-moi à [tâche simple] » → coup d'œil scène → plan de micro-actions → panneau + ancre/geste sur l'objet
-21. ☐ « c'est fait » → l'étape suivante s'affiche instantanément (fantôme pré-calculé)
-22. ☐ Ne rien faire ~90 s pendant une tâche → un indice arrive tout seul
-23. ☐ « rejoue 14h » → pince la fenêtre vidéo → déplace-la ; pince un coin → redimensionne ; « – » → pastille → re-pince → restaurée
-24. ☐ Pince hors panneau → le zoom marche comme avant
-
-## 👓 Lunettes XREAL (E49 — à valider sur matériel)
-
-L'app lunettes est une **APK séparée** : `mlomega-xreal.apk`, à builder toi-même
-(le SDK XREAL est propriétaire, non redistribué). Build : dépose `com.xreal.xr.tar.gz` dans
-`apps\xr-mobile\Packages\xreal-sdk\`, puis le menu Unity **MLOmega > XREAL** (ou
-`-executeMethod MLOmega.XR.Editor.AndroidBuildXreal.BuildApk`).
-
-Utilisation (flux prévu — à confirmer sur tes vraies lunettes) :
-1. Installe l'APK lunettes sur le **téléphone** : `adb install -r apps\xr-mobile\build\android\mlomega-xreal.apk`.
-2. **Branche les lunettes XREAL en USB-C** au téléphone (les lunettes = écran + caméra Eye ;
-   le calcul reste sur le téléphone). Le téléphone doit sortir la vidéo en USB-C (DisplayPort).
-3. Lance l'app → **rendu stéréo** dans les lunettes, la **caméra Eye** devient la source vidéo.
-   Tout le reste (PC, mémoire, commandes, gestes) est **identique au mode téléphone**.
-4. Si l'Eye est absente/indisponible sur ton unité (One vs One Pro), l'app reste en **pose-only**
-   (pas de capture vidéo lunettes) sans planter — c'est le plan B intégré.
-
-⚠️ Non encore validé sur lunettes physiques : affichage stéréo réel, caméra Eye, pose 6DoF,
-batterie sur session longue. Le builder produit désormais la scène produit complète
-(pairing, WebRTC, UI, Reflex, menu, replay, aide), et non plus `G1Gate.unity`. L'ancien
-`mlomega-xreal-g1.apk` reste uniquement un diagnostic matériel historique ; rebuild la
-nouvelle APK après avoir rafraîchi la licence Unity, puis valide-la sur les lunettes.
-
-## 📊 Après le close-day : LIS ta mémoire (dashboard)
 ```powershell
+cd C:\Users\wabad\Downloads\ProjetMemobyFABLE\Mlomega-main
+.\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -Pro -ProTextModel pro `
+  -CloudBudgetEur 1.50 -CloudOnBudget stop `
+  -BindHost 0.0.0.0 -Port 8710
+```
+
+`-CloudOnBudget stop` interdit tout dépassement. `-ProTextModel flash` est
+moins coûteux mais moins profond.
+
+## 6. Vérifier le réseau depuis le S24
+
+Dans le navigateur du S24 :
+
+- même Wi-Fi : `http://192.168.1.199:8710/ready` ;
+- dehors/5G avec Tailscale : `http://100.113.42.19:8710/ready`.
+
+Une des deux routes doit répondre prête. Si aucune ne répond, vérifie le
+pare-feu privé, Tailscale et :
+
+```powershell
+tailscale status
+tailscale ip -4
+Test-NetConnection 127.0.0.1 -Port 8710
+```
+
+## 7. Première session
+
+1. Attends le préflight PC vert.
+2. Ouvre MLOmega sur le S24.
+3. Attends `Paired`, puis `Connected`.
+4. Laisse les modèles ASR terminer leur premier téléchargement (`dl: 100 %`).
+5. Dis **« Viki, configure ma voix »**, puis parle pendant la capture demandée.
+   Cette étape est obligatoire pour que tes tours portent `person_id=me`.
+
+Checklist courte :
+
+- briefing du jour reçu ;
+- wake word « Viki » et sous-titres ;
+- « c'est quoi ça ? » sur plusieurs objets ;
+- « où sont mes lunettes ? » visible, puis hors champ ;
+- « lis le texte », puis « traduis-le » ;
+- « ouvre le menu », paume, pinch/zoom et déplacement d'un panneau ;
+- « aide-moi à faire un café », puis « étape suivante » ;
+- « retiens que… », puis question mémoire sur ce fait ;
+- une personne inconnue reste anonyme ; une identité n'est promue que par preuve
+  ou correction utilisateur ;
+- perte Wi-Fi puis reconnexion sans double audio ;
+- PC inaccessible : Reflex/sous-titres locaux continuent honnêtement.
+
+Le système mémorise toute parole durable. En politique wake-word gated, seules
+les commandes sont bloquées sans « Viki » ; la conversation ordinaire continue
+d'alimenter la mémoire.
+
+Pour suivre le runtime :
+
+```powershell
+Invoke-RestMethod http://localhost:8710/metrics |
+  ConvertTo-Json -Depth 8
+```
+
+Une commande `accepted` n'est pas une preuve suffisante : elle doit finir
+`completed` ou produire un échec explicite.
+
+## 8. Terminer et lancer CloseDay
+
+Ne swipe pas l'app et ne force pas son arrêt.
+
+Touche dans MLOmega :
+
+**« Terminer la session et lancer CloseDay »**
+
+Le bouton authentifie `/session/end`, arrête la capture, scelle BrainLive et
+déclenche CloseDay. L'accusé Android arrive avant la fin des traitements lourds.
+Surveille la console PC et `/metrics` jusqu'à :
+
+- `end_session=completed` ;
+- `close_day=running`, puis `completed` ;
+- maintenance `completed` ou warning expliqué.
+
+`/session/status` est une route POST authentifiée utilisée par l'app, pas une
+page à ouvrir directement.
+
+En cas de crash, ne supprime ni DB ni médias : relance la même commande RUN. La
+recovery reprend le job durable et empêche un faux succès. Quand CloseDay est
+terminé, arrête le serveur par `Ctrl+C`, puis ferme l'app.
+
+## 9. Dashboard
+
+Après CloseDay :
+
+```powershell
+cd C:\Users\wabad\Downloads\ProjetMemobyFABLE\Mlomega-main
 powershell -ExecutionPolicy Bypass -File scripts\RUN_DASHBOARD.ps1
 ```
-→ **http://localhost:8720** : hypothèses en attente/confirmées, modèle de vie, prédictions
-et leurs vérifications, preuves visuelles, zones/routines, et le détail de tes close-days —
-en lecture seule. C'est là que tu verras ce que ta première session a réellement produit.
+
+Ouvre <http://localhost:8720>. Le Dashboard est en lecture seule et vérifie que
+le SHA de la DB reste identique. Pour imposer une DB :
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\RUN_DASHBOARD.ps1 `
+  -Database "C:\chemin\vers\memory.db"
+```
+
+## 10. Audit owner/qualité — manuel
+
+Lance-le uniquement après un CloseDay terminé, idéalement une fois par semaine
+ou un jour OFF :
+
+```powershell
+$line = Select-String -Path .env -Pattern '^\s*MLOMEGA_DB\s*=' |
+  Select-Object -First 1
+$db = (($line.Line -split '=', 2)[1]).Trim().Trim('"').Trim("'")
+if (-not [IO.Path]::IsPathRooted($db)) { $db = Join-Path $pwd $db }
+$db = (Resolve-Path $db).Path
+
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$plan = "tools\harness\_run\owner-shadow-$stamp-plan.json"
+$report = "tools\harness\_run\owner-shadow-$stamp-report.json"
+
+.\.venv\Scripts\python.exe tools\harness\owner_quality_shadow.py `
+  --db $db --owner-id me --owner-name William `
+  --plan-only --text-backend deepseek --deepseek-model deepseek-v4-pro `
+  --vision-backend existing --budget-eur 1.00 --out $plan
+```
+
+Lis le devis. S'il est cohérent :
+
+```powershell
+.\.venv\Scripts\python.exe tools\harness\owner_quality_shadow.py `
+  --db $db --owner-id me --owner-name William `
+  --execute --plan $plan --apply-safe `
+  --text-backend deepseek --deepseek-model deepseek-v4-pro `
+  --vision-backend existing --budget-eur 1.00 --out $report
+```
+
+Exige `mode=execute_applied_safe`, un backup indiqué et `quick_check=ok`.
+
+## 11. Diagnostic PhoneOnly
+
+```powershell
+adb logcat |
+  Select-String 'SessionPairing|LiveTransport|PhoneOnly|AsrBridge|Reflex'
+```
+
+Problèmes courants :
+
+- pairing bloqué : vérifie `/ready` depuis le S24 ;
+- aucune commande : vérifie micro, transcript PC et état terminal de la trace ;
+- modèles : garde l'app au premier plan jusqu'à `dl: 100 %` ;
+- arrière-plan : retire l'optimisation batterie et verrouille MLOmega si Samsung
+  propose « applications jamais en veille » ;
+- CloseDay rouge : conserve DB/logs et relance RUN pour recovery.
+
+Les tests automatisés prouvent le code et les frontières simulées. Le premier
+S24 réel reste nécessaire pour certifier caméra, micro, permissions, chauffe,
+batterie et latence physique.

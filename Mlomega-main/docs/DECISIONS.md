@@ -1769,9 +1769,10 @@ RGB de PhoneOnly reste inchangé et n'est jamais sélectionné lorsque ces plans
 La pose XREAL vient d'un XR Origin et d'un TrackedPoseDriver à actions embarquées.
 `pose_valid=true` exige les bits tracking position+rotation, pas seulement `isTracked`,
 afin qu'un mode 3DoF ne pollue jamais WorldBrain avec une position zéro présentée comme
-6DoF. Cette fermeture est prouvée par build/APK, mais la compatibilité S23 + One Pro +
-Eye reste une frontière matérielle : le SDK 3.1 ne liste officiellement que S25 et Beam
-Pro comme hôtes testés.
+6DoF. Cette fermeture est prouvée par build/APK, mais la compatibilité S24 + One Pro +
+Eye reste une frontière matérielle : le S24 est officiellement compatible SDK 3.0,
+tandis que la matrice publiée du SDK 3.1 ne liste que S25 et Beam Pro comme hôtes
+testés.
 
 Un exit code Unity 0 n'est pas une preuve suffisante : le SDK pouvait lever une
 `NullReferenceException` dans ses callbacks puis laisser le build continuer. Le profil
@@ -1785,10 +1786,10 @@ Unity affiche `Build succeeded`.
 
 Le mode capture-only XREAL utilise la gravité reconstruite depuis la pose des lunettes
 avant l'accéléromètre du téléphone : accrocher les lunettes verticalement doit faire
-tourner le flux Eye même si le S23 reste droit dans une poche. PhoneOnly conserve son
+tourner le flux Eye même si le S24 reste droit dans une poche. PhoneOnly conserve son
 garde accélérométrique historique.
 
-## 2026-07-25 — Le Beam Pro partage le profil produit, pas les valeurs par défaut du type
+## 2026-07-25 — L'hôte XREAL partage le profil produit, pas les valeurs par défaut du type
 
 `MLOmegaXreal.asset` est un artefact généré, pas une seconde source de configuration.
 Le builder doit le recopier depuis `MLOmegaPhoneOnly.asset` à chaque génération, puis
@@ -1802,3 +1803,10 @@ correct. Après correction, l'archive compilée contient `192.168.1.199` puis
 `100.113.42.19`, et plus l'adresse de développement. Un build vert ou un fichier de
 configuration bien nommé n'est donc jamais une preuve suffisante : les endpoints sont
 contrôlés dans `sharedassets0.assets`.
+
+Le Galaxy S24 est l'hôte matériel retenu pour le premier gate. Avant ce gate, One Pro
+et Eye sont montés ensemble puis mis à jour depuis un PC avec Chrome 89+ via
+`https://www.xreal.com/ota/`. Sur le téléphone, ControlGlasses 1.1.0 est le lanceur
+autoritaire; MyGlasses reste propre au Beam Pro. L'APK, les routes PC et le protocole
+restent identiques : cette décision d'exploitation ne rouvre ni PhoneOnly ni les runs
+Local/PRO.

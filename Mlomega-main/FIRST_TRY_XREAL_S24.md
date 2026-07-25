@@ -1,13 +1,13 @@
-# Première utilisation — XREAL One Pro + Eye + Beam Pro
+# Première utilisation — Galaxy S24 + XREAL One Pro + Eye
 
 Ce guide est le chemin opérateur courant pour utiliser MLOmega avec :
 
 - un PC Windows qui exécute le Live, BrainLive et CloseDay ;
-- un XREAL Beam Pro comme hôte Android ;
+- un Samsung Galaxy S24 comme hôte Android ;
 - des XREAL One Pro avec le module XREAL Eye ;
 - l'APK `apps\xr-mobile\build\android\mlomega-xreal.apk`.
 
-Le Beam exécute Unity/XREAL, l'interface, la capture Eye, WebRTC et les réflexes
+Le S24 exécute Unity/XREAL, l'interface, la capture Eye, WebRTC et les réflexes
 locaux. Les traitements lourds restent sur le PC. Le profil livré essaie le PC
 dans cet ordre :
 
@@ -17,19 +17,39 @@ dans cet ordre :
 L'APK courante est `com.mlomega.xr.glasses`, SHA-256
 `EFA4AEC207CA2BFB1602FDDB39D348447F75B560DE475A8CE1D4160405C891C9`.
 
-## 1. Préparation unique du Beam et des lunettes
+## 1. Préparation unique du S24 et des lunettes
 
-1. Mets à jour le Beam Pro et l'application XREAL **MyGlasses**
-   (appelée ControlGlasses sur certaines versions).
-2. Monte le module Eye sur les One Pro, puis mets à jour le firmware des
-   lunettes et de l'Eye. Au besoin, utilise l'outil officiel
-   <https://www.xreal.com/ota>.
-3. Installe Tailscale sur le Beam, connecte-le au même tailnet que le PC et
-   laisse le VPN actif. Le Beam Wi-Fi a besoin d'un Wi-Fi ou d'un partage de
-   connexion dehors ; le modèle 5G peut utiliser son réseau mobile.
-4. Dans Android, retire l'optimisation batterie pour MLOmega, MyGlasses et
-   Tailscale. Autorise caméra, micro et affichage par-dessus les autres apps.
-5. Active les options développeur et le débogage USB sur le Beam.
+### 1.1 Firmware One Pro + Eye — obligatoire
+
+Le 6DoF du SDK XREAL 3.1 exige le dernier firmware. Avant d'utiliser le S24 :
+
+1. monte l'XREAL Eye sur les One Pro ;
+2. sur le PC Windows, ouvre **Chrome 89 ou plus récent** ;
+3. ouvre <https://www.xreal.com/ota/> ;
+4. branche les lunettes au PC avec le câble XREAL d'origine ;
+5. autorise l'accès USB dans Chrome, puis applique toutes les mises à jour
+   proposées pour les lunettes/Eye ;
+6. attends la confirmation finale avant de débrancher.
+
+Ne commence pas le gate MLOmega si le site OTA ne reconnaît pas les lunettes ou
+si une mise à jour reste en attente.
+
+### 1.2 Applications et permissions du S24
+
+1. Depuis la page officielle <https://developer.xreal.com/download/>, installe
+   **ControlGlasses 1.1.0** sur le S24. MyGlasses est l'application du Beam Pro
+   et ne remplace pas ControlGlasses sur téléphone.
+2. Installe Tailscale sur le S24, connecte-le au même tailnet que le PC et
+   laisse le VPN actif.
+3. Dans Paramètres > Applications, retire l'optimisation batterie pour
+   MLOmega, ControlGlasses et Tailscale. Autorise caméra, micro, notifications
+   et affichage par-dessus les autres apps.
+4. Active les options développeur et le débogage USB sur le S24.
+5. Pour le premier gate, note la version Android/One UI et évite une mise à jour
+   majeure entre l'installation et le test : XREAL certifie le S24 avec le SDK
+   3.0, tandis que le SDK 3.1 utilisé par MLOmega est officiellement testé sur
+   Beam Pro et S25. Le S24 n'est pas déclaré incompatible, mais Eye/6DoF doit
+   être prouvé physiquement.
 
 Sur le PC :
 
@@ -40,20 +60,47 @@ adb install -r apps\xr-mobile\build\android\mlomega-xreal.apk
 adb shell pm path com.mlomega.xr.glasses
 ```
 
-`adb devices` doit montrer le Beam avec l'état `device`. Accepte l'empreinte RSA
-sur le Beam si Android la demande.
+`adb devices` doit montrer le S24 avec l'état `device`. Accepte l'empreinte RSA
+sur le S24 si Android la demande.
 
 Branchement quotidien :
 
-1. branche les One Pro au port lunettes du Beam avec le câble d'origine ;
-2. branche l'alimentation sur l'autre port USB-C si la session doit durer ;
-3. lance MLOmega depuis MyGlasses, pas depuis une ancienne icône APK ;
+1. ouvre ControlGlasses sur le S24 ;
+2. branche les One Pro au S24 avec le câble XREAL d'origine et accepte la
+   permission USB ;
+3. lance MLOmega depuis ControlGlasses, pas depuis une ancienne icône APK ni
+   depuis Samsung DeX ;
 4. vérifie que l'Eye est bien détectée. Sans Eye, l'app reste volontairement en
    mode pose-only et aucune vidéo lunettes n'est envoyée.
+
+Le S24 n'a qu'un port USB-C. Pour une session longue, utilise un XREAL Hub ou un
+adaptateur alimenté qui conserve explicitement le DisplayPort USB-C. Teste
+d'abord dix minutes : un hub de charge ordinaire peut alimenter le téléphone
+mais couper la vidéo ou l'accès Eye.
 
 Le mode capture-only vertical est prévu : la rotation des lunettes est portée
 avec chaque frame et corrigée avant Vision/OCR. Si les lunettes sont accrochées
 verticalement, le bandeau doit indiquer `capture-only`.
+
+### 1.3 Base fraîche — uniquement avant la première production
+
+Si la base courante ne contient que les anciens essais et doit être supprimée,
+arrête d'abord RUN, le dashboard et tout processus MLOmega. Depuis la racine :
+
+```powershell
+$db = ".mlomega_audio_elite\memory.db"
+if (Test-Path $db) {
+  Copy-Item $db "$db.before-first-production.bak"
+}
+Remove-Item -LiteralPath $db -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath "$db-wal","$db-shm" -Force -ErrorAction SilentlyContinue
+Test-Path $db
+```
+
+Le résultat doit être `False`; le prochain RUN recrée la base.
+Ne supprime jamais la DB après le début d'une vraie capture. En cas de
+CloseDay interrompu, conserve DB et médias puis relance RUN : la recovery
+reprend le travail durable.
 
 ## 2. Lancer le PC — mode Local
 
@@ -108,7 +155,7 @@ choix sûr : aucune dépense au-delà du plafond.
 
 ## 4. Vérifier LAN et Tailscale avant la capture
 
-Sur le Beam, dans un navigateur :
+Sur le S24, dans un navigateur :
 
 - à la maison : `http://192.168.1.199:8710/ready` ;
 - hors du LAN : `http://100.113.42.19:8710/ready`.
@@ -122,13 +169,14 @@ tailscale ip -4
 Test-NetConnection 127.0.0.1 -Port 8710
 ```
 
-Vérifie aussi que le Beam et le PC sont dans le même tailnet et que le Beam
+Vérifie aussi que le S24 et le PC sont dans le même tailnet et que le S24
 n'utilise pas un exit node qui bloque le LAN.
 
-## 5. Première session sur le Beam
+## 5. Première session sur le S24
 
 1. Lance d'abord le PC et attends le préflight vert.
-2. Branche Eye + One Pro, puis ouvre MLOmega depuis MyGlasses.
+2. Ouvre ControlGlasses, branche Eye + One Pro, puis lance MLOmega depuis
+   ControlGlasses.
 3. Accorde caméra, micro et overlay à la première demande.
 4. Attends `Paired`, puis `Connected`. Lors du premier démarrage, laisse les
    modèles ASR finir leur téléchargement (`dl: ... 100 %`).
@@ -150,7 +198,7 @@ Contrôle rapide conseillé :
 
 Les scénarios vocaux complets restent décrits dans
 [`FIRST_TRY_ANDROID.md`](FIRST_TRY_ANDROID.md). Ils utilisent les mêmes routes
-PC, BrainLive et UI sur le Beam.
+PC, BrainLive et UI sur le S24.
 
 Pour observer le runtime depuis le PC :
 
@@ -167,7 +215,7 @@ On doit voir progresser audio, vidéo, commandes et effets device. Une commande
 
 Ne swipe pas l'app et ne débranche pas les lunettes pour terminer.
 
-Sur l'écran du Beam/MLOmega, touche :
+Sur l'écran du S24/MLOmega, touche :
 
 **« Terminer la session et lancer CloseDay »**
 
@@ -196,13 +244,13 @@ Attends successivement :
 `/session/status` est une route **POST authentifiée** utilisée par l'app : ne la
 teste pas en collant simplement son URL dans un navigateur.
 
-Si le Beam ou le PC crashe, conserve la DB et les logs puis relance exactement
+Si le S24 ou le PC crashe, conserve la DB et les logs puis relance exactement
 la même commande RUN. La recovery reprend le job durable et bloque CloseDay
 plutôt que de déclarer un faux succès. Ne lance pas manuellement un second
 CloseDay sur une session encore active.
 
 Quand `close_day=completed`, arrête le serveur par `Ctrl+C`, quitte MLOmega dans
-MyGlasses et débranche les lunettes.
+ControlGlasses et débranche les lunettes.
 
 ## 7. Ouvrir le Dashboard
 
@@ -275,9 +323,9 @@ powershell -ExecutionPolicy Bypass -File scripts\RUN_DASHBOARD.ps1 `
 Ne lance cet audit qu'après un CloseDay terminé, idéalement une fois par semaine
 ou un jour OFF, pas après chaque session.
 
-## 9. Diagnostic lunettes/Beam
+## 9. Diagnostic lunettes/S24
 
-Avec le Beam relié en ADB :
+Avec le S24 relié en ADB :
 
 ```powershell
 adb logcat |
@@ -293,13 +341,13 @@ adb logcat |
 
 Problèmes courants :
 
-- **Pairing bloqué** : vérifie `/ready` depuis le Beam, pare-feu, LAN/Tailscale,
+- **Pairing bloqué** : vérifie `/ready` depuis le S24, pare-feu, LAN/Tailscale,
   puis relance d'abord le PC.
-- **Eye absente** : remonte le module, mets firmware/MyGlasses à jour, utilise le
-  câble d'origine et redémarre le Beam.
-- **UI noire ou non stéréo** : lance depuis MyGlasses et non depuis le launcher
-  Android ; vérifie les permissions overlay.
-- **Téléchargement modèle bloqué** : garde l'app au premier plan et le Beam
+- **Eye absente** : remonte le module, repasse l'OTA PC, utilise le câble
+  d'origine et redémarre le S24.
+- **UI noire ou non stéréo** : lance depuis ControlGlasses et non depuis le
+  launcher Android ou DeX ; vérifie USB et permission overlay.
+- **Téléchargement modèle bloqué** : garde l'app au premier plan et le S24
   alimenté jusqu'à la fin de `dl:`.
 - **CloseDay `error`/`blocked`** : ne supprime rien ; relance RUN pour recovery et
   conserve la console ainsi que la DB.
@@ -309,7 +357,10 @@ Références constructeur :
 - SDK/tested devices : <https://developer.xreal.com/download/>
 - démarrage XREAL SDK : <https://docs.xreal.com/Getting%20Started%20with%20XREAL%20SDK>
 - guide XREAL Eye : <https://tutorials.xreal.com/docs/accessories/eye/>
-- Beam Pro : <https://us.shop.xreal.com/products/xreal-beam-pro>
+- compatibilité SDK et ControlGlasses :
+  <https://developer.xreal.com/download/>
+- sortie filaire Samsung S24/DeX :
+  <https://www.samsung.com/us/support/answer/ANS10001972/>
 - Tailscale Android : <https://tailscale.com/docs/install/android>
 
 ## 10. Rebuild développeur uniquement
