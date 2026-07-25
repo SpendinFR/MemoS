@@ -26,6 +26,8 @@ import json
 import hashlib
 import os
 import queue
+import sqlite3
+import re
 import sys
 import threading
 import time
@@ -277,6 +279,14 @@ class LivePipeline:
         self._latest_frame_bgr: np.ndarray | None = None
         self._latest_envelope: Any = None
         self._semantic_focus_last_persist: dict[str, float] = {}
+        self._device_object_labels: list[dict[str, Any]] = []
+        self._device_object_labels_at = 0.0
+        self._device_object_labels_frame_id = ""
+        # Installed only by the opt-in PhoneOnly AR profile. A disabled/absent
+        # bridge is inert and cannot alter the historical focus result.
+        self.augmented_reality: Any = None
+        self._ar_action_lock = threading.Lock()
+        self._ar_action_inflight = False
         vcfg = self.profile.get("vision", {}) if isinstance(self.profile, dict) else {}
         acfg = self.profile.get("audio", {}) if isinstance(self.profile, dict) else {}
 
@@ -1426,7 +1436,9 @@ class LivePipeline:
             )
 
         if not is_find:
-            return self._forward_visual_translation(request, current_result)
+            forwarded = self._forward_visual_translation(request, current_result)
+            self._submit_ar_object_profile(forwarded)
+            return forwarded
 
         current_content = (
             current_result.get("content")
@@ -1462,7 +1474,9 @@ class LivePipeline:
                     )
                 except Exception as exc:
                     self._report_error("worldbrain.record_semantic_sighting", exc)
-            return self._forward_visual_translation(request, current_result)
+            forwarded = self._forward_visual_translation(request, current_result)
+            self._submit_ar_object_profile(forwarded)
+            return forwarded
 
         query = str(request.get("query") or "").strip()
         if query:
@@ -1650,6 +1664,278 @@ class LivePipeline:
             except Exception as exc:
                 self._report_error("worldbrain.semantic_track", exc)
         self._push_intent(intent)
+        self._submit_ar_object_profile(intent)
+
+    def _submit_ar_object_profile(self, intent: Any) -> None:
+        """Emit an optional tracked object profile without delaying VisionRT."""
+        bridge = self.augmented_reality
+        if (
+            bridge is None
+            or not hasattr(bridge, "submit_object_focus")
+            or not bridge.feature_active("object_menus")
+            or not isinstance(intent, dict)
+        ):
+            return
+        content = intent.get("content")
+        if not isinstance(content, dict):
+            return
+        bbox = content.get("screen_bbox")
+        label = str(content.get("label") or content.get("query") or "").strip()
+        if (
+            not label
+            or not isinstance(bbox, dict)
+            or content.get("state") not in {None, "visible"}
+        ):
+            return
+        bridge.submit_object_focus(
+            {
+                "source_frame_id": intent.get("source_frame_id"),
+                "focus_id": intent.get("ui_intent_id"),
+                "target_track_id": intent.get("target_track_id"),
+                "entity_id": intent.get("entity_id") or content.get("entity_id"),
+                "label": label,
+                "category": content.get("category"),
+                "device_labels": (
+                    list(self._device_object_labels)
+                    if (
+                        time.monotonic() - self._device_object_labels_at <= 2.0
+                        and (
+                            not self._device_object_labels_frame_id
+                            or self._device_object_labels_frame_id
+                            == str(intent.get("source_frame_id") or "")
+                        )
+                    )
+                    else []
+                ),
+                "brand": content.get("brand"),
+                "model": content.get("model"),
+                "summary": content.get("text"),
+                "manual_ref": content.get("manual_ref"),
+                "app_id": content.get("app_id"),
+                "bbox": bbox,
+                "visibility": "visible",
+                "confidence": intent.get("confidence"),
+                "evidence_ref": next(iter(intent.get("evidence_refs") or []), None),
+            },
+            session_id=self.live_session_id,
+            on_intent=self._push_intent,
+        )
+
+    def on_device_object_labels(self, payload: dict[str, Any]) -> None:
+        """Store a short-lived, non-durable ML Kit semantic cross-check."""
+        raw = payload.get("labels") if isinstance(payload, dict) else None
+        if not isinstance(raw, list):
+            return
+        clean: list[dict[str, Any]] = []
+        for item in raw[:3]:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or "").strip()[:120]
+            try:
+                confidence = float(item.get("confidence") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if label and 0.0 <= confidence <= 1.0:
+                clean.append({"label": label, "confidence": round(confidence, 4)})
+        self._device_object_labels = clean
+        self._device_object_labels_at = time.monotonic()
+        self._device_object_labels_frame_id = str(
+            payload.get("source_frame_id") or ""
+        )[:200]
+
+    def on_device_semantic_sound(self, payload: dict[str, Any]) -> None:
+        """Persist one validated device sound event; local UI already rendered it."""
+        label = str(payload.get("label") or "").strip().lower()
+        allowed = {
+            "glass_breaking", "smoke_alarm", "siren", "doorbell",
+            "baby_cry", "dog_bark", "engine", "footsteps",
+        }
+        if label not in allowed or str(payload.get("direction") or "") != "unknown":
+            return
+        try:
+            confidence = float(payload.get("confidence") or 0.0)
+            captured_at_ms = int(payload.get("captured_at_ms") or 0)
+        except (TypeError, ValueError):
+            return
+        if not 0.0 <= confidence <= 1.0 or captured_at_ms <= 0:
+            return
+        path = Path(self.db_path) if self.db_path is not None else None
+        if path is None:
+            return
+        event_id = hashlib.sha256(
+            f"{self.live_session_id}|{label}|{captured_at_ms}".encode("utf-8")
+        ).hexdigest()[:24]
+        with sqlite3.connect(str(path), timeout=3.0) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS semantic_sound_events_v19(
+                    event_id TEXT PRIMARY KEY,
+                    person_id TEXT NOT NULL,
+                    live_session_id TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    captured_at_ms INTEGER NOT NULL,
+                    direction TEXT NOT NULL,
+                    source TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO semantic_sound_events_v19(
+                    event_id, person_id, live_session_id, label, confidence,
+                    captured_at_ms, direction, source
+                ) VALUES(?,?,?,?,?,?,?,?)
+                """,
+                (
+                    event_id, self.person_id, self.live_session_id, label,
+                    confidence, captured_at_ms, "unknown", "yamnet_device_pcm",
+                ),
+            )
+
+    def handle_ar_object_action(self, payload: dict[str, Any]) -> None:
+        """Execute one explicit object-card action off the receipt callback.
+
+        The single in-flight slot prevents taps from creating an unbounded VLM
+        queue. Historical Local/PRO and continuous VisionRT paths are untouched.
+        """
+        if not isinstance(payload, dict):
+            return
+        with self._ar_action_lock:
+            if self._ar_action_inflight:
+                self._push_ar_action_card(
+                    "Analyse déjà en cours", "Attends la fin de l’action précédente.",
+                    truth_level="unknown",
+                )
+                return
+            self._ar_action_inflight = True
+
+        def run() -> None:
+            try:
+                self._execute_ar_object_action(payload)
+            except Exception as exc:
+                self._report_error("ar_object_action", exc)
+                self._push_ar_action_card(
+                    "Action indisponible", str(exc)[:240], truth_level="unknown"
+                )
+            finally:
+                with self._ar_action_lock:
+                    self._ar_action_inflight = False
+
+        threading.Thread(
+            target=run, name="mlomega-ar-object-action", daemon=True
+        ).start()
+
+    def _execute_ar_object_action(self, payload: dict[str, Any]) -> None:
+        action = str(payload.get("action_id") or "")
+        label = str(payload.get("label") or "cet objet").strip()[:120]
+        if action == "history":
+            if self.memory_query is None:
+                raise RuntimeError("mémoire live indisponible")
+            result = self.memory_query.ask(f"Que sais-tu sur {label} ?")
+            if isinstance(result, dict):
+                self._push_intent(result)
+            return
+        if action == "open_app":
+            app_id = str(payload.get("app_id") or "").strip()[:200]
+            if not app_id:
+                raise RuntimeError("aucune application configurée")
+            self._push_device_command({
+                "type": "device_command",
+                "action": "open_app",
+                "app": "package",
+                "package": app_id,
+            })
+            return
+        if action != "manual":
+            status = str(payload.get("status") or "")
+            state = str(payload.get("state") or "")
+            if status == "completed":
+                self._push_ar_action_card(
+                    label, f"Commande exécutée. État confirmé : {state or 'OK'}.",
+                    truth_level="observed",
+                )
+                return
+            raise RuntimeError(str(payload.get("detail") or "action non exécutée"))
+
+        frame = self._latest_frame_bgr
+        if frame is None:
+            raise RuntimeError("aucune image live disponible")
+        crop = frame.copy()
+        bbox = payload.get("bbox")
+        if isinstance(bbox, dict):
+            try:
+                h, w = crop.shape[:2]
+                x1 = max(0, min(w - 1, int(float(bbox["x"]) * w)))
+                y1 = max(0, min(h - 1, int(float(bbox["y"]) * h)))
+                x2 = max(x1 + 1, min(w, int((float(bbox["x"]) + float(bbox["w"])) * w)))
+                y2 = max(y1 + 1, min(h, int((float(bbox["y"]) + float(bbox["h"])) * h)))
+                crop = crop[y1:y2, x1:x2].copy()
+            except (KeyError, TypeError, ValueError):
+                pass
+        vlm = getattr(self.vision, "vlm", None)
+        if vlm is None or getattr(self.vision, "_vlm_refused", False):
+            raise RuntimeError("analyse visuelle précise indisponible")
+        result = vlm.describe(
+            crop,
+            prompt=(
+                "Identify the focused physical object as precisely as the image permits. "
+                "Return strict JSON with object_name, brand, model, a short useful "
+                "description, and manual_search_terms. Leave brand/model empty when "
+                "not visibly supported; never guess a product reference."
+            ),
+            format_schema={
+                "type": "object",
+                "properties": {
+                    "object_name": {"type": "string"},
+                    "brand": {"type": "string"},
+                    "model": {"type": "string"},
+                    "description": {"type": "string"},
+                    "manual_search_terms": {"type": "string"},
+                },
+                "required": [
+                    "object_name", "brand", "model", "description",
+                    "manual_search_terms",
+                ],
+                "additionalProperties": False,
+            },
+        )
+        decoded = result.get("json") if isinstance(result, dict) else None
+        if not isinstance(decoded, dict) or result.get("status") != "ok":
+            raise RuntimeError("identification précise sans résultat fiable")
+        title = " ".join(
+            str(decoded.get(key) or "").strip()
+            for key in ("brand", "model", "object_name")
+        ).strip() or label
+        description = str(decoded.get("description") or "").strip()
+        search = str(decoded.get("manual_search_terms") or "").strip()
+        text = description + (f"\nManuel : {search}" if search else "")
+        self._push_ar_action_card(title[:160], text[:520], truth_level="probable")
+
+    def _push_ar_action_card(
+        self, title: str, text: str, *, truth_level: str
+    ) -> None:
+        self._push_intent({
+            "type": "ui_intent",
+            "ui_intent_id": f"ar-action-{self.live_session_id}-{time.time_ns()}",
+            "producer": "ultralive",
+            "component": "context_card",
+            "anchor": {"type": "head_locked", "side": "right"},
+            "content": {
+                "kind": "ar_object_action_result",
+                "title": str(title)[:160],
+                "text": str(text)[:520],
+            },
+            "truth_level": truth_level,
+            "confidence": (
+                0.65 if truth_level == "probable"
+                else 1.0 if truth_level == "observed"
+                else 0.0
+            ),
+            "priority": 0.83,
+            "ttl_ms": 12_000,
+            "evidence_refs": [],
+        })
 
     # ------------------------------------------------------------------ degraded
     def update_degraded(self, signals: Any) -> dict[str, Any]:
@@ -2014,6 +2300,7 @@ class LivePipeline:
                     self.scene_adapter.note_transcript(text)
                 except Exception as exc:
                     self._report_error("scene_adapter.note_transcript", exc)
+            self._maybe_submit_contextual_knowledge(text)
             # E38 §1/§2: feed the final turn to the fine-intelligence engines — the
             # addressed-name hypothesis signal and the heard attribute-fact signal.
             # E34 §4: fine discourse analysis off the hot path (background worker).
@@ -2129,6 +2416,41 @@ class LivePipeline:
                         self._report_error("enrollment.clear_segment", exc)
                 self._delete_temp_wav(str(wav_path))
         return intents
+
+    def _maybe_submit_contextual_knowledge(self, text: str) -> None:
+        """Bounded Kiwix trigger; never changes routing or calls an online LLM."""
+        bridge = self.augmented_reality
+        if bridge is None or not bridge.feature_active("contextual_knowledge"):
+            return
+        clean = " ".join(str(text or "").split())
+        if len(clean) < 8:
+            return
+        patterns = (
+            (r"^(?:explique(?:-moi)?|parle-moi de|c['’]est quoi)\s+(.+)$", True),
+            (r"\b(?:à propos de|on parle de|tu connais)\s+(.+)$", False),
+        )
+        for pattern, explicit in patterns:
+            match = re.search(pattern, clean, flags=re.IGNORECASE)
+            if not match:
+                continue
+            topic = match.group(1).strip(" .?!,:;")[:160]
+            if (
+                len(topic) < 3
+                or topic.casefold() in {
+                    "ça", "ca", "ceci", "cet objet", "ce truc", "lui", "elle",
+                }
+            ):
+                return
+            bridge.submit_contextual_knowledge(
+                {
+                    "topic": topic,
+                    "explicit": explicit,
+                    "novel": not explicit,
+                },
+                session_id=self.session_id,
+                on_intent=self._push_intent,
+            )
+            return
 
     def release_live_resources(self) -> None:
         """Drop live model references before core post-stop/CloseDay phases."""

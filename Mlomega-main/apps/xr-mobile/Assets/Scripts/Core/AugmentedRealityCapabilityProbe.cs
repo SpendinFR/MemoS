@@ -25,6 +25,7 @@ namespace MLOmega.XR.Core
             public bool ArFoundationLoaded { get; set; }
             public bool ArcorePluginLoaded { get; set; }
             public bool ArcoreExtensionsLoaded { get; set; }
+            public bool SemanticSoundModelAvailable { get; set; }
             public string[] ConfiguredLoaderCandidates { get; set; }
             public string[] RunningArSubsystems { get; set; }
             public int SimultaneousActiveLoaderCount { get; set; }
@@ -51,6 +52,7 @@ namespace MLOmega.XR.Core
                 ArFoundationLoaded = HasAssembly("Unity.XR.ARFoundation"),
                 ArcorePluginLoaded = HasAssembly("Unity.XR.ARCore"),
                 ArcoreExtensionsLoaded = HasAssembly("Google.XR.ARCoreExtensions"),
+                SemanticSoundModelAvailable = HasDeviceModel("yamnet.tflite"),
                 ConfiguredLoaderCandidates = configuredLoaders,
                 RunningArSubsystems = ResolveRunningArSubsystems(),
                 // XR Management exposes one activeLoader. Multiple configured
@@ -236,6 +238,23 @@ namespace MLOmega.XR.Core
             if (activeLoader.IndexOf("ARCore", StringComparison.OrdinalIgnoreCase) >= 0)
                 return "google_arcore_provider";
             return "other_provider";
+        }
+
+        private static bool HasDeviceModel(string name)
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                string path = Path.Combine(Application.persistentDataPath, "models", name);
+                return File.Exists(path) && new FileInfo(path).Length > 0;
+            }
+            catch
+            {
+                return false;
+            }
+#else
+            return false;
+#endif
         }
 
         private static Type FindType(string fullName, string assemblyFragment)

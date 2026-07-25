@@ -95,6 +95,7 @@ namespace MLOmega.XR.Editor
             var appLauncher = root.AddComponent<AppLauncherBridge>();
             var commands = root.AddComponent<DeviceCommandHandler>();
             var ttsPlayer = root.AddComponent<TtsAudioPlayer>();
+            var augmentedReality = root.AddComponent<AugmentedRealityFeatureRegistry>();
 
             // E48-A: the Ultra-Live reflex layer (E26/E47). GAP FIX — these components
             // were never added to the PhoneOnly scene, so the E47 device gates (wake
@@ -105,6 +106,8 @@ namespace MLOmega.XR.Editor
             var localBootstrap = root.AddComponent<E25SourceBootstrap>();
             var asrBridge = root.AddComponent<AsrBridge>();
             var gestureBridge = root.AddComponent<GestureBridge>();
+            var instantImageLabels = root.AddComponent<InstantImageLabelBridge>();
+            var semanticSound = root.AddComponent<SemanticSoundBridge>();
             var wakeGate = root.AddComponent<WakeWordGate>();
             var stableTrack = root.AddComponent<StableTrackSkill>();
             var lensWindow = root.AddComponent<LensWindowSkill>();
@@ -177,6 +180,8 @@ namespace MLOmega.XR.Editor
             Assign(commands, "_transport", transport);
             Assign(commands, "_session", session);
             Assign(ttsPlayer, "_transport", transport);
+            Assign(augmentedReality, "_transport", transport);
+            Assign(augmentedReality, "_statusBar", statusBar);
             // E48-A reflex wiring (the rest self-finds in Awake at scene load).
             Assign(translate, "_commands", commands);
             Assign(translate, "_statusBar", statusBar);
@@ -194,6 +199,12 @@ namespace MLOmega.XR.Editor
             Assign(reflex, "_panelManipulator", panelManipulator);
             Assign(reflexSignals, "_scheduler", reflex);
             Assign(reflexSignals, "_session", session);
+            Assign(instantImageLabels, "_capture", capture);
+            Assign(instantImageLabels, "_transport", transport);
+            Assign(instantImageLabels, "_features", augmentedReality);
+            Assign(semanticSound, "_transport", transport);
+            Assign(semanticSound, "_features", augmentedReality);
+            Assign(semanticSound, "_intentSource", localIntents);
             Assign(panelManipulator, "_camera", camera);
             Assign(wakeGate, "_asr", asrBridge);
             Assign(translate, "_asrBridge", asrBridge);
@@ -202,6 +213,7 @@ namespace MLOmega.XR.Editor
             Assign(menu, "_commandHandler", commands);
             Assign(menu, "_theme", theme);
             Assign(menu, "_camera", camera);
+            Assign(menu, "_augmentedReality", augmentedReality);
             Assign(menuGestures, "_gestures", gestureBridge);
             Assign(menuGestures, "_menu", menu);
             Assign(menuGestures, "_commandHandler", commands);

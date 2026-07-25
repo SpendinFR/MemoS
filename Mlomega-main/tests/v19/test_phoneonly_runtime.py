@@ -1001,6 +1001,60 @@ def test_augmented_reality_preferences_are_isolated_and_disabled_by_default(monk
     assert status["status"] == "disabled"
 
 
+def test_device_semantic_sound_is_routed_and_persisted_without_fake_direction(
+    tmp_path,
+):
+    db_path = tmp_path / "semantic-sound.db"
+    pipe = runtime_mod.live_pipeline.LivePipeline(
+        db_path=db_path,
+        person_id="me",
+        live_session_id="brainlive-sound",
+        enable_detector=False,
+        enable_worldbrain=False,
+        enable_conversation=False,
+        enable_intents=False,
+        enable_live_discourse=False,
+    )
+    pipe.on_device_semantic_sound({
+        "type": "device_semantic_sound",
+        "label": "glass_breaking",
+        "confidence": 0.91,
+        "captured_at_ms": 123_456,
+        "direction": "unknown",
+    })
+    pipe.on_device_semantic_sound({
+        "type": "device_semantic_sound",
+        "label": "glass_breaking",
+        "confidence": 0.99,
+        "captured_at_ms": 123_457,
+        "direction": "left",
+    })
+
+    import sqlite3
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT label, direction, source FROM semantic_sound_events_v19"
+        ).fetchall()
+    assert rows == [("glass_breaking", "unknown", "yamnet_device_pcm")]
+
+    rt = runtime_mod.PhoneOnlyRuntime(
+        "s-ar-sound",
+        ingress_factory=FakeIngress,
+        pipeline_factory=FakePipeline,
+        close_day=lambda **_: {"status": "completed"},
+    )
+    received = []
+    rt.pipeline.on_device_semantic_sound = received.append
+    rt._on_receipt(json.dumps({
+        "type": "device_semantic_sound",
+        "label": "doorbell",
+        "confidence": 0.78,
+        "captured_at_ms": 456_789,
+        "direction": "unknown",
+    }))
+    assert received[0]["label"] == "doorbell"
+
+
 def test_recovery_job_exists_before_brainlive_can_be_marked_ended(tmp_path, monkeypatch):
     db_path = tmp_path / "recovery.db"
     monkeypatch.setenv("MLOMEGA_DB", str(db_path))

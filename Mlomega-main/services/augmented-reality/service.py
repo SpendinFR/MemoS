@@ -5,11 +5,23 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import threading
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
+
+from capabilities import (  # noqa: E402
+    ContextualKnowledgeGate,
+    ObjectActionRegistry,
+    build_object_profile_card,
+    execute_object_action,
+)
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
 KNOWN_FEATURES = (
@@ -72,9 +84,32 @@ def normalise_preferences(payload: Any) -> dict[str, Any]:
 class PreferenceState:
     """Bounded, in-memory session preferences. Never writes the memory DB."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        object_registry: ObjectActionRegistry | None = None,
+        knowledge: ContextualKnowledgeGate | None = None,
+    ) -> None:
         self._lock = threading.Lock()
         self._sessions: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self.object_registry = object_registry or ObjectActionRegistry()
+        self.knowledge = knowledge or ContextualKnowledgeGate()
+
+    def capabilities(self) -> dict[str, bool]:
+        return {
+            "object_menus": True,
+            "action_recognition": False,
+            # Provider code is installed. Per-session activation additionally
+            # requires the device probe to confirm the provisioned YAMNet file.
+            "semantic_sound": True,
+            "contextual_knowledge": bool(self.knowledge.available),
+            # Base crop is device-local and does not need this service. The
+            # optional super-resolution provider is not advertised until installed.
+            "enhanced_zoom": False,
+            # Measurement remains unavailable until the active XR provider exposes
+            # valid depth/intrinsics/pose on the physical gate.
+            "ar_measurement": False,
+        }
 
     def apply(self, payload: Any) -> dict[str, Any]:
         clean = normalise_preferences(payload)
@@ -84,27 +119,90 @@ class PreferenceState:
             self._sessions[session_id] = clean
             while len(self._sessions) > MAX_SESSIONS:
                 self._sessions.popitem(last=False)
-        # Foundation lot: no perception module is implemented yet. Preferences
-        # are accepted, but active_features remains honestly empty.
+        available = self.capabilities()
+        available = self._available_for(clean, available)
+        active = [
+            feature
+            for feature in KNOWN_FEATURES
+            if clean["master_enabled"]
+            and clean["features"].get(feature) is True
+            and available.get(feature) is True
+        ]
         return {
-            "status": "accepted",
-            "detail": "foundation ready; perception modules not installed",
-            "active_features": [],
+            "status": "ready",
+            "detail": "enabled features are backed by installed providers",
+            "active_features": active,
         }
 
     def count(self) -> int:
         with self._lock:
             return len(self._sessions)
 
+    def feature_active(self, session_id: str, feature: str) -> bool:
+        with self._lock:
+            state = self._sessions.get(str(session_id))
+            if not state:
+                return False
+            return bool(
+                state.get("master_enabled")
+                and state.get("features", {}).get(feature)
+                and self._available_for(state).get(feature)
+            )
 
-def capability_manifest(*, enabled: bool, session_count: int = 0) -> dict[str, Any]:
+    def _available_for(
+        self,
+        state: dict[str, Any],
+        base: dict[str, bool] | None = None,
+    ) -> dict[str, bool]:
+        available = dict(base or self.capabilities())
+        probe = state.get("probe") if isinstance(state.get("probe"), dict) else {}
+        semantic_model = probe.get(
+            "semantic_sound_model_available",
+            probe.get("SemanticSoundModelAvailable", False),
+        )
+        available["semantic_sound"] = bool(
+            available.get("semantic_sound") and semantic_model is True
+        )
+        return available
+
+    def object_card(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be an object")
+        session_id = str(payload.get("session_id") or "")
+        if not self.feature_active(session_id, "object_menus"):
+            raise PermissionError("object_menus is not active for this session")
+        return build_object_profile_card(payload, registry=self.object_registry)
+
+    def object_action(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be an object")
+        session_id = str(payload.get("session_id") or "")
+        if not self.feature_active(session_id, "object_menus"):
+            raise PermissionError("object_menus is not active for this session")
+        return execute_object_action(payload, registry=self.object_registry)
+
+    def contextual_knowledge(self, payload: Any) -> dict[str, Any] | None:
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be an object")
+        session_id = str(payload.get("session_id") or "")
+        if not self.feature_active(session_id, "contextual_knowledge"):
+            raise PermissionError("contextual_knowledge is not active for this session")
+        return self.knowledge.maybe_card(payload)
+
+
+def capability_manifest(
+    *,
+    enabled: bool,
+    session_count: int = 0,
+    capabilities: dict[str, bool] | None = None,
+) -> dict[str, Any]:
     return {
         "service": "mlomega-augmented-reality",
         "schema_version": 1,
         "enabled": bool(enabled),
         "status": "ready" if enabled else "disabled",
         "session_count": int(session_count),
-        "capabilities": {feature: False for feature in KNOWN_FEATURES},
+        "capabilities": capabilities or {feature: False for feature in KNOWN_FEATURES},
         "memory_access": dict(MEMORY_ACCESS),
         "writes_memory_db": False,
     }
@@ -120,11 +218,22 @@ def build_handler(state: PreferenceState, *, enabled: bool) -> type[BaseHTTPRequ
                 return
             self._json(
                 200,
-                capability_manifest(enabled=enabled, session_count=state.count()),
+                capability_manifest(
+                    enabled=enabled,
+                    session_count=state.count(),
+                    capabilities=state.capabilities() if enabled else None,
+                ),
             )
 
         def do_POST(self) -> None:  # noqa: N802
-            if self.path != "/v1/preferences":
+            routes = {
+                "/v1/preferences": state.apply,
+                "/v1/object-card": state.object_card,
+                "/v1/object-action": state.object_action,
+                "/v1/contextual-knowledge": state.contextual_knowledge,
+            }
+            handler = routes.get(self.path)
+            if handler is None:
                 self._json(404, {"status": "not_found"})
                 return
             if not enabled:
@@ -136,9 +245,28 @@ def build_handler(state: PreferenceState, *, enabled: bool) -> type[BaseHTTPRequ
                     raise ValueError("invalid request size")
                 raw = self.rfile.read(length)
                 payload = json.loads(raw.decode("utf-8"))
-                self._json(200, state.apply(payload))
+                result = handler(payload)
+                self._json(
+                    200,
+                    {"status": "no_result"} if result is None else result,
+                )
+            except PermissionError as exc:
+                self._json(409, {"status": "inactive", "detail": str(exc)[:300]})
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 self._json(400, {"status": "rejected", "detail": str(exc)[:300]})
+            except Exception as exc:
+                # Optional providers (Kiwix/Home Assistant) may disappear after
+                # readiness. Return a bounded, explicit terminal result instead
+                # of dropping the HTTP connection and making the UI look stuck.
+                self._json(
+                    503,
+                    {
+                        "status": "unavailable",
+                        "detail": (
+                            f"{exc.__class__.__name__}: {str(exc)}"
+                        )[:300],
+                    },
+                )
 
         def log_message(self, _format: str, *_args: Any) -> None:
             return
@@ -166,7 +294,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.host not in {"127.0.0.1", "localhost", "::1"}:
         parser.error("the augmented-reality service is loopback-only")
     if args.probe:
-        print(json.dumps(capability_manifest(enabled=enabled), ensure_ascii=False))
+        probe_state = PreferenceState() if enabled else None
+        print(json.dumps(
+            capability_manifest(
+                enabled=enabled,
+                capabilities=probe_state.capabilities() if probe_state else None,
+            ),
+            ensure_ascii=False,
+        ))
         return 0
     if not enabled:
         print("MLOMEGA_AUGMENTED_REALITY is off; service not started")

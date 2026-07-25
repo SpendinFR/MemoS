@@ -201,6 +201,18 @@ device:
     url: https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
     sha256: 9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6
 
+  # --- Semantic sound classification (YAMNet / AudioSet) -------------------
+  # MediaPipe AudioClassifier consumes the existing WebRTC PCM fan-out on the
+  # Android device. No second microphone and no direction are inferred.
+  yamnet:
+    provider: mediapipe_device
+    platform: android
+    kind: semantic_sound
+    license: Apache-2.0
+    path: models/device/yamnet.tflite
+    url: https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/latest/yamnet.tflite
+    sha256: 4d8b4a53282dc83ef04e3e7dbc4fbc98082e34e44ed798e16c3a0cdd4c584faf
+
   # --- Live translation (E48-A) — offline NMT reflex, ONNX Runtime + OPUS-MT ---
   # The phone translates its own final ASR segments FR<->EN on device (PC absent),
   # so the subtitle line carries a translation under the original. Engine (ADR

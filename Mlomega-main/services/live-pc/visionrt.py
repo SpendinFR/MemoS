@@ -884,11 +884,18 @@ class VisionRT:
         else:  # what_is → detector label first, VLM fallback
             label = None
             conf = 0.0
+            screen_bbox = None
             if self.detector and self._admit("detector"):
                 dets = self.detector.detect(crop)
                 dets.sort(key=lambda d: d.score, reverse=True)
                 if dets:
                     label, conf = dets[0].label, float(dets[0].score)
+                    screen_bbox = self._crop_pixel_bbox_to_screen(
+                        dets[0].box,
+                        crop_bbox=bbox,
+                        frame_width=frame_bgr.shape[1],
+                        frame_height=frame_bgr.shape[0],
+                    )
             if label is not None:
                 content = {
                     "kind": "what_is",
@@ -896,6 +903,16 @@ class VisionRT:
                     "source": "detector",
                     "text": f"Je vois {label}.",
                 }
+                if screen_bbox is not None:
+                    content.update({
+                        "state": "visible",
+                        "screen_bbox": screen_bbox,
+                        "bbox": self._screen_bbox_to_pixels(
+                            screen_bbox, frame_bgr.shape[1], frame_bgr.shape[0]
+                        ),
+                        "frame_width": int(frame_bgr.shape[1]),
+                        "frame_height": int(frame_bgr.shape[0]),
+                    })
                 truth_level = "observed"
                 confidence = conf
             elif not self._vlm_refused and self._admit("vlm"):
@@ -963,7 +980,7 @@ class VisionRT:
             "evidence_refs": [f"frame:{frame_id}"] if frame_id else [],
         }
         if (
-            kind == "find"
+            kind in {"find", "what_is"}
             and content.get("state") == "visible"
             and not track_id
             and content.get("screen_bbox")

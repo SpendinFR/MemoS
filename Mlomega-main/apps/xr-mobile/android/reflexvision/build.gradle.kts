@@ -77,6 +77,21 @@ dependencies {
     // storage (see README), never committed. ADR docs/DECISIONS.md §E26.
     implementation("com.google.mediapipe:tasks-vision:0.10.29")
 
+    // Bundled ML Kit labeler for opt-in Augmented Reality object cards. The
+    // bundled variant is available on the first offline launch. Calls are
+    // throttled/keep-only-latest and only run while object_menus is active.
+    implementation("com.google.mlkit:image-labeling:17.0.9")
+    // ML Kit's internal VisionKit dependency still declares OkHttp 3.0/Okio
+    // 1.6. The separate livetransport Unity plugin already ships OkHttp 4.12
+    // and Okio 3.6, so resolve this module to the same binary-compatible pair
+    // instead of exporting duplicate okhttp3/okio classes into the final APK.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okio:okio:3.6.0")
+
+    // On-device semantic sound events (YAMNet). It consumes the existing
+    // WebRTC PCM fan-out; it never opens a second AudioRecord.
+    implementation("com.google.mediapipe:tasks-audio:0.10.29")
+
     // sherpa-onnx Android AAR (JNI) — VAD + streaming zipformer ASR + KeywordSpotter.
     // Apache-2.0. Official release AAR vendored because the old JitPack coordinate
     // is not public (HTTP 401). SHA256:

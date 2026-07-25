@@ -97,15 +97,69 @@ def test_foundation_service_is_bounded_and_claims_no_memory_writer():
         _payload(), session_id="transport-1", person_id="me"
     )
     result = state.apply(normalised)
-    manifest = service_mod.capability_manifest(enabled=True, session_count=state.count())
+    manifest = service_mod.capability_manifest(
+        enabled=True,
+        session_count=state.count(),
+        capabilities=state.capabilities(),
+    )
 
-    assert result["status"] == "accepted"
-    assert result["active_features"] == []
+    assert result["status"] == "ready"
+    assert result["active_features"] == ["object_menus"]
     assert state.count() == 1
     assert manifest["writes_memory_db"] is False
-    assert not any(manifest["capabilities"].values())
+    assert manifest["capabilities"]["object_menus"] is True
+    assert manifest["capabilities"]["semantic_sound"] is True
     assert manifest["memory_access"]["object_menus"] == "read_worldbrain_memoryquery"
     assert manifest["memory_access"]["enhanced_zoom"] == "none"
+
+
+def test_semantic_sound_activates_only_after_device_model_probe():
+    state = service_mod.PreferenceState()
+    cold = bridge_mod.normalise_preferences(
+        _payload(), session_id="transport-cold", person_id="me"
+    )
+    assert state.apply(cold)["active_features"] == ["object_menus"]
+
+    ready_payload = _payload(
+        probe={
+            "coexistence_verdict": "single_active_loader_architecture",
+            "SemanticSoundModelAvailable": True,
+        }
+    )
+    ready = bridge_mod.normalise_preferences(
+        ready_payload, session_id="transport-ready", person_id="me"
+    )
+    assert state.apply(ready)["active_features"] == [
+        "object_menus",
+        "semantic_sound",
+    ]
+
+
+def test_contextual_knowledge_auto_cards_have_global_and_topic_cooldowns():
+    class Provider:
+        available = True
+
+        def lookup(self, topic):
+            return {
+                "title": topic,
+                "summary": "Résumé local et sourcé.",
+                "source": "http://127.0.0.1:8081/article",
+            }
+
+    gate = service_mod.ContextualKnowledgeGate(provider=Provider())
+    first = gate.maybe_card({
+        "session_id": "s1", "topic": "calcul quantique", "novel": True
+    })
+    second = gate.maybe_card({
+        "session_id": "s1", "topic": "fusion nucléaire", "novel": True
+    })
+    explicit = gate.maybe_card({
+        "session_id": "s1", "topic": "fusion nucléaire", "explicit": True
+    })
+
+    assert first["content"]["kind"] == "contextual_knowledge"
+    assert second is None
+    assert explicit["content"]["title"] == "fusion nucléaire"
 
 
 def test_enabled_bridge_reaches_loopback_service_without_blocking_caller():
@@ -131,7 +185,8 @@ def test_enabled_bridge_reaches_loopback_service_without_blocking_caller():
         )
         assert immediate["status"] == "pending"
         assert done.wait(2.0)
-        assert statuses[0]["status"] == "accepted"
+        assert statuses[0]["status"] == "ready"
+        assert statuses[0]["active_features"] == ["object_menus"]
         assert state.count() == 1
         assert bridge.metrics()["accepted"] == 1
     finally:
@@ -148,6 +203,66 @@ def test_service_probe_is_honest_when_disabled(monkeypatch, capsys):
     assert payload["status"] == "disabled"
     assert payload["writes_memory_db"] is False
     assert not any(payload["capabilities"].values())
+
+
+def test_object_card_is_visible_bounded_and_only_exposes_backed_actions():
+    state = service_mod.PreferenceState()
+    normalised = bridge_mod.normalise_preferences(
+        _payload(), session_id="transport-1", person_id="me"
+    )
+    state.apply(normalised)
+    card = state.object_card({
+        "session_id": "transport-1",
+        "source_frame_id": "frame-9",
+        "focus_id": "focus-2",
+        "entity_id": "mug-1",
+        "label": "mug",
+        "bbox": {"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4},
+        "visibility": "visible",
+        "confidence": 0.88,
+        "device_labels": [{"label": "Drinkware", "confidence": 0.92}],
+    })
+
+    assert card["component"] == "object_profile_card"
+    assert card["anchor"]["bbox"] == {"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4}
+    assert card["content"]["device_labels"][0]["label"] == "Drinkware"
+    actions = {item["action_id"] for item in card["content"]["actions"]}
+    assert actions == {"manual", "history"}
+    assert card["ttl_ms"] == 3500
+
+
+def test_object_state_change_requires_confirmation_and_configured_adapter(
+    monkeypatch,
+):
+    registry = service_mod.ObjectActionRegistry(configured_devices={})
+    try:
+        service_mod.execute_object_action(
+            {
+                "action_id": "power_on",
+                "entity_id": "lamp-1",
+                "label": "lamp",
+                "confirmed": True,
+            },
+            registry=registry,
+        )
+        raise AssertionError("unconfigured state-changing action was accepted")
+    except ValueError as exc:
+        assert "configured" in str(exc)
+
+    configured = service_mod.ObjectActionRegistry(configured_devices={
+        "lamp-1": {
+            "adapter": "home_assistant",
+            "base_url": "http://127.0.0.1:8123",
+            "ha_entity_id": "light.living_room",
+            "token_env": "MLOMEGA_HOME_ASSISTANT_TOKEN",
+        }
+    })
+    monkeypatch.setenv("MLOMEGA_HOME_ASSISTANT_TOKEN", "test-token")
+    actions = configured.actions_for({"entity_id": "lamp-1", "label": "lamp"})
+    state_actions = [item for item in actions if item.state_change]
+    assert [(item.action_id, item.requires_confirmation) for item in state_actions] == [
+        ("toggle", True)
+    ]
 
 
 def test_product_launcher_keeps_augmented_reality_opt_in_and_cleans_it_up():

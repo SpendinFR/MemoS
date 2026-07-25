@@ -1,0 +1,14 @@
+{
+  "living-room-lamp": {
+    "adapter": "home_assistant",
+    "base_url": "http://127.0.0.1:8123",
+    "ha_entity_id": "light.living_room",
+    "token_env": "MLOMEGA_HOME_ASSISTANT_TOKEN"
+  },
+  "lampe du salon": {
+    "adapter": "home_assistant",
+    "base_url": "http://127.0.0.1:8123",
+    "ha_entity_id": "light.living_room",
+    "token_env": "MLOMEGA_HOME_ASSISTANT_TOKEN"
+  }
+}

@@ -544,6 +544,8 @@ class PhoneOnlyRuntime:
         except Exception:
             self._stop_clip_recorder()
             raise
+        if hasattr(self.pipeline, "augmented_reality"):
+            self.pipeline.augmented_reality = self.augmented_reality
         self.ingress.on_audio_chunk = self._on_audio_chunk
         self.delivery_adapter = delivery_adapter.DeliveryAdapter(
             renderer=DataChannelRenderer(self.ingress)
@@ -754,6 +756,20 @@ class PhoneOnlyRuntime:
                 on_status=self._send_augmented_reality_status,
             )
             return
+        if isinstance(payload, dict) and payload.get("type") == "device_object_labels":
+            if hasattr(self.pipeline, "on_device_object_labels"):
+                try:
+                    self.pipeline.on_device_object_labels(payload)
+                except Exception as exc:
+                    self.recent_errors.append(("device_object_labels: " + str(exc))[:500])
+            return
+        if isinstance(payload, dict) and payload.get("type") == "device_semantic_sound":
+            if hasattr(self.pipeline, "on_device_semantic_sound"):
+                try:
+                    self.pipeline.on_device_semantic_sound(payload)
+                except Exception as exc:
+                    self.recent_errors.append(("device_semantic_sound: " + str(exc))[:500])
+            return
         if isinstance(payload, dict) and payload.get("type") == "device_intent":
             router = getattr(self.pipeline, "intents", None)
             if router is not None and hasattr(router, "on_device_action"):
@@ -774,8 +790,28 @@ class PhoneOnlyRuntime:
         try:
             receipt = delivery_adapter.UIReceipt.model_validate_json(raw)
             self.delivery_adapter.record_receipt(receipt)
+            action = receipt.user_action
+            if (
+                receipt.event == "acted"
+                and isinstance(action, dict)
+                and action.get("kind") == "ar_object_action"
+            ):
+                self.augmented_reality.submit_object_action(
+                    action,
+                    session_id=self.session_id,
+                    on_result=self._on_augmented_object_action_result,
+                )
         except Exception as exc:
             self.recent_errors.append(("receipt: " + str(exc))[:500])
+
+    def _on_augmented_object_action_result(self, result: dict[str, Any]) -> None:
+        """Continue only actions validated by the isolated AR registry."""
+        if not isinstance(result, dict):
+            return
+        if result.get("status") == "confirmation_required":
+            return
+        if hasattr(self.pipeline, "handle_ar_object_action"):
+            self.pipeline.handle_ar_object_action(result)
 
     def _on_audio_chunk(
         self, samples: Any, src_rate: int, source_timing: dict[str, Any] | None = None

@@ -15,6 +15,7 @@ namespace MLOmega.XR.Tests
         public void AllTenComponents_MapToTheirType()
         {
             Assert.AreEqual(typeof(ObjectOutline), UIComponentRegistry.ResolveType("object_outline"));
+            Assert.AreEqual(typeof(ObjectProfileCard), UIComponentRegistry.ResolveType("object_profile_card"));
             Assert.AreEqual(typeof(PersonTag), UIComponentRegistry.ResolveType("person_tag"));
             Assert.AreEqual(typeof(Subtitle), UIComponentRegistry.ResolveType("subtitle"));
             Assert.AreEqual(typeof(LensWindow), UIComponentRegistry.ResolveType("lens_window"));
@@ -41,6 +42,7 @@ namespace MLOmega.XR.Tests
             Assert.AreEqual(typeof(Subtitle), UIComponentRegistry.ResolveType("translation"));
             Assert.AreEqual(typeof(LensWindow), UIComponentRegistry.ResolveType("lens"));
             Assert.AreEqual(typeof(OffscreenArrow), UIComponentRegistry.ResolveType("arrow"));
+            Assert.AreEqual(typeof(ObjectProfileCard), UIComponentRegistry.ResolveType("object profile"));
         }
 
         [Test]

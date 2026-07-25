@@ -2024,6 +2024,56 @@ d'assembly ne prouve la coexistence ARCore/XREAL sur le matériel.
   intrinsics et tracking sont valides, avec incertitude. Sans Depth/pose valide,
   abstention plutôt qu'une mesure monoculaire présentée comme exacte.
 
+**Avancement Lot 1 (2026-07-26 — code fermé, gate matériel encore ouvert).**
+
+- [x] **B1 — carte objet UltraLive.** VisionRT reste autoritaire pour la bbox, le
+  `track_id`, la visibilité et la preuve. Le S24 ajoute au maximum 2 images/s de
+  320 px à ML Kit bundled, uniquement lorsque `object_menus` est réellement actif.
+  La réponse n'est consommée que si son `source_frame_id` correspond encore à la
+  frame VisionRT (TTL 2 s). `ObjectProfileCard` affiche une fiche Liquid Glass à
+  côté de l'objet; perte/TTL la ferme. Ce chemin n'appelle ni VLM ni LLM en continu.
+- [x] **B2 — actions explicites et domotique sûre.** `manuel` déclenche seulement
+  après geste un crop VLM borné; `historique` passe par MemoryQuery; `ouvrir_app`
+  réutilise le downlink produit. La domotique n'apparaît que pour une entrée du
+  registre `MLOMEGA_AR_DEVICE_REGISTRY` avec token réellement présent. Un changement
+  d'état exige un second pinch en moins de 4 s, lit Home Assistant avant, exécute
+  l'action, relit l'état terminal et retourne un receipt. Aucune découverte réseau
+  implicite ni commande inventée.
+- [ ] **B3 — gate physique.** Sur S24 + One Pro/Eye : activer uniquement
+  `object_menus`, exiger carte attachée au bon objet, suivi/TTL, pinch/gaze,
+  confirmation domotique et absence de chauffe/drops AudioRT. L'APK seule ne coche
+  pas ce point.
+- [ ] **C — différé volontairement.** Les primitives `prendre/poser` existent déjà
+  dans ChangeAttention/WorldBrain; MMAction2 ne sera ajouté que si un scénario
+  produit démontre un gain distinct, afin de ne pas payer deux fois la même
+  sémantique vidéo.
+- [x] **D1 — son sémantique local.** YAMNet officiel est provisionné par SHA-256
+  dans l'APK. `SemanticSoundBridge` attache un sink au PCM WebRTC déjà ouvert :
+  aucun second micro. Un worker Android keep-only-latest classe des fenêtres de
+  0,975 s avec seuils/cooldown par classe. L'UI locale s'affiche immédiatement;
+  le PC accepte seulement huit labels bornés, persiste la provenance
+  `yamnet_device_pcm`, et refuse toute direction autre que `unknown`.
+- [ ] **D2 — gate physique.** Faire entendre au S24 des échantillons positifs et
+  négatifs (verre, alarme, sirène, sonnette, bébé, chien, moteur, pas), mesurer
+  latence/faux positifs/température et confirmer qu'ASR/WebRTC ne droppe pas.
+- [x] **E1 — connaissance contextuelle bornée.** Un sujet explicite ou réellement
+  nouveau peut interroger un serveur Kiwix local. Maximum automatique global :
+  une carte/90 s; même sujet : 15 min; les demandes explicites peuvent contourner
+  le cooldown automatique. La carte courte est sourcée, refermable et n'écrit pas
+  dans la mémoire personnelle. Aucun LLM ni appel par tour.
+- [ ] **E2 — corpus opérateur.** Installer/choisir le ZIM et fournir
+  `MLOMEGA_KIWIX_URL`; vérifier la pertinence des fiches sur le S24. Sans endpoint
+  local, la capacité reste honnêtement indisponible.
+- [x] **F1 — décision zoom/mesure.** Le crop/track GPU `LensWindow` existant est le
+  zoom UltraLive de base. Real-ESRGAN n'est pas ajouté au flux continu : coût,
+  chaleur et pixels synthétiques sans gain produit suffisant. Aucun faux bouton de
+  mesure n'est livré. Le vrai mètre ruban est déplacé vers `4.0-I` et exige Depth,
+  intrinsics et pose valides avant toute valeur.
+
+Les cases principales B/D/E restent ouvertes uniquement jusqu'au gate matériel
+correspondant. Les runs Local/PRO, leurs prompts et leurs writers ne sont pas
+modifiés; master et capacités restent OFF par défaut.
+
 **Lot 2 — socle spatial calibre Google Maps AR, après le spike A2.**
 
 - [ ] **4.0-G Geospatial/VPS.** Utiliser ARCore Geospatial seulement lorsque support,

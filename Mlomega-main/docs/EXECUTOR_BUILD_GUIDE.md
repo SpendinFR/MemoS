@@ -1829,3 +1829,69 @@ Le GO exige provider XREAL, session AR en cours, frames Eye et WebRTC progressan
 pose suivie et budgets FPS/mémoire/thermique acceptables. Le build seul ne ferme pas
 A2c. Preuves build : Python 8/8, Unity 5/5, APK SHA-256
 `9CA7104B19EABCC7A829CC175AEC8224BF89A031354A35CF1AA9D35F2D05D7A5`.
+
+### PASSATION 2026-07-26 — Lot 1 AR : objets, sons et connaissance locale
+
+Le lot est toujours opt-in. Il ne modifie ni prompt, ni writer CloseDay, ni backend
+Local/PRO. Le menu « Réglages AR » conserve master et interrupteurs séparés. Pour
+préparer les dépendances Android et le modèle device :
+
+```powershell
+cd C:\Users\wabad\Downloads\ProjetMemobyFABLE\Mlomega-main
+.\scripts\BUILD_ANDROID_PLUGINS.ps1
+.\.venv\Scripts\python.exe scripts\fetch_models_v19.py --device
+```
+
+`yamnet.tflite` est vérifié par le SHA du `MODEL_MANIFEST.yaml`, embarqué par
+`AndroidBuild` puis copié au premier lancement sous
+`Application.persistentDataPath\models`. Tant que le probe device ne retrouve pas
+ce fichier, `semantic_sound` reste `ATTENTE`, jamais faussement vert.
+
+Configuration optionnelle des actions objet :
+
+```powershell
+$env:MLOMEGA_AR_DEVICE_REGISTRY="$pwd\configs\augmented_devices.json"
+$env:MLOMEGA_HOME_ASSISTANT_TOKEN="<token local>"
+Copy-Item .\configs\augmented_devices.example.json `
+  .\configs\augmented_devices.json
+```
+
+Ne jamais committer le registre réel s'il contient des adresses privées ou le token.
+Le JSON référence seulement le **nom** de la variable de token. L'action domotique
+fait état initial → confirmation utilisateur → service → état terminal.
+
+Pour la connaissance contextuelle, démarrer un Kiwix local avec le ZIM choisi puis
+définir son endpoint loopback :
+
+```powershell
+$env:MLOMEGA_KIWIX_URL="http://127.0.0.1:8081"
+.\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -AugmentedReality
+```
+
+Sans `MLOMEGA_KIWIX_URL`, la capacité reste indisponible. Avec le service prêt,
+ouvrir le menu sur le S24/lunettes, activer d'abord le master puis séparément
+« Menus objets », « Sons » ou « Connaissances ». Le vert signifie que le service
+et le provider device ont confirmé la capacité; `ARMÉ/ATTENTE` n'est pas un succès.
+
+Tests PC ciblés (environnement live, car `webrtcvad` appartient à `.venv-live`) :
+
+```powershell
+.\.venv-live\Scripts\python.exe -m pytest `
+  tests\v19\test_augmented_reality_foundation.py `
+  tests\v19\test_phoneonly_runtime.py -q -p no:cacheprovider `
+  -k "augmented_reality or semantic_sound"
+```
+
+Gate S24 minimal :
+
+1. `object_menus` : carte sur bbox actuelle, suivi/TTL, gaze/pinch et seconde
+   confirmation pour une action d'état;
+2. `semantic_sound` : positifs/négatifs, direction affichée `unknown`, aucune
+   seconde capture micro, zéro drop ASR/WebRTC;
+3. `contextual_knowledge` : une demande explicite et deux sujets automatiques
+   rapprochés; la seconde carte doit être retenue par le cooldown;
+4. surveiller température/FPS et vérifier que couper le master arrête immédiatement
+   les deux bridges device.
+
+Le zoom à utiliser est toujours `LensWindow` (crop/track GPU). Ne pas ajouter
+Real-ESRGAN au flux continu et ne pas exposer de mesure avant le lot Depth/intrinsics.

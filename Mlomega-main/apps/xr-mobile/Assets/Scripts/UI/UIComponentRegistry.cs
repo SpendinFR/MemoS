@@ -20,6 +20,7 @@ namespace MLOmega.XR.UI
             new Dictionary<string, System.Type>
             {
                 { "objectoutline", typeof(ObjectOutline) },
+                { "objectprofilecard", typeof(ObjectProfileCard) },
                 { "persontag", typeof(PersonTag) },
                 { "subtitle", typeof(Subtitle) },
                 { "lenswindow", typeof(LensWindow) },
@@ -42,6 +43,8 @@ namespace MLOmega.XR.UI
                 { "lens", "lenswindow" },
                 { "arrow", "offscreenarrow" },
                 { "outline", "objectoutline" },
+                { "objectprofile", "objectprofilecard" },
+                { "lenscard", "objectprofilecard" },
                 { "person", "persontag" },
                 { "context", "contextcard" },
                 { "task", "taskcard" },

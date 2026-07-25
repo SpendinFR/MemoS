@@ -41,12 +41,18 @@ class AugmentedRealityBridge:
         self.timeout_s = max(0.1, min(float(timeout_s), 3.0))
         self._executor: ThreadPoolExecutor | None = None
         self._lock = threading.Lock()
+        self._active_features: set[str] = set()
+        self._inflight: set[str] = set()
         self._metrics = {
             "enabled": self.enabled,
             "submitted": 0,
             "accepted": 0,
             "failed": 0,
             "rejected": 0,
+            "dropped_busy": 0,
+            "object_cards": 0,
+            "object_actions": 0,
+            "knowledge_cards": 0,
         }
         if self.enabled:
             self._validate_loopback_endpoint()
@@ -107,6 +113,63 @@ class AugmentedRealityBridge:
         self._executor.submit(self._post_preferences, normalised, on_status)
         return {"status": "pending", "detail": "preference update queued"}
 
+    def feature_active(self, feature: str) -> bool:
+        with self._lock:
+            return str(feature) in self._active_features
+
+    def submit_object_focus(
+        self,
+        payload: dict[str, Any],
+        *,
+        session_id: str,
+        on_intent: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        return self._submit_feature(
+            "object_card",
+            "object_menus",
+            "/v1/object-card",
+            {"session_id": session_id, **dict(payload or {})},
+            lambda result: self._deliver_ui_result(
+                result, on_intent, metric="object_cards"
+            ),
+        )
+
+    def submit_object_action(
+        self,
+        payload: dict[str, Any],
+        *,
+        session_id: str,
+        on_result: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        return self._submit_feature(
+            "object_action",
+            "object_menus",
+            "/v1/object-action",
+            {"session_id": session_id, **dict(payload or {})},
+            lambda result: self._deliver_result(
+                result, on_result, metric="object_actions"
+            ),
+        )
+
+    def submit_contextual_knowledge(
+        self,
+        payload: dict[str, Any],
+        *,
+        session_id: str,
+        on_intent: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        topic = str((payload or {}).get("topic") or "").strip()
+        key = "knowledge:" + topic.casefold()[:120]
+        return self._submit_feature(
+            key,
+            "contextual_knowledge",
+            "/v1/contextual-knowledge",
+            {"session_id": session_id, **dict(payload or {})},
+            lambda result: self._deliver_ui_result(
+                result, on_intent, metric="knowledge_cards"
+            ),
+        )
+
     def metrics(self) -> dict[str, Any]:
         with self._lock:
             return dict(self._metrics)
@@ -114,6 +177,9 @@ class AugmentedRealityBridge:
     def close(self) -> None:
         executor = self._executor
         self._executor = None
+        with self._lock:
+            self._active_features.clear()
+            self._inflight.clear()
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
 
@@ -142,12 +208,94 @@ class AugmentedRealityBridge:
                 "detail": str(decoded.get("detail") or ""),
                 "active_features": list(decoded.get("active_features") or []),
             }
+            with self._lock:
+                self._active_features = {
+                    str(item)
+                    for item in status["active_features"]
+                    if str(item) in KNOWN_FEATURES
+                }
             self._increment("accepted")
         except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError) as exc:
             self._increment("failed")
             status = {"status": "unavailable", "detail": str(exc)[:300]}
         if on_status is not None:
             on_status(status)
+
+    def _submit_feature(
+        self,
+        key: str,
+        feature: str,
+        path: str,
+        payload: dict[str, Any],
+        callback: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        if not self.enabled or self._executor is None:
+            return {"status": "disabled"}
+        if not self.feature_active(feature):
+            return {"status": "inactive", "feature": feature}
+        with self._lock:
+            if key in self._inflight or len(self._inflight) >= 4:
+                self._metrics["dropped_busy"] += 1
+                return {"status": "dropped_busy", "feature": feature}
+            self._inflight.add(key)
+            self._metrics["submitted"] += 1
+
+        def run() -> None:
+            try:
+                callback(self._post_json(path, payload))
+                self._increment("accepted")
+            except Exception as exc:
+                self._increment("failed")
+                callback({"status": "unavailable", "detail": str(exc)[:300]})
+            finally:
+                with self._lock:
+                    self._inflight.discard(key)
+
+        self._executor.submit(run)
+        return {"status": "pending", "feature": feature}
+
+    def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        body = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+        if len(body) > MAX_PREFERENCES_BYTES:
+            raise ValueError("augmented-reality request exceeds size limit")
+        request = urllib.request.Request(
+            self.base_url + path,
+            data=body,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
+            raw = response.read(MAX_PREFERENCES_BYTES + 1)
+        if len(raw) > MAX_PREFERENCES_BYTES:
+            raise ValueError("augmented-reality response exceeds size limit")
+        result = json.loads(raw.decode("utf-8"))
+        if not isinstance(result, dict):
+            raise ValueError("augmented-reality response must be an object")
+        return result
+
+    def _deliver_ui_result(
+        self,
+        result: dict[str, Any],
+        callback: Callable[[dict[str, Any]], None],
+        *,
+        metric: str,
+    ) -> None:
+        if result.get("type") != "ui_intent":
+            return
+        self._increment(metric)
+        callback(result)
+
+    def _deliver_result(
+        self,
+        result: dict[str, Any],
+        callback: Callable[[dict[str, Any]], None],
+        *,
+        metric: str,
+    ) -> None:
+        self._increment(metric)
+        callback(result)
 
     def _validate_loopback_endpoint(self) -> None:
         parsed = urllib.parse.urlparse(self.base_url)

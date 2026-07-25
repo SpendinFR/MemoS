@@ -1848,3 +1848,34 @@ subsystems réellement actifs, puis mesure Eye, pose, WebRTC, FPS, mémoire et �
 thermique pendant 60 secondes. Présence d'assembly, descriptor ou loader configuré
 n'est jamais promue en preuve matérielle. Le build transactionnel restaure aussi les
 assets XR Simulation créés par AR Foundation et n'altère pas les APK de référence.
+
+## 2026-07-26 — Le premier lot FreeGuy privilégie les réflexes device et les actions explicites
+
+Les cartes objet ne doivent jamais attendre un VLM. VisionRT fournit la géométrie
+et le tracking; ML Kit bundled ajoute sur le S24 un label sémantique opportuniste,
+à 320 px/2 FPS maximum, seulement lorsque le mode est actif. Les deux résultats
+ne sont fusionnés que pour le même `source_frame_id`. Une identification précise
+ou un manuel déclenche ensuite un crop VLM uniquement après action utilisateur.
+Un label ML Kit ne devient ni une bbox, ni une identité durable.
+
+Les actions d'une carte viennent d'un registre explicite. Une commande Home
+Assistant n'est affichée que si l'entité, l'endpoint et la variable de token sont
+configurés. Un changement d'état exige confirmation, lecture de l'état initial,
+commande puis lecture de l'état terminal. Le receipt terminal, pas le tap, constitue
+la preuve d'exécution.
+
+Le son sémantique est un réflexe Android YAMNet branché sur le même fan-out PCM que
+WebRTC/ASR. Il n'ouvre jamais un second microphone et ne prétend jamais localiser
+le son avec un seul capteur. La carte locale est immédiate; seules les classes
+allowlistées avec timestamp/confiance sont envoyées au PC et écrites par le chemin
+produit. Diarisation et ASR restent autoritaires pour la parole.
+
+La connaissance contextuelle utilise uniquement un Kiwix local, avec novelty gate,
+cooldown global et cooldown par sujet. Elle produit une fiche sourcée et refermable,
+pas une observation personnelle. Aucun appel LLM automatique par tour n'est admis.
+
+Enfin, le zoom UltraLive reste le crop/track GPU existant. Real-ESRGAN n'est ni
+continu ni présenté comme preuve; il n'est pas livré dans ce lot. La mesure est
+reportée au vrai mètre ruban Depth : aucune distance monoculaire décorative ne doit
+être affichée sans profondeur, intrinsics et pose valides. Toutes ces capacités
+restent OFF par défaut et ne changent aucun chemin Local/PRO.

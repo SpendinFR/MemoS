@@ -34,7 +34,12 @@ $out = Join-Path $Root "apps\xr-mobile\Assets\Plugins\Android"
   "kotlin-stdlib-1.9.24.jar",
   "kotlin-stdlib-jdk7-1.9.10.jar",
   "kotlin-stdlib-jdk8-1.9.10.jar",
-  "annotation-jvm-1.8.0.jar"
+  "annotation-jvm-1.8.0.jar",
+  # Stale transitive artifacts left by the first ML Kit export. ReflexVision
+  # now resolves the same OkHttp/Okio versions as LiveTransport; keeping both
+  # generations in Unity would create duplicate okhttp3/okio classes.
+  "okhttp-3.0.0.jar",
+  "okio-1.6.0.jar"
 ) | ForEach-Object {
   $duplicate = Join-Path $out $_
   if (Test-Path $duplicate) { Remove-Item -LiteralPath $duplicate -Force }

@@ -48,6 +48,9 @@ namespace MLOmega.XR.Editor
             // Silero VAD (~2 MB) gates the whole AsrKwsService stream — without it
             // neither the wake word nor offline subtitles start.
             "silero_vad.onnx",
+            // YAMNet (~4 MB) powers the opt-in semantic sound overlay from the
+            // existing WebRTC PCM fan-out.
+            "yamnet.tflite",
         };
 
         [MenuItem("MLOmega/Build PhoneOnly APK")]

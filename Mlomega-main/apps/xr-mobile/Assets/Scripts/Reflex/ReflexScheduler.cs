@@ -17,6 +17,7 @@ using System.Collections.Generic;
 using MLOmega.XR.Reflex.Skills;
 using MLOmega.XR.Transport;
 using MLOmega.XR.UI;
+using MLOmega.XR.UI.Components;
 using UnityEngine;
 
 namespace MLOmega.XR.Reflex
@@ -76,6 +77,7 @@ namespace MLOmega.XR.Reflex
 
         private readonly HashSet<ReflexSignal> _activeSignals = new HashSet<ReflexSignal>();
         private bool _privacyPaused;
+        private ObjectProfileCard _objectCardPinchTarget;
 
         public IReadOnlyDictionary<ReflexSkillId, ReflexSkillBase> Skills => _skills;
         private readonly Dictionary<ReflexSkillId, ReflexSkillBase> _skills =
@@ -115,6 +117,10 @@ namespace MLOmega.XR.Reflex
 
         private void OnGestureForLens(GestureEvent ev)
         {
+            // Interactive object-card rows own the pinch before either panel
+            // manipulation or LensWindow. This avoids the old event-subscriber race
+            // where one pinch could trigger both a card action and a zoom.
+            if (HandleObjectCardPinch(ev)) return;
             // E59: run the window-manager FIRST so its pinch-begin hit-test can claim a
             // grab/resize on a manipulable panel. Only when it does NOT claim does the
             // pinch fall through to the LensWindow zoom (never steal the existing zoom).
@@ -124,6 +130,30 @@ namespace MLOmega.XR.Reflex
                 if (_panelManipulator.HasClaim) return;
             }
             if (_lensWindow != null) _lensWindow.OnGesture(ev);
+        }
+
+        private bool HandleObjectCardPinch(GestureEvent ev)
+        {
+            if (ev.Kind == GestureKind.PinchBegin)
+            {
+                _objectCardPinchTarget = null;
+                foreach (ObjectProfileCard card in ObjectProfileCard.ActiveCards)
+                {
+                    if (card == null || card.ResolveActionAtViewport(ev.ScreenPoint) < 0) continue;
+                    _objectCardPinchTarget = card;
+                    card.HoverAtViewport(ev.ScreenPoint);
+                    return true;
+                }
+                return false;
+            }
+            if (_objectCardPinchTarget == null) return false;
+            _objectCardPinchTarget.HoverAtViewport(ev.ScreenPoint);
+            if (ev.Kind == GestureKind.PinchEnd)
+            {
+                _objectCardPinchTarget.PinchCommit();
+                _objectCardPinchTarget = null;
+            }
+            return true;
         }
 
         private void OnOfflineFocusTranscript(TranscriptEvent ev)
