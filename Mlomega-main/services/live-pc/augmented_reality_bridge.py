@@ -29,6 +29,11 @@ KNOWN_FEATURES = {
     "persistent_anchors",
     "depth_occlusion",
     "world_styling",
+    "trajectory_forecast",
+    "spatial_keyboard",
+    "event_vision",
+    "ballistic_preview",
+    "radio_field",
 }
 MAX_PREFERENCES_BYTES = 32_768
 

@@ -165,6 +165,11 @@ namespace MLOmega.XR.UI.Components
             _actions.Add(ToggleLabel("Ancres persistantes", AugmentedRealityFeatureRegistry.PersistentAnchors));
             _actions.Add(ToggleLabel("Occlusion Depth", AugmentedRealityFeatureRegistry.DepthOcclusion));
             _actions.Add(ToggleLabel("Style FreeGuy", AugmentedRealityFeatureRegistry.WorldStyling));
+            _actions.Add(ToggleLabel("Futurs de foule", AugmentedRealityFeatureRegistry.TrajectoryForecast));
+            _actions.Add(ToggleLabel("Clavier spatial", AugmentedRealityFeatureRegistry.SpatialKeyboard));
+            _actions.Add(ToggleLabel("Vision mouvement", AugmentedRealityFeatureRegistry.EventVision));
+            _actions.Add(ToggleLabel("Lancer ludique", AugmentedRealityFeatureRegistry.BallisticPreview));
+            _actions.Add(ToggleLabel("Carte radio", AugmentedRealityFeatureRegistry.RadioField));
             _actions.Add(new MenuAction(
                 "Retour",
                 new DeviceCommand { Type = "device_command", Action = "back_main_menu" }));

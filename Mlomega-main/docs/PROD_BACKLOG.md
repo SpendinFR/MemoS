@@ -2200,14 +2200,72 @@ ouvert).**
   et `imagination`, conserver date/provenance et ne jamais réinjecter les pixels
   transformés dans VisionRT, WorldBrain, OCR ou les archives comme preuve réelle.
   Le calcul lourd reste à la demande sur PC; le S24/XREAL ne fait que tracking,
-  composition, cache et rendu.
+  composition, cache et rendu. Sur XREAL optique, ce mode est un **monde fantôme
+  additif** (architecture, enseignes, personnages/objets holographiques, portails et
+  direction artistique), pas un remplacement opaque : il ne peut pas effacer la
+  vraie rue. Sa version crédible dépend donc de `4.0-N` (géométrie/reconstruction)
+  et de VPS/Depth; aucun simple filtre caméra 2D n'est accepté comme équivalent.
 - [ ] **4.0-O6 Transformations visage/vêtements.** Proposer beauté/rajeunissement,
   face-swap et remplacement/segmentation de vêtements comme effets locaux opt-in,
   chacun avec interrupteur, aperçu et reset. Exiger consentement lorsqu'une autre
   personne est transformée, appliquer un watermark/état UI « synthétique », et
   isoler strictement le flux rendu du flux perception/mémoire. Commencer par
   segmentation vêtements/masques 2D; DeepFaceLive ou reconstruction plus lourde ne
-  passe en Ultralive qu'après mesure FPS, chauffe, latence et licence.
+  passe en Ultralive qu'après mesure FPS, chauffe, latence et licence. Sur les
+  verres optiques, un filtre ne peut pas masquer le vrai visage/vêtement : O6 reste
+  différé plutôt que de livrer une surimpression qui double les contours.
+
+**Avancement Lot 3 (2026-07-26 — fondation 3D validée, producteurs matériels
+encore ouverts).**
+
+- [x] **T1 — une grammaire visuelle commune pour L/O1/O2.**
+  `WorldPathOverlay` rend des chemins 3D à gradient, fins alternatifs, anneaux
+  d'impact et silhouettes-capsules translucides. Trois contrats stricts partagent
+  le renderer sans partager leur vérité :
+  `trajectory_forecast` exige plusieurs futurs courts avec probabilité/qualité;
+  `event_motion` exige mouvement RGB valide **et** compensation du mouvement de
+  tête; `ballistic_preview` exige Depth + pose main, `safety_class=recreational`,
+  cible `play_target|inanimate` et refuse `weapon=true`. Le cas papier doit être
+  déclenché explicitement après acquisition main + objet + plan cible; aucun
+  calcul permanent ni ciblage d'une personne.
+- [x] **T2 — mètre ruban honnête.** `WorldMeasureTape` recalcule la distance entre
+  les deux points 3D au lieu de croire la chaîne d'affichage, vérifie cohérence,
+  intrinsics, Depth, pose, qualité et provenance, puis rend ligne, anneaux,
+  unité et marge `±`. Plage contractuelle 1 cm–65 m; la plage physiquement fiable
+  sera resserrée par le provider et le gate S24.
+- [x] **T3 — carte radio holographique.** `WorldRadioField` rend des anneaux 3D
+  cyan/violet/vert depuis de vrais échantillons RSSI Wi-Fi/BLE localisés. Il exige
+  deux mesures minimum, source connue, RSSI borné, IDs `radio-*` pseudonymisés,
+  pose et preuves. L'UI dit explicitement `CARTE RADIO`/`DBM`/`MESURÉ` : bel effet
+  « ondes », mais aucune prétention à dessiner le champ physique, voir à travers
+  un mur ou détecter sûrement une caméra.
+- [x] **T4 — clavier spatial rendu et hit-testé.** `WorldKeyboardPlane` construit
+  un clavier AZERTY holographique sur un plan 3D calibré et expose
+  `TryPressWorld(fingertip, contactConfirmed)` avec distance au plan 2,5 cm,
+  debounce et receipt `spatial_key`. Il exige activation explicite, Depth, pose,
+  base orthogonale et hand tracking. Le raccord producteur « landmark index-tip
+  3D → TryPressWorld → cible texte active » reste T6; le pinch écran existant n'est
+  pas détourné.
+- [x] **T5 — opt-in et isolation.** Cinq interrupteurs additionnels, tous OFF :
+  futurs de foule, clavier spatial, vision mouvement, lancer ludique, carte radio.
+  Les types/alias sont inscrits dans `UIComponentRegistry`; service AR et bridge
+  connaissent les IDs mais annoncent toutes ces capacités `False`. Local/PRO,
+  prompts, writers mémoire et PhoneOnly normal restent inchangés.
+- [ ] **T6 — producteurs physiques.** Après A2c, brancher exactement :
+  tracks+Depth+pose → forecast; diff/flow+pose tête → event motion;
+  main+objet+Depth+plan → ballistic; deux points hit-testés → measure;
+  scan radio autorisé+pose → field; index-tip 3D → keyboard. Chaque producteur
+  active sa capability séparément; aucune disponibilité groupée.
+- [ ] **T7 — gates UX/thermiques.** Sur S24 + One Pro/Eye : stabilité monde,
+  latence et probabilité des silhouettes, faux mouvement après rotation de tête,
+  papier/balle positifs et armes/personnes négatifs, erreur du mètre, permissions
+  radio, précision clavier, FPS/chauffe/batterie et extinction immédiate via menu.
+- [ ] **T8 — O5 après N uniquement.** Construire le monde historique/artistique à
+  partir d'une géométrie versionnée et sourcée, avec portail/rendu additif et
+  badge `reconstruction|imagination`. Ne pas bricoler une vidéo plein écran.
+- [ ] **T9 — O6 conditionnel.** Prototype séparé; GO seulement si alignement,
+  latence et rendu sur verre évitent le double visage/vêtement. Sinon abandon
+  explicite, sans incidence sur les autres lots.
 
 **Lot 4 — expérimental, biométrie et garde-fous.**
 

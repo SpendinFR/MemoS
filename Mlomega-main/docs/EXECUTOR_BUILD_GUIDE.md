@@ -1949,3 +1949,49 @@ surfaces de façade/enseigne réelles, vérifier stabilité quand la tête bouge
 relocalisation, occlusion, FPS/chauffe et lisibilité. Ne pas
 reconstruire les deux APK à ce point : la consigne est un unique rebuild PhoneOnly
 et XREAL après stabilisation de tous les lots AR.
+
+### PASSATION 2026-07-26 — Lot 3 AR : effets spatiaux avancés
+
+Fondation rendue, mais **aucune capability matérielle n'est encore ON** :
+
+- `world_path` :
+  alias `trajectory_forecast`, `event_vision`/`event_motion`,
+  `ballistic_preview`; silhouettes fantômes/chemins/anneaux 3D;
+- `world_measure` / alias `ar_measurement`, `measurement_tape` :
+  distance Depth avec cohérence endpoints et incertitude;
+- `world_radio` / alias `radio_field` :
+  anneaux RSSI pseudonymisés, jamais présentés comme champ physique;
+- `world_keyboard` / alias `spatial_keyboard` :
+  plan AZERTY et hit-test index-tip 3D explicite.
+
+Interrupteurs ajoutés au menu, tous OFF : `trajectory_forecast`,
+`spatial_keyboard`, `event_vision`, `ballistic_preview`, `radio_field`. Leur
+présence dans les registres Unity/PC n'autorise pas `active_features`; le service
+retourne `False` jusqu'au producteur physique individuel.
+
+Tests ciblés après compilation de toutes les assemblies Unity :
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest `
+  tests\v19\test_augmented_reality_foundation.py -q -p no:cacheprovider
+
+cd .\apps\xr-mobile
+$u = 'C:\Program Files\Unity\Hub\Editor\6000.0.23f1\Editor\Unity.exe'
+$p = Start-Process $u -ArgumentList '-batchmode','-runTests',`
+  '-testPlatform','EditMode','-projectPath','.',`
+  '-testFilter','MLOmega.XR.Tests.WorldCanvas',`
+  '-testResults',"$pwd\world-canvas-lot3-editmode.xml",`
+  '-logFile',"$pwd\world-canvas-lot3-editmode.log" -Wait -PassThru -NoNewWindow
+"exit=$($p.ExitCode)"
+```
+
+Résultat : Python **10/10**, Unity WorldCanvas lots 2+3 **15/15**, exit 0.
+`Packages/packages-lock.json` régénéré par Unity a été revert ciblé. Aucun build
+APK à ce checkpoint.
+
+Ordre de raccord à respecter après A2c : (1) un seul producteur à la fois,
+(2) test positif + négatif + perte capteur, (3) mesure thermique, (4) seulement
+alors capability `True`. Le clavier nécessite encore le raccord index-tip 3D vers
+`TryPressWorld`; les gestes écran existants ne sont pas réutilisés comme faux 3D.
+O5 attend la géométrie `4.0-N`; O6 reste conditionnel à une qualité optique qui
+évite un double visage/vêtement.

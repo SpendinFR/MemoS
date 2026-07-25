@@ -36,6 +36,11 @@ KNOWN_FEATURES = (
     "persistent_anchors",
     "depth_occlusion",
     "world_styling",
+    "trajectory_forecast",
+    "spatial_keyboard",
+    "event_vision",
+    "ballistic_preview",
+    "radio_field",
 )
 MEMORY_ACCESS = {
     # Future modules consume existing product APIs; this isolated service never
@@ -51,6 +56,11 @@ MEMORY_ACCESS = {
     "persistent_anchors": "read_worldbrain_no_write",
     "depth_occlusion": "none",
     "world_styling": "none",
+    "trajectory_forecast": "none",
+    "spatial_keyboard": "none",
+    "event_vision": "none",
+    "ballistic_preview": "none",
+    "radio_field": "none",
 }
 MAX_BODY_BYTES = 32_768
 MAX_SESSIONS = 16
@@ -128,6 +138,13 @@ class PreferenceState:
             "persistent_anchors": False,
             "depth_occlusion": False,
             "world_styling": False,
+            # Lot 3 renderers/contracts are installed, but none is advertised
+            # before its real pose/depth/hand/radio producer passes hardware.
+            "trajectory_forecast": False,
+            "spatial_keyboard": False,
+            "event_vision": False,
+            "ballistic_preview": False,
+            "radio_field": False,
         }
 
     def apply(self, payload: Any) -> dict[str, Any]:

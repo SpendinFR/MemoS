@@ -1909,3 +1909,24 @@ rectangles qui glissent avec la tête et préserve l'effet « monde augmenté »
 
 Les pixels colorés sont exclusivement une composition Unity. Ils ne retournent
 jamais dans VisionRT, OCR, WorldBrain ou les archives comme observation réelle.
+
+## 2026-07-26 — Les effets FreeGuy avancés partagent le rendu, jamais leur preuve
+
+Trajectoire humaine, trace événementielle RGB et lancer ludique utilisent un même
+renderer 3D borné (`WorldPathOverlay`) pour conserver une grammaire visuelle et un
+budget draw-call communs. Leurs contrats restent distincts : un forecast porte une
+probabilité, une trace exige compensation du mouvement de tête, un lancer exige
+main/Depth/cible inanimée et garde-fou récréatif. Le partage de code ne permet
+jamais de convertir un type de preuve en un autre.
+
+Mètre, radio et clavier sont eux aussi 3D-only. Le mètre recalcule la longueur et
+affiche l'incertitude; la radio représente des échantillons RSSI pseudonymisés et
+ne s'appelle pas champ électromagnétique; le clavier exige un contact index-plan
+confirmé et une activation volontaire. Tous sont OFF et indisponibles tant que le
+producteur matériel correspondant n'a pas passé son gate.
+
+Un verre optique additif ne peut pas effacer le monde réel. Le filtre temporel est
+donc une reconstitution holographique alignée dépendante d'une géométrie/VPS, pas
+un remplacement total. Beauté/face-swap/vêtements sont différés si le vrai sujet
+reste visible sous l'overlay. Cette abstention est une exigence qualité, pas un
+manque à masquer.

@@ -30,6 +30,11 @@ namespace MLOmega.XR.UI
         public const string PersistentAnchors = "persistent_anchors";
         public const string DepthOcclusion = "depth_occlusion";
         public const string WorldStyling = "world_styling";
+        public const string TrajectoryForecast = "trajectory_forecast";
+        public const string SpatialKeyboard = "spatial_keyboard";
+        public const string EventVision = "event_vision";
+        public const string BallisticPreview = "ballistic_preview";
+        public const string RadioField = "radio_field";
 
         private const string PreferencePrefix = "mlomega.augmented_reality.";
 
@@ -46,6 +51,11 @@ namespace MLOmega.XR.UI
             PersistentAnchors,
             DepthOcclusion,
             WorldStyling,
+            TrajectoryForecast,
+            SpatialKeyboard,
+            EventVision,
+            BallisticPreview,
+            RadioField,
         };
 
         [SerializeField] private LiveTransportBridge _transport;
