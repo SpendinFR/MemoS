@@ -1800,3 +1800,32 @@ La prochaine frontière est `4.0-A2` (coexistence ARCore/XREAL sur application-g
 puis le premier module fonctionnel du Lot 1. Les APK courantes ne contiennent pas
 encore cette nouvelle page : reconstruire seulement après stabilisation du premier
 module, pas à chaque incrément de fondation.
+
+### PASSATION 2026-07-25 — 4.0-A2 gate fournisseur XREAL/AR Foundation
+
+Le constat d'architecture est fermé : XR Management n'active qu'un loader. Le produit
+lunettes garde donc XREAL comme fournisseur; Google ARCore n'est pas injecté dans son
+manifest. L'APK-gate est générée par copie de la scène produit et ne devient jamais une
+scène de build normale.
+
+```powershell
+cd C:\Users\wabad\Downloads\ProjetMemobyFABLE\Mlomega-main
+.\scripts\BUILD_XREAL_ASSISTED.ps1 -ProviderGate `
+  -PcHost 192.168.1.199 -PcPort 8710
+adb install -r .\apps\xr-mobile\build\android\mlomega-xreal-provider-gate.apk
+adb shell am force-stop com.mlomega.xr.glasses
+adb shell monkey -p com.mlomega.xr.glasses 1
+```
+
+Après 60 secondes, récupérer le JSON affiché/écrit sous
+`Application.persistentDataPath/mlomega-ar-gates`, puis :
+
+```powershell
+.\.venv\Scripts\python.exe -m tools.arcore_xreal_gate.validate_report `
+  .\chemin\vers\ar_provider_gate_report.json
+```
+
+Le GO exige provider XREAL, session AR en cours, frames Eye et WebRTC progressantes,
+pose suivie et budgets FPS/mémoire/thermique acceptables. Le build seul ne ferme pas
+A2c. Preuves build : Python 8/8, Unity 5/5, APK SHA-256
+`9CA7104B19EABCC7A829CC175AEC8224BF89A031354A35CF1AA9D35F2D05D7A5`.

@@ -1832,3 +1832,19 @@ face-swappés ou reconstruits restent hors du flux de preuve.
 ARCore n'est pas ajouté à l'APK produit avant un spike physique S24 + XREAL One
 Pro/Eye. Le probe par réflexion ne fait qu'inventorier les assemblies et le loader;
 son verdict reste `unproven_physical_gate`.
+
+## 2026-07-25 — Un player XR possède un fournisseur actif; XREAL reste autoritaire
+
+XR Management expose un seul `activeLoader`. Une liste contenant XREAL et ARCore ne
+prouve donc jamais deux caméras/providers simultanés. Pour le player lunettes,
+`XREALXRLoader` reste l'unique fournisseur : les fonctions spatiales compatibles sont
+consommées par AR Foundation au-dessus des subsystems XREAL. Les capacités Google
+ARCore/Geospatial nécessitant le provider Google restent hors de l'APK produit et
+devront vivre dans une frontière Android séparée ou une phase mutuellement exclusive.
+
+Le gate fournisseur est une APK jetable construite uniquement avec
+`MLOMEGA_XREAL_PROVIDER_GATE=1`. Elle clone la scène produit, inventorie loader et
+subsystems réellement actifs, puis mesure Eye, pose, WebRTC, FPS, mémoire et état
+thermique pendant 60 secondes. Présence d'assembly, descriptor ou loader configuré
+n'est jamais promue en preuve matérielle. Le build transactionnel restaure aussi les
+assets XR Simulation créés par AR Foundation et n'altère pas les APK de référence.

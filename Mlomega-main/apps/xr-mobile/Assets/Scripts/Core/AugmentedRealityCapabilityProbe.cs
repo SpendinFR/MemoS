@@ -1,4 +1,6 @@
 using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
 
@@ -23,6 +25,10 @@ namespace MLOmega.XR.Core
             public bool ArFoundationLoaded { get; set; }
             public bool ArcorePluginLoaded { get; set; }
             public bool ArcoreExtensionsLoaded { get; set; }
+            public string[] ConfiguredLoaderCandidates { get; set; }
+            public string[] RunningArSubsystems { get; set; }
+            public int SimultaneousActiveLoaderCount { get; set; }
+            public string ProviderBoundary { get; set; }
             public string CoexistenceVerdict { get; set; }
         }
 
@@ -34,18 +40,29 @@ namespace MLOmega.XR.Core
 #if XREAL_SDK_PRESENT
             xrealCompiled = true;
 #endif
+            string activeLoader = ResolveActiveLoader();
+            string[] configuredLoaders = ResolveConfiguredLoaders();
             LastReport = new Report
             {
                 DeviceModel = SystemInfo.deviceModel ?? string.Empty,
                 OperatingSystem = SystemInfo.operatingSystem ?? string.Empty,
-                ActiveXrLoader = ResolveActiveLoader(),
+                ActiveXrLoader = activeLoader,
                 XrealSdkCompiled = xrealCompiled,
                 ArFoundationLoaded = HasAssembly("Unity.XR.ARFoundation"),
                 ArcorePluginLoaded = HasAssembly("Unity.XR.ARCore"),
                 ArcoreExtensionsLoaded = HasAssembly("Google.XR.ARCoreExtensions"),
-                // A package or assembly is not evidence that both providers and
-                // their camera sessions coexist on the physical S24.
-                CoexistenceVerdict = "unproven_physical_gate",
+                ConfiguredLoaderCandidates = configuredLoaders,
+                RunningArSubsystems = ResolveRunningArSubsystems(),
+                // XR Management exposes one activeLoader. Multiple configured
+                // candidates are fallback/order metadata, not simultaneous
+                // providers. Keep this number factual instead of inferring
+                // coexistence from package presence.
+                SimultaneousActiveLoaderCount =
+                    string.Equals(activeLoader, "none", StringComparison.Ordinal) ? 0 : 1,
+                ProviderBoundary = ResolveProviderBoundary(activeLoader),
+                // A package, descriptor or configured loader is not evidence that
+                // XREAL and Google ARCore camera sessions coexist on the S24.
+                CoexistenceVerdict = "single_active_loader_architecture",
             };
             return LastReport;
         }
@@ -85,12 +102,149 @@ namespace MLOmega.XR.Core
             }
         }
 
+        private static string[] ResolveConfiguredLoaders()
+        {
+            var names = new List<string>();
+            try
+            {
+                object manager = ResolveManager();
+                object candidates = manager?.GetType()
+                    .GetProperty("activeLoaders", BindingFlags.Public | BindingFlags.Instance)?
+                    .GetValue(manager);
+                if (candidates is IEnumerable enumerable)
+                {
+                    foreach (object candidate in enumerable)
+                    {
+                        string name = candidate?.GetType().FullName;
+                        if (!string.IsNullOrEmpty(name) && !names.Contains(name))
+                            names.Add(name);
+                    }
+                }
+            }
+            catch
+            {
+                // The probe is diagnostic and must not make the product fail.
+            }
+            return names.ToArray();
+        }
+
+        private static string[] ResolveRunningArSubsystems()
+        {
+            var running = new List<string>();
+            string[] subsystemTypes =
+            {
+                "UnityEngine.XR.ARSubsystems.XRSessionSubsystem",
+                "UnityEngine.XR.ARSubsystems.XRCameraSubsystem",
+                "UnityEngine.XR.ARSubsystems.XRPlaneSubsystem",
+                "UnityEngine.XR.ARSubsystems.XRAnchorSubsystem",
+                "UnityEngine.XR.XRMeshSubsystem",
+                "UnityEngine.XR.ARSubsystems.XROcclusionSubsystem",
+            };
+            foreach (string fullName in subsystemTypes)
+            {
+                Type subsystemType = FindType(fullName, string.Empty);
+                if (subsystemType == null) continue;
+                AppendRunningSubsystems(subsystemType, running);
+            }
+            return running.ToArray();
+        }
+
+        private static void AppendRunningSubsystems(
+            Type subsystemType,
+            List<string> destination)
+        {
+            try
+            {
+                Type listType = typeof(List<>).MakeGenericType(subsystemType);
+                object list = Activator.CreateInstance(listType);
+                MethodInfo getInstances = null;
+                foreach (MethodInfo method in typeof(SubsystemManager)
+                    .GetMethods(BindingFlags.Public | BindingFlags.Static))
+                {
+                    if (method.Name == "GetInstances" &&
+                        method.IsGenericMethodDefinition &&
+                        method.GetParameters().Length == 1)
+                    {
+                        getInstances = method;
+                        break;
+                    }
+                }
+                getInstances?
+                    .MakeGenericMethod(subsystemType)
+                    .Invoke(null, new[] { list });
+                if (!(list is IEnumerable enumerable)) return;
+                foreach (object subsystem in enumerable)
+                {
+                    object runningValue = subsystem?.GetType()
+                        .GetProperty("running", BindingFlags.Public | BindingFlags.Instance)?
+                        .GetValue(subsystem);
+                    bool isRunning =
+                        runningValue is bool runningFlag && runningFlag;
+                    if (!isRunning) continue;
+                    string id = ResolveSubsystemId(subsystem);
+                    string value = string.IsNullOrEmpty(id)
+                        ? subsystem.GetType().FullName
+                        : $"{subsystem.GetType().FullName}:{id}";
+                    if (!destination.Contains(value)) destination.Add(value);
+                }
+            }
+            catch
+            {
+                // Some subsystem types differ between Unity package versions.
+                // Absence is reported as absence, never promoted to support.
+            }
+        }
+
+        private static string ResolveSubsystemId(object subsystem)
+        {
+            try
+            {
+                object descriptor = subsystem?.GetType()
+                    .GetProperty("subsystemDescriptor",
+                        BindingFlags.Public | BindingFlags.Instance)?
+                    .GetValue(subsystem);
+                return descriptor?.GetType()
+                    .GetProperty("id", BindingFlags.Public | BindingFlags.Instance)?
+                    .GetValue(descriptor) as string;
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static object ResolveManager()
+        {
+            Type settingsType = FindType(
+                "UnityEngine.XR.Management.XRGeneralSettings",
+                "Unity.XR.Management");
+            object settings = settingsType?
+                .GetProperty("Instance", BindingFlags.Public | BindingFlags.Static)?
+                .GetValue(null);
+            return settingsType?
+                .GetProperty("Manager", BindingFlags.Public | BindingFlags.Instance)?
+                .GetValue(settings);
+        }
+
+        private static string ResolveProviderBoundary(string activeLoader)
+        {
+            if (string.IsNullOrEmpty(activeLoader) ||
+                string.Equals(activeLoader, "none", StringComparison.Ordinal))
+                return "no_active_provider";
+            if (activeLoader.IndexOf("XREAL", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "xreal_provider";
+            if (activeLoader.IndexOf("ARCore", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "google_arcore_provider";
+            return "other_provider";
+        }
+
         private static Type FindType(string fullName, string assemblyFragment)
         {
             foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
             {
                 string name = assembly.GetName().Name ?? string.Empty;
-                if (name.IndexOf(assemblyFragment, StringComparison.OrdinalIgnoreCase) < 0)
+                if (!string.IsNullOrEmpty(assemblyFragment) &&
+                    name.IndexOf(assemblyFragment, StringComparison.OrdinalIgnoreCase) < 0)
                     continue;
                 Type found = assembly.GetType(fullName, false);
                 if (found != null) return found;

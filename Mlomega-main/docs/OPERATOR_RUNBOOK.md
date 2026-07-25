@@ -294,6 +294,23 @@ git checkout -- `
 Ne pas appliquer ce revert si l'un de ces fichiers contient une modification utilisateur
 intentionnelle non liée au build; inspecter `git diff` d'abord.
 
+### APK diagnostic fournisseur AR/XREAL (jamais l'APK utilisateur)
+
+Ce gate ne remplace pas `mlomega-xreal.apk`. Il sert une fois à mesurer le vrai
+provider XREAL/AR Foundation sur S24 + One Pro/Eye :
+
+```powershell
+cd C:\Users\wabad\Downloads\ProjetMemobyFABLE\Mlomega-main
+.\scripts\BUILD_XREAL_ASSISTED.ps1 -ProviderGate `
+  -PcHost 192.168.1.199 -PcPort 8710
+adb install -r .\apps\xr-mobile\build\android\mlomega-xreal-provider-gate.apk
+```
+
+Attendre 60 s dans l'overlay, récupérer le rapport
+`mlomega-ar-gates/ar_provider_gate_report.json`, puis le valider avec
+`python -m tools.arcore_xreal_gate.validate_report`. Une assembly ARCore présente,
+deux loaders configurés ou un build vert ne prouvent jamais deux providers actifs.
+
 ## 9. Git dans ce dépôt mixte
 
 La racine Git est le parent `ProjetMemobyFABLE`, pas `Mlomega-main` :

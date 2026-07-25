@@ -1976,6 +1976,23 @@ d'assembly ne prouve la coexistence ARCore/XREAL sur le matériel.
   mutuellement exclusives; ou géométrie PC à partir de pose/Eye. Ne jamais injecter
   ARCore directement dans l'APK produit avant ce verdict.
 
+  - [x] **A2a — architecture fournisseur tranchée.** XR Management ne possède qu'un
+    loader actif : plusieurs loaders configurés ne constituent pas deux providers
+    simultanés. Le player lunettes conserve donc `XREALXRLoader` comme fournisseur
+    unique et utilise les subsystems AR Foundation exposés par XREAL (session, caméra,
+    plans, ancres/mesh lorsque disponibles). Google ARCore/Geospatial n'est pas injecté
+    dans l'APK produit et restera une frontière Android séparée ou une phase exclusive.
+  - [x] **A2b — gate jetable construit sans contaminer le produit.** Le switch
+    `BUILD_XREAL_ASSISTED.ps1 -ProviderGate` ajoute AR Foundation uniquement pendant
+    deux passes Unity, clone `XrealProduct.unity` vers une scène générée puis restaure
+    manifest, lock, réglages XR, Quality et scènes. Tests : Python **8/8**, Unity réel
+    **5/5**. APK diagnostic : `mlomega-xreal-provider-gate.apk`, SHA-256
+    `9CA7104B19EABCC7A829CC175AEC8224BF89A031354A35CF1AA9D35F2D05D7A5`.
+  - [ ] **A2c — preuve physique restante.** Installer cette APK uniquement sur le
+    S24 relié aux One Pro/Eye, exécuter 60 s et exiger loader XREAL actif, session AR
+    active, progression Eye/WebRTC, pose suivie, FPS/chauffe/mémoire bornés. L'absence
+    d'un pixel ou d'une métrique est un échec explicite, jamais une coexistence déduite.
+
 **Lot 1 — vision augmentée crédible, meilleur ROI.**
 
 - [ ] **4.0-B Menus contextuels physiques autour des objets.** Réutiliser

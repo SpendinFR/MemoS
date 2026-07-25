@@ -116,13 +116,18 @@ namespace MLOmega.XR.Tests
         }
 
         [Test]
-        public void ProbeNeverClaimsArcoreXrealCoexistence()
+        public void ProbeReportsSingleLoaderBoundaryNeverPackageCoexistence()
         {
             var root = NewObject("probe");
             var probe = root.AddComponent<AugmentedRealityCapabilityProbe>();
             AugmentedRealityCapabilityProbe.Report report = probe.Probe();
 
-            Assert.AreEqual("unproven_physical_gate", report.CoexistenceVerdict);
+            Assert.AreEqual(
+                "single_active_loader_architecture",
+                report.CoexistenceVerdict);
+            Assert.LessOrEqual(report.SimultaneousActiveLoaderCount, 1);
+            Assert.IsNotNull(report.ConfiguredLoaderCandidates);
+            Assert.IsNotNull(report.RunningArSubsystems);
             Assert.IsNotNull(report.DeviceModel);
             Assert.IsNotNull(report.ActiveXrLoader);
         }

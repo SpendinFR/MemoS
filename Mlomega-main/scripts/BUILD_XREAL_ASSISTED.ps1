@@ -5,6 +5,7 @@ param(
   [ValidateRange(1,65535)][int]$PcPort = 8710,
   [string]$UnityExe = 'C:\Program Files\Unity\Hub\Editor\6000.0.23f1\Editor\Unity.exe',
   [string]$ProjectPath,
+  [switch]$ProviderGate,
   [switch]$DryRun
 )
 
@@ -13,12 +14,15 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = (Resolve-Path (Join-Path $ScriptDir '..')).Path
 if (-not $ProjectPath) { $ProjectPath = Join-Path $ProjectRoot 'apps\xr-mobile' }
 $ProjectPath = [IO.Path]::GetFullPath($ProjectPath)
-$Apk = Join-Path $ProjectPath 'build\android\mlomega-xreal.apk'
-$PrepLog = Join-Path $ProjectPath 'xreal-prep.log'
-$BuildLog = Join-Path $ProjectPath 'xreal-build.log'
+$ApkName = if ($ProviderGate) { 'mlomega-xreal-provider-gate.apk' } else { 'mlomega-xreal.apk' }
+$LogPrefix = if ($ProviderGate) { 'xreal-provider-gate' } else { 'xreal' }
+$Apk = Join-Path $ProjectPath ('build\android\' + $ApkName)
+$PrepLog = Join-Path $ProjectPath ($LogPrefix + '-prep.log')
+$BuildLog = Join-Path $ProjectPath ($LogPrefix + '-build.log')
 
 if ($DryRun) {
-  Write-Host "[DRY] XREAL two-pass product build: $UnityExe" -ForegroundColor Magenta
+  $profile = if ($ProviderGate) { 'isolated provider gate' } else { 'product' }
+  Write-Host "[DRY] XREAL two-pass $profile build: $UnityExe" -ForegroundColor Magenta
   Write-Host "[DRY] PrepareDefines -> BuildApk; endpoint=$PcHost`:$PcPort; output=$Apk" -ForegroundColor Magenta
   Write-Host "[DRY] ProjectSettings/manifest/lock/scenes/config sont restaures apres le build." -ForegroundColor Magenta
   exit 0
@@ -38,9 +42,20 @@ New-Item -ItemType Directory -Path $snapshotRoot | Out-Null
 $files = @(
   'Packages\manifest.json', 'Packages\packages-lock.json',
   'ProjectSettings\ProjectSettings.asset', 'ProjectSettings\EditorBuildSettings.asset',
+  'ProjectSettings\QualitySettings.asset',
   'Assets\XR\XRGeneralSettingsPerBuildTarget.asset',
+  'Assets\XR\Resources.meta',
+  'Assets\XR\Resources\XRSimulationRuntimeSettings.asset',
+  'Assets\XR\Resources\XRSimulationRuntimeSettings.asset.meta',
+  'Assets\XR\UserSimulationSettings.meta',
+  'Assets\XR\UserSimulationSettings\Resources.meta',
+  'Assets\XR\UserSimulationSettings\Resources\XRSimulationPreferences.asset',
+  'Assets\XR\UserSimulationSettings\Resources\XRSimulationPreferences.asset.meta',
   'Assets\Scenes\PhoneOnly.unity', 'Assets\Scenes\PhoneOnly.unity.meta',
   'Assets\Scenes\XrealProduct.unity', 'Assets\Scenes\XrealProduct.unity.meta',
+  'Assets\Scenes\Generated.meta',
+  'Assets\Scenes\Generated\AugmentedRealityProviderGate.unity',
+  'Assets\Scenes\Generated\AugmentedRealityProviderGate.unity.meta',
   'Assets\Config\MLOmegaPhoneOnly.asset', 'Assets\Config\MLOmegaPhoneOnly.asset.meta',
   'Assets\Config\MLOmegaXreal.asset', 'Assets\Config\MLOmegaXreal.asset.meta'
 )
@@ -57,11 +72,17 @@ foreach ($file in $files) {
 
 $oldHost = $env:MLOMEGA_PC_HOST
 $oldPort = $env:MLOMEGA_PC_PORT
+$oldProviderGate = $env:MLOMEGA_XREAL_PROVIDER_GATE
 $savedPath = $env:Path
 [Environment]::SetEnvironmentVariable('PATH',$null,[EnvironmentVariableTarget]::Process)
 [Environment]::SetEnvironmentVariable('Path',$savedPath,[EnvironmentVariableTarget]::Process)
 $env:MLOMEGA_PC_HOST = $PcHost
 $env:MLOMEGA_PC_PORT = [string]$PcPort
+if ($ProviderGate) {
+  $env:MLOMEGA_XREAL_PROVIDER_GATE = '1'
+} else {
+  Remove-Item Env:MLOMEGA_XREAL_PROVIDER_GATE -ErrorAction SilentlyContinue
+}
 
 function Run-UnityPass([string]$Method, [string]$Log) {
   $p = Start-Process -FilePath $UnityExe -ArgumentList @(
@@ -81,15 +102,17 @@ try {
   Set-Location $ProjectPath
   Write-Host "[INFO] XREAL passe 1/2: SDK + define" -ForegroundColor Cyan
   Run-UnityPass 'MLOmega.XR.Editor.AndroidBuildXreal.PrepareDefines' $PrepLog
-  Write-Host "[INFO] XREAL passe 2/2: APK produit" -ForegroundColor Cyan
+  $profile = if ($ProviderGate) { 'gate provider isole' } else { 'APK produit' }
+  Write-Host "[INFO] XREAL passe 2/2: $profile" -ForegroundColor Cyan
   Run-UnityPass 'MLOmega.XR.Editor.AndroidBuildXreal.BuildApk' $BuildLog
   if (-not (Test-Path $Apk)) { throw "Unity exit 0 mais APK absente: $Apk" }
   $hash = (Get-FileHash -LiteralPath $Apk -Algorithm SHA256).Hash
-  Write-Host "[OK] APK XREAL produit: $Apk (SHA-256 $hash)" -ForegroundColor Green
+  Write-Host "[OK] APK XREAL $profile`: $Apk (SHA-256 $hash)" -ForegroundColor Green
 } finally {
   Set-Location $ProjectRoot
   if ($null -eq $oldHost) { Remove-Item Env:MLOMEGA_PC_HOST -ErrorAction SilentlyContinue } else { $env:MLOMEGA_PC_HOST = $oldHost }
   if ($null -eq $oldPort) { Remove-Item Env:MLOMEGA_PC_PORT -ErrorAction SilentlyContinue } else { $env:MLOMEGA_PC_PORT = $oldPort }
+  if ($null -eq $oldProviderGate) { Remove-Item Env:MLOMEGA_XREAL_PROVIDER_GATE -ErrorAction SilentlyContinue } else { $env:MLOMEGA_XREAL_PROVIDER_GATE = $oldProviderGate }
   foreach ($file in $files) {
     $target = Join-Path $ProjectPath $file
     $copy = Join-Path $snapshotRoot $file
