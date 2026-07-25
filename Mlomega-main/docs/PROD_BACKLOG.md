@@ -1920,6 +1920,185 @@ réduction statique de JSON comme une validation modèle.
 
 #### Étape finale 4 — vrai Samsung S24, APK fraîche et identité owner réelle
 
+##### 4.0 Prélude — programme « monde augmenté / FreeGuy », isolé de Memory
+
+Ce programme enrichit d'abord le Live/Ultralive; il ne remplace ni VisionRT,
+WorldBrain, BrainLive ni CloseDay. Il peut être développé avant le gate matériel
+uniquement derrière un flag éteint par défaut. **Impératif absolu : les runs Local
+et PRO actuellement verts, leurs prompts, leurs writers et les deux APK de référence
+ne changent pas de comportement.**
+
+Architecture retenue :
+
+- [ ] **4.0-A Socle isolé avant toute nouvelle capacité.** Créer
+  `services/augmented-reality/` avec processus, environnement, dépendances et tests
+  propres, dans le même monorepo pour réutiliser les contrats. Le S24 conserve
+  capture, UI et réflexes; les modèles lourds tournent sur le PC. Entrées autorisées :
+  `FrameEnvelope`, audio horodaté, `PoseSample` et événements explicites. Sorties
+  autorisées : `UIIntent`/receipt et observation factuelle avec provenance via les
+  API existantes. Le service n'écrit jamais directement dans la DB mémoire et ne
+  connaît pas le schéma SQLite. BrainLive décide ensuite ce qui mérite mémoire.
+- [ ] **4.0-A1 Isolation et rollback prouvés.** Flag global
+  `MLOMEGA_AUGMENTED_REALITY=0` par défaut, flags par capacité et manifeste de
+  capacités. À `0`, aucun import lourd, thread, caméra, appel réseau, écriture ou
+  variation de payload Local/PRO. Chaque worker possède file bornée latest-only,
+  TTL, annulation de session, métriques latence/drop/VRAM et passage par
+  `GpuArbiter`. Un échec donne `unavailable|degraded`, jamais un faux résultat.
+  Avant chaque lot : conserver les hashes APK et rejouer seulement les tests
+  contractuels concernés; un run de référence n'est payé qu'au gate du lot.
+- [ ] **4.0-A2 Spike ARCore/XREAL obligatoire — ne pas supposer la coexistence.**
+  XREAL SDK 3.1 s'appuie sur son provider XR et l'XREAL Eye; ARCore Extensions
+  demande AR Foundation + provider ARCore et la caméra du S24. Prouver sur une
+  application-gate jetable si les deux sessions/providers et caméras peuvent
+  coexister sur S24 + One Pro/Eye sans casser tracking, rendu ou WebRTC. Si non,
+  choisir explicitement l'une des frontières suivantes : petit companion Android
+  ARCore communiquant par contrat avec l'APK XREAL; phases ARCore/XREAL
+  mutuellement exclusives; ou géométrie PC à partir de pose/Eye. Ne jamais injecter
+  ARCore directement dans l'APK produit avant ce verdict.
+
+**Lot 1 — vision augmentée crédible, meilleur ROI.**
+
+- [ ] **4.0-B Menus contextuels physiques autour des objets.** Réutiliser
+  VisionRT/YOLO et les entités WorldBrain; MobileSAM n'intervient qu'après focus ou
+  sélection pour détourer. Une entité visible reçoit une ancre écran/monde et un
+  menu construit depuis un registre d'actions réellement disponibles
+  (`manuel`, `historique`, `ouvrir l'app`, action domotique autorisée). Aucune
+  action sensible n'est exécutée sans confirmation/receipt. Le menu suit l'objet,
+  disparaît sur perte/TTL et ne confond jamais dernière position et visibilité.
+- [ ] **4.0-C Reconnaissance d'actions temporelles.** Évaluer MMAction2 sur le PC,
+  mais d'abord sur tracks/poses échantillonnés et fenêtres courtes, pas sur toutes
+  les frames. Émettre action + intervalle + confiance + sujet, avec état
+  `probable`; promouvoir un fait uniquement avec persistance ou corroboration.
+  Commencer par un vocabulaire utile au produit (s'asseoir, se lever, poser/prendre,
+  entrer/sortir, préparer une boisson), puis mesurer faux positifs, latence et GPU.
+- [ ] **4.0-D Son sémantique.** Ajouter un classifieur léger type YAMNet pour
+  reconnaître verre brisé, sirène, sonnette, alarme, bébé, chien, moteur, pas, etc.
+  Sans réseau de microphones synchronisés, afficher la classe et la temporalité,
+  jamais une direction inventée. Diarisation/ASR restent autoritaires pour la
+  parole. Déclenchement événementiel, cooldown et seuils par classe.
+- [ ] **4.0-E Connaissance contextuelle automatique.** OpenZIM/Wikipédia hors ligne
+  reçoit les sujets nouveaux déjà extraits par ASR/HotContext et renvoie une carte
+  courte, sourcée, refermable. Aucun appel par tour : novelty gate, cooldown,
+  demande explicite ou contexte réellement inconnu. La fiche n'entre pas dans la
+  mémoire personnelle comme observation vécue.
+- [ ] **4.0-F Zoom et mesure.** Le zoom normal reste crop/track local; Real-ESRGAN
+  est une amélioration à la demande calculée sur PC et étiquetée « amélioré », jamais
+  une nouvelle preuve visuelle. Une distance/taille n'est affichée que si profondeur,
+  intrinsics et tracking sont valides, avec incertitude. Sans Depth/pose valide,
+  abstention plutôt qu'une mesure monoculaire présentée comme exacte.
+
+**Lot 2 — socle spatial calibre Google Maps AR, après le spike A2.**
+
+- [ ] **4.0-G Geospatial/VPS.** Utiliser ARCore Geospatial seulement lorsque support,
+  permission, réseau et disponibilité VPS sont prouvés. Conserver latitude/longitude,
+  altitude, orientation, précisions horizontale/verticale/yaw, provider et timestamp;
+  ne jamais traduire « haute précision » en « centimètre garanti ». Prévoir fallback
+  GPS/pose XREAL et mode hors couverture.
+- [ ] **4.0-H Scene Semantics.** Exploiter les masques ciel/bâtiment/arbre/route/
+  trottoir/véhicule/personne pour placement, filtrage et occlusion. Limites
+  officielles à coder dans le capability gate : extérieur seulement, portrait, même
+  matrice de compatibilité que Depth; qualité moindre sur petites classes
+  `object/person`. Vérifier en plus que l'image sémantique correspond au champ de vue
+  Eye — un masque produit par la caméra S24 ne doit jamais être superposé directement
+  aux lunettes sans calibration extrinsèque.
+- [ ] **4.0-I Depth et Geospatial Depth.** Le Galaxy S24 figure dans la matrice
+  ARCore Depth. Utiliser Depth pour hit-tests, occlusion et mesures proches; la zone
+  la plus fiable reste environ 0,5–5 m et dépend du mouvement/texture. Geospatial
+  Depth peut compléter bâtiments/terrain jusqu'à environ 65 m uniquement avec
+  VPS + Streetscape Geometry. Stocker confiance/source et ne jamais présenter toute
+  la carte 65 m comme mesure locale exacte.
+- [ ] **4.0-J Ancres locales/Cloud Anchors et monde persistant.** Définir un registre
+  indépendant `anchor_id`, espace de coordonnées, pose, incertitude, propriétaire,
+  source, `entity_id`, création/expiration et dernière résolution. Les Cloud Anchors
+  nécessitent Google Cloud, quotas, réseau, feature-map de qualité et TTL; ne pas
+  écrire « gratuit illimité » tant que projet, facturation/quota et politique de
+  rétention ne sont pas validés. Une ancre non résolue redevient inconnue au lieu de
+  flotter à une ancienne pose.
+- [ ] **4.0-K Composition visuelle FreeGuy.** Empiler localisation, sémantique,
+  profondeur, ancres et mémoire uniquement après calibration des espaces. Construire
+  occlusion Depth, LOD/densité UI, collision d'ancres, ancrage doux, vérité visuelle
+  et thème URP. Budget cible : rendu stable à la fréquence lunettes; perception PC
+  asynchrone et événementielle. Les cartes importantes survivent à un drop réseau,
+  mais aucune géométrie périmée ne reste affichée comme actuelle.
+
+**Lot 3 — extensions après stabilité des lots 1–2.**
+
+- [ ] **4.0-L Trajectoires humaines probabilistes.** Évaluer OpenTraj/Social-GAN ou
+  un modèle équivalent à partir de tracks calibrés; montrer plusieurs futurs courts
+  avec confiance et horizon, jamais intention/dangerosité. Réservé aux scènes où pose,
+  profondeur et FPS sont suffisants.
+- [ ] **4.0-M Clavier/surface tactile.** MediaPipe Hands + plan calibré + projection
+  des bouts de doigts. Calibration volontaire, feedback de touche et correction;
+  aucun keylogging hors activation explicite. Le clavier n'est pas confondu avec les
+  gestes globaux paume/pinch existants.
+- [ ] **4.0-N Reconstruction 3D fantôme et VPS privé.** Commencer par lieux
+  pré-scannés et viewer local (Open3D/Gaussian Splatting), avec version de carte,
+  provenance média, quotas disque et suppression. `openvps`, Immersal ou AR
+  Foundation sont des candidats à évaluer, pas des dépendances déjà approuvées.
+- [ ] **4.0-O Appels avatar/holographiques.** Séparer WebRTC audio/vidéo, matting
+  temps réel (BodyPix ou équivalent), avatar 2.5D puis seulement reconstruction
+  volumétrique. PIFuHD n'est pas supposé temps réel. Ce chantier est indépendant et
+  ne doit pas entrer dans le Live principal avant un prototype avec budget réseau,
+  latence et consentement.
+
+**Lot 4 — expérimental, biométrie et garde-fous.**
+
+- [ ] **4.0-P Reconnaissance de proches et recherche publique contrôlée.** DeepFace
+  peut être évalué uniquement pour embeddings de personnes consentantes/enrôlées,
+  anti-spoofing et identification probabiliste. Les modèles enveloppés conservent
+  leurs licences propres. Sherlock/snscrape ne sont jamais déclenchés automatiquement
+  depuis un visage : recherche explicite sur une identité confirmée, sources et
+  résultats non vérifiés séparés de la mémoire factuelle. Âge, genre, « race » et
+  émotion faciale ne sont ni identité ni faits fiables et ne doivent pas alimenter
+  BrainLive.
+- [ ] **4.0-Q Pouls et amplification eulérienne.** Prototype opt-in uniquement sur
+  sujet immobile, ROI stable et lumière contrôlée. Afficher qualité du signal et
+  estimation de fréquence; aucun diagnostic ni « aura de stress/calme ». Les
+  mouvements de tête, lumière, compression, peau et distance doivent produire
+  abstention. L'amplification eulérienne est un effet/outil d'inspection, pas une
+  preuve physiologique.
+- [ ] **4.0-R Filtres visuels.** Beauté, rajeunissement, vêtements, CycleGAN et
+  face-swap restent effets locaux explicitement activés, avec consentement lorsqu'une
+  autre personne est transformée. Aucun pixel synthétique ne retourne dans VisionRT,
+  WorldBrain ou les archives comme observation réelle.
+- [ ] **4.0-S Capacités nécessitant du matériel.** RF-Pose exige un vrai capteur/
+  réseau RF dédié; une caméra acoustique exige un réseau de micros synchronisés; une
+  vraie vision événementielle exige une event camera. Avec l'Eye RGB, autoriser
+  seulement des approximations nommées (diff de frames, classification sonore), pas
+  les présenter comme ces capteurs. Wi-Fi RSSI peut être visualisé, mais ne détecte
+  pas sûrement personnes, champs ou caméras cachées. Toute assistance balistique
+  destinée à une arme est hors produit; une trajectoire ludique d'objet inoffensif
+  resterait un simulateur séparé.
+
+**Dépendances candidates à évaluer, jamais à copier sans audit licence/maintenance :**
+
+- perception : `open-mmlab/mmaction2`, `ultralytics/ultralytics`,
+  `ChaoningZhang/MobileSAM`, MediaPipe Hands, `xinntao/Real-ESRGAN`;
+- son : YAMNet/realtime-YAMNET et pyannote déjà présent pour la parole;
+- espace : AR Foundation/ARCore Extensions, Open3D, `OpenArCloud/openvps`,
+  Immersal VPS, `graphdeco-inria/gaussian-splatting`,
+  `mkkellogg/GaussianSplats3D`, `playcanvas/supersplat-viewer`;
+- identité/effets : `serengil/deepface`, DeepFaceLive,
+  Face_Beautification_Android, Clothing-Segmentation;
+- recherche uniquement : RF-Pose, Eulerian Motion Magnification, OpenTraj,
+  SurfaceTouch, event-based vision resources, PIFuHD/MVP et Mozilla Hubs.
+
+**Gate commun à chaque lot :** test du service isolé → test contrat
+frame/audio/pose→UIIntent→receipt → test négatif (modèle absent, GPU occupé, réseau
+perdu, capability non supportée) → mesure S24/PC réelle → lancement Local et PRO de
+référence avec feature désactivée, sorties/hashes fonctionnels inchangés → gate avec
+feature activée. Aucun lot n'est coché sur la présence d'une classe, d'un dépôt cloné
+ou d'une démo éditeur.
+
+Sources techniques autoritaires pour le socle spatial :
+[XREAL SDK 3.1](https://docs.xreal.com/),
+[ARCore Extensions/AR Foundation](https://developers.google.com/ar/develop/unity-arf/features),
+[Scene Semantics](https://developers.google.com/ar/develop/scene-semantics),
+[Depth](https://developers.google.com/ar/develop/depth),
+[Geospatial Depth](https://developers.google.com/ar/develop/c/depth/geospatial-depth),
+[Geospatial quotas](https://developers.google.com/ar/develop/c/geospatial/api-usage-quota)
+et [appareils ARCore](https://developers.google.com/ar/devices).
+
 - [x] **4.1 Rebuild PhoneOnly obligatoire.** Le commit `de39fef` modifie le C# Unity
   (`translate_text`) : l'ancienne APK ne contient pas le pont. Fermer Unity, puis depuis
   `apps\xr-mobile` :
