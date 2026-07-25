@@ -1930,7 +1930,7 @@ ne changent pas de comportement.**
 
 Architecture retenue :
 
-- [ ] **4.0-A Socle isolé avant toute nouvelle capacité.** Créer
+- [x] **4.0-A Socle isolé avant toute nouvelle capacité.** Créer
   `services/augmented-reality/` avec processus, environnement, dépendances et tests
   propres, dans le même monorepo pour réutiliser les contrats. Le S24 conserve
   capture, UI et réflexes; les modèles lourds tournent sur le PC. Entrées autorisées :
@@ -1938,7 +1938,7 @@ Architecture retenue :
   autorisées : `UIIntent`/receipt et observation factuelle avec provenance via les
   API existantes. Le service n'écrit jamais directement dans la DB mémoire et ne
   connaît pas le schéma SQLite. BrainLive décide ensuite ce qui mérite mémoire.
-- [ ] **4.0-A1 Isolation et rollback prouvés.** Flag global
+- [x] **4.0-A1 Isolation et rollback prouvés.** Flag global
   `MLOMEGA_AUGMENTED_REALITY=0` par défaut, flags par capacité et manifeste de
   capacités. À `0`, aucun import lourd, thread, caméra, appel réseau, écriture ou
   variation de payload Local/PRO. Chaque worker possède file bornée latest-only,
@@ -1946,6 +1946,26 @@ Architecture retenue :
   `GpuArbiter`. Un échec donne `unavailable|degraded`, jamais un faux résultat.
   Avant chaque lot : conserver les hashes APK et rejouer seulement les tests
   contractuels concernés; un run de référence n'est payé qu'au gate du lot.
+
+**Avancement 4.0-A/A1 (2026-07-25 — fondation fermée, capacités encore OFF).**
+`services/augmented-reality/` est un processus loopback stdlib séparé, lancé
+uniquement par `RUN_MLOMEGA_V19.ps1 -LivePhone -AugmentedReality`. Sans ce switch
+et sans variable explicite, le bridge PhoneOnly ne crée ni executor, ni thread,
+ni appel réseau. Le menu Liquid Glass possède un master et un interrupteur par
+capacité livrée, avec trois vérités visuelles : `OFF`, sélectionnée/en attente,
+réellement active. Le StatusBar ne devient vert que sur `ready`, jamais sur le
+simple accusé de réception d'une préférence.
+
+Le contrat DataChannel `augmented_reality_preferences` est borné et le retour
+`augmented_reality_status` expose les capacités réellement actives. Le service ne
+connaît aucun schéma SQLite : les modules futurs pourront lire WorldBrain/
+MemoryQuery/HotContext par leurs API et écrire seulement par les writers
+d'événements validés. Mode OFF et deux chemins PhoneOnly historiques : **8 tests
+Python verts**; Unity réel : **5/5 fondation + 10/10 menu/commandes verts**.
+`PhoneOnly.unity` et les réglages XR sales antérieurs n'ont pas été régénérés.
+Les APK existantes ne contiennent donc pas encore ce nouveau menu; leur rebuild
+est différé au premier lot fonctionnel. `4.0-A2` reste ouvert : aucune présence
+d'assembly ne prouve la coexistence ARCore/XREAL sur le matériel.
 - [ ] **4.0-A2 Spike ARCore/XREAL obligatoire — ne pas supposer la coexistence.**
   XREAL SDK 3.1 s'appuie sur son provider XR et l'XREAL Eye; ARCore Extensions
   demande AR Foundation + provider ARCore et la caméra du S24. Prouver sur une
@@ -2035,11 +2055,45 @@ Architecture retenue :
   pré-scannés et viewer local (Open3D/Gaussian Splatting), avec version de carte,
   provenance média, quotas disque et suppression. `openvps`, Immersal ou AR
   Foundation sont des candidats à évaluer, pas des dépendances déjà approuvées.
-- [ ] **4.0-O Appels avatar/holographiques.** Séparer WebRTC audio/vidéo, matting
-  temps réel (BodyPix ou équivalent), avatar 2.5D puis seulement reconstruction
-  volumétrique. PIFuHD n'est pas supposé temps réel. Ce chantier est indépendant et
-  ne doit pas entrer dans le Live principal avant un prototype avec budget réseau,
-  latence et consentement.
+- [ ] **4.0-O1 Vision événementielle RGB.** Avec l'XREAL Eye, construire un mode
+  volontaire « seulement ce qui change » par différences de frames, flot optique et
+  tracks VisionRT : silhouettes, micro-mouvements suffisamment visibles,
+  clignotements et objets rapides deviennent des contours/traînées temporaires. Le
+  rendu reste un effet Ultralive local et borné, désactivable séparément. Il ne doit
+  jamais être présenté comme une vraie event camera ni alimenter WorldBrain avec des
+  observations synthétiques. Prévoir seuil adaptatif, stabilisation du mouvement de
+  tête, LOD thermique et extinction automatique si FPS/température chutent.
+- [ ] **4.0-O2 Trajectoire balistique ludique.** Réserver Bullet/physique et
+  MediaPipe Hands aux objets inoffensifs explicitement sélectionnés (balle, papier,
+  objet lancé vers une cible). Estimer origine, vitesse, gravité, plan cible et
+  incertitude, puis afficher plusieurs trajectoires probabilistes courtes. Interdire
+  les armes, l'assistance visant une personne et toute présentation comme calcul
+  certain; aucune exécution permanente sans calibration Depth/pose valide.
+- [ ] **4.0-O3 Mètre ruban AR.** Produire distance, hauteur, largeur et écart entre
+  deux points depuis Depth/Geospatial Depth, intrinsics et pose calibrée. L'UI montre
+  unités, source et marge d'erreur, permet de fixer/effacer les points et refuse une
+  mesure lorsque la profondeur ou le tracking est insuffisant. Ce lot spécialise
+  `4.0-F`/`4.0-I`; il ne duplique pas un estimateur monoculaire présenté comme exact.
+- [ ] **4.0-O4 Carte radio Wi-Fi/Bluetooth.** Visualiser uniquement les mesures
+  réellement disponibles sur le S24 : RSSI, SSID/BSSID pseudonymisé, BLE autorisé,
+  timestamp et position/zone avec incertitude. Construire une heatmap au fil du
+  déplacement, avec permissions et effacement explicites. Ne jamais appeler cela
+  « champ électromagnétique », ne pas prétendre voir à travers les murs, localiser
+  précisément une personne ou détecter sûrement une caméra cachée.
+- [ ] **4.0-O5 Filtre temporel du monde.** Superposer une reconstitution passée
+  sourcée (replay, médias personnels, carte 3D versionnée) ou un style historique
+  explicitement synthétique (CycleGAN/pix2pix). Séparer visuellement `reconstruction`
+  et `imagination`, conserver date/provenance et ne jamais réinjecter les pixels
+  transformés dans VisionRT, WorldBrain, OCR ou les archives comme preuve réelle.
+  Le calcul lourd reste à la demande sur PC; le S24/XREAL ne fait que tracking,
+  composition, cache et rendu.
+- [ ] **4.0-O6 Transformations visage/vêtements.** Proposer beauté/rajeunissement,
+  face-swap et remplacement/segmentation de vêtements comme effets locaux opt-in,
+  chacun avec interrupteur, aperçu et reset. Exiger consentement lorsqu'une autre
+  personne est transformée, appliquer un watermark/état UI « synthétique », et
+  isoler strictement le flux rendu du flux perception/mémoire. Commencer par
+  segmentation vêtements/masques 2D; DeepFaceLive ou reconstruction plus lourde ne
+  passe en Ultralive qu'après mesure FPS, chauffe, latence et licence.
 
 **Lot 4 — expérimental, biométrie et garde-fous.**
 

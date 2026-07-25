@@ -46,6 +46,8 @@ namespace MLOmega.XR.UI.Components
 
         [Tooltip("E48-A: live on-device translation is on. Shows a discreet badge.")]
         [SerializeField] private bool _translateLive;
+        [SerializeField] private bool _augmentedRealityEnabled;
+        [SerializeField] private string _augmentedRealityStatus = "disabled";
 
         private GlassPanel _panel;
         private float _nextRefresh;
@@ -60,6 +62,16 @@ namespace MLOmega.XR.UI.Components
         public bool CaptureOnly { get => _captureOnly; set => _captureOnly = value; }
         /// <summary>E48-A: live on-device translation on/off badge (set by DeviceCommandHandler).</summary>
         public bool TranslateLive { get => _translateLive; set => _translateLive = value; }
+        public bool AugmentedRealityEnabled
+        {
+            get => _augmentedRealityEnabled;
+            set => _augmentedRealityEnabled = value;
+        }
+        public string AugmentedRealityStatus
+        {
+            get => _augmentedRealityStatus;
+            set => _augmentedRealityStatus = value ?? "unavailable";
+        }
 
         private void Awake()
         {
@@ -124,6 +136,20 @@ namespace MLOmega.XR.UI.Components
             if (_translateLive)
             {
                 _sb.Append("<color=#C8D6E5>translate</color>  ");
+            }
+            if (_augmentedRealityEnabled)
+            {
+                string glyph = _augmentedRealityStatus == "ready"
+                    ? "AR"
+                    : _augmentedRealityStatus == "pending" ||
+                      _augmentedRealityStatus == "accepted" ||
+                      _augmentedRealityStatus == "armed"
+                        ? "AR…"
+                        : "AR!";
+                string colour = glyph == "AR" ? "#67F0C1" :
+                                glyph == "AR…" ? "#FFD24A" : "#FF6B6B";
+                _sb.Append("<color=").Append(colour).Append(">")
+                   .Append(glyph).Append("</color>  ");
             }
             _sb.Append(Battery());
 

@@ -45,6 +45,7 @@ namespace MLOmega.XR.UI
         [JsonProperty("text")] public string Text { get; set; }
         [JsonProperty("source_language")] public string SourceLanguage { get; set; }
         [JsonProperty("target_language")] public string TargetLanguage { get; set; }
+        [JsonProperty("feature")] public string Feature { get; set; }
 
         public static bool IsDeviceCommand(string json)
         {
@@ -60,6 +61,7 @@ namespace MLOmega.XR.UI
         [SerializeField] private AppLauncherBridge _appLauncher;
         [SerializeField] private LiveTransportBridge _transport;
         [SerializeField] private XrSessionController _session;
+        [SerializeField] private AugmentedRealityFeatureRegistry _augmentedReality;
 
         /// <summary>Raised when a "menu" command arrives (MenuPanel opens the panel).</summary>
         public event Action MenuRequested;
@@ -94,6 +96,10 @@ namespace MLOmega.XR.UI
             if (_appLauncher == null) _appLauncher = FindAnyObjectByType<AppLauncherBridge>();
             if (_transport == null) _transport = FindAnyObjectByType<LiveTransportBridge>();
             if (_session == null) _session = FindAnyObjectByType<XrSessionController>();
+            if (_augmentedReality == null)
+                _augmentedReality = FindAnyObjectByType<AugmentedRealityFeatureRegistry>();
+            if (_augmentedReality == null)
+                _augmentedReality = gameObject.AddComponent<AugmentedRealityFeatureRegistry>();
         }
 
         private void OnEnable()
@@ -170,6 +176,10 @@ namespace MLOmega.XR.UI
                     break;
                 case "set_wake_word":
                     ok = SetWakeWord(cmd.Word);
+                    break;
+                case "set_augmented_feature":
+                    ok = _augmentedReality != null &&
+                         _augmentedReality.SetFeature(cmd.Feature, cmd.On);
                     break;
                 default:
                     Debug.LogWarning($"[DeviceCommand] unknown action: {cmd.Action}");

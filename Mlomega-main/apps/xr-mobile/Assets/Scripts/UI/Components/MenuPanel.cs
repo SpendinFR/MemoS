@@ -40,6 +40,7 @@ namespace MLOmega.XR.UI.Components
         [SerializeField] private UITheme _theme;
         [SerializeField] private Material _glassMaterial;
         [SerializeField] private Camera _camera;
+        [SerializeField] private AugmentedRealityFeatureRegistry _augmentedReality;
 
         [Tooltip("Seconds of continuous gaze on an item before it selects (dwell).")]
         [SerializeField] private float _dwellSeconds = 1.0f;
@@ -69,11 +70,14 @@ namespace MLOmega.XR.UI.Components
         private Vector3 _restorePosition;
         private Quaternion _restoreRotation;
         private Vector2 _restoreSize;
+        private bool _augmentedSettingsPage;
 
         private void Awake()
         {
             if (_commandHandler == null) _commandHandler = FindAnyObjectByType<DeviceCommandHandler>();
             if (_camera == null) _camera = Camera.main;
+            if (_augmentedReality == null)
+                _augmentedReality = FindAnyObjectByType<AugmentedRealityFeatureRegistry>();
             if (ReceiptSink == null) ReceiptSink = FindAnyObjectByType<UIReceiptTransportSink>();
             EnsureVisual();
             BuildDefaultActions();
@@ -90,13 +94,26 @@ namespace MLOmega.XR.UI.Components
             }
             _panel = new GlassPanel(transform, _size, _theme, _glassMaterial,
                 withTitle: true, withBody: true, withTruthChip: false);
-            _panel.Title.text = "Viki — menu                         −   ×";
+            _panel.Title.text = "VIKI // MENU                         −   ×";
+            if (_panel.Body != null)
+            {
+                _panel.Body.fontSize = 0.034f;
+                _panel.Body.lineSpacing = 12f;
+                _panel.Body.richText = true;
+            }
             _panel.SetAlpha(1f);
         }
 
         /// <summary>The default action grid (§5). Public so tests/scene-builders can rebuild it.</summary>
         public void BuildDefaultActions()
         {
+            _augmentedSettingsPage = false;
+            BuildMainActions();
+        }
+
+        private void BuildMainActions()
+        {
+            ResolveAugmentedRegistry();
             _actions.Clear();
             // Modes.
             _actions.Add(Mode("FreeGuy", "freeguy"));
@@ -119,22 +136,87 @@ namespace MLOmega.XR.UI.Components
             // Paid mode on/off.
             _actions.Add(new MenuAction("Mode payant", new DeviceCommand { Type = "device_command", Action = "paid_mode" }));
             _actions.Add(new MenuAction("Mode local", new DeviceCommand { Type = "device_command", Action = "local_mode" }));
+            _actions.Add(new MenuAction(
+                "Augmenté : " +
+                (_augmentedReality?.DisplayState(AugmentedRealityFeatureRegistry.Master) ?? "OFF"),
+                Feature(AugmentedRealityFeatureRegistry.Master)));
+            _actions.Add(new MenuAction(
+                "Réglages AR",
+                new DeviceCommand { Type = "device_command", Action = "open_augmented_settings" }));
             // Close.
             _actions.Add(new MenuAction("Fermer", new DeviceCommand { Type = "device_command", Action = "close_menu" }));
+            RefreshVisual();
+        }
+
+        public void BuildAugmentedActions()
+        {
+            ResolveAugmentedRegistry();
+            _augmentedSettingsPage = true;
+            _actions.Clear();
+            _actions.Add(ToggleLabel("AR globale", AugmentedRealityFeatureRegistry.Master));
+            _actions.Add(ToggleLabel("Menus objets", AugmentedRealityFeatureRegistry.ObjectMenus));
+            _actions.Add(ToggleLabel("Actions", AugmentedRealityFeatureRegistry.ActionRecognition));
+            _actions.Add(ToggleLabel("Sons", AugmentedRealityFeatureRegistry.SemanticSound));
+            _actions.Add(ToggleLabel("Contexte", AugmentedRealityFeatureRegistry.ContextualKnowledge));
+            _actions.Add(ToggleLabel("Super-zoom", AugmentedRealityFeatureRegistry.EnhancedZoom));
+            _actions.Add(ToggleLabel("Mesure AR", AugmentedRealityFeatureRegistry.ArMeasurement));
+            _actions.Add(new MenuAction(
+                "Retour",
+                new DeviceCommand { Type = "device_command", Action = "back_main_menu" }));
             RefreshVisual();
         }
 
         private void RefreshVisual()
         {
             if (_panel?.Body == null) return;
+            ResolveAugmentedRegistry();
+            RefreshTitle();
             var text = new StringBuilder(256);
             for (int i = 0; i < _actions.Count; i++)
             {
-                text.Append(i == _gazeIndex ? "› " : "  ");
+                text.Append(i == _gazeIndex
+                    ? "<color=#7FE7FF>›</color> "
+                    : "  ");
+                DeviceCommand command = _actions[i].Command;
+                if (command?.Action == "set_augmented_feature")
+                {
+                    bool active = _augmentedReality?.IsActive(command.Feature) ?? false;
+                    bool selected = _augmentedReality?.IsSelected(command.Feature) ?? false;
+                    text.Append(active
+                        ? "<color=#67F0C1>●</color> "
+                        : selected
+                            ? "<color=#FFD24A>◌</color> "
+                            : "<color=#617386>○</color> ");
+                }
                 text.Append(_actions[i].Label);
                 if (i + 1 < _actions.Count) text.Append('\n');
             }
             _panel.Body.text = text.ToString();
+        }
+
+        private void ResolveAugmentedRegistry()
+        {
+            if (_augmentedReality == null)
+                _augmentedReality = FindAnyObjectByType<AugmentedRealityFeatureRegistry>();
+        }
+
+        private void RefreshTitle()
+        {
+            if (_panel?.Title == null) return;
+            if (!_augmentedSettingsPage)
+            {
+                _panel.Title.text =
+                    "<color=#7FE7FF>VIKI</color> // MENU                         −   ×";
+                return;
+            }
+            string status = _augmentedReality?.MasterEnabled == true
+                ? (_augmentedReality.LastServiceStatus == "ready" ? "ACTIF" : "SYNCHRO")
+                : "OFF";
+            string colour = status == "ACTIF" ? "#67F0C1" :
+                            status == "SYNCHRO" ? "#FFD24A" : "#8FA3B8";
+            _panel.Title.text =
+                "<color=#7FE7FF>VIKI</color> // AUGMENTÉ  " +
+                $"<color={colour}>{status}</color>          −   ×";
         }
 
         private static MenuAction Mode(string label, string uiMode) =>
@@ -142,6 +224,20 @@ namespace MLOmega.XR.UI.Components
 
         private static MenuAction App(string label, string app) =>
             new MenuAction(label, new DeviceCommand { Type = "device_command", Action = "open_app", App = app });
+
+        private static DeviceCommand Feature(string feature) =>
+            new DeviceCommand
+            {
+                Type = "device_command",
+                Action = "set_augmented_feature",
+                Feature = feature,
+                On = null,
+            };
+
+        private MenuAction ToggleLabel(string label, string feature) =>
+            new MenuAction(
+                label + " : " + (_augmentedReality?.DisplayState(feature) ?? "OFF"),
+                Feature(feature));
 
         /// <summary>Open the panel (palm gesture or "menu" command). Idempotent.</summary>
         public void Open()
@@ -216,6 +312,18 @@ namespace MLOmega.XR.UI.Components
             ActionSelected?.Invoke(action);
 
             string act = action.Command?.Action ?? string.Empty;
+            if (act == "open_augmented_settings")
+            {
+                BuildAugmentedActions();
+                SendReceipt(action);
+                return true;
+            }
+            if (act == "back_main_menu")
+            {
+                BuildDefaultActions();
+                SendReceipt(action);
+                return true;
+            }
             if (act == "close_menu")
             {
                 Close();
@@ -229,6 +337,11 @@ namespace MLOmega.XR.UI.Components
                 ok = _commandHandler.ExecuteFromMenu(action.Command);
             }
             SendReceipt(action);
+            if (act == "set_augmented_feature")
+            {
+                if (_augmentedSettingsPage) BuildAugmentedActions(); else BuildMainActions();
+                return ok;
+            }
             // Selecting a mode/app action closes the menu (single-shot), like a tap.
             Close();
             return ok;

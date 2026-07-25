@@ -36,6 +36,9 @@ delivery_adapter = _load("v19_delivery_adapter", "delivery_adapter.py")
 clip_recorder_mod = _load("v19_clip_recorder_runtime", "clip_recorder.py")
 gpu_arbiter_mod = _load("v19_gpu_arbiter_runtime", "gpu_arbiter.py")
 deferred_fine_intel = _load("v19_deferred_fine_intel_runtime", "deferred_fine_intel.py")
+augmented_reality_bridge = _load(
+    "v19_augmented_reality_bridge", "augmented_reality_bridge.py"
+)
 
 
 def _completed_close_day_exists(
@@ -419,6 +422,7 @@ class PhoneOnlyRuntime:
         self.person_id = person_id
         self.db_path = db_path
         self.recent_errors: deque[str] = deque(maxlen=20)
+        self.augmented_reality = augmented_reality_bridge.AugmentedRealityBridge.from_env()
         # E47-C livrable 6: when this is a SECOND (or later) live session on the
         # same day, its close-day must REOPEN the day's already-completed close-day
         # run so this session's data is consolidated too (multi-session/day). The
@@ -738,6 +742,17 @@ class PhoneOnlyRuntime:
             return
         if isinstance(payload, dict) and payload.get("type") == "privacy_state":
             self.privacy_paused = bool(payload.get("paused"))
+            return
+        if (
+            isinstance(payload, dict)
+            and payload.get("type") == "augmented_reality_preferences"
+        ):
+            self.augmented_reality.submit_preferences(
+                payload,
+                session_id=self.session_id,
+                person_id=self.person_id,
+                on_status=self._send_augmented_reality_status,
+            )
             return
         if isinstance(payload, dict) and payload.get("type") == "device_intent":
             router = getattr(self.pipeline, "intents", None)
@@ -1172,6 +1187,21 @@ class PhoneOnlyRuntime:
             # the consumer task; transport closure remains idempotent.
             await asyncio.gather(self.video_task, return_exceptions=True)
         await asyncio.to_thread(self._stop_clip_recorder)
+        self.augmented_reality.close()
+
+    def _send_augmented_reality_status(self, status: dict[str, Any]) -> None:
+        payload = {
+            "type": "augmented_reality_status",
+            "status": str(status.get("status") or "unavailable"),
+            "detail": str(status.get("detail") or "")[:300],
+            "active_features": list(status.get("active_features") or []),
+        }
+        try:
+            self.ingress.send_ui_intent(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            )
+        except Exception as exc:
+            self.recent_errors.append(("augmented_reality.status: " + str(exc))[:500])
 
     def _stop_clip_recorder(self) -> None:
         recorder = self.clip_recorder
@@ -1186,6 +1216,7 @@ class PhoneOnlyRuntime:
 
     def status(self) -> dict[str, Any]:
         metrics = dict(self.pipeline.metrics())
+        metrics["augmented_reality"] = self.augmented_reality.metrics()
         if hasattr(self.ingress, "stats"):
             metrics.update(self.ingress.stats())
         conversation = getattr(self.pipeline, "conversation", None)

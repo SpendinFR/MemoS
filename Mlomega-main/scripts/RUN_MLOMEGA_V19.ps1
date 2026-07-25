@@ -14,6 +14,7 @@ param(
   [Alias("PhoneOnly")][switch]$LivePhone,
   [switch]$Xr,
   [switch]$Pro,
+  [switch]$AugmentedReality,
   [ValidateSet("pro", "flash")][string]$ProTextModel = "pro",
   [ValidateSet("stop", "flash", "local")][string]$CloudOnBudget = "stop",
   [double]$CloudBudgetEur = 1.50,
@@ -96,6 +97,9 @@ function Initialize-CoreCudaPath {
 
 if ($LivePhone) {
   Import-DotEnv
+  $augmentedRealityProcess = $null
+  if ($AugmentedReality) { $env:MLOMEGA_AUGMENTED_REALITY = "1" }
+  if (-not $env:MLOMEGA_AUGMENTED_REALITY) { $env:MLOMEGA_AUGMENTED_REALITY = "0" }
   if ($Pro) {
     $env:MLOMEGA_CLOUD_MODE = "pro"
     $env:MLOMEGA_PRO_CLOSEDAY = "1"
@@ -152,6 +156,32 @@ if ($LivePhone) {
     Write-Host "     Companion: http://${address}:8706/"
   }
   Write-Host "[INFO] Ce lancement ne prouve pas le build Unity/Gradle ni le flux materiel Android." -ForegroundColor Yellow
+  if ($env:MLOMEGA_AUGMENTED_REALITY.Trim().ToLowerInvariant() -in @("1", "true", "yes", "on")) {
+    $augmentedRealityProcess = Start-Process -FilePath $Python -ArgumentList @(
+      (Join-Path $ProjectRoot "services\augmented-reality\service.py"),
+      "--host", "127.0.0.1", "--port", "8791"
+    ) -WindowStyle Hidden -PassThru
+    $augmentedRealityReady = $false
+    for ($i = 0; $i -lt 20; $i++) {
+      try {
+        $probe = Invoke-WebRequest -Uri "http://127.0.0.1:8791/health" -UseBasicParsing -TimeoutSec 1
+        $body = $probe.Content | ConvertFrom-Json
+        if ($probe.StatusCode -eq 200 -and $body.enabled -eq $true) {
+          $augmentedRealityReady = $true
+          break
+        }
+      }
+      catch { Start-Sleep -Milliseconds 250 }
+    }
+    if (-not $augmentedRealityReady) {
+      if ($augmentedRealityProcess -and -not $augmentedRealityProcess.HasExited) {
+        Stop-Process -Id $augmentedRealityProcess.Id -Force -ErrorAction SilentlyContinue
+      }
+      Write-Host "[FAIL] Service Augmented Reality indisponible sur http://127.0.0.1:8791/." -ForegroundColor Red
+      exit 5
+    }
+    Write-Host "[OK]   Service Augmented Reality isole pret; toutes les capacites restent pilotees depuis le menu." -ForegroundColor Green
+  }
   $companion = Start-Process -FilePath $Python -ArgumentList @(
     (Join-Path $ProjectRoot "services\live-pc\delivery_adapter.py"), "--host", $BindHost, "--port", "8706"
   ) -WindowStyle Hidden -PassThru
@@ -165,6 +195,9 @@ if ($LivePhone) {
   }
   if (-not $companionReady) {
     if ($companion -and -not $companion.HasExited) { Stop-Process -Id $companion.Id -Force -ErrorAction SilentlyContinue }
+    if ($augmentedRealityProcess -and -not $augmentedRealityProcess.HasExited) {
+      Stop-Process -Id $augmentedRealityProcess.Id -Force -ErrorAction SilentlyContinue
+    }
     Write-Host "[FAIL] Companion-web n'a pas démarré sur http://127.0.0.1:8706/." -ForegroundColor Red
     exit 5
   }
@@ -174,6 +207,9 @@ if ($LivePhone) {
   }
   finally {
     if ($companion -and -not $companion.HasExited) { Stop-Process -Id $companion.Id -Force -ErrorAction SilentlyContinue }
+    if ($augmentedRealityProcess -and -not $augmentedRealityProcess.HasExited) {
+      Stop-Process -Id $augmentedRealityProcess.Id -Force -ErrorAction SilentlyContinue
+    }
   }
   exit $serverCode
 }
@@ -198,5 +234,5 @@ if ($SimOnly) {
   exit $code
 }
 
-Write-Host "Usage: .\scripts\RUN_MLOMEGA_V19.ps1 -SimOnly | -LivePhone [-Pro] [-CloudBudgetEur 1.50] [-CloudOnBudget stop|flash|local]" -ForegroundColor Cyan
+Write-Host "Usage: .\scripts\RUN_MLOMEGA_V19.ps1 -SimOnly | -LivePhone [-Pro] [-AugmentedReality] [-CloudBudgetEur 1.50] [-CloudOnBudget stop|flash|local]" -ForegroundColor Cyan
 exit 0

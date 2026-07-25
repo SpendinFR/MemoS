@@ -42,6 +42,20 @@ préflight profond, prépare GPU/Ollama/P1 puis démarre Companion et SessionHub
 .\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -PersonId me -BindHost 0.0.0.0 -Port 8710
 ```
 
+Le monde augmenté est un opt-in séparé. Le switch démarre le service loopback
+8791, vérifie son `/health`, puis le ferme avec SessionHub. Sans le switch, le
+produit Local/PRO reste strictement sur son chemin historique :
+
+```powershell
+.\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -AugmentedReality `
+  -PersonId me -BindHost 0.0.0.0 -Port 8710
+```
+
+Dans le menu Liquid Glass, `OFF` signifie coupé, `ARMÉ/ATTENTE` signifie demandé
+mais pas encore actif, et `ON` n'est affiché qu'après confirmation du service.
+Une capacité absente ou incompatible reste jaune/rouge; ne jamais interpréter la
+préférence enregistrée comme une preuve qu'un worker ou ARCore fonctionne.
+
 Ne pas démarrer manuellement P1 et plusieurs modèles Ollama avant cette commande :
 l'orchestrateur GPU gère leur résidence par phase. Le CloseDay enfant utilise `.venv` de
 façon intentionnelle; le live reste dans `.venv-live`.

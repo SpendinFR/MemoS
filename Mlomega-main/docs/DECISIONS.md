@@ -1810,3 +1810,25 @@ et Eye sont montés ensemble puis mis à jour depuis un PC avec Chrome 89+ via
 autoritaire; MyGlasses reste propre au Beam Pro. L'APK, les routes PC et le protocole
 restent identiques : cette décision d'exploitation ne rouvre ni PhoneOnly ni les runs
 Local/PRO.
+
+## 2026-07-25 — La réalité augmentée est un plan de contrôle optionnel, pas une seconde mémoire
+
+Le programme FreeGuy reste dans le monorepo pour réutiliser les contrats, mais son
+processus PC est séparé et loopback-only. `MLOMEGA_AUGMENTED_REALITY=0` est la
+valeur par défaut; `-AugmentedReality` constitue l'opt-in opérateur. À OFF, aucun
+worker, import de modèle, caméra ou réseau n'est créé. Les runs Local/PRO, leurs
+prompts et leurs writers restent inchangés.
+
+Le menu n'affiche pas une préférence comme une capacité réelle. Il distingue
+`OFF`, sélection/attente et `ON` confirmé par le service. Chaque futur mode possède
+son interrupteur et son budget cadence/chaleur; une surcharge doit dégrader ou
+couper le mode optionnel, jamais AudioRT, VisionRT ou BrainLive.
+
+Le service AR ne lit ni n'écrit SQLite. Un module qui a besoin de mémoire consomme
+les API WorldBrain, MemoryQuery ou HotContext; une observation nouvelle traverse
+un writer événementiel existant avec provenance. Les pixels améliorés, filtrés,
+face-swappés ou reconstruits restent hors du flux de preuve.
+
+ARCore n'est pas ajouté à l'APK produit avant un spike physique S24 + XREAL One
+Pro/Eye. Le probe par réflexion ne fait qu'inventorier les assemblies et le loader;
+son verdict reste `unproven_physical_gate`.

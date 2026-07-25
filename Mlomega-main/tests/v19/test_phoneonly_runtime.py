@@ -972,6 +972,35 @@ def test_device_privacy_and_structured_intent_reach_runtime_controls():
     assert rt.pipeline.intents.calls[0][0] == "owner_enroll"
 
 
+def test_augmented_reality_preferences_are_isolated_and_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("MLOMEGA_AUGMENTED_REALITY", raising=False)
+    rt = runtime_mod.PhoneOnlyRuntime(
+        "s-ar-off", ingress_factory=FakeIngress, pipeline_factory=FakePipeline,
+        close_day=lambda **_: {"status": "completed"},
+    )
+    rt.ingress.open_channels = 1
+    rt._on_receipt(json.dumps({
+        "type": "augmented_reality_preferences",
+        "schema_version": 1,
+        "master_enabled": True,
+        "features": {
+            "object_menus": True,
+            "action_recognition": False,
+            "semantic_sound": True,
+            "contextual_knowledge": False,
+            "enhanced_zoom": False,
+            "ar_measurement": False,
+        },
+        "probe": {"coexistence_verdict": "unproven_physical_gate"},
+    }))
+
+    assert rt.augmented_reality.worker_created is False
+    assert rt.augmented_reality.metrics()["submitted"] == 1
+    status = json.loads(rt.ingress.sent[-1])
+    assert status["type"] == "augmented_reality_status"
+    assert status["status"] == "disabled"
+
+
 def test_recovery_job_exists_before_brainlive_can_be_marked_ended(tmp_path, monkeypatch):
     db_path = tmp_path / "recovery.db"
     monkeypatch.setenv("MLOMEGA_DB", str(db_path))

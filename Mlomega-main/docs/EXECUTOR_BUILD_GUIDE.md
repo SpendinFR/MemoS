@@ -1770,3 +1770,33 @@ Attendre dans le log `Eye capture started` puis transport connecté; aucune erre
 aucun `pose_valid` positionnel avant tracking 6DoF. Le S24 est officiellement compatible
 SDK 3.0, mais n'est pas dans la matrice publiée des hôtes testés SDK 3.1 (S25/Beam Pro) :
 seul ce test physique peut fermer la compatibilité hôte.
+
+### PASSATION 2026-07-25 — 4.0-A/A1 fondation Augmented Reality
+
+Le lot est additif et opt-in. `AugmentedRealityFeatureRegistry` est créé par le
+`DeviceCommandHandler` même dans une scène ancienne, charge des préférences toutes
+OFF, puis publie un contrat borné sur le DataChannel. Le `MenuPanel` réutilise le
+Liquid Glass existant : page AR séparée, état OFF/ARMÉ-ATTENTE/ON, accent
+cyan/menthe, jaune tant que le service n'a pas confirmé et badge StatusBar. Les
+actions continuent de passer par l'unique `DeviceCommandHandler`.
+
+Sur le PC, `phoneonly_runtime` délègue uniquement les préférences à
+`services/live-pc/augmented_reality_bridge.py`. À OFF, l'objet ne crée aucun
+executor/thread/réseau. À ON, `RUN_MLOMEGA_V19.ps1 -LivePhone
+-AugmentedReality` démarre `services/augmented-reality/service.py` sur
+`127.0.0.1:8791`, vérifie `/health` et garantit son arrêt dans le `finally`.
+Le service est volontairement stdlib, borné en mémoire et sans accès DB.
+
+Preuves payées : pytest fondation + runtime historiques **8/8**; Unity réel
+`AugmentedRealityFoundationTests` **5/5**, puis `E33MenuDeviceTests` **10/10**.
+La licence Personal a d'abord rendu un vrai `No valid Unity Editor license`, puis
+Unity Hub a rafraîchi le jeton et les deux runs ont terminé exit 0. Le test Unity a
+modifié `Packages/packages-lock.json`; cet artefact a été restauré. Les modifications
+antérieures de `PhoneOnly.unity` et `XRGeneralSettingsPerBuildTarget.asset` n'ont
+pas été touchées ni stagées.
+
+Ne pas lancer un worker réel tant que sa capacité reste `false` dans le manifeste.
+La prochaine frontière est `4.0-A2` (coexistence ARCore/XREAL sur application-gate),
+puis le premier module fonctionnel du Lot 1. Les APK courantes ne contiennent pas
+encore cette nouvelle page : reconstruire seulement après stabilisation du premier
+module, pas à chaque incrément de fondation.
