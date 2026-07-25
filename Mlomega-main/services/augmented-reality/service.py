@@ -31,6 +31,11 @@ KNOWN_FEATURES = (
     "contextual_knowledge",
     "enhanced_zoom",
     "ar_measurement",
+    "street_navigation",
+    "world_labels",
+    "persistent_anchors",
+    "depth_occlusion",
+    "world_styling",
 )
 MEMORY_ACCESS = {
     # Future modules consume existing product APIs; this isolated service never
@@ -41,6 +46,11 @@ MEMORY_ACCESS = {
     "contextual_knowledge": "read_hotcontext_no_personal_write",
     "enhanced_zoom": "none",
     "ar_measurement": "none",
+    "street_navigation": "none",
+    "world_labels": "read_visionrt_worldbrain_no_write",
+    "persistent_anchors": "read_worldbrain_no_write",
+    "depth_occlusion": "none",
+    "world_styling": "none",
 }
 MAX_BODY_BYTES = 32_768
 MAX_SESSIONS = 16
@@ -109,6 +119,15 @@ class PreferenceState:
             # Measurement remains unavailable until the active XR provider exposes
             # valid depth/intrinsics/pose on the physical gate.
             "ar_measurement": False,
+            # Lot 2 renderers exist, but these capabilities remain unavailable
+            # until the physical provider proves calibrated pose/VPS/depth.
+            "street_navigation": False,
+            # World labels are 3D-only: no screen-space fallback. The provider
+            # must prove calibrated tracking-local poses before activation.
+            "world_labels": False,
+            "persistent_anchors": False,
+            "depth_occlusion": False,
+            "world_styling": False,
         }
 
     def apply(self, payload: Any) -> dict[str, Any]:

@@ -1895,3 +1895,57 @@ Gate S24 minimal :
 
 Le zoom à utiliser est toujours `LensWindow` (crop/track GPU). Ne pas ajouter
 Real-ESRGAN au flux continu et ne pas exposer de mesure avant le lot Depth/intrinsics.
+
+### PASSATION 2026-07-26 — Lot 2 AR : World Canvas FreeGuy
+
+Le rendu spatial est ajouté sans toucher aux runs Local/PRO. Trois nouveaux composants
+passent par le chemin produit déjà branché
+`LiveTransportBridge -> TransportIntentSource -> UIIntentBroker -> UIRuntime` :
+
+- `world_navigation` / alias `street_navigation` :
+  `WorldNavigationRibbon`, ruban discret, grandes flèches flottantes, portail et
+  balise de destination;
+- `world_marker` / alias `world_label`, `poi` :
+  `WorldSemanticMarker`, label/logo compact sur lieu/enseigne/objet/mémoire;
+- `world_surface` / alias `semantic_surface`, `facade_overlay` :
+  `WorldSemanticSurface`, contour néon et teinte additive d'un polygone 3D prouvé.
+
+Ces composants ne consomment que des positions `tracking_local` déjà calibrées. Ils
+refusent WGS84 brut, pose/calibration/qualité/provenance absentes. Il n'existe donc
+aucun fallback qui place arbitrairement une flèche devant la caméra. Le choix
+produit est 3D-only : les bbox VisionRT `detector_pixels` continuent d'alimenter
+SceneCache/WorldBrain mais ne sont jamais dessinées dans le World Canvas. Les
+surfaces exigent aussi Depth, planéité/convexité recalculées et une qualité >= 0,75.
+
+Interrupteurs du menu, tous OFF par défaut : `street_navigation`, `world_labels`,
+`persistent_anchors`, `depth_occlusion`, `world_styling`. Le service AR les connaît,
+mais les cinq capabilities restent `false` tant que le provider S24 + One Pro/Eye
+n'a pas passé A2c. L'existence du renderer ne suffit pas à les mettre `ON`.
+
+Preuves code actuelles :
+
+```powershell
+.\.venv-live\Scripts\python.exe -m pytest `
+  tests\v19\test_augmented_reality_foundation.py -q -p no:cacheprovider
+
+cd .\apps\xr-mobile
+$u = 'C:\Program Files\Unity\Hub\Editor\6000.0.23f1\Editor\Unity.exe'
+$p = Start-Process $u -ArgumentList '-batchmode','-runTests',`
+  '-testPlatform','EditMode','-projectPath','.',`
+  '-testFilter','MLOmega.XR.Tests.WorldCanvasTests',`
+  '-testResults',"$pwd\world-canvas-editmode.xml",`
+  '-logFile',"$pwd\world-canvas-editmode.log" -Wait -PassThru -NoNewWindow
+"exit=$($p.ExitCode)"
+```
+
+Résultat : Python **10/10**, Unity WorldCanvas **8/8**, compilation complète des
+assemblies Unity pendant le run. Le premier lancement sandboxé a retourné 199 car
+le Licensing Client ne pouvait pas joindre le jeton Hub; la même commande dans la
+session utilisateur a terminé exit 0. Ce n'est pas une erreur C#.
+
+À reprendre : A2c doit livrer le vrai producteur pose/VPS/depth/Scene Semantics et
+la calibration Eye↔display. Puis injecter une route réelle, 6–12 marqueurs et des
+surfaces de façade/enseigne réelles, vérifier stabilité quand la tête bouge,
+relocalisation, occlusion, FPS/chauffe et lisibilité. Ne pas
+reconstruire les deux APK à ce point : la consigne est un unique rebuild PhoneOnly
+et XREAL après stabilisation de tous les lots AR.

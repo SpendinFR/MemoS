@@ -12,6 +12,7 @@ using System;
 using System.Collections.Generic;
 using MLOmega.Contracts.V19;
 using MLOmega.XR.Core;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 
 namespace MLOmega.XR.Scene
@@ -68,7 +69,7 @@ namespace MLOmega.XR.Scene
             {
                 string trackId = Str(e, "track_id") ?? Str(e, "last_track");
                 if (string.IsNullOrEmpty(trackId)) continue;
-                Dictionary<string, object> bbox = ExtractBbox(e);
+                Dictionary<string, object> bbox = ExtractBbox(e, delta);
                 if (bbox == null) continue;
                 var track = BuildTrack(trackId, delta.SourceFrameId, bbox,
                     Num(e, "confidence", 0.6), nowMs);
@@ -172,11 +173,60 @@ namespace MLOmega.XR.Scene
             };
         }
 
-        private static Dictionary<string, object> ExtractBbox(Dictionary<string, object> e)
+        private static Dictionary<string, object> ExtractBbox(
+            Dictionary<string, object> e,
+            SceneDelta delta)
         {
-            if (e.TryGetValue("bbox", out object v) && v is Dictionary<string, object> b) return b;
-            if (e.ContainsKey("x") && e.ContainsKey("y")) return e;
-            return null;
+            if (!e.TryGetValue("bbox", out object v) || v == null)
+                return e.ContainsKey("x") && e.ContainsKey("y") ? e : null;
+            if (v is Dictionary<string, object> b) return b;
+            if (v is JObject obj)
+                return obj.ToObject<Dictionary<string, object>>();
+            if (
+                !delta.FrameWidth.HasValue ||
+                !delta.FrameHeight.HasValue ||
+                delta.FrameWidth.Value <= 0 ||
+                delta.FrameHeight.Value <= 0)
+                return null;
+            JArray array;
+            try { array = v as JArray ?? JArray.FromObject(v); }
+            catch { return null; }
+            if (array.Count < 4) return null;
+            float x1 = Float(array[0]);
+            float y1 = Float(array[1]);
+            float x2 = Float(array[2]);
+            float y2 = Float(array[3]);
+            if (
+                float.IsNaN(x1) || float.IsNaN(y1) ||
+                float.IsNaN(x2) || float.IsNaN(y2) ||
+                x2 <= x1 || y2 <= y1)
+                return null;
+            float width = delta.FrameWidth.Value;
+            float height = delta.FrameHeight.Value;
+            x1 = Mathf.Clamp(x1, 0f, width);
+            x2 = Mathf.Clamp(x2, 0f, width);
+            y1 = Mathf.Clamp(y1, 0f, height);
+            y2 = Mathf.Clamp(y2, 0f, height);
+            if (x2 <= x1 || y2 <= y1) return null;
+            return new Dictionary<string, object>
+            {
+                { "x", x1 / width },
+                { "y", y1 / height },
+                { "w", (x2 - x1) / width },
+                { "h", (y2 - y1) / height },
+            };
+        }
+
+        private static float Float(JToken token)
+        {
+            return token != null &&
+                float.TryParse(
+                    token.ToString(),
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out float value)
+                ? value
+                : float.NaN;
         }
 
         private static string Str(Dictionary<string, object> d, string key)
@@ -187,9 +237,22 @@ namespace MLOmega.XR.Scene
 
         private static double Num(Dictionary<string, object> d, string key, double fallback)
         {
-            if (d != null && d.TryGetValue(key, out object v) && v != null &&
-                double.TryParse(v.ToString(), System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out double r)) return r;
+            if (d != null && d.TryGetValue(key, out object v) && v != null)
+            {
+                switch (v)
+                {
+                    case double value: return value;
+                    case float value: return value;
+                    case long value: return value;
+                    case int value: return value;
+                }
+                if (double.TryParse(
+                    v.ToString(),
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out double parsed))
+                    return parsed;
+            }
             return fallback;
         }
 

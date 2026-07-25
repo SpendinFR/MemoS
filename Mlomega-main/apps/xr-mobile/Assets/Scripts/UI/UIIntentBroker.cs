@@ -294,7 +294,10 @@ namespace MLOmega.XR.UI
             var candidate = new ActiveIntent(intent, prio, nowMs, ResolveSource(intent));
 
             // Density cap: status/privacy is never counted nor capped.
-            if (!candidate.IsStatus && NonStatusCount() >= Cfg.MaxSimultaneousIntents)
+            int densityCap = Density == UIDensityMode.FreeGuy
+                ? Cfg.FreeGuyMaxSimultaneousIntents
+                : Cfg.MaxSimultaneousIntents;
+            if (!candidate.IsStatus && NonStatusCount() >= densityCap)
             {
                 // Try to evict the weakest currently-active non-status intent that is
                 // strictly lower priority than the candidate.

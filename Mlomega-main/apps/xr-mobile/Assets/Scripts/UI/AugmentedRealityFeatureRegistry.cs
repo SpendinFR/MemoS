@@ -25,6 +25,11 @@ namespace MLOmega.XR.UI
         public const string ContextualKnowledge = "contextual_knowledge";
         public const string EnhancedZoom = "enhanced_zoom";
         public const string ArMeasurement = "ar_measurement";
+        public const string StreetNavigation = "street_navigation";
+        public const string WorldLabels = "world_labels";
+        public const string PersistentAnchors = "persistent_anchors";
+        public const string DepthOcclusion = "depth_occlusion";
+        public const string WorldStyling = "world_styling";
 
         private const string PreferencePrefix = "mlomega.augmented_reality.";
 
@@ -36,6 +41,11 @@ namespace MLOmega.XR.UI
             ContextualKnowledge,
             EnhancedZoom,
             ArMeasurement,
+            StreetNavigation,
+            WorldLabels,
+            PersistentAnchors,
+            DepthOcclusion,
+            WorldStyling,
         };
 
         [SerializeField] private LiveTransportBridge _transport;

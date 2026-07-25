@@ -64,6 +64,10 @@ namespace MLOmega.XR.Scene
         [Min(1)]
         [SerializeField] private int _maxSimultaneousIntents = 4;
 
+        [Tooltip("FreeGuy-only cap for compact world labels/navigation. Normal/minimal modes keep the product cap above.")]
+        [Min(1)]
+        [SerializeField] private int _freeGuyMaxSimultaneousIntents = 12;
+
         [Tooltip("Fade duration applied when an intent loses its track / TTL / confidence before it disappears.")]
         [Min(0)]
         [SerializeField] private long _fadeOutMs = 180;
@@ -77,6 +81,8 @@ namespace MLOmega.XR.Scene
         public long TranslationHotTtlMs => _translationHotTtlMs;
         public long UiStateDefaultTtlMs => _uiStateDefaultTtlMs;
         public int MaxSimultaneousIntents => _maxSimultaneousIntents;
+        public int FreeGuyMaxSimultaneousIntents =>
+            Mathf.Max(_maxSimultaneousIntents, _freeGuyMaxSimultaneousIntents);
         public long FadeOutMs => _fadeOutMs;
 
         /// <summary>

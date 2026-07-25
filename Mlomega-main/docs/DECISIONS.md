@@ -1879,3 +1879,33 @@ continu ni présenté comme preuve; il n'est pas livré dans ce lot. La mesure e
 reportée au vrai mètre ruban Depth : aucune distance monoculaire décorative ne doit
 être affichée sans profondeur, intrinsics et pose valides. Toutes ces capacités
 restent OFF par défaut et ne changent aucun chemin Local/PRO.
+
+## 2026-07-26 — Le mode FreeGuy est un World Canvas, pas une fenêtre Google Maps
+
+Google/ARCore, lorsqu'il sera physiquement validé, fournit seulement localisation,
+route, VPS, profondeur et ancres. L'expérience visuelle reste une scène Unity
+transparente rendue dans les XREAL. Aucune application Maps, WebView ou capture
+d'écran de navigation n'est ouverte devant les yeux.
+
+Le guidage combine une ligne au sol secondaire, de grandes flèches flottantes
+world-locked et un portail de destination. Les lieux, enseignes et objets utilisent
+des labels holographiques compacts; leur carte complète n'est ouverte qu'au
+regard/pinch. Ce choix permet un monde visuellement riche sans envoyer une fiche LLM
+par détection ni saturer le champ de vision.
+
+Unity ne convertit jamais latitude/longitude en position locale. Le provider actif
+doit fournir une polyline/position en mètres `tracking_local`, une calibration,
+des qualités mesurées et une provenance. Les renderers refusent tout contrat
+insuffisant. En mode normal, le cap historique reste quatre surfaces; le plafond
+de douze ne s'applique qu'au mode FreeGuy et aux marqueurs compacts. Les cinq
+capacités spatiales restent OFF et non disponibles jusqu'au gate matériel A2c.
+
+Le World Canvas est **3D-only**. Un bbox VisionRT en pixels ne devient jamais un
+label flottant approximatif devant la caméra. Marqueurs et routes exigent une pose
+`tracking_local` calibrée; les aplats/contours de façades exigent aussi une
+profondeur et un polygone planaire/convexe prouvé. L'absence de spatialisation
+produit une abstention visuelle, pas un fallback écran. Cette contrainte évite les
+rectangles qui glissent avec la tête et préserve l'effet « monde augmenté ».
+
+Les pixels colorés sont exclusivement une composition Unity. Ils ne retournent
+jamais dans VisionRT, OCR, WorldBrain ou les archives comme observation réelle.

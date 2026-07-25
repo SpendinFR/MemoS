@@ -160,6 +160,11 @@ namespace MLOmega.XR.UI.Components
             _actions.Add(ToggleLabel("Contexte", AugmentedRealityFeatureRegistry.ContextualKnowledge));
             _actions.Add(ToggleLabel("Super-zoom", AugmentedRealityFeatureRegistry.EnhancedZoom));
             _actions.Add(ToggleLabel("Mesure AR", AugmentedRealityFeatureRegistry.ArMeasurement));
+            _actions.Add(ToggleLabel("Navigation monde", AugmentedRealityFeatureRegistry.StreetNavigation));
+            _actions.Add(ToggleLabel("Labels du monde", AugmentedRealityFeatureRegistry.WorldLabels));
+            _actions.Add(ToggleLabel("Ancres persistantes", AugmentedRealityFeatureRegistry.PersistentAnchors));
+            _actions.Add(ToggleLabel("Occlusion Depth", AugmentedRealityFeatureRegistry.DepthOcclusion));
+            _actions.Add(ToggleLabel("Style FreeGuy", AugmentedRealityFeatureRegistry.WorldStyling));
             _actions.Add(new MenuAction(
                 "Retour",
                 new DeviceCommand { Type = "device_command", Action = "back_main_menu" }));

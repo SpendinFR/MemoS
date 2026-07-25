@@ -2108,6 +2108,53 @@ modifiés; master et capacités restent OFF par défaut.
   asynchrone et événementielle. Les cartes importantes survivent à un drop réseau,
   mais aucune géométrie périmée ne reste affichée comme actuelle.
 
+**Avancement Lot 2 (2026-07-26 — World Canvas livré, provider physique encore
+ouvert).**
+
+- [x] **K1 — navigation FreeGuy rendue dans la vision réelle.**
+  `WorldNavigationRibbon` ne lance ni Google Maps ni un écran 2D : il consomme une
+  polyline déjà convertie en mètres `tracking_local` par le provider actif et la
+  rend dans la scène Unity transparente des XREAL. Le rendu combine un ruban au sol
+  discret, de grandes flèches holographiques flottantes animées, un faisceau et un
+  portail vertical de destination avec distance/ETA. L'UI refuse coordonnées WGS84
+  brutes, pose/calibration manquante, qualité carte/route < 0,70, segments non finis
+  ou disproportionnés et provenance absente.
+- [x] **K2 — monde 3D labellisé et stylisé sans mur de cartes.**
+  `WorldSemanticMarker` fournit les marqueurs compacts
+  `storefront/sign/object/place/memory/destination/hazard` : halo au sol, tige,
+  bracket et texte/logo holographique billboardé. `WorldSemanticSurface` ajoute
+  un remplissage translucide pulsé et un contour néon aux façades, enseignes,
+  routes, trottoirs, arbres et véhicules dont le polygone 3D est réellement
+  prouvé. Le détail complet reste réservé au regard/pinch et au
+  `ObjectProfileCard` existant. Un marqueur exige pose locale calibrée,
+  `anchor_quality >= 0,70`, identité et preuves; une surface exige en plus Depth,
+  polygone planaire/convexe recalculé, `surface_quality >= 0,75` et provenance.
+  Aucun rectangle/bbox 2D ne sert de fallback : sans géométrie 3D, rien ne
+  s'affiche.
+  Les composants sont de vrais types du `UIComponentRegistry`, donc tout UIIntent
+  transporté atteint `UIRuntime`; les alias `street_navigation`, `world_label` et
+  `poi`, `facade_overlay` sont couverts en EditMode.
+- [x] **K3 — contrôle densité et opt-out.** Cinq interrupteurs indépendants,
+  tous OFF par défaut, sont ajoutés au menu : navigation, labels du monde, ancres
+  persistantes, occlusion Depth et style FreeGuy. Le mode normal garde le cap
+  historique de quatre intents; seul le mode FreeGuy autorise jusqu'à douze
+  surfaces compactes, les demandes/focus plus prioritaires pouvant toujours les
+  évincer. Le service isolé connaît ces préférences mais les annonce `False`
+  jusqu'à preuve du provider : classe présente ≠ capacité active.
+- [ ] **K4 — raccord spatial produit.** L'UI et le transport générique sont
+  branchés, mais aucun faux convertisseur GPS→Unity n'est ajouté. A2c doit déterminer
+  sur S24 + One Pro/Eye quel provider produit réellement pose locale, profondeur,
+  VPS/route et calibration Eye↔display. Ensuite seulement ce provider émettra les
+  UIIntent K1/K2. Une route Google/ARCore sert de données; elle ne remplace jamais
+  l'interface MLOmega et n'ouvre pas l'application Maps. Le bbox VisionRT en pixels
+  reste utile au tracking/mémoire, mais il n'est volontairement pas rendu dans le
+  World Canvas : seule sa promotion par Depth + pose peut créer un marqueur 3D.
+- [ ] **K5 — gate visuel matériel.** Vérifier stéréo, stabilité monde quand la tête
+  bouge, flèches/portail, 6–12 labels, occlusion et perte/relocalisation, puis mesurer
+  FPS, chauffe, batterie et lisibilité extérieure. Les APK PhoneOnly et XREAL ne
+  sont reconstruites qu'une fois tous les lots AR terminés, conformément à la
+  consigne opérateur.
+
 **Lot 3 — extensions après stabilité des lots 1–2.**
 
 - [ ] **4.0-L Trajectoires humaines probabilistes.** Évaluer OpenTraj/Social-GAN ou

@@ -24,6 +24,11 @@ KNOWN_FEATURES = {
     "contextual_knowledge",
     "enhanced_zoom",
     "ar_measurement",
+    "street_navigation",
+    "world_labels",
+    "persistent_anchors",
+    "depth_occlusion",
+    "world_styling",
 }
 MAX_PREFERENCES_BYTES = 32_768
 
