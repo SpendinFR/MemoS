@@ -224,6 +224,7 @@ namespace MLOmega.XR.UI
                 case "ask_memory_prompt":
                 case "owner_enroll":
                 case "replay":
+                case "sherlock_toggle":
                 case "virtual_screen":
                 case "paid_mode":
                 case "local_mode":

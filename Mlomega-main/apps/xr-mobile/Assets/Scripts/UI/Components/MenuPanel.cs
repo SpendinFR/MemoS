@@ -172,6 +172,9 @@ namespace MLOmega.XR.UI.Components
             _actions.Add(new MenuAction("Ma voix", new DeviceCommand { Type = "device_command", Action = "owner_enroll" }));
             // Replay + virtual screen.
             _actions.Add(new MenuAction("Replay", new DeviceCommand { Type = "device_command", Action = "replay" }));
+            // T3 explicit, bounded investigation. PC owns the state so this menu
+            // choice toggles the exact same session as the natural voice path.
+            _actions.Add(new MenuAction("Sherlock", new DeviceCommand { Type = "device_command", Action = "sherlock_toggle" }));
             _actions.Add(new MenuAction("Écran virtuel", new DeviceCommand { Type = "device_command", Action = "virtual_screen" }));
             // E48-A: live on-device translation (On=null → the handler flips current state).
             _actions.Add(new MenuAction("Traduire", new DeviceCommand { Type = "device_command", Action = "translate_live" }));

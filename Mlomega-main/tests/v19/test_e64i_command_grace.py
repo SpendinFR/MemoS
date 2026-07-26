@@ -193,7 +193,9 @@ def _traces(db_path: Path, segment_id: str) -> list[dict]:
 # --------------------------------------------------------------------------- #
 def test_intent_classification_matches_the_router_vocabulary():
     durable = {"enroll", "correct", "correct_object", "correct_place",
-               "remember_fact", "owner_enroll"}
+               "remember_fact", "owner_enroll", "sherlock_start",
+               "sherlock_stop", "sherlock_delete", "sherlock_capture",
+               "sherlock_enhance", "sherlock_compare"}
     interactive = {"help_start", "help_advance", "ask_memory", "what_is",
                    "find", "ocr", "zoom", "translate", "translate_live", "unknown"}
     for intent in durable:

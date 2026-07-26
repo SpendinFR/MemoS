@@ -1129,3 +1129,18 @@ uniquement l'adaptateur et le device ID. Preuve binaire après rebuild :
 absent. APK 201 365 231 octets, SHA-256
 `EFA4AEC207CA2BFB1602FDDB39D348447F75B560DE475A8CE1D4160405C891C9`,
 90/90 EditMode, prep/build XREAL verts.
+
+## OBS-78 — « Sherlock » existait comme nom mais aucune enquête visuelle n'était branchée (CORRIGÉ CODE — 2026-07-26)
+
+Le seul Sherlock réel était un lookup de pseudonymes après Web Detection. Il
+n'existait aucune session d'enquête, aucune conservation immuable du buffer Eye,
+aucune comparaison original/rehaussement, aucun raccord T1/ChangeAttention/Replay
+et aucune suppression immédiate. Présenter « qui a mangé le chocolat ? » comme
+fonctionnel aurait donc été un faux positif.
+
+Correction : session explicite bornée, frames Eye PNG hashées, crops parents,
+rehaussement `enhanced_candidate`, comparaison SSIM/ORB, timeline issue des vrais
+SceneDelta/OCR/actions T1/ChangeAttention/Replay, route média authentifiée et
+suppression DB+fichiers. `take` reste une action probable et n'est jamais converti
+en `eat`; aucune identité ou causalité n'est fabriquée. Tests ciblés PC et menu
+Unity verts; seule la preuve matérielle S24 + Eye reste ouverte.

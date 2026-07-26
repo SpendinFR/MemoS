@@ -74,6 +74,15 @@ def _build_rules() -> list[tuple[re.Pattern[str], str, dict[str, Any]]]:
         r"\b(?:arrete|arrête|stoppe|coupe|desactive|désactive)\s+(?:le\s+)?(?:mode|aide|assistance)\s+(?:juridique|contextuel(?:le)?|contexte)\b",
         "context_assist_stop",
     )
+    # T3 explicit, bounded visual investigation. Nothing here starts a hidden
+    # continuous capture; ``sherlock_start`` is the mandatory opt-in boundary.
+    add(r"\b(?:active|lance|demarre|démarre|ouvre)\s+(?:le\s+)?(?:mode\s+)?(?:sherlock|enqu[êe]te)\b", "sherlock_start")
+    add(r"\b(?:termine|arr[êe]te|stoppe|ferme)\s+(?:le\s+)?(?:mode\s+)?(?:sherlock|enqu[êe]te)\b", "sherlock_stop")
+    add(r"\b(?:supprime|efface)\s+(?:l['’]\s*)?(?:enqu[êe]te|session\s+sherlock)\b", "sherlock_delete")
+    add(r"\b(?:capture|photographie|enregistre|analyse)\s+(?:cette?|la|l['’])?\s*(?:trace|zone|preuve|indice|image)\b", "sherlock_capture")
+    add(r"\b(?:am[ée]liore|rehausse|clarifie)\s+(?:cette?|la|l['’])?\s*(?:capture|trace|preuve|image)\b", "sherlock_enhance")
+    add(r"\b(?:compare|comparaison)\s+(?:les|ces|avec)?\s*(?:captures?|traces?|preuves?|images?)?\b", "sherlock_compare")
+    add(r"\b(?:r[ée]sume|montre|affiche)\s+(?:l['’])?(?:enqu[êe]te|timeline\s+sherlock|indices)\b", "sherlock_timeline")
 
     add(r"\bmode\s+payant\b\s*(?:avec\s+)?(openai|gpt|gemini|google)?", "paid_mode")
     add(r"\bpaid\s+mode\b\s*(openai|gpt|gemini|google)?", "paid_mode")
@@ -195,6 +204,9 @@ _HIGH_CONFIDENCE: list[tuple[re.Pattern[str], str]] = [
         (r"mode\s+gratuit\b", "local_mode"),
         (r"(?:active|lance|demarre|démarre)\s+(?:le\s+)?(?:mode|aide|assistance)\s+(?:juridique|contextuel(?:le)?|contexte)\b", "context_assist_start"),
         (r"(?:arrete|arrête|stoppe|coupe|desactive|désactive)\s+(?:le\s+)?(?:mode|aide|assistance)\s+(?:juridique|contextuel(?:le)?|contexte)\b", "context_assist_stop"),
+        (r"(?:active|lance|demarre|démarre)\s+(?:le\s+)?(?:mode\s+)?sherlock\b", "sherlock_start"),
+        (r"(?:capture|photographie|analyse)\s+(?:cette?\s+)?(?:trace|zone|preuve|indice|image)\b", "sherlock_capture"),
+        (r"(?:termine|arr[êe]te|stoppe)\s+(?:le\s+)?(?:mode\s+)?sherlock\b", "sherlock_stop"),
         (r"configure\s+ma\s+voix\b", "owner_enroll"),
         (r"c'?est\s+moi\s+qui\s+parle\b", "owner_enroll"),
         (r"set\s*up\s+my\s+voice\b", "owner_enroll"),
@@ -340,6 +352,7 @@ class IntentRouter:
         owner_setup: Any = None,
         help_engine: Any = None,
         context_assist: Any = None,
+        sherlock_handler: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
         person_id: str = "me",
     ) -> None:
         self.vision_focus = vision_focus
@@ -364,6 +377,7 @@ class IntentRouter:
         # (before the generic grammar can swallow them).
         self.help_engine = help_engine
         self.context_assist = context_assist
+        self.sherlock_handler = sherlock_handler
         self.person_id = person_id
         self._pending_device_action: str | None = None
         self.context = IntentContext()
@@ -528,6 +542,8 @@ class IntentRouter:
             return self._dispatch({"intent": "paid_mode", "provider": params.get("provider", "openai")}, "")
         if action == "local_mode":
             return self._dispatch({"intent": "local_mode"}, "")
+        if action == "sherlock_toggle":
+            return self._dispatch({"intent": "sherlock_toggle"}, "")
         if action == "inspect_object":
             track_id = str(
                 params.get("track_id") or params.get("target_track_id") or ""
@@ -634,7 +650,9 @@ class IntentRouter:
         schema = {
             "intent": "one of: what_is|who_is|find|ocr|translate|translate_live|zoom|set_ui_mode|privacy_pause|"
                       "open_app|paid_mode|local_mode|menu|replay|ask_memory|remember_fact|scene_changes|"
-                      "owner_enroll|help_start|name_indoor_place|context_assist_start|context_assist_stop|unknown",
+                      "owner_enroll|help_start|name_indoor_place|context_assist_start|context_assist_stop|"
+                      "sherlock_start|sherlock_stop|sherlock_capture|sherlock_enhance|"
+                      "sherlock_compare|sherlock_timeline|sherlock_delete|unknown",
             "help_desc": "string (help_start: the task the user wants help with, e.g. 'monter l'étagère'; '' if none given)",
             "on": "bool (translate_live: true='traduis en direct', false='stop traduction')",
             "query": "string (target for find, or search text for open_app youtube)",
@@ -772,7 +790,35 @@ class IntentRouter:
             result = self.context_assist.stop()
             self._ui(result)
             return RoutedIntent(intent=intent, result=result, handled=True)
+        if intent.startswith("sherlock_"):
+            return self._do_sherlock(intent, routed, text)
         return self._unknown(text)
+
+    def _do_sherlock(
+        self, intent: str, routed: dict[str, Any], text: str
+    ) -> RoutedIntent:
+        if self.sherlock_handler is None:
+            return self._unavailable(intent, "Mode Sherlock indisponible.")
+        action = intent.removeprefix("sherlock_")
+        try:
+            result = self.sherlock_handler(
+                action,
+                {
+                    **dict(routed),
+                    "text": text,
+                    "bbox": routed.get("bbox") or self.context.last_bbox,
+                },
+            )
+        except Exception:
+            return self._unavailable(
+                intent, "Le mode Sherlock a rencontré une erreur."
+            )
+        return RoutedIntent(
+            intent=intent,
+            result=result,
+            handled=isinstance(result, dict)
+            and result.get("status") not in {"unavailable", "unknown_action"},
+        )
 
     def _do_owner_enroll(self) -> RoutedIntent:
         """E37 §3: arm the wearer's voice-enrolment capture window."""

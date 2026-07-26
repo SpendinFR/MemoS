@@ -2085,3 +2085,24 @@ Local/PRO, ni les writers Memory, ni le CloseDay.
 La frontière UI commune ne dépend plus du type concret XREAL : `LensWindow`
 consomme `IXrealSpatialProvider`. L'assembly PhoneOnly compile donc sans le
 define/package XREAL tout en conservant la projection Depth dans l'APK lunettes.
+
+## 2026-07-26 — Sherlock est une session de preuve explicite, pas un détective automatique
+
+Le nom Sherlock recouvrait déjà un lookup public de pseudonymes après consentement;
+ce chemin n'est pas l'enquête visuelle T3. T3 possède donc son propre contrôleur,
+sans worker ni DB avant une activation explicite, limité à vingt minutes et
+120 captures de changement. La source autoritaire est le buffer Eye WebRTC
+réellement reçu, jamais une promesse de photo native plus résolue.
+
+Chaque original est immuable et hashé. Crop et rehaussement sont des enfants avec
+paramètres; le rehaussement déterministe porte `enhanced_candidate`. La comparaison
+mesure pixels, SSIM et ORB mais ne nomme ni personne, ni cause. Real-ESRGAN/ALPR ne
+sont pas prétendus disponibles tant qu'un provider et ses modèles/licences ne sont
+pas provisionnés.
+
+Une enquête active réemploie les producteurs existants : SceneDelta/WorldBrain,
+ChangeAttention, OCR, actions T1 et Replay. Les niveaux de vérité restent séparés :
+une disparition observée et une prise probable peuvent former une hypothèse, pas
+la conclusion « cette personne a mangé l'objet ». La suppression efface DB et
+médias immédiatement. La voix, le menu et la route média authentifiée convergent
+sur ce seul chemin; Local, PRO, BrainLive et CloseDay restent inchangés.

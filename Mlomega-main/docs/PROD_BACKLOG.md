@@ -2593,19 +2593,51 @@ Suivi T0 logiciel — 26 juillet 2026 :
 
 **T3 — vrai Sherlock manuel et traçable.**
 
-- [ ] **T3.1 Session d'enquête explicite.** Un bouton/commande ouvre une session
+- [x] **T3.1 Session d'enquête explicite.** Un bouton/commande ouvre une session
   Sherlock bornée : captures Eye haute qualité, timeline, zone/crop choisi, mesures,
   objets/personnes/actions et chaîne de preuves. Le mode ne tourne jamais en secret
   et respecte consentement, droit local et suppression immédiate.
-- [ ] **T3.2 Rehaussement sans fabriquer de preuve.** Real-ESRGAN et scikit-image
+- [x] **T3.2 Rehaussement sans fabriquer de preuve.** Real-ESRGAN et scikit-image
   peuvent produire une vue améliorée d'empreinte, cheveu, trace de pneu/semelle ou
   plaque; conserver toujours l'original, paramètres, hash et résultat côte à côte.
   Un détail créé uniquement par super-résolution n'est jamais présenté comme observé.
-- [ ] **T3.3 Comparaison contrôlée.** OCR/ALPR et index locaux/licites peuvent
+- [x] **T3.3 Comparaison contrôlée.** OCR/ALPR et index locaux/licites peuvent
   proposer type, similarité ou correspondance candidate avec confiance. Aucune
   « base policière » supposée, aucune identification faciale/incrimination
   automatique. Fusionner T1.1 + ChangeAttention + replay pour séparer strictement
   observation, hypothèse et conclusion corroborée.
+
+**Suivi T3 livré — 2026-07-26.**
+
+- `SherlockInvestigation` est un contrôleur séparé, inerte tant que l'utilisateur
+  ne dit pas `active le mode Sherlock` ou n'appuie pas sur `Sherlock` dans le menu.
+  Il ne crée alors ni table, ni dossier, ni capture. Une session active expire à
+  vingt minutes, conserve au plus 120 changements Eye (échantillonnage borné à
+  cinq secondes) et se scelle avec la session Live. `supprime l'enquête` retire
+  immédiatement lignes et médias.
+- La source est la frame Eye **réellement décodée** par WebRTC, sauvegardée lossless
+  en PNG avec `frame_id`, timestamp, dimensions et SHA-256. Un crop garde son parent
+  et sa bbox. Le système ne prétend pas disposer d'un mode photo natif plus résolu
+  que le flux reçu.
+- Le rehaussement manuel conserve l'original byte-identique et produit un enfant
+  `enhanced_candidate` (`CLAHE + unsharp + Lanczos x2`, paramètres et hash source).
+  Real-ESRGAN n'est pas provisionné dans le venv et n'est donc pas simulé. La
+  comparaison utilise différences de pixels, SSIM scikit-image et ORB; elle ne
+  déduit ni identité, ni causalité, ni culpabilité.
+- Pendant la seule session explicite, le vrai flux `SceneDelta` active le
+  `TemporalActionRecognizer` T1 même si son toggle AR général était éteint.
+  ChangeAttention, OCR/focus, actions prendre/poser/entrer/sortir et Replay
+  authentifié rejoignent la timeline avec leurs niveaux `observed/probable`.
+  Ainsi « qui a mangé le chocolat ? » peut réunir disparition + prise + images,
+  mais `prendre` n'est jamais transformé en `manger` et aucun coupable n'est créé
+  sans corroboration.
+- Les médias utilisent la route token-gated
+  `/replay/media/sherlock/{evidence_id}` et le `VirtualScreen` existant; le menu et
+  la voix convergent vers la même méthode PC. MediaRetention protège les frames
+  citées. Aucun prompt, backend Local/PRO, EpisodeBuilder ou CloseDay n'est modifié.
+- Validation ciblée : **35/35** tests Python ciblés
+  et **10/10** EditMode `E33MenuDeviceTests` verts. Aucun APK n'est construit dans
+  T3; le rendu et les captures physiques restent dans le gate final S24 + Eye.
 
 **T4 — profil Memory complet ou allégé, avant tout fork de dépôt.**
 

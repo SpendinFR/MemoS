@@ -60,7 +60,11 @@ namespace MLOmega.XR.Tests
             Assert.Contains("FreeGuy", new List<string>(labels));
             Assert.Contains("Cacher", new List<string>(labels));
             Assert.Contains("Maps", new List<string>(labels));
+            Assert.Contains("Sherlock", new List<string>(labels));
             Assert.Contains("Fermer", new List<string>(labels));
+            foreach (MenuAction action in menu.Actions)
+                if (action.Label == "Sherlock")
+                    Assert.AreEqual("sherlock_toggle", action.Command.Action);
         }
 
         [Test]

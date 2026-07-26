@@ -681,14 +681,23 @@ def create_app(
 
         q = request.query_params
         _authenticate_query(q.get("session_id"), q.get("token"))
-        if kind not in {"frame", "clip"}:
+        if kind not in {"frame", "clip", "sherlock"}:
             raise HTTPException(status_code=404, detail="unknown replay media kind")
         manager = app.state.runtime_manager
         runtime = manager.get(q.get("session_id")) if manager is not None else None
-        replay = getattr(getattr(runtime, "pipeline", None), "replay", None)
-        if replay is None or not hasattr(replay, "resolve_media_path"):
+        pipeline = getattr(runtime, "pipeline", None)
+        media_service = (
+            getattr(pipeline, "sherlock", None)
+            if kind == "sherlock"
+            else getattr(pipeline, "replay", None)
+        )
+        if media_service is None or not hasattr(media_service, "resolve_media_path"):
             raise HTTPException(status_code=404, detail="replay service unavailable")
-        path = replay.resolve_media_path(kind, asset_id)
+        path = (
+            media_service.resolve_media_path(asset_id)
+            if kind == "sherlock"
+            else media_service.resolve_media_path(kind, asset_id)
+        )
         if path is None:
             raise HTTPException(status_code=404, detail="replay media not found")
         return FileResponse(path=str(path), filename=path.name,

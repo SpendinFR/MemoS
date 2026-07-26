@@ -2292,3 +2292,54 @@ Verdict : **29/29 + 2/2 + 2/2 verts** et plugin Android reconstruit. Ne pas
 committer XML/logs, scènes/settings/packages temporaires. Le test final reste
 S24 + One Pro/Eye : permissions, stabilité des empreintes, relocalisation après
 redémarrage, précision cap/GPS et lisibilité du SkyDome.
+
+### PASSATION T3 SHERLOCK — 2026-07-26
+
+Ne pas confondre avec `public_profile_discovery.py` : celui-ci cherche des profils
+publics consentis; l'enquête visuelle est
+`services/live-pc/sherlock_investigation.py`.
+
+Chemin produit à préserver :
+
+1. `MenuPanel > Sherlock` envoie `device_intent/sherlock_toggle`; les formulations
+   naturelles `active/termine le mode Sherlock`, `capture/analyse cette trace`,
+   `améliore`, `compare`, `montre l'enquête`, `supprime l'enquête` passent par
+   `IntentRouter` puis l'unique frontière `LivePipeline._route_sherlock`.
+2. Avant `start`, le contrôleur ne touche ni disque ni SQLite. Après `start`,
+   `on_video_frame` garde au plus un PNG lossless toutes les cinq secondes si la
+   signature visuelle change, avec cap 120/20 min. Une capture manuelle utilise le
+   dernier buffer Eye redressé et le crop de focus réel s'il existe.
+3. `_on_scene_delta` alimente T1 durant l'enquête; le retour réel de
+   ChangeAttention, l'OCR/focus et les actions `live_action_candidates_v19`
+   rejoignent `sherlock_findings_v19`. `timeline()` assemble aussi le Replay borné.
+4. `sessionhub_http.py` sert uniquement un `evidence_id` owner-scopé après
+   authentification de session. `release_live_resources()` scelle toute enquête
+   encore ouverte. La suppression vérifie que le dossier résolu est un enfant du
+   root Sherlock avant de le retirer.
+5. Ne promouvoir aucune conclusion depuis `enhanced_candidate`, ne convertir
+   jamais `take` en `eat`, et ne créer aucun fallback facial/ALPR/policier.
+
+Validation sans run long ni cloud :
+
+```powershell
+.\.venv-live\Scripts\python.exe -m pytest `
+  tests\v19\test_t3_sherlock_investigation.py `
+  tests\v19\test_change_attention.py `
+  tests\v19\test_t1_temporal_world_text.py `
+  tests\v19\test_sessionhub_http.py `
+  tests\v19\test_e64i_command_grace.py::test_intent_classification_matches_the_router_vocabulary `
+  -q -p no:cacheprovider
+
+cd apps\xr-mobile
+$u = "C:\Program Files\Unity\Hub\Editor\6000.0.23f1\Editor\Unity.exe"
+$p = Start-Process $u -ArgumentList '-batchmode','-runTests',
+  '-testPlatform','EditMode','-projectPath','.',
+  '-testFilter','MLOmega.XR.Tests.E33MenuDeviceTests',
+  '-testResults',"$pwd\t3-menu-editmode.xml",
+  '-logFile',"$pwd\t3-menu-editmode.log" -Wait -PassThru -NoNewWindow
+```
+
+Verdict courant : **35/35 Python ciblés** et **10/10 EditMode** verts. Le
+fichier PNG source est la résolution Eye/WebRTC reçue; ne documenter « photo haute
+résolution » qu'après preuve d'une API still XREAL distincte. Aucun APK avant la
+fin des lots.

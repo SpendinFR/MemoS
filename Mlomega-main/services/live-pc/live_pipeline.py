@@ -92,6 +92,9 @@ temporal_actions = _load_sibling(
     "v19_temporal_action_recognizer", "temporal_action_recognizer.py"
 )
 world_text_memory = _load_sibling("v19_world_text_memory", "world_text_memory.py")
+sherlock_investigation = _load_sibling(
+    "v19_sherlock_investigation", "sherlock_investigation.py"
+)
 
 
 def load_profile(profile_path: Path | str | None = None) -> dict[str, Any]:
@@ -184,6 +187,12 @@ _DURABLE_COMMAND_INTENTS: frozenset[str] = frozenset({
     "correct_place",
     "remember_fact",
     "owner_enroll",
+    "sherlock_start",
+    "sherlock_stop",
+    "sherlock_delete",
+    "sherlock_capture",
+    "sherlock_enhance",
+    "sherlock_compare",
 })
 
 
@@ -666,6 +675,17 @@ class LivePipeline:
                 person_id=self.person_id, live_session_id=self.live_session_id,
                 db_path=self.db_path, emit_ui_intent=self._push_intent,
             )
+        # T3: explicit visual investigation. Constructing the controller is inert:
+        # it opens no DB and retains no frame until the wearer starts Sherlock.
+        self.sherlock: Any = None
+        if enable_intents and self.db_path is not None:
+            self.sherlock = sherlock_investigation.SherlockInvestigation(
+                person_id=self.person_id,
+                live_session_id=self.live_session_id,
+                db_path=self.db_path,
+                emit_ui_intent=self._push_intent,
+                replay_service=self.replay,
+            )
 
         # ---- OwnerSetup (E37 §3): enrol the WEARER's voice → owner attribution ----
         # « configure ma voix » captures the next N wearer segments and enrols them
@@ -744,6 +764,7 @@ class LivePipeline:
                 owner_setup=self.owner_setup,
                 help_engine=self.help_engine,
                 context_assist=self.context_assist,
+                sherlock_handler=self._route_sherlock,
                 person_id=self.person_id,
             )
             # E64-i grâce: learn the routed intent the MOMENT it is decided (before
@@ -1464,6 +1485,8 @@ class LivePipeline:
             forwarded = self._forward_visual_translation(request, current_result)
             if kind == "ocr":
                 self._record_world_text_observation(request, forwarded)
+            if self.sherlock is not None:
+                self.sherlock.observe_focus_result(request, forwarded)
             self._submit_ar_object_profile(forwarded)
             return forwarded
 
@@ -1502,6 +1525,8 @@ class LivePipeline:
                 except Exception as exc:
                     self._report_error("worldbrain.record_semantic_sighting", exc)
             forwarded = self._forward_visual_translation(request, current_result)
+            if self.sherlock is not None:
+                self.sherlock.observe_focus_result(request, forwarded)
             self._submit_ar_object_profile(forwarded)
             return forwarded
 
@@ -1565,6 +1590,73 @@ class LivePipeline:
             "priority": 0.7, "ttl_ms": 7000, "evidence_refs": [],
         }
 
+    def _route_sherlock(
+        self, action: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Single T3 execution boundary for voice and menu actions."""
+        service = self.sherlock
+        if service is None:
+            result = {
+                "status": "unavailable",
+                "ui_intent": {
+                    "type": "ui_intent",
+                    "ui_intent_id": f"sherlock-unavailable-{time.time_ns()}",
+                    "producer": "sherlock",
+                    "component": "context_card",
+                    "content": {
+                        "kind": "sherlock",
+                        "title": "Sherlock",
+                        "text": "Mode enquête indisponible sur ce profil.",
+                    },
+                    "truth_level": "unknown",
+                    "confidence": 0.0,
+                    "priority": 0.5,
+                    "ttl_ms": 6000,
+                    "evidence_refs": [],
+                },
+            }
+            self._push_intent(result["ui_intent"])
+            return result
+        data = dict(params or {})
+        action = str(action or "").strip().lower()
+        if action in {"start", "toggle"}:
+            if action == "toggle" and service.active:
+                return service.stop()
+            return service.start(str(data.get("title") or "") or None)
+        if action == "stop":
+            return service.stop()
+        if action == "delete":
+            return service.delete()
+        if action == "status":
+            return service.status()
+        if action == "capture":
+            bbox = data.get("bbox")
+            if bbox is None and self.intents is not None:
+                bbox = getattr(getattr(self.intents, "context", None), "last_bbox", None)
+            result = service.capture(
+                self._latest_frame_bgr,
+                self._latest_envelope,
+                bbox=bbox,
+                reason="manual",
+                metadata={"request": str(data.get("text") or "")[:300]},
+            )
+            request_text = str(data.get("text") or "").casefold()
+            if result.get("status") == "captured" and any(
+                token in request_text for token in ("analyse", "texte", "lis ")
+            ):
+                focus_result = self._route_vision_focus({"kind": "ocr", "bbox": bbox})
+                result["focus_analysis"] = focus_result
+            return result
+        if action == "enhance":
+            return service.enhance(data.get("evidence_id"))
+        if action == "compare":
+            return service.compare(
+                data.get("first_evidence_id"), data.get("second_evidence_id")
+            )
+        if action in {"timeline", "summary"}:
+            return service.timeline()
+        return {"status": "unknown_action", "action": action}
+
     def _forward_visual_translation(
         self, request: dict[str, Any], result: Any,
     ) -> Any:
@@ -1612,15 +1704,24 @@ class LivePipeline:
                 self.worldbrain.ingest_scene_delta(delta)
             except Exception as exc:
                 self._report_error("worldbrain.ingest_scene_delta", exc)
+        if self.sherlock is not None:
+            try:
+                self.sherlock.observe_scene_delta(delta)
+            except Exception as exc:
+                self._report_error("sherlock.observe_scene_delta", exc)
         # T1 temporal actions consume the same real detector delta.  They remain
         # candidates in a dedicated durable table; Memory promotion is reserved
         # for the later corroboration lot.
         bridge = self.augmented_reality
-        if (
-            bridge is not None
-            and hasattr(bridge, "feature_active")
-            and bridge.feature_active("action_recognition")
-        ):
+        action_requested = bool(
+            (
+                bridge is not None
+                and hasattr(bridge, "feature_active")
+                and bridge.feature_active("action_recognition")
+            )
+            or (self.sherlock is not None and self.sherlock.active)
+        )
+        if action_requested:
             try:
                 if self._temporal_actions is None:
                     self._temporal_actions = temporal_actions.TemporalActionRecognizer(
@@ -1639,9 +1740,11 @@ class LivePipeline:
         # confidence/map_quality floor, never twice within the cooldown).
         if self.change_attention is not None:
             try:
-                self.change_attention.on_scene_snapshot(
+                change_cue = self.change_attention.on_scene_snapshot(
                     self.worldbrain.snapshot(), place_hint=self._current_place_subject(),
                 )
+                if self.sherlock is not None:
+                    self.sherlock.observe_change_attention(change_cue)
             except Exception as exc:
                 self._report_error("change_attention.on_scene_snapshot", exc)
         # E38 §3: approaching a zone/entity whose learned routine implies an object
@@ -2141,6 +2244,11 @@ class LivePipeline:
                 except Exception as exc:
                     self._report_error("spatial.observe_pose", exc)
         delta = self.vision.process_frame(frame_bgr, envelope, focus_active=focus_active, now=now)
+        if self.sherlock is not None:
+            try:
+                self.sherlock.observe_frame(frame_bgr, envelope)
+            except Exception as exc:
+                self._report_error("sherlock.observe_frame", exc)
         # Identity (E32): face-embed person crops at an economical cadence — on a
         # newly-seen person track, or every ``identity_frame_interval`` deltas.
         if delta is not None and self.fusion is not None and self.face is not None:
@@ -2796,6 +2904,11 @@ class LivePipeline:
 
     def release_live_resources(self) -> None:
         """Drop live model references before core post-stop/CloseDay phases."""
+        if self.sherlock is not None and self.sherlock.session_id is not None:
+            try:
+                self.sherlock.stop()
+            except Exception as exc:
+                self._report_error("sherlock.stop", exc)
         if self.help_engine is not None and getattr(self.help_engine, "planning", False):
             timeout_s = float(os.environ.get("MLOMEGA_HELP_PLAN_DRAIN_TIMEOUT_S", "180"))
             if not self.help_engine.wait_for_planning(timeout=timeout_s):

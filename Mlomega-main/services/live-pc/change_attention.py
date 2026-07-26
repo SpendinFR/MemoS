@@ -313,8 +313,15 @@ class ChangeAttention:
             priority=0.35,  # deliberately low — a sober point of interest, not an alert
             kind="change_attention",
         )
-        return {**result, "zone": zone, "appeared": appeared, "disappeared": disappeared,
-                "score": round(score, 3)}
+        return {
+            **result,
+            "zone": zone,
+            "message": message,
+            "appeared": appeared,
+            "disappeared": disappeared,
+            "score": round(score, 3),
+            "evidence_refs": evidence,
+        }
 
     @staticmethod
     def _cue_message(appeared: list[str], disappeared: list[str]) -> str:
