@@ -48,6 +48,7 @@ namespace MLOmega.XR.UI.Components
         [SerializeField] private bool _translateLive;
         [SerializeField] private bool _augmentedRealityEnabled;
         [SerializeField] private string _augmentedRealityStatus = "disabled";
+        [SerializeField] private bool _vikiListening;
 
         private GlassPanel _panel;
         private float _nextRefresh;
@@ -71,6 +72,11 @@ namespace MLOmega.XR.UI.Components
         {
             get => _augmentedRealityStatus;
             set => _augmentedRealityStatus = value ?? "unavailable";
+        }
+        public bool VikiListening
+        {
+            get => _vikiListening;
+            set => _vikiListening = value;
         }
 
         private void Awake()
@@ -132,6 +138,10 @@ namespace MLOmega.XR.UI.Components
             if (_captureOnly)
             {
                 _sb.Append("<color=#FFD24A>capture-only</color>  ");
+            }
+            if (_vikiListening)
+            {
+                _sb.Append("<color=#7FE7FF>VIKI ● écoute</color>  ");
             }
             if (_translateLive)
             {

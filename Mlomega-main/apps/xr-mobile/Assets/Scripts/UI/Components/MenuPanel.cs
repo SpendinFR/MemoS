@@ -72,7 +72,8 @@ namespace MLOmega.XR.UI.Components
         private Vector2 _restoreSize;
         private bool _augmentedSettingsPage;
         private int _augmentedPageIndex;
-        private const int AugmentedItemsPerPage = 7;
+        // Six features + previous/next/back keeps every physical page at <= 9 rows.
+        private const int AugmentedItemsPerPage = 6;
         private static readonly string[] AugmentedLabels =
         {
             "AR globale", "Menus objets", "Actions", "Sons", "Contexte",

@@ -27,6 +27,7 @@ dict. ``emit_ui_intent`` pushes reply/ack UIIntents; ``emit_device_command`` pus
 import re
 import sys
 import time
+import unicodedata
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -47,6 +48,89 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip())
 
 
+_AUGMENTED_FEATURE_ALIASES: tuple[tuple[str, str], ...] = (
+    ("trajectoires de foule", "trajectory_forecast"),
+    ("mouvements de foule", "trajectory_forecast"),
+    ("futurs de foule", "trajectory_forecast"),
+    ("prediction de trajectoires", "trajectory_forecast"),
+    ("vision evenementielle", "event_vision"),
+    ("vision mouvement", "event_vision"),
+    ("sons semantiques", "semantic_sound"),
+    ("reconnaissance d actions", "action_recognition"),
+    ("connaissances contextuelles", "contextual_knowledge"),
+    ("menus d objets", "object_menus"),
+    ("menus objets", "object_menus"),
+    ("effets monde automatiques", "automatic_world_fx"),
+    ("effets monde auto", "automatic_world_fx"),
+    ("texte du monde", "world_text"),
+    ("navigation interieure", "indoor_navigation"),
+    ("navigation exterieure", "street_navigation"),
+    ("navigation monde", "street_navigation"),
+    ("ancres persistantes", "persistent_anchors"),
+    ("labels du monde", "world_labels"),
+    ("champs wifi", "radio_field"),
+    ("champs bluetooth", "radio_field"),
+    ("carte radio", "radio_field"),
+    ("aura physiologique", "pulse_aura"),
+    ("aura pouls", "pulse_aura"),
+    ("profils consentis", "consented_people"),
+    ("profils studio", "consented_people"),
+    ("clavier spatial", "spatial_keyboard"),
+    ("trajectoire ludique", "ballistic_preview"),
+    ("lancer ludique", "ballistic_preview"),
+    ("metre ar", "ar_measurement"),
+    ("mesure ar", "ar_measurement"),
+    ("zoom ameliore", "enhanced_zoom"),
+    ("super zoom", "enhanced_zoom"),
+    ("style freeguy", "world_styling"),
+    ("style free guy", "world_styling"),
+    ("meteo contextuelle", "weather_context"),
+    ("aide contexte social juridique", "legal_context"),
+    ("aide contexte juridique", "legal_context"),
+    ("planeterium", "planetarium"),
+    ("planetarium", "planetarium"),
+    ("occlusion", "depth_occlusion"),
+    ("realite augmentee", "master"),
+    ("ar globale", "master"),
+)
+
+
+def _fold_control_text(text: str) -> str:
+    folded = unicodedata.normalize("NFKD", _norm(text).casefold())
+    folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
+    return re.sub(r"[^a-z0-9]+", " ", folded).strip()
+
+
+def _match_augmented_feature_toggle(text: str) -> dict[str, Any] | None:
+    """Fast common feature toggles; unconstrained natural phrasing still uses the LLM."""
+
+    folded = _fold_control_text(text)
+    off = re.match(
+        r"^(?:viki\s+)?(?:desactive|arrete|stoppe|coupe|eteins|retire)\b",
+        folded,
+    )
+    on = re.match(
+        r"^(?:viki\s+)?(?:active|lance|demarre|allume|affiche)\b",
+        folded,
+    )
+    if off is None and on is None:
+        return None
+    if "mode freeguy" in folded or "mode free guy" in folded:
+        return {
+            "intent": "set_ui_mode",
+            "ui_mode": "freeguy",
+            "on": off is None,
+        }
+    for alias, feature in _AUGMENTED_FEATURE_ALIASES:
+        if alias in folded:
+            return {
+                "intent": "set_augmented_feature",
+                "feature": feature,
+                "on": off is None,
+            }
+    return None
+
+
 # --------------------------------------------------------------------------- grammar
 # Each rule: (compiled regex, intent name, group->param mapping or callable).
 # Order matters: earlier, more specific rules win. Correction/enroll are matched
@@ -61,7 +145,13 @@ def _build_rules() -> list[tuple[re.Pattern[str], str, dict[str, Any]]]:
         rules.append((re.compile(pattern, I), intent, params))
 
     # --- device / cloud toggles ---
-    add(r"\bmode\s+(?:free\s*guy|freeguy|libre)\b", "set_ui_mode", ui_mode="freeguy")
+    add(
+        r"\b(?:desactive|dÃ©sactive|arrete|arrÃªte|stoppe|coupe)\s+(?:le\s+)?mode\s+(?:free\s*guy|freeguy|libre)\b",
+        "set_ui_mode",
+        ui_mode="freeguy",
+        on=False,
+    )
+    add(r"\bmode\s+(?:free\s*guy|freeguy|libre)\b", "set_ui_mode", ui_mode="freeguy", on=True)
     add(r"\b(?:cache\s+tout|masque\s+tout|hide\s+(?:all|everything)|tout\s+cacher)\b", "set_ui_mode", ui_mode="hide_all")
     add(r"\b(?:mode\s+)?minimal\b", "set_ui_mode", ui_mode="minimal")
     add(r"\b(?:affiche\s+tout|montre\s+tout|show\s+(?:all|everything)|mode\s+normal)\b", "set_ui_mode", ui_mode="normal")
@@ -489,6 +579,14 @@ class IntentRouter:
                 self.metrics["multiturn_hits"] += 1
                 return self._dispatch(routed, raw)
 
+        # Common AR switches are exact device controls, so keep them local and
+        # instant. Less canonical phrasing continues through the natural-language
+        # classifier below instead of growing a brittle regex grammar.
+        routed = _match_augmented_feature_toggle(raw)
+        if routed is not None:
+            self.metrics["grammar_hits"] += 1
+            return self._dispatch(routed, raw)
+
         # 3) High-confidence grammar shortcut (§1a): only when the utterance BEGINS
         # with an exact control keyword ("menu", "cache tout", "zoom", "mode payant"
         # …). These are unambiguous instrument orders — instant, offline, no LLM.
@@ -648,13 +746,14 @@ class IntentRouter:
         if self.llm_router is None:
             return None
         schema = {
-            "intent": "one of: what_is|who_is|find|ocr|translate|translate_live|zoom|set_ui_mode|privacy_pause|"
+            "intent": "one of: what_is|who_is|find|ocr|translate|translate_live|zoom|set_ui_mode|set_augmented_feature|privacy_pause|"
                       "open_app|paid_mode|local_mode|menu|replay|ask_memory|remember_fact|scene_changes|"
                       "owner_enroll|help_start|name_indoor_place|context_assist_start|context_assist_stop|"
                       "sherlock_start|sherlock_stop|sherlock_capture|sherlock_enhance|"
                       "sherlock_compare|sherlock_timeline|sherlock_delete|unknown",
             "help_desc": "string (help_start: the task the user wants help with, e.g. 'monter l'étagère'; '' if none given)",
-            "on": "bool (translate_live: true='traduis en direct', false='stop traduction')",
+            "on": "bool (translate_live or set_augmented_feature; true=activate, false=deactivate)",
+            "feature": "one of: master|object_menus|action_recognition|semantic_sound|contextual_knowledge|enhanced_zoom|ar_measurement|street_navigation|world_labels|persistent_anchors|depth_occlusion|world_styling|trajectory_forecast|spatial_keyboard|event_vision|ballistic_preview|radio_field|consented_people|pulse_aura|automatic_world_fx|world_text|indoor_navigation|planetarium|weather_context|legal_context",
             "query": "string (target for find, or search text for open_app youtube)",
             "ui_mode": "hide_all|minimal|normal|freeguy",
             "app": "maps|youtube|package",
@@ -690,7 +789,7 @@ class IntentRouter:
         if intent in ("", "unknown"):
             return None
         out: dict[str, Any] = {"intent": intent, "llm": True}
-        for k in ("query", "ui_mode", "app", "language", "provider", "question", "fact", "package", "destination", "time"):
+        for k in ("query", "ui_mode", "feature", "app", "language", "provider", "question", "fact", "package", "destination", "time"):
             if data.get(k):
                 out[k] = data[k]
         # E53: help_start carries a free description that may legitimately be empty
@@ -699,7 +798,7 @@ class IntentRouter:
             out["help_desc"] = _clean_target(data.get("help_desc")) or ""
         # E48-A: "on" is a real boolean — the falsy-skip above would drop on=False
         # ("stop traduction"), so copy it explicitly.
-        if intent == "translate_live" and "on" in data:
+        if intent in ("translate_live", "set_augmented_feature") and "on" in data:
             out["on"] = bool(data["on"])
         if intent == "ask_memory" and "question" not in out:
             out["question"] = text
@@ -733,7 +832,25 @@ class IntentRouter:
                 self._ui(result)
             return RoutedIntent(intent=intent, result=result, handled=bool(result))
         if intent == "set_ui_mode":
-            return self._do_device({"type": "device_command", "action": "set_ui_mode", "ui_mode": routed["ui_mode"]}, intent)
+            return self._do_device(
+                {
+                    "type": "device_command",
+                    "action": "set_ui_mode",
+                    "ui_mode": routed["ui_mode"],
+                    "on": bool(routed.get("on", True)),
+                },
+                intent,
+            )
+        if intent == "set_augmented_feature":
+            return self._do_device(
+                {
+                    "type": "device_command",
+                    "action": "set_augmented_feature",
+                    "feature": str(routed.get("feature") or ""),
+                    "on": bool(routed.get("on", True)),
+                },
+                intent,
+            )
         if intent == "privacy_pause":
             return self._do_device({"type": "device_command", "action": "privacy_pause"}, intent)
         if intent == "translate_live":

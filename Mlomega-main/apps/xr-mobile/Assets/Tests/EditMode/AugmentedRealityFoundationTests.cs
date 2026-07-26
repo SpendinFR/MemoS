@@ -67,6 +67,35 @@ namespace MLOmega.XR.Tests
         }
 
         [Test]
+        public void FreeGuyPresetIsAtomicAndLeavesIndependentFeaturesUntouched()
+        {
+            var root = NewObject("preset");
+            var registry = root.AddComponent<AugmentedRealityFeatureRegistry>();
+            registry.SetFeature(
+                AugmentedRealityFeatureRegistry.TrajectoryForecast, true);
+
+            Assert.IsTrue(registry.SetPreset("freeguy", true));
+            Assert.IsTrue(registry.MasterEnabled);
+            Assert.IsTrue(registry.IsSelected(
+                AugmentedRealityFeatureRegistry.WorldStyling));
+            Assert.IsTrue(registry.IsSelected(
+                AugmentedRealityFeatureRegistry.AutomaticWorldFx));
+            Assert.IsTrue(registry.IsSelected(
+                AugmentedRealityFeatureRegistry.TrajectoryForecast),
+                "crowd trajectories may coexist with the FreeGuy preset");
+
+            Assert.IsTrue(registry.SetPreset("freeguy", false));
+            Assert.IsFalse(registry.IsSelected(
+                AugmentedRealityFeatureRegistry.WorldStyling));
+            Assert.IsFalse(registry.IsSelected(
+                AugmentedRealityFeatureRegistry.AutomaticWorldFx));
+            Assert.IsTrue(registry.MasterEnabled,
+                "turning off one preset must not kill other selected AR features");
+            Assert.IsTrue(registry.IsSelected(
+                AugmentedRealityFeatureRegistry.TrajectoryForecast));
+        }
+
+        [Test]
         public void MenuExposesMasterAndPerFeatureSettingsWithoutClosing()
         {
             var root = NewObject("root");
@@ -131,6 +160,7 @@ namespace MLOmega.XR.Tests
             Assert.LessOrEqual(menu.Actions.Count, 9,
                 "a physical glass page must stay readable/selectable");
             Assert.GreaterOrEqual(Find(menu, "Page suivante"), 0);
+            Assert.IsTrue(menu.Select(Find(menu, "Page suivante")));
             Assert.IsTrue(menu.Select(Find(menu, "Page suivante")));
             Assert.IsTrue(menu.Select(Find(menu, "Page suivante")));
             Assert.GreaterOrEqual(Find(menu, "Aura pouls (exp.) : OFF"), 0);

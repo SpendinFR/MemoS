@@ -2138,3 +2138,25 @@ index live-ready pour HotContext, suggestions et BrainLive. Sa nouvelle table de
 faits est un journal explicable supplémentaire, jamais l'unique mémoire. Revenir
 à Full ne demande ni migration ni revert : il suffit de relancer avec
 `-MemoryProfile full`.
+
+## 2026-07-26 — Les modes AR se composent par switches, VIKI accuse l'état réel
+
+Le menu et la voix pilotent le même registre `AugmentedRealityFeatureRegistry`.
+Une commande vocale n'entretient donc pas un second état parallèle. Le preset
+`FreeGuy` active atomiquement le master AR, le style du monde et les effets
+automatiques; sa désactivation ne coupe ni les trajectoires de foule ni les
+autres fonctions choisies séparément. Chaque fonction du Prélude reste
+activable/désactivable indépendamment par son identifiant stable.
+
+La composition ne crée pas un pipeline par mode : un seul chargeur, un seul
+provider spatial et une cadence SceneDelta de 5 Hz alimentent les surfaces.
+`UIIntentBroker` conserve déduplication, TTL, priorité et plafond FreeGuy de
+12 surfaces simultanées. Cela autorise par exemple FreeGuy + trajectoires de
+foule sans empilement illimité; le plafond thermique/FPS définitif reste le
+gate matériel T7 sur S24 + XREAL.
+
+Après le wake word, l'utilisateur voit désormais successivement l'état
+`VIKI écoute`, le texte final reconnu, puis un accusé explicite
+`activé`, `désactivé` ou `indisponible`. Les formulations usuelles sont routées
+localement et instantanément; les formulations moins littérales conservent le
+routeur en langage naturel. Aucun chemin Memory Local/PRO n'est modifié.

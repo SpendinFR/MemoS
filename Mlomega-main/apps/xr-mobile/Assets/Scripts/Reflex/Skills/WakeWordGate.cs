@@ -10,6 +10,7 @@ using System.Collections.Generic;
 using MLOmega.Contracts.V19;
 using MLOmega.XR.Core;
 using MLOmega.XR.UI;
+using MLOmega.XR.UI.Components;
 using UnityEngine;
 
 namespace MLOmega.XR.Reflex.Skills
@@ -18,6 +19,7 @@ namespace MLOmega.XR.Reflex.Skills
     {
         [SerializeField] private LocalIntentSource _intentSource;
         [SerializeField] private AsrBridge _asr;
+        [SerializeField] private StatusBar _statusBar;
 
         [Tooltip("How long command listening stays armed after the wake word (seconds).")]
         [Min(1f)]
@@ -38,16 +40,25 @@ namespace MLOmega.XR.Reflex.Skills
         {
             if (_intentSource == null) _intentSource = FindAnyObjectByType<LocalIntentSource>();
             if (_asr == null) _asr = FindAnyObjectByType<AsrBridge>();
+            if (_statusBar == null) _statusBar = FindAnyObjectByType<StatusBar>();
         }
 
         private void OnEnable()
         {
-            if (_asr != null) _asr.WakeWordSpotted += OnWakeWord;
+            if (_asr != null)
+            {
+                _asr.WakeWordSpotted += OnWakeWord;
+                _asr.Transcript += OnTranscript;
+            }
         }
 
         private void OnDisable()
         {
-            if (_asr != null) _asr.WakeWordSpotted -= OnWakeWord;
+            if (_asr != null)
+            {
+                _asr.WakeWordSpotted -= OnWakeWord;
+                _asr.Transcript -= OnTranscript;
+            }
         }
 
         private void Update()
@@ -69,6 +80,7 @@ namespace MLOmega.XR.Reflex.Skills
             }
             Listening = true;
             _asr?.SetWakeWordArmed(false); // don't re-trigger on the command's words
+            if (_statusBar != null) _statusBar.VikiListening = true;
             EmitStatus(true);
             ListeningStarted?.Invoke(tsMs);
         }
@@ -76,12 +88,21 @@ namespace MLOmega.XR.Reflex.Skills
         /// <summary>Called by the command router once a command was captured (re-arm early).</summary>
         public void CommandCaptured() => StopListening();
 
-        private void StopListening()
+        private void OnTranscript(TranscriptEvent transcript)
+        {
+            if (!Listening || !transcript.IsFinal || !transcript.IsCommand)
+                return;
+            EmitHeard(transcript.Text);
+            StopListening(emitStatus: false);
+        }
+
+        private void StopListening(bool emitStatus = true)
         {
             if (!Listening) return;
             Listening = false;
             _asr?.SetWakeWordArmed(true);
-            EmitStatus(false);
+            if (_statusBar != null) _statusBar.VikiListening = false;
+            if (emitStatus) EmitStatus(false);
             ListeningStopped?.Invoke();
         }
 
@@ -93,19 +114,64 @@ namespace MLOmega.XR.Reflex.Skills
                 ContractsVersion = ContractDefaults.Version,
                 UiIntentId = "ul_wakeword_status",
                 Producer = "ultralive",
-                Component = "status_bar",
+                Component = "context_card",
                 TruthLevel = "observed",
                 Confidence = 1.0,
                 Priority = 1.0,
                 TtlMs = listening ? (long)(_listenWindowSeconds * 1000f) : 1200,
                 Content = new Dictionary<string, object>
                 {
-                    { "text", listening ? "listening…" : "" },
+                    { "text", listening ? "Je t'écoute…" : "" },
+                    { "title", "VIKI" },
                     { "listening", listening }
                 },
-                UiHint = new Dictionary<string, object> { { "channel", "mic" } },
-                Anchor = new Dictionary<string, object>(),
+                UiHint = new Dictionary<string, object>
+                {
+                    { "channel", "mic" },
+                    { "focus", true },
+                    { "transient", true },
+                },
+                Anchor = new Dictionary<string, object>
+                {
+                    { "type", "head_locked" },
+                    { "side", "right" },
+                },
                 EvidenceRefs = new List<string>()
+            };
+            _intentSource.Emit(intent);
+        }
+
+        private void EmitHeard(string text)
+        {
+            if (_intentSource == null || string.IsNullOrWhiteSpace(text)) return;
+            var intent = new UIIntent
+            {
+                ContractsVersion = ContractDefaults.Version,
+                UiIntentId = "ul_voice_command_status",
+                Producer = "ultralive",
+                Component = "context_card",
+                TruthLevel = "observed",
+                Confidence = 1.0,
+                Priority = 1.0,
+                TtlMs = 2200,
+                Content = new Dictionary<string, object>
+                {
+                    { "title", "VIKI // COMPRIS" },
+                    { "text", "« " + text.Trim() + " »" },
+                    { "listening", false },
+                },
+                UiHint = new Dictionary<string, object>
+                {
+                    { "channel", "mic" },
+                    { "focus", true },
+                    { "transient", true },
+                },
+                Anchor = new Dictionary<string, object>
+                {
+                    { "type", "head_locked" },
+                    { "side", "right" },
+                },
+                EvidenceRefs = new List<string>(),
             };
             _intentSource.Emit(intent);
         }

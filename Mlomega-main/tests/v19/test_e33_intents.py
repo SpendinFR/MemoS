@@ -92,6 +92,30 @@ def _router(sink, *, llm=None, ask_memory=None, enrollment=None, **handlers):
         ("cache tout", "set_ui_mode", lambda r: r["device_command"]["ui_mode"] == "hide_all"),
         ("hide everything", "set_ui_mode", lambda r: r["device_command"]["ui_mode"] == "hide_all"),
         ("mode Free Guy", "set_ui_mode", lambda r: r["device_command"]["ui_mode"] == "freeguy"),
+        (
+            "VIKI active le mode Free Guy",
+            "set_ui_mode",
+            lambda r: r["device_command"]["ui_mode"] == "freeguy"
+            and r["device_command"]["on"] is True,
+        ),
+        (
+            "VIKI désactive le mode Free Guy",
+            "set_ui_mode",
+            lambda r: r["device_command"]["ui_mode"] == "freeguy"
+            and r["device_command"]["on"] is False,
+        ),
+        (
+            "VIKI active les mouvements de foule",
+            "set_augmented_feature",
+            lambda r: r["device_command"]["feature"] == "trajectory_forecast"
+            and r["device_command"]["on"] is True,
+        ),
+        (
+            "désactive la vision événementielle",
+            "set_augmented_feature",
+            lambda r: r["device_command"]["feature"] == "event_vision"
+            and r["device_command"]["on"] is False,
+        ),
         ("pause privée", "privacy_pause", None),
         ("menu", "menu", None),
         ("open the menu", "menu", None),

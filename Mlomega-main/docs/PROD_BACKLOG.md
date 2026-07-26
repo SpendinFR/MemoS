@@ -2454,6 +2454,21 @@ et l'image Eye; GPS/boussole/cartographie fournissent seulement le repère terre
   import d'un paquet Atelier témoin, relocalisation après redémarrage, occlusion et
   20 minutes de FPS/chauffe/batterie. Valider `K5`; Local/PRO et PhoneOnly restent
   inchangés avec FreeGuy OFF.
+- [x] **T0.8 Composition vocale et retour VIKI visibles.** Le menu et la voix
+  convergent sur `DeviceCommandHandler` et le même registre. « VIKI, active le
+  mode FreeGuy » applique atomiquement `master + world_styling +
+  automatic_world_fx`; le désactiver retire seulement ces deux effets et conserve
+  les autres fonctions choisies (par exemple `trajectory_forecast`). Chaque
+  feature Prélude est adressable par `set_augmented_feature{feature,on}` :
+  libellés courants traités localement, formulations libres par le classifieur
+  naturel. Après le wake word, le StatusBar et une carte flottante affichent
+  `VIKI ● écoute`/`Je t'écoute…`; le transcript final devient `VIKI // COMPRIS`,
+  puis le résultat réel du handler rafraîchit la même carte (`activé`,
+  `désactivé` ou `indisponible`). Aucun modèle Memory/Local/PRO n'est modifié.
+  Les combinaisons restent bornées par un seul provider XR, une projection des
+  SceneDelta à 5 Hz, des IDs/TTL stables et le cap FreeGuy de douze surfaces;
+  l'empilement thermique réel reste le gate T7, jamais une promesse de test
+  EditMode. Validation : **45/45 Python** et **31/31 Unity EditMode** ciblés.
 
 Suivi T0 logiciel — 26 juillet 2026 :
 

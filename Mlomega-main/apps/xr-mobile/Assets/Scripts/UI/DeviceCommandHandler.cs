@@ -17,6 +17,7 @@
 // Scene and Contracts) â€” a Transport->UI dependency would be a cycle.
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using MLOmega.Contracts.V19;
 using MLOmega.XR.Transport;
 using MLOmega.XR.Core;
@@ -62,6 +63,7 @@ namespace MLOmega.XR.UI
         [SerializeField] private LiveTransportBridge _transport;
         [SerializeField] private XrSessionController _session;
         [SerializeField] private AugmentedRealityFeatureRegistry _augmentedReality;
+        [SerializeField] private LocalIntentSource _localIntents;
         [SerializeField] private MonoBehaviour _xrealSpatial;
 
         private IXrealSpatialProvider SpatialProvider =>
@@ -104,6 +106,8 @@ namespace MLOmega.XR.UI
                 _augmentedReality = FindAnyObjectByType<AugmentedRealityFeatureRegistry>();
             if (_augmentedReality == null)
                 _augmentedReality = gameObject.AddComponent<AugmentedRealityFeatureRegistry>();
+            if (_localIntents == null)
+                _localIntents = FindAnyObjectByType<LocalIntentSource>();
             if (_xrealSpatial == null)
             {
                 foreach (MonoBehaviour behaviour in
@@ -168,7 +172,7 @@ namespace MLOmega.XR.UI
             switch ((cmd.Action ?? string.Empty).ToLowerInvariant())
             {
                 case "set_ui_mode":
-                    ok = SetUiMode(cmd.UiMode);
+                    ok = SetUiMode(cmd.UiMode, cmd.On);
                     break;
                 case "privacy_pause":
                     ok = PrivacyPause();
@@ -201,7 +205,7 @@ namespace MLOmega.XR.UI
                     ok = SetWakeWord(cmd.Word);
                     break;
                 case "set_augmented_feature":
-                    ok = _augmentedReality != null &&
+                    ok = EnsureAugmentedReality() != null &&
                          _augmentedReality.SetFeature(cmd.Feature, cmd.On);
                     break;
                 default:
@@ -210,6 +214,7 @@ namespace MLOmega.XR.UI
                     break;
             }
             CommandExecuted?.Invoke(cmd.Action, ok);
+            EmitCommandFeedback(cmd, ok);
             return ok;
         }
 
@@ -235,15 +240,103 @@ namespace MLOmega.XR.UI
             }
         }
 
-        private bool SetUiMode(string uiMode)
+        private bool SetUiMode(string uiMode, bool? requested)
         {
-            UIDensityMode mode = UIIntentBroker.ParseDensity(uiMode);
+            string normalised = (uiMode ?? string.Empty)
+                .Trim()
+                .ToLowerInvariant()
+                .Replace("_", string.Empty)
+                .Replace(" ", string.Empty);
+            bool freeGuy = normalised == "freeguy";
+            bool enable = requested ?? true;
+            UIDensityMode mode = freeGuy && !enable
+                ? UIDensityMode.Normal
+                : UIIntentBroker.ParseDensity(uiMode);
             if (_broker != null) _broker.SetDensity(mode);
             if (_statusBar != null)
             {
-                _statusBar.UiMode = mode == UIDensityMode.Normal ? "live" : uiMode;
+                _statusBar.UiMode = mode == UIDensityMode.Normal
+                    ? "live"
+                    : mode == UIDensityMode.FreeGuy ? "freeguy" : uiMode;
             }
+            if (freeGuy)
+                return EnsureAugmentedReality() != null &&
+                    _augmentedReality.SetPreset("freeguy", enable);
             return true;
+        }
+
+        private AugmentedRealityFeatureRegistry EnsureAugmentedReality()
+        {
+            if (_augmentedReality == null)
+                _augmentedReality = FindAnyObjectByType<AugmentedRealityFeatureRegistry>();
+            if (_augmentedReality == null)
+                _augmentedReality = gameObject.AddComponent<AugmentedRealityFeatureRegistry>();
+            return _augmentedReality;
+        }
+
+        private void EmitCommandFeedback(DeviceCommand cmd, bool ok)
+        {
+            if (_localIntents == null || cmd == null) return;
+            string action = (cmd.Action ?? string.Empty).Trim().ToLowerInvariant();
+            string text = null;
+            switch (action)
+            {
+                case "set_ui_mode":
+                    string mode = (cmd.UiMode ?? "normal").Trim();
+                    bool on = cmd.On ?? true;
+                    text = ok
+                        ? string.Equals(
+                            mode.Replace(" ", string.Empty),
+                            "freeguy",
+                            StringComparison.OrdinalIgnoreCase)
+                            ? $"Mode FreeGuy {(on ? "activé" : "désactivé")}."
+                            : $"Mode {mode} activé."
+                        : $"Impossible d'activer le mode {mode}.";
+                    break;
+                case "set_augmented_feature":
+                    string label = AugmentedRealityFeatureRegistry.DisplayName(cmd.Feature);
+                    bool selected = _augmentedReality != null &&
+                        _augmentedReality.IsSelected(cmd.Feature);
+                    text = ok
+                        ? $"{label} {(selected ? "activé" : "désactivé")}."
+                        : $"{label} indisponible.";
+                    break;
+                case "translate_live":
+                    text = ok ? "Traduction directe mise à jour." : "Traduction indisponible.";
+                    break;
+                case "privacy_pause":
+                    text = ok ? "Mode privé mis à jour." : "Mode privé indisponible.";
+                    break;
+            }
+            if (string.IsNullOrEmpty(text)) return;
+
+            _localIntents.Emit(new UIIntent
+            {
+                ContractsVersion = ContractDefaults.Version,
+                UiIntentId = "ul_voice_command_status",
+                Producer = "ultralive",
+                Component = "context_card",
+                TruthLevel = "observed",
+                Confidence = 1.0,
+                Priority = 1.0,
+                TtlMs = 3200,
+                Content = new Dictionary<string, object>
+                {
+                    { "title", "VIKI" },
+                    { "text", text },
+                },
+                UiHint = new Dictionary<string, object>
+                {
+                    { "focus", true },
+                    { "transient", true },
+                },
+                Anchor = new Dictionary<string, object>
+                {
+                    { "type", "head_locked" },
+                    { "side", "right" },
+                },
+                EvidenceRefs = new List<string>(),
+            });
         }
 
         // E48-A: toggle the live on-device translation reflex (« traduis en direct » /

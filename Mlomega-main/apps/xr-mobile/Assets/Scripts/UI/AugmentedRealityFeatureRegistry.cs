@@ -93,6 +93,44 @@ namespace MLOmega.XR.UI
         public string LastServiceStatus { get; private set; } = "disabled";
         public string LastServiceDetail { get; private set; } = string.Empty;
 
+        /// <summary>
+        /// Atomically apply a named visual preset. A preset only selects existing
+        /// switches; it never bypasses capability checks or starts another provider.
+        /// Menu and voice commands both use this path.
+        /// </summary>
+        public bool SetPreset(string preset, bool enabled)
+        {
+            string id = (preset ?? string.Empty)
+                .Trim()
+                .ToLowerInvariant()
+                .Replace("_", string.Empty)
+                .Replace(" ", string.Empty);
+            if (id != "freeguy") return false;
+
+            var changed = new List<KeyValuePair<string, bool>>();
+            if (enabled && StoreSelection(Master, true))
+                changed.Add(new KeyValuePair<string, bool>(Master, true));
+            if (StoreSelection(WorldStyling, enabled))
+                changed.Add(new KeyValuePair<string, bool>(WorldStyling, enabled));
+            if (StoreSelection(AutomaticWorldFx, enabled))
+                changed.Add(new KeyValuePair<string, bool>(AutomaticWorldFx, enabled));
+
+            if (enabled && changed.Exists(pair => pair.Key == Master))
+            {
+                LastServiceStatus = "pending";
+                LastServiceDetail = string.Empty;
+                EnsureProbe().Probe();
+            }
+            if (changed.Count == 0) return true;
+
+            SavePreferences();
+            ApplyStatusBar();
+            foreach (KeyValuePair<string, bool> pair in changed)
+                FeatureChanged?.Invoke(pair.Key, pair.Value);
+            PublishPreferences();
+            return true;
+        }
+
         private void Awake()
         {
             if (_transport == null) _transport = FindAnyObjectByType<LiveTransportBridge>();
@@ -182,12 +220,8 @@ namespace MLOmega.XR.UI
             string id = Normalise(feature);
             if (id == null) return false;
             bool next = requested ?? !IsSelected(id);
-            _selected[id] = next;
-            if (_persistPreferences)
-            {
-                PlayerPrefs.SetInt(PreferencePrefix + id, next ? 1 : 0);
-                PlayerPrefs.Save();
-            }
+            bool changed = StoreSelection(id, next);
+            if (changed) SavePreferences();
             if (id == Master)
             {
                 LastServiceStatus = next ? "pending" : "disabled";
@@ -195,9 +229,42 @@ namespace MLOmega.XR.UI
                 if (next) EnsureProbe().Probe();
             }
             ApplyStatusBar();
-            FeatureChanged?.Invoke(id, next);
+            if (changed) FeatureChanged?.Invoke(id, next);
             PublishPreferences();
             return true;
+        }
+
+        public static string DisplayName(string feature)
+        {
+            switch (Normalise(feature))
+            {
+                case Master: return "Réalité augmentée";
+                case ObjectMenus: return "Menus d'objets";
+                case ActionRecognition: return "Reconnaissance d'actions";
+                case SemanticSound: return "Sons sémantiques";
+                case ContextualKnowledge: return "Connaissances contextuelles";
+                case EnhancedZoom: return "Zoom amélioré";
+                case ArMeasurement: return "Mètre AR";
+                case StreetNavigation: return "Navigation extérieure";
+                case WorldLabels: return "Labels du monde";
+                case PersistentAnchors: return "Ancres persistantes";
+                case DepthOcclusion: return "Occlusion";
+                case WorldStyling: return "Style FreeGuy";
+                case TrajectoryForecast: return "Trajectoires de foule";
+                case SpatialKeyboard: return "Clavier spatial";
+                case EventVision: return "Vision événementielle";
+                case BallisticPreview: return "Trajectoire ludique";
+                case RadioField: return "Champs Wi-Fi et Bluetooth";
+                case ConsentedPeople: return "Profils consentis";
+                case PulseAura: return "Aura physiologique";
+                case AutomaticWorldFx: return "Effets monde automatiques";
+                case WorldText: return "Texte du monde";
+                case IndoorNavigation: return "Navigation intérieure";
+                case Planetarium: return "Planétarium";
+                case WeatherContext: return "Météo contextuelle";
+                case LegalContext: return "Assistance contextuelle";
+                default: return "Fonction";
+            }
         }
 
         public Dictionary<string, bool> Snapshot()
@@ -232,6 +299,21 @@ namespace MLOmega.XR.UI
         private bool ReadPreference(string id) =>
             _persistPreferences && PlayerPrefs.HasKey(PreferencePrefix + id) &&
             PlayerPrefs.GetInt(PreferencePrefix + id, 0) == 1;
+
+        private bool StoreSelection(string id, bool value)
+        {
+            if (_selected.TryGetValue(id, out bool previous) && previous == value)
+                return false;
+            _selected[id] = value;
+            if (_persistPreferences)
+                PlayerPrefs.SetInt(PreferencePrefix + id, value ? 1 : 0);
+            return true;
+        }
+
+        private void SavePreferences()
+        {
+            if (_persistPreferences) PlayerPrefs.Save();
+        }
 
         private void OnTransportStateChanged(LiveTransportState state, string detail)
         {

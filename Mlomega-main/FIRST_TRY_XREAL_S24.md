@@ -496,3 +496,26 @@ $p = Start-Process $u -ArgumentList '-batchmode','-quit','-projectPath','.', `
 Un exit code 0 n'est pas suffisant : le log doit finir par un build réussi sans
 exception XREAL/JSON. L'APK finale doit lancer
 `ai.nreal.activitylife.NRXRActivity` et contenir les endpoints LAN/Tailscale.
+
+## Piloter les modes du Prélude avec VIKI
+
+Le menu et la voix modifient exactement les mêmes switches. Exemples :
+
+- `VIKI, active le mode FreeGuy`;
+- `VIKI, désactive le mode FreeGuy`;
+- `VIKI, active les mouvements de foule`;
+- `VIKI, active la vision événementielle`;
+- `VIKI, désactive les sons sémantiques`.
+
+La séquence visible attendue est : badge `VIKI ● écoute`, carte
+`Je t'écoute…`, sous-titre du texte reconnu, puis carte
+`activé`, `désactivé` ou `indisponible`. Si la dernière carte indique
+`indisponible`, ne pas considérer la fonction comme active : sa capacité
+matérielle/provider manque réellement.
+
+FreeGuy peut rester actif pendant les trajectoires de foule ou une autre
+fonction ponctuelle. Le runtime partage un seul provider spatial, déduplique
+les surfaces, expire les éléments par TTL et plafonne FreeGuy à 12 surfaces.
+Pour le premier test physique, activer les fonctions progressivement plutôt
+que tout le menu : la fluidité et la température finales doivent encore être
+mesurées sur S24 + XREAL Eye.

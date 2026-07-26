@@ -15,6 +15,7 @@ using MLOmega.XR.Reflex;
 using MLOmega.XR.Reflex.Skills;
 using MLOmega.XR.Scene;
 using MLOmega.XR.UI;
+using MLOmega.XR.UI.Components;
 using NUnit.Framework;
 using UnityEngine;
 
@@ -198,19 +199,40 @@ namespace MLOmega.XR.Tests
             var cap = new CapturingIntents();
             LocalIntentSource src = NewSource(cap);
             var gate = Make<WakeWordGate>("wake");
+            var statusBar = Make<StatusBar>("wake-status");
             typeof(WakeWordGate)
                 .GetField("_intentSource", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
                 .SetValue(gate, src);
+            typeof(WakeWordGate)
+                .GetField("_statusBar", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                .SetValue(gate, statusBar);
 
             bool started = false;
             gate.ListeningStarted += _ => started = true;
             gate.OnWakeWord("hey mlomega", 0);
 
             Assert.IsTrue(gate.Listening, "wake word must arm command listening");
+            Assert.IsTrue(statusBar.VikiListening);
             Assert.IsTrue(started);
-            UIIntent status = cap.Last("status_bar");
-            Assert.IsNotNull(status, "wake word shows StatusBar feedback offline");
+            UIIntent status = cap.Last("context_card");
+            Assert.IsNotNull(status, "wake word shows a rendered VIKI feedback card offline");
             Assert.AreEqual(true, status.Content["listening"]);
+            StringAssert.Contains("écoute", status.Content["text"].ToString());
+
+            typeof(WakeWordGate)
+                .GetMethod("OnTranscript",
+                    System.Reflection.BindingFlags.NonPublic |
+                    System.Reflection.BindingFlags.Instance)
+                .Invoke(gate, new object[]
+                {
+                    new TranscriptEvent(
+                        "active le mode FreeGuy", true, "fr", 10, 20, true)
+                });
+
+            Assert.IsFalse(gate.Listening, "a captured command must close the listening window");
+            Assert.IsFalse(statusBar.VikiListening);
+            UIIntent heard = cap.Last("context_card");
+            StringAssert.Contains("active le mode FreeGuy", heard.Content["text"].ToString());
         }
 
         // ------------------------------------------------------------------

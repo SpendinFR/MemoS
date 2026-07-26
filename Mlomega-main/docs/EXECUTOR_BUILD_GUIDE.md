@@ -2404,3 +2404,48 @@ Verdict de livraison : **3/3 Lite**, **11/11 CloseDay historiques** et **4/4
 frontières profil/PRO/recovery** verts. Aucun APK n'est concerné : T4 est exclusivement
 PC/SQLite. Ne pas lancer Full et Lite simultanément sur la même session; changer
 de profil au lancement suivant suffit.
+
+### PASSATION T0.8 — VIKI et composition des modes AR, avant APK
+
+Le lot raccorde le menu et les commandes vocales au même registre AR :
+
+1. `AugmentedRealityFeatureRegistry.SetPreset("freeguy", on)` compose master,
+   style du monde et effets automatiques en une seule publication;
+2. `set_augmented_feature` pilote les autres fonctions par identifiant stable;
+3. `WakeWordGate` et `StatusBar` rendent visibles l'écoute et la transcription,
+   puis `DeviceCommandHandler` affiche l'état effectivement appliqué;
+4. `PhoneOnlySceneBuilder` câble les références nécessaires pour PhoneOnly et
+   XREAL lors de la reconstruction des scènes.
+
+Exemples reconnus sans appel LLM : `VIKI active le mode FreeGuy`,
+`désactive le mode FreeGuy`, `active les mouvements de foule`,
+`désactive la vision événementielle`. Les synonymes courants de toutes les
+entrées du menu AR sont couverts; une formulation libre reste classée par le
+routeur NL. FreeGuy + foule est une composition supportée, pas deux runtimes
+concurrents.
+
+Validation ciblée effectuée avant documentation :
+
+```powershell
+.\.venv-live\Scripts\python.exe -m pytest `
+  tests\v19\test_e33_intents.py -q -p no:cacheprovider `
+  --deselect tests/v19/test_e33_intents.py::test_real_openai_provider_if_key_present
+```
+
+Résultat : **45 verts**. Le test provider OpenAI réel est volontairement exclu
+car il dépend d'une clé et du réseau, pas du raccord produit.
+
+```powershell
+$u = "C:\Program Files\Unity\Hub\Editor\6000.0.23f1\Editor\Unity.exe"
+$p = Start-Process $u -ArgumentList `
+  '-batchmode','-runTests','-testPlatform','EditMode','-projectPath','.', `
+  '-testFilter','MLOmega.XR.Tests.AugmentedRealityFoundationTests;MLOmega.XR.Tests.E33MenuDeviceTests;MLOmega.XR.Tests.ReflexOfflineTests', `
+  '-testResults',"$pwd\viki-freeguy-editmode.xml", `
+  '-logFile',"$pwd\viki-freeguy-editmode.log" `
+  -Wait -PassThru -NoNewWindow
+"exit=$($p.ExitCode)"
+```
+
+Résultat : **31/31 verts**, exit 0. Les XML/logs ne doivent pas être commités.
+Les builders matérialisent le câblage dans les scènes au prochain build; ne pas
+committer les scènes/ProjectSettings/manifest générés sans contre-audit ciblé.

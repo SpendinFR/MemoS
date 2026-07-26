@@ -143,9 +143,45 @@ namespace MLOmega.XR.Tests
 
             Assert.IsTrue(handler.TryHandleRaw("{\"type\":\"device_command\",\"action\":\"set_ui_mode\",\"ui_mode\":\"freeguy\"}"));
             Assert.AreEqual(UIDensityMode.FreeGuy, broker.Density);
+            var registry = handler.GetComponent<AugmentedRealityFeatureRegistry>();
+            Assert.IsTrue(registry.MasterEnabled);
+            Assert.IsTrue(registry.IsSelected(
+                AugmentedRealityFeatureRegistry.WorldStyling));
+            Assert.IsTrue(registry.IsSelected(
+                AugmentedRealityFeatureRegistry.AutomaticWorldFx));
 
             handler.Execute(new DeviceCommand { Type = "device_command", Action = "set_ui_mode", UiMode = "normal" });
             Assert.AreEqual(UIDensityMode.Normal, broker.Density);
+        }
+
+        [Test]
+        public void FreeGuyCommandEmitsVisibleVikiConfirmation()
+        {
+            var broker = Make<UIIntentBroker>("broker-confirm");
+            var source = Make<LocalIntentSource>("local-confirm");
+            UIIntent feedback = null;
+            source.IntentProduced += intent => feedback = intent;
+            var handler = Make<DeviceCommandHandler>("handler-confirm");
+            typeof(DeviceCommandHandler)
+                .GetField("_broker", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                .SetValue(handler, broker);
+            typeof(DeviceCommandHandler)
+                .GetField("_localIntents", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                .SetValue(handler, source);
+
+            Assert.IsTrue(handler.Execute(new DeviceCommand
+            {
+                Type = "device_command",
+                Action = "set_ui_mode",
+                UiMode = "freeguy",
+                On = true,
+            }));
+
+            Assert.IsNotNull(feedback);
+            Assert.AreEqual("context_card", feedback.Component);
+            Assert.AreEqual("VIKI", feedback.Content["title"]);
+            StringAssert.Contains("FreeGuy", feedback.Content["text"].ToString());
+            StringAssert.Contains("activé", feedback.Content["text"].ToString());
         }
 
         [Test]

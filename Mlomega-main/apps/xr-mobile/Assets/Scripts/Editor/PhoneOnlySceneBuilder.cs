@@ -206,6 +206,7 @@ namespace MLOmega.XR.Editor
             Assign(commands, "_transport", transport);
             Assign(commands, "_session", session);
             Assign(commands, "_augmentedReality", augmentedReality);
+            Assign(commands, "_localIntents", localIntents);
             if (xrealSpatial != null)
                 Assign(commands, "_xrealSpatial", xrealSpatial);
             Assign(ttsPlayer, "_transport", transport);
@@ -263,6 +264,8 @@ namespace MLOmega.XR.Editor
             Assign(pulseAura, "_intents", localIntents);
             Assign(panelManipulator, "_camera", camera);
             Assign(wakeGate, "_asr", asrBridge);
+            Assign(wakeGate, "_intentSource", localIntents);
+            Assign(wakeGate, "_statusBar", statusBar);
             Assign(translate, "_asrBridge", asrBridge);
             Assign(translate, "_subtitle", subtitle);
             Assign(translate, "_config", config);
