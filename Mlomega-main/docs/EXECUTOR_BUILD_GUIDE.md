@@ -2343,3 +2343,64 @@ Verdict courant : **35/35 Python ciblés** et **10/10 EditMode** verts. Le
 fichier PNG source est la résolution Eye/WebRTC reçue; ne documenter « photo haute
 résolution » qu'après preuve d'une API still XREAL distincte. Aucun APK avant la
 fin des lots.
+
+### PASSATION T4 MEMORY FULL/LITE — 2026-07-26
+
+T4 ne remplace pas le pipeline historique. Le sélecteur mémoire et le sélecteur
+de modèle sont deux axes indépendants :
+
+```powershell
+# Local + Full (défaut historique, inchangé)
+.\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -MemoryProfile full
+
+# Local + Lite
+.\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -MemoryProfile lite
+
+# PRO + Lite
+.\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -Pro -MemoryProfile lite
+
+# Reprise manuelle d'une session déjà scellée
+.\.venv\Scripts\python.exe scripts\run_phoneonly_close_day.py `
+  --person-id me --live-session-id <ID> --package-date <YYYY-MM-DD> `
+  --memory-profile lite
+```
+
+Ne jamais utiliser `MLOMEGA_PRO_CLOSEDAY` comme sélecteur Lite : PRO choisit
+DeepSeek/Groq/Gemini, alors que `MLOMEGA_MEMORY_PROFILE=full|lite` choisit la
+profondeur cognitive. `RUN_MLOMEGA_V19.ps1` pose ce dernier automatiquement.
+
+Chemin Lite à connaître :
+
+1. `run_phoneonly_close_day.py` exécute toujours le drain durable
+   `deferred_fine_intel`; il appelle ensuite soit Full, soit
+   `run_memory_lite_close_day`.
+2. Lite lit seulement les finals de la session, matérialise une conversation
+   canonique et tous ses tours, puis construit des fenêtres cohérentes bornées.
+3. Les preuves supplémentaires autorisées viennent de
+   `live_action_candidates_v19`, `world_text_observations_v19`,
+   `brainlive_world_states`, `scene_session_summaries_v19`,
+   `visual_events_v19` et `sherlock_findings_v19`. Une référence inventée est
+   filtrée; une action T1 seule reste `watch`.
+4. La barrière produit est l'existence d'un run Lite `completed`, des épisodes/
+   faits sourcés et d'un export `lite_ready`. Une erreur LLM met le run Lite
+   `error` et n'autorise pas le nettoyage.
+5. La reprise sans changement de digest ne repaye aucun appel. `--allow-rerun`
+   force Lite; Full conserve sa logique historique de reopen multi-session.
+
+Validation courte, sans modèle réel ni cloud :
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest `
+  tests\v19\test_memory_lite_v19.py -q -p no:cacheprovider
+
+.\.venv-live\Scripts\python.exe -m pytest `
+  tests\v19\test_multi_session_close_day.py `
+  tests\v19\test_close_day_output_proof.py `
+  tests\v19\test_phoneonly_runtime.py `
+  -q -p no:cacheprovider -k "memory_profile or pro_profile_switches_only or multi_session or output"
+```
+
+Verdict de livraison : **3/3 Lite**, **11/11 CloseDay historiques** et **4/4
+frontières profil/PRO/recovery** verts. Aucun APK n'est concerné : T4 est exclusivement
+PC/SQLite. Ne pas lancer Full et Lite simultanément sur la même session; changer
+de profil au lancement suivant suffit.

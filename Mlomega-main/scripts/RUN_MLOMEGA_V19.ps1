@@ -16,6 +16,7 @@ param(
   [switch]$Pro,
   [switch]$AugmentedReality,
   [string]$StudioReleaseId = "",
+  [ValidateSet("full", "lite")][string]$MemoryProfile = "full",
   [ValidateSet("pro", "flash")][string]$ProTextModel = "pro",
   [ValidateSet("stop", "flash", "local")][string]$CloudOnBudget = "stop",
   [double]$CloudBudgetEur = 1.50,
@@ -98,6 +99,7 @@ function Initialize-CoreCudaPath {
 
 if ($LivePhone) {
   Import-DotEnv
+  $env:MLOMEGA_MEMORY_PROFILE = $MemoryProfile
   $augmentedRealityProcess = $null
   $kiwixProcess = $null
   if ($AugmentedReality) { $env:MLOMEGA_AUGMENTED_REALITY = "1" }
@@ -124,6 +126,7 @@ if ($LivePhone) {
     $env:MLOMEGA_CLOUD_ON_BUDGET = $CloudOnBudget
     Write-Host "[PRO] CloseDay cloud opt-in: DeepSeek/$($env:MLOMEGA_PRO_TEXT_MODEL), Groq Whisper, Gemini Flash-Lite; live Ollama unchanged; budget $CloudBudgetEur EUR." -ForegroundColor Cyan
   }
+  Write-Host "[MEMORY] Profil CloseDay: $MemoryProfile (independant de local/PRO)." -ForegroundColor Cyan
   Remove-KnownBlackholeProxy
   Initialize-CoreCudaPath
   # Orchestration GPU par phase active par defaut en production (preflight teste

@@ -2641,20 +2641,58 @@ Suivi T0 logiciel — 26 juillet 2026 :
 
 **T4 — profil Memory complet ou allégé, avant tout fork de dépôt.**
 
-- [ ] **T4.1 Mesure A/B sur les mêmes journées.** Conserver le pipeline actuel comme
-  référence et créer un profil `memory_lite` derrière flag : médias/transcriptions
-  lossless identiques, conversations regroupées par épisodes cohérents (cible
-  indicative 10–20 minutes, sans couper un échange), extraction déterministe puis
-  un ou deux appels de synthèse/relations. Comparer rappels factuels, causalité,
-  longitudinal, prédictions, contradictions, coût, latence et volume de doublons.
-- [ ] **T4.2 Aucun second dépôt avant verdict.** Ne pas supprimer les moteurs ni
-  diverger deux cœurs. Mutualiser capture, schémas, writers et requêtes; faire du
-  mode allégé un profil de CloseDay. Un clone produit n'est autorisé qu'après plusieurs
-  jours shadow montrant une qualité suffisante et un besoin de distribution réellement
-  différent.
+- [x] **T4.1 Deux profils explicites dans un seul dépôt.** `full` reste le défaut
+  et appelle exactement le CloseDay V18 existant; `lite` appelle le module séparé
+  `memory_lite_v19`. Le choix `-MemoryProfile full|lite` est orthogonal à
+  Local/`-Pro`, propagé uniquement au worker nocturne et disponible aussi en CLI
+  par `--memory-profile`. Aucun moteur, prompt ou checkpoint Full n'est modifié.
+- [x] **T4.2 Archive lossless, analyse bornée.** Lite recopie tous les finals
+  `brainlive_turn_buffer` dans la conversation/les `turns` canoniques owner-scopés,
+  sans supprimer la source. Les échanges sont séparés sur vraie conversation,
+  silence supérieur à quatre minutes, plafond vingt minutes ou 48 000 caractères.
+  Une seule extraction JSON owner-centrée est payée par épisode; les épisodes
+  indépendants peuvent tourner en parallèle uniquement avec DeepSeek. Les reprises
+  réutilisent le résultat si le digest exact des sources n'a pas changé.
+- [x] **T4.3 Projection utile du Prélude, pas de pollution.** Le paquet Lite ajoute
+  les actions T1 `probable` au-dessus du seuil, OCR/prix/adresses/notices réellement
+  utiles, états/lieux BrainLive, résumés de scène, changements/dernières
+  positions/deep vision et constats Sherlock sourcés.
+  Météo, ciel, radio, navigation, widgets, effets FreeGuy et télémétrie UI restent
+  exclus. Une action T1 seule est forcée `watch`; un fait sans référence autorisée
+  est supprimé avant écriture.
+- [x] **T4.4 Mémoire réellement consommée.** Les sorties deviennent `episodes`,
+  `episode_subthemes_v19`, `episode_evidence`, `interaction_episodes`,
+  `relationship_models`, `memory_lite_facts_v19` et `life_model_entries_v19`.
+  Un export `brainlive_personal_model_exports` et son
+  `brainlive_live_relevance_index` rendent relations, lieux, expressions, besoins,
+  hooks et suggestions disponibles au HotContext/BrainLive du lendemain. Une
+  occurrence de routine/préférence/émotion/identité/expression reste `watch`.
+- [x] **T4.5 Choix opérateur et garde de non-régression.** Commandes officielles :
+  `RUN_MLOMEGA_V19.ps1 -LivePhone -MemoryProfile lite` (local),
+  ajouter `-Pro` pour Lite cloud, ou conserver/omettre `-MemoryProfile full` pour
+  le pipeline historique. Validation : **3/3** tests Lite (DB neuve, T1/OCR,
+  reprise/digest, preuve, relations, promotion multi-session sans doublon,
+  Life V19, export live), **11/11** tests
+  CloseDay/multi-session historiques et **4/4** tests de frontière profil/PRO/recovery
+  verts. Aucun run long, aucune API payante et aucun APK dans T4.
+
+**Suivi T4 livré — 2026-07-26.**
+
+- La demande produit remplace l'ancien protocole A/B multi-jours : le choix
+  Full/Lite est volontaire à chaque lancement. Lite n'est pas présenté comme une
+  exécution partielle de Full; son manifeste, son idempotence et ses erreurs vivent
+  dans `memory_lite_close_day_runs_v19`.
+- Lite privilégie la connaissance exploitable de William : ce qu'il dit/fait/
+  choisit, ses faits et buts, puis l'effet concret des autres sur lui. Les autres
+  personnes restent mémorisées par relation; aucun speaker inconnu n'est
+  arbitrairement renommé.
+- Le prochain gate réel n'est pas une comparaison A/B : lancer le scénario normal
+  avec `-MemoryProfile lite`, vérifier `status=completed`, le nombre d'appels égal
+  au nombre d'épisodes bornés, puis interroger mémoire/HotContext. Full demeure le
+  rollback immédiat par simple option de lancement.
 
 **Ordre d'exécution :** `T0` FreeGuy complet → `T1.1/T1.2` actions et lecture du
-monde → `T2` overlays spécialisés → `T3` Sherlock → expérimentation `T4` en shadow.
+monde → `T2` overlays spécialisés → `T3` Sherlock → profil `T4` Full/Lite.
 Chaque lot reste OFF par défaut et doit satisfaire le gate commun ci-dessous.
 
 **Dépendances candidates à évaluer, jamais à copier sans audit licence/maintenance :**

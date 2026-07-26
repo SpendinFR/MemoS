@@ -79,6 +79,12 @@ un rouge : applique sa ligne `[FIX]`. Avant d'ouvrir l'app, exige :
 Garde cette console ouverte pendant la capture et CloseDay. Autorise le port
 TCP 8710 sur le réseau privé Windows.
 
+Le profil mémoire est **Full par défaut**. Pour une nuit beaucoup plus courte,
+owner-centrée, sans la chaîne complète V13–V18, ajoute
+`-MemoryProfile lite`. Ce choix est indépendant de Local/PRO et se fait avant la
+capture; revenir à Full consiste seulement à omettre l'option ou écrire
+`-MemoryProfile full`.
+
 Pour activer aussi les fonctions augmentées PC (Wikipédia hors ligne, cartes
 objet et Home Assistant), ajoute `-AugmentedReality` :
 
@@ -110,6 +116,7 @@ Commande :
 ```powershell
 cd C:\Users\wabad\Downloads\ProjetMemobyFABLE\Mlomega-main
 .\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -Pro -ProTextModel pro `
+  -MemoryProfile full `
   -CloudBudgetEur 1.50 -CloudOnBudget stop `
   -BindHost 0.0.0.0 -Port 8710
 ```

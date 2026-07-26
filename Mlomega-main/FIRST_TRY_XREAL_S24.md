@@ -128,6 +128,11 @@ CloseDay. Ne contourne pas un check rouge : suis la ligne `[FIX]`. Attends :
 Garde cette console ouverte pendant toute la capture et tout CloseDay. Le
 pare-feu Windows doit autoriser Python sur le réseau privé et le port TCP 8710.
 
+Le profil mémoire est **Full par défaut**. Pour utiliser le nouveau CloseDay
+rapide, owner-centré et borné, ajoute `-MemoryProfile lite` à la même commande.
+Ce sélecteur ne change ni le Live, ni les fonctions lunettes, ni Local/PRO; le
+retour à Full se fait par `-MemoryProfile full` ou en omettant l'option.
+
 `-AugmentedReality` démarre aussi le service isolé sur
 `http://127.0.0.1:8791`; RUN doit afficher qu'il est prêt. Sans ce flag,
 Memory/BrainLive restent utilisables, mais les fonctions augmentées PC sont
@@ -153,6 +158,7 @@ Puis :
 cd C:\Users\wabad\Downloads\ProjetMemobyFABLE\Mlomega-main
 .\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -AugmentedReality `
   -Pro -ProTextModel pro `
+  -MemoryProfile full `
   -CloudBudgetEur 1.50 -CloudOnBudget stop `
   -BindHost 0.0.0.0 -Port 8710
 ```

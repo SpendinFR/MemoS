@@ -1546,3 +1546,92 @@ def test_pro_profile_switches_only_the_isolated_close_day_process(tmp_path, monk
     assert captured["env"]["MLOMEGA_LLM_BACKEND"] == "deepseek"
     assert captured["env"]["MLOMEGA_DEEPSEEK_MODEL"] == "deepseek-v4-pro"
     assert os.environ["MLOMEGA_LLM_BACKEND"] == "ollama"
+
+
+def test_memory_profile_is_only_forwarded_to_close_day_worker(tmp_path, monkeypatch):
+    from mlomega_audio_elite import runtime_environment_v19
+
+    monkeypatch.setenv("MLOMEGA_MEMORY_PROFILE", "lite")
+    monkeypatch.setenv("MLOMEGA_LLM_BACKEND", "ollama")
+    monkeypatch.delenv("MLOMEGA_PRO_CLOSEDAY", raising=False)
+    monkeypatch.setattr(runtime_environment_v19, "configure_windows_cuda_dlls", lambda _root: (True, {}))
+    monkeypatch.setattr(runtime_environment_v19, "sanitize_blackhole_proxy_env", lambda: [])
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = list(command)
+        captured.update(kwargs)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"status": "completed", "memory_profile": "lite"}) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(runtime_mod.subprocess, "run", fake_run)
+    result = runtime_mod._run_close_day_subprocess(
+        person_id="me", live_session_id="brain-lite", db_path=tmp_path / "memory.db"
+    )
+
+    index = captured["command"].index("--memory-profile")
+    assert captured["command"][index + 1] == "lite"
+    assert captured["env"]["MLOMEGA_LLM_BACKEND"] == "ollama"
+    assert os.environ["MLOMEGA_MEMORY_PROFILE"] == "lite"
+    assert result["memory_profile"] == "lite"
+
+
+def test_memory_profile_full_remains_the_default_close_day_command(tmp_path, monkeypatch):
+    from mlomega_audio_elite import runtime_environment_v19
+
+    monkeypatch.delenv("MLOMEGA_MEMORY_PROFILE", raising=False)
+    monkeypatch.delenv("MLOMEGA_PRO_CLOSEDAY", raising=False)
+    monkeypatch.setattr(runtime_environment_v19, "configure_windows_cuda_dlls", lambda _root: (True, {}))
+    monkeypatch.setattr(runtime_environment_v19, "sanitize_blackhole_proxy_env", lambda: [])
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = list(command)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"status": "completed"}) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(runtime_mod.subprocess, "run", fake_run)
+    runtime_mod._run_close_day_subprocess(
+        person_id="me", live_session_id="brain-full", db_path=tmp_path / "memory.db"
+    )
+
+    index = captured["command"].index("--memory-profile")
+    assert captured["command"][index + 1] == "full"
+
+
+def test_lite_recovery_reads_its_own_completed_run(tmp_path, monkeypatch):
+    from mlomega_audio_elite.db import connect
+    from mlomega_audio_elite.memory_lite_v19 import ensure_memory_lite_schema
+    from mlomega_audio_elite.utils import now_iso
+
+    db = tmp_path / "memory.db"
+    ensure_memory_lite_schema(db)
+    monkeypatch.setenv("MLOMEGA_MEMORY_PROFILE", "lite")
+    now = now_iso()
+    with connect(db) as con:
+        con.execute(
+            """INSERT INTO memory_lite_close_day_runs_v19(
+                 run_id,person_id,package_date,live_session_id,status,input_digest,
+                 episode_count,fact_count,relationship_count,result_json,error_text,
+                 created_at,updated_at,completed_at)
+               VALUES('lite-run','me','2026-07-26','lite-session','completed','digest',
+                      1,1,0,'{}',NULL,?,?,?)""",
+            (now, now, now),
+        )
+        con.commit()
+
+    assert runtime_mod._completed_close_day_exists(
+        person_id="me", package_date="2026-07-26", db_path=db
+    )
+    assert runtime_mod._close_day_covers_session(
+        person_id="me",
+        package_date="2026-07-26",
+        live_session_id="lite-session",
+        db_path=db,
+    )

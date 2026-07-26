@@ -49,7 +49,21 @@ def _completed_close_day_exists(
     from mlomega_audio_elite.v18_close_day import _package_day
 
     path = Path(db_path) if db_path is not None else None
+    profile = os.environ.get("MLOMEGA_MEMORY_PROFILE", "full").strip().lower()
     with connect(path) as con:
+        if profile == "lite":
+            table = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_lite_close_day_runs_v19'"
+            ).fetchone()
+            if table is None:
+                return False
+            row = con.execute(
+                """SELECT status FROM memory_lite_close_day_runs_v19
+                   WHERE person_id=? AND package_date=?
+                   ORDER BY updated_at DESC LIMIT 1""",
+                (str(person_id or "me"), _package_day(package_date)),
+            ).fetchone()
+            return row is not None and str(row["status"] or "") == "completed"
         table = con.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='v18_close_day_runs'"
         ).fetchone()
@@ -153,7 +167,21 @@ def _close_day_covers_session(
     from mlomega_audio_elite.db import connect
 
     path = Path(db_path) if db_path is not None else None
+    profile = os.environ.get("MLOMEGA_MEMORY_PROFILE", "full").strip().lower()
     with connect(path) as con:
+        if profile == "lite":
+            table = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_lite_close_day_runs_v19'"
+            ).fetchone()
+            if table is None:
+                return False
+            row = con.execute(
+                """SELECT 1 FROM memory_lite_close_day_runs_v19
+                   WHERE person_id=? AND package_date=? AND live_session_id=?
+                     AND status='completed'""",
+                (person_id, package_date, live_session_id),
+            ).fetchone()
+            return row is not None
         table = con.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='v18_close_day_runs'"
         ).fetchone()
@@ -200,6 +228,12 @@ def _run_close_day_subprocess(
         command.extend(["--package-date", str(package_date)])
     if allow_rerun:
         command.append("--allow-rerun")
+    memory_profile = env_profile = os.environ.get(
+        "MLOMEGA_MEMORY_PROFILE", "full"
+    ).strip().lower()
+    if memory_profile not in {"full", "lite"}:
+        raise RuntimeError(f"invalid MLOMEGA_MEMORY_PROFILE: {env_profile!r}")
+    command.extend(["--memory-profile", memory_profile])
     env = os.environ.copy()
     if env.get("MLOMEGA_PRO_CLOSEDAY", "0").strip().lower() in {"1", "true", "yes", "on"}:
         # The capture/live process remains on its proven local Ollama providers.
@@ -1406,6 +1440,7 @@ class SinglePhoneRuntimeManager:
     def metrics(self) -> dict[str, Any]:
         result = {
             "mode": "single_phone",
+            "memory_profile": os.environ.get("MLOMEGA_MEMORY_PROFILE", "full"),
             "active": self.active.status() if self.active else None,
             "startup_recovery": self.recovery_state,
             "startup_recovery_report": self.recovery_report,

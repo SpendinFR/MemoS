@@ -2106,3 +2106,35 @@ une disparition observée et une prise probable peuvent former une hypothèse, p
 la conclusion « cette personne a mangé l'objet ». La suppression efface DB et
 médias immédiatement. La voix, le menu et la route média authentifiée convergent
 sur ce seul chemin; Local, PRO, BrainLive et CloseDay restent inchangés.
+
+## 2026-07-26 — Memory Lite est un profil CloseDay, pas un Full amputé
+
+Le produit choisit désormais explicitement `full` ou `lite` au lancement. Ce choix
+est indépendant du provider `local`/`PRO` : quatre combinaisons sont possibles.
+`full` reste la valeur par défaut et son appel à `close_brainlive_day` n'est pas
+modifié. Lite possède `memory_lite_close_day_runs_v19`, un digest de source et des
+IDs stables propres; il ne déclare jamais que les capacités V13–V18 Full ont tourné.
+
+Lite conserve chaque final live dans les tables canoniques avant toute synthèse.
+Le coût s'applique ensuite à des épisodes continus bornés à vingt minutes, une
+analyse par épisode. Ce n'est pas une troncature : la réponse à une question
+factuelle peut toujours remonter aux tours source, tandis que les résumés,
+relations et hooks accélèrent les usages courants. En PRO seulement, des épisodes
+indépendants peuvent être extraits en parallèle; le writer reste séquentiel et
+transactionnel.
+
+La perspective sémantique est explicitement celle du propriétaire William/`me`.
+Une sortie n'entre pas dans la mémoire sans référence appartenant au paquet
+d'entrée. Les motifs mono-épisode restent `watch`, et une action T1 `probable`
+isolée ne peut pas devenir `observed`. Les entrées utiles du Prélude sont actions,
+OCR significatif, états/lieux BrainLive, résumés de scène, faits spatiaux/visuels
+et Sherlock; les effets AR décoratifs,
+météo, ciel, navigation et télémétrie n'ont aucune valeur biographique et sont
+exclus.
+
+Lite écrit dans les tables que les consommateurs utilisent déjà : épisodes et
+relations pour MemoryQuery, Life V19 pour le longitudinal typé, puis export et
+index live-ready pour HotContext, suggestions et BrainLive. Sa nouvelle table de
+faits est un journal explicable supplémentaire, jamais l'unique mémoire. Revenir
+à Full ne demande ni migration ni revert : il suffit de relancer avec
+`-MemoryProfile full`.

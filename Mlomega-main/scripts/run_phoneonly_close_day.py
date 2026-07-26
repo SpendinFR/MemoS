@@ -164,6 +164,12 @@ def main() -> int:
     parser.add_argument("--live-session-id", required=True)
     parser.add_argument("--package-date", default=None)
     parser.add_argument("--pro", action="store_true", help="opt-in cloud CloseDay profile; local remains the default")
+    parser.add_argument(
+        "--memory-profile",
+        choices=("full", "lite"),
+        default=os.environ.get("MLOMEGA_MEMORY_PROFILE", "full").strip().lower(),
+        help="memory depth profile; independent from local/PRO model provider",
+    )
     parser.add_argument("--cloud-budget-eur", type=float, default=1.50)
     parser.add_argument("--cloud-on-budget", choices=("stop", "flash", "local"), default="stop")
     parser.add_argument("--pro-text-model", choices=("pro", "flash"), default="pro")
@@ -204,14 +210,12 @@ def main() -> int:
     if not _CUDA_ENV_OK:
         raise RuntimeError(f"CloseDay CUDA/cuDNN environment invalid: {_CUDA_ENV_DETAIL}")
 
-    from mlomega_audio_elite.v18_close_day import close_brainlive_day
-
     # No explicit --package-date: the session's OWN local day wins over "today"
     # (a worker crossing local midnight must not retarget an empty next day).
     package_date = args.package_date or _derive_session_package_date(args.live_session_id)
 
     reopen_report = None
-    if args.allow_rerun:
+    if args.allow_rerun and args.memory_profile == "full":
         reopen_report = _reopen_completed_close_day(
             person_id=args.person_id, package_date=package_date
         )
@@ -223,14 +227,28 @@ def main() -> int:
     if deferred_semantics.get("status") not in {"completed", "not_applicable"}:
         raise RuntimeError(f"deferred semantics incomplete: {deferred_semantics}")
 
-    result = close_brainlive_day(
-        person_id=args.person_id,
-        live_session_id=args.live_session_id,
-        package_date=package_date,
-        # force bypasses only a safety backoff; the reopen above is what actually
-        # un-skips a completed day, so pair them for an explicit second session.
-        force=bool(args.allow_rerun),
-    )
+    if args.memory_profile == "lite":
+        if not package_date:
+            raise RuntimeError("memory_lite cannot derive the session package date")
+        from mlomega_audio_elite.memory_lite_v19 import run_memory_lite_close_day
+
+        result = run_memory_lite_close_day(
+            person_id=args.person_id,
+            live_session_id=args.live_session_id,
+            package_date=package_date,
+            force=bool(args.allow_rerun),
+        )
+    else:
+        from mlomega_audio_elite.v18_close_day import close_brainlive_day
+
+        result = close_brainlive_day(
+            person_id=args.person_id,
+            live_session_id=args.live_session_id,
+            package_date=package_date,
+            # force bypasses only a safety backoff; the reopen above is what actually
+            # un-skips a completed day, so pair them for an explicit second session.
+            force=bool(args.allow_rerun),
+        )
     if reopen_report is not None:
         result = {**result, "reopen": reopen_report}
     result = {**result, "deferred_semantics": deferred_semantics}
