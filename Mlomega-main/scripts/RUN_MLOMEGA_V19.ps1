@@ -15,6 +15,7 @@ param(
   [switch]$Xr,
   [switch]$Pro,
   [switch]$AugmentedReality,
+  [string]$StudioReleaseId = "",
   [ValidateSet("pro", "flash")][string]$ProTextModel = "pro",
   [ValidateSet("stop", "flash", "local")][string]$CloudOnBudget = "stop",
   [double]$CloudBudgetEur = 1.50,
@@ -100,6 +101,9 @@ if ($LivePhone) {
   $augmentedRealityProcess = $null
   if ($AugmentedReality) { $env:MLOMEGA_AUGMENTED_REALITY = "1" }
   if (-not $env:MLOMEGA_AUGMENTED_REALITY) { $env:MLOMEGA_AUGMENTED_REALITY = "0" }
+  if ($AugmentedReality -and $StudioReleaseId) {
+    $env:MLOMEGA_AR_STUDIO_RELEASE_ID = $StudioReleaseId
+  }
   if ($Pro) {
     $env:MLOMEGA_CLOUD_MODE = "pro"
     $env:MLOMEGA_PRO_CLOSEDAY = "1"
@@ -234,5 +238,5 @@ if ($SimOnly) {
   exit $code
 }
 
-Write-Host "Usage: .\scripts\RUN_MLOMEGA_V19.ps1 -SimOnly | -LivePhone [-Pro] [-AugmentedReality] [-CloudBudgetEur 1.50] [-CloudOnBudget stop|flash|local]" -ForegroundColor Cyan
+Write-Host "Usage: .\scripts\RUN_MLOMEGA_V19.ps1 -SimOnly | -LivePhone [-Pro] [-AugmentedReality] [-StudioReleaseId release-id] [-CloudBudgetEur 1.50] [-CloudOnBudget stop|flash|local]" -ForegroundColor Cyan
 exit 0

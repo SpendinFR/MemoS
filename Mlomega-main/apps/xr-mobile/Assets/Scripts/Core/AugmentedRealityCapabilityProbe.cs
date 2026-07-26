@@ -245,8 +245,10 @@ namespace MLOmega.XR.Core
 #if UNITY_ANDROID && !UNITY_EDITOR
             try
             {
-                string path = Path.Combine(Application.persistentDataPath, "models", name);
-                return File.Exists(path) && new FileInfo(path).Length > 0;
+                string path = System.IO.Path.Combine(
+                    Application.persistentDataPath, "models", name);
+                return System.IO.File.Exists(path) &&
+                    new System.IO.FileInfo(path).Length > 0;
             }
             catch
             {

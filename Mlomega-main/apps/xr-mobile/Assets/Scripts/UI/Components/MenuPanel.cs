@@ -71,6 +71,38 @@ namespace MLOmega.XR.UI.Components
         private Quaternion _restoreRotation;
         private Vector2 _restoreSize;
         private bool _augmentedSettingsPage;
+        private int _augmentedPageIndex;
+        private const int AugmentedItemsPerPage = 7;
+        private static readonly string[] AugmentedLabels =
+        {
+            "AR globale", "Menus objets", "Actions", "Sons", "Contexte",
+            "Super-zoom", "Mesure AR", "Navigation monde", "Labels du monde",
+            "Ancres persistantes", "Occlusion Depth", "Style FreeGuy",
+            "Futurs de foule", "Clavier spatial", "Vision mouvement",
+            "Lancer ludique", "Carte radio", "Profils studio", "Aura pouls (exp.)",
+        };
+        private static readonly string[] AugmentedFeatures =
+        {
+            AugmentedRealityFeatureRegistry.Master,
+            AugmentedRealityFeatureRegistry.ObjectMenus,
+            AugmentedRealityFeatureRegistry.ActionRecognition,
+            AugmentedRealityFeatureRegistry.SemanticSound,
+            AugmentedRealityFeatureRegistry.ContextualKnowledge,
+            AugmentedRealityFeatureRegistry.EnhancedZoom,
+            AugmentedRealityFeatureRegistry.ArMeasurement,
+            AugmentedRealityFeatureRegistry.StreetNavigation,
+            AugmentedRealityFeatureRegistry.WorldLabels,
+            AugmentedRealityFeatureRegistry.PersistentAnchors,
+            AugmentedRealityFeatureRegistry.DepthOcclusion,
+            AugmentedRealityFeatureRegistry.WorldStyling,
+            AugmentedRealityFeatureRegistry.TrajectoryForecast,
+            AugmentedRealityFeatureRegistry.SpatialKeyboard,
+            AugmentedRealityFeatureRegistry.EventVision,
+            AugmentedRealityFeatureRegistry.BallisticPreview,
+            AugmentedRealityFeatureRegistry.RadioField,
+            AugmentedRealityFeatureRegistry.ConsentedPeople,
+            AugmentedRealityFeatureRegistry.PulseAura,
+        };
 
         private void Awake()
         {
@@ -108,6 +140,7 @@ namespace MLOmega.XR.UI.Components
         public void BuildDefaultActions()
         {
             _augmentedSettingsPage = false;
+            _augmentedPageIndex = 0;
             BuildMainActions();
         }
 
@@ -153,23 +186,20 @@ namespace MLOmega.XR.UI.Components
             ResolveAugmentedRegistry();
             _augmentedSettingsPage = true;
             _actions.Clear();
-            _actions.Add(ToggleLabel("AR globale", AugmentedRealityFeatureRegistry.Master));
-            _actions.Add(ToggleLabel("Menus objets", AugmentedRealityFeatureRegistry.ObjectMenus));
-            _actions.Add(ToggleLabel("Actions", AugmentedRealityFeatureRegistry.ActionRecognition));
-            _actions.Add(ToggleLabel("Sons", AugmentedRealityFeatureRegistry.SemanticSound));
-            _actions.Add(ToggleLabel("Contexte", AugmentedRealityFeatureRegistry.ContextualKnowledge));
-            _actions.Add(ToggleLabel("Super-zoom", AugmentedRealityFeatureRegistry.EnhancedZoom));
-            _actions.Add(ToggleLabel("Mesure AR", AugmentedRealityFeatureRegistry.ArMeasurement));
-            _actions.Add(ToggleLabel("Navigation monde", AugmentedRealityFeatureRegistry.StreetNavigation));
-            _actions.Add(ToggleLabel("Labels du monde", AugmentedRealityFeatureRegistry.WorldLabels));
-            _actions.Add(ToggleLabel("Ancres persistantes", AugmentedRealityFeatureRegistry.PersistentAnchors));
-            _actions.Add(ToggleLabel("Occlusion Depth", AugmentedRealityFeatureRegistry.DepthOcclusion));
-            _actions.Add(ToggleLabel("Style FreeGuy", AugmentedRealityFeatureRegistry.WorldStyling));
-            _actions.Add(ToggleLabel("Futurs de foule", AugmentedRealityFeatureRegistry.TrajectoryForecast));
-            _actions.Add(ToggleLabel("Clavier spatial", AugmentedRealityFeatureRegistry.SpatialKeyboard));
-            _actions.Add(ToggleLabel("Vision mouvement", AugmentedRealityFeatureRegistry.EventVision));
-            _actions.Add(ToggleLabel("Lancer ludique", AugmentedRealityFeatureRegistry.BallisticPreview));
-            _actions.Add(ToggleLabel("Carte radio", AugmentedRealityFeatureRegistry.RadioField));
+            int pageCount = Mathf.CeilToInt((float)AugmentedFeatures.Length / AugmentedItemsPerPage);
+            _augmentedPageIndex = Mathf.Clamp(_augmentedPageIndex, 0, pageCount - 1);
+            int start = _augmentedPageIndex * AugmentedItemsPerPage;
+            int end = Mathf.Min(start + AugmentedItemsPerPage, AugmentedFeatures.Length);
+            for (int i = start; i < end; i++)
+                _actions.Add(ToggleLabel(AugmentedLabels[i], AugmentedFeatures[i]));
+            if (_augmentedPageIndex > 0)
+                _actions.Add(new MenuAction(
+                    "Page précédente",
+                    new DeviceCommand { Type = "device_command", Action = "augmented_prev_page" }));
+            if (_augmentedPageIndex + 1 < pageCount)
+                _actions.Add(new MenuAction(
+                    "Page suivante",
+                    new DeviceCommand { Type = "device_command", Action = "augmented_next_page" }));
             _actions.Add(new MenuAction(
                 "Retour",
                 new DeviceCommand { Type = "device_command", Action = "back_main_menu" }));
@@ -331,6 +361,13 @@ namespace MLOmega.XR.UI.Components
             if (act == "back_main_menu")
             {
                 BuildDefaultActions();
+                SendReceipt(action);
+                return true;
+            }
+            if (act == "augmented_prev_page" || act == "augmented_next_page")
+            {
+                _augmentedPageIndex += act == "augmented_next_page" ? 1 : -1;
+                BuildAugmentedActions();
                 SendReceipt(action);
                 return true;
             }

@@ -22,6 +22,8 @@ from capabilities import (  # noqa: E402
     build_object_profile_card,
     execute_object_action,
 )
+from consented_profiles import ConsentedProfileRegistry  # noqa: E402
+from public_profile_discovery import PublicProfileDiscovery  # noqa: E402
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
 KNOWN_FEATURES = (
@@ -41,6 +43,8 @@ KNOWN_FEATURES = (
     "event_vision",
     "ballistic_preview",
     "radio_field",
+    "consented_people",
+    "pulse_aura",
 )
 MEMORY_ACCESS = {
     # Future modules consume existing product APIs; this isolated service never
@@ -61,8 +65,10 @@ MEMORY_ACCESS = {
     "event_vision": "none",
     "ballistic_preview": "none",
     "radio_field": "none",
+    "consented_people": "read_enrolled_identity_and_explicit_consent_registry",
+    "pulse_aura": "none_no_biometric_persistence",
 }
-MAX_BODY_BYTES = 32_768
+MAX_BODY_BYTES = 262_144
 MAX_SESSIONS = 16
 
 
@@ -109,11 +115,15 @@ class PreferenceState:
         *,
         object_registry: ObjectActionRegistry | None = None,
         knowledge: ContextualKnowledgeGate | None = None,
+        profile_registry: ConsentedProfileRegistry | None = None,
+        public_discovery: PublicProfileDiscovery | None = None,
     ) -> None:
         self._lock = threading.Lock()
         self._sessions: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self.object_registry = object_registry or ObjectActionRegistry()
         self.knowledge = knowledge or ContextualKnowledgeGate()
+        self.profile_registry = profile_registry or ConsentedProfileRegistry.from_env()
+        self.public_discovery = public_discovery or PublicProfileDiscovery()
 
     def capabilities(self) -> dict[str, bool]:
         return {
@@ -145,6 +155,11 @@ class PreferenceState:
             "event_vision": False,
             "ballistic_preview": False,
             "radio_field": False,
+            "consented_people": bool(
+                self.profile_registry.supports("profile_card")
+                or self.public_discovery.available
+            ),
+            "pulse_aura": self.profile_registry.supports("physiology"),
         }
 
     def apply(self, payload: Any) -> dict[str, Any]:
@@ -225,6 +240,29 @@ class PreferenceState:
             raise PermissionError("contextual_knowledge is not active for this session")
         return self.knowledge.maybe_card(payload)
 
+    def consented_person(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be an object")
+        session_id = str(payload.get("session_id") or "")
+        profile_enabled = self.feature_active(session_id, "consented_people")
+        pulse_enabled = self.feature_active(session_id, "pulse_aura")
+        if not profile_enabled and not pulse_enabled:
+            raise PermissionError(
+                "consented_people/pulse_aura is not active for this session"
+            )
+        result = self.profile_registry.project(
+            payload,
+            profile_enabled=profile_enabled,
+            pulse_enabled=pulse_enabled,
+        )
+        if (
+            result.get("status") == "no_consent"
+            and profile_enabled
+            and payload.get("face_jpeg_b64")
+        ):
+            return self.public_discovery.discover(payload)
+        return result
+
 
 def capability_manifest(
     *,
@@ -267,6 +305,7 @@ def build_handler(state: PreferenceState, *, enabled: bool) -> type[BaseHTTPRequ
                 "/v1/object-card": state.object_card,
                 "/v1/object-action": state.object_action,
                 "/v1/contextual-knowledge": state.contextual_knowledge,
+                "/v1/consented-person": state.consented_person,
             }
             handler = routes.get(self.path)
             if handler is None:

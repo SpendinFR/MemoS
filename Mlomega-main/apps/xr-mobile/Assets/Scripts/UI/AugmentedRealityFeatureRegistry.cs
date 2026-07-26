@@ -35,6 +35,8 @@ namespace MLOmega.XR.UI
         public const string EventVision = "event_vision";
         public const string BallisticPreview = "ballistic_preview";
         public const string RadioField = "radio_field";
+        public const string ConsentedPeople = "consented_people";
+        public const string PulseAura = "pulse_aura";
 
         private const string PreferencePrefix = "mlomega.augmented_reality.";
 
@@ -56,6 +58,8 @@ namespace MLOmega.XR.UI
             EventVision,
             BallisticPreview,
             RadioField,
+            ConsentedPeople,
+            PulseAura,
         };
 
         [SerializeField] private LiveTransportBridge _transport;
@@ -66,6 +70,8 @@ namespace MLOmega.XR.UI
         private readonly Dictionary<string, bool> _selected =
             new Dictionary<string, bool>(StringComparer.Ordinal);
         private readonly HashSet<string> _active =
+            new HashSet<string>(StringComparer.Ordinal);
+        private readonly HashSet<string> _localActive =
             new HashSet<string>(StringComparer.Ordinal);
 
         public event Action<string, bool> FeatureChanged;
@@ -110,7 +116,41 @@ namespace MLOmega.XR.UI
         public bool IsActive(string feature)
         {
             string id = Normalise(feature);
-            return id != null && id != Master && _active.Contains(id);
+            return id != null &&
+                id != Master &&
+                MasterEnabled &&
+                IsSelected(id) &&
+                (_active.Contains(id) || _localActive.Contains(id));
+        }
+
+        /// <summary>
+        /// Advertise one capability proven by the active device XR provider.
+        /// This never selects the feature: every switch remains explicit opt-in.
+        /// PhoneOnly has no local spatial provider and therefore stays unchanged.
+        /// </summary>
+        public bool SetLocalCapability(string feature, bool available)
+        {
+            string id = Normalise(feature);
+            if (id == null || id == Master) return false;
+            bool changed = available
+                ? _localActive.Add(id)
+                : _localActive.Remove(id);
+            if (changed)
+            {
+                ApplyStatusBar();
+                ServiceStatusChanged?.Invoke(
+                    LastServiceStatus,
+                    available
+                        ? $"local XR provider ready: {id}"
+                        : $"local XR provider unavailable: {id}");
+            }
+            return changed;
+        }
+
+        public bool IsLocalCapabilityAvailable(string feature)
+        {
+            string id = Normalise(feature);
+            return id != null && id != Master && _localActive.Contains(id);
         }
 
         public string DisplayState(string feature)
@@ -118,7 +158,9 @@ namespace MLOmega.XR.UI
             string id = Normalise(feature);
             if (id == null || !IsSelected(id)) return "OFF";
             if (id == Master)
-                return LastServiceStatus == "ready" ? "ON" : "ATTENTE";
+                return LastServiceStatus == "ready" || _localActive.Count > 0
+                    ? "ON"
+                    : "ATTENTE";
             if (!MasterEnabled) return "ARMÉ";
             return IsActive(id) ? "ON" : "ATTENTE";
         }

@@ -34,8 +34,11 @@ KNOWN_FEATURES = {
     "event_vision",
     "ballistic_preview",
     "radio_field",
+    "consented_people",
+    "pulse_aura",
 }
 MAX_PREFERENCES_BYTES = 32_768
+MAX_FEATURE_REQUEST_BYTES = 262_144
 
 
 class AugmentedRealityBridge:
@@ -45,11 +48,16 @@ class AugmentedRealityBridge:
         enabled: bool,
         base_url: str = "http://127.0.0.1:8791",
         timeout_s: float = 0.75,
+        public_lookup_timeout_s: float = 55.0,
     ) -> None:
         self.enabled = bool(enabled)
         self.base_url = str(base_url).rstrip("/")
         self.timeout_s = max(0.1, min(float(timeout_s), 3.0))
+        self.public_lookup_timeout_s = max(
+            5.0, min(float(public_lookup_timeout_s), 70.0)
+        )
         self._executor: ThreadPoolExecutor | None = None
+        self._public_executor: ThreadPoolExecutor | None = None
         self._lock = threading.Lock()
         self._active_features: set[str] = set()
         self._inflight: set[str] = set()
@@ -63,11 +71,18 @@ class AugmentedRealityBridge:
             "object_cards": 0,
             "object_actions": 0,
             "knowledge_cards": 0,
+            "person_profiles": 0,
         }
         if self.enabled:
             self._validate_loopback_endpoint()
             self._executor = ThreadPoolExecutor(
                 max_workers=1, thread_name_prefix="mlomega-augmented-reality"
+            )
+            # A consented public lookup may spend up to 12 s in Web Detection and
+            # 35 s in Sherlock.  It must never block preferences, Kiwix or object
+            # cards on the regular low-latency worker.
+            self._public_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="mlomega-augmented-public"
             )
 
     @classmethod
@@ -82,6 +97,9 @@ class AugmentedRealityBridge:
             ),
             timeout_s=float(
                 os.environ.get("MLOMEGA_AUGMENTED_REALITY_TIMEOUT_S", "0.75")
+            ),
+            public_lookup_timeout_s=float(
+                os.environ.get("MLOMEGA_AR_PUBLIC_LOOKUP_TIMEOUT_S", "55")
             ),
         )
 
@@ -180,18 +198,52 @@ class AugmentedRealityBridge:
             ),
         )
 
+    def submit_consented_person(
+        self,
+        payload: dict[str, Any],
+        *,
+        session_id: str,
+        on_result: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        if not (
+            self.feature_active("consented_people")
+            or self.feature_active("pulse_aura")
+        ):
+            return {"status": "inactive", "feature": "consented_people"}
+        person_id = str((payload or {}).get("person_id") or "").strip()
+        track_id = str((payload or {}).get("target_track_id") or "").strip()
+        return self._submit_feature(
+            f"consented-person:{person_id}:{track_id}",
+            (
+                "consented_people"
+                if self.feature_active("consented_people")
+                else "pulse_aura"
+            ),
+            "/v1/consented-person",
+            {"session_id": session_id, **dict(payload or {})},
+            lambda result: self._deliver_result(
+                result, on_result, metric="person_profiles"
+            ),
+            executor=self._public_executor,
+            request_timeout_s=self.public_lookup_timeout_s,
+        )
+
     def metrics(self) -> dict[str, Any]:
         with self._lock:
             return dict(self._metrics)
 
     def close(self) -> None:
         executor = self._executor
+        public_executor = self._public_executor
         self._executor = None
+        self._public_executor = None
         with self._lock:
             self._active_features.clear()
             self._inflight.clear()
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
+        if public_executor is not None:
+            public_executor.shutdown(wait=False, cancel_futures=True)
 
     def _post_preferences(
         self,
@@ -238,8 +290,11 @@ class AugmentedRealityBridge:
         path: str,
         payload: dict[str, Any],
         callback: Callable[[dict[str, Any]], None],
+        executor: ThreadPoolExecutor | None = None,
+        request_timeout_s: float | None = None,
     ) -> dict[str, Any]:
-        if not self.enabled or self._executor is None:
+        selected_executor = executor or self._executor
+        if not self.enabled or selected_executor is None:
             return {"status": "disabled"}
         if not self.feature_active(feature):
             return {"status": "inactive", "feature": feature}
@@ -252,7 +307,13 @@ class AugmentedRealityBridge:
 
         def run() -> None:
             try:
-                callback(self._post_json(path, payload))
+                callback(
+                    self._post_json(
+                        path,
+                        payload,
+                        timeout_s=request_timeout_s,
+                    )
+                )
                 self._increment("accepted")
             except Exception as exc:
                 self._increment("failed")
@@ -261,14 +322,20 @@ class AugmentedRealityBridge:
                 with self._lock:
                     self._inflight.discard(key)
 
-        self._executor.submit(run)
+        selected_executor.submit(run)
         return {"status": "pending", "feature": feature}
 
-    def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _post_json(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        timeout_s: float | None = None,
+    ) -> dict[str, Any]:
         body = json.dumps(
             payload, ensure_ascii=False, separators=(",", ":")
         ).encode("utf-8")
-        if len(body) > MAX_PREFERENCES_BYTES:
+        if len(body) > MAX_FEATURE_REQUEST_BYTES:
             raise ValueError("augmented-reality request exceeds size limit")
         request = urllib.request.Request(
             self.base_url + path,
@@ -276,7 +343,10 @@ class AugmentedRealityBridge:
             headers={"Content-Type": "application/json; charset=utf-8"},
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
+        with urllib.request.urlopen(
+            request,
+            timeout=self.timeout_s if timeout_s is None else timeout_s,
+        ) as response:
             raw = response.read(MAX_PREFERENCES_BYTES + 1)
         if len(raw) > MAX_PREFERENCES_BYTES:
             raise ValueError("augmented-reality response exceeds size limit")

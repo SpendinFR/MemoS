@@ -479,6 +479,7 @@ class LivePipeline:
         self.identity_frame_interval = max(1, int(identity_frame_interval))
         self._frame_counter = 0
         self._identity_seen_tracks: set[str] = set()
+        self._ar_profile_attempted_tracks: set[str] = set()
         self.face: Any = None
         self.voice_identity: Any = None
         self.fusion: Any = None
@@ -2194,7 +2195,179 @@ class LivePipeline:
             # Keep the freshest crop for enrollment ("retiens : c'est X").
             if self.enrollment is not None:
                 self.enrollment.set_active_track(track_id, entity_id, crop)
-            self.fusion.resolve(entity_id=entity_id, track_id=track_id, face=face_res)
+            verdict = self.fusion.resolve(
+                entity_id=entity_id,
+                track_id=track_id,
+                face=face_res,
+            )
+            self._submit_ar_person_profile(
+                frame_bgr=frame_bgr,
+                crop=crop,
+                entity=ent,
+                face_result=face_res,
+                verdict=verdict,
+                source_frame_id=str(delta.get("source_frame_id") or ""),
+                frame_width=int(delta.get("frame_width") or frame_bgr.shape[1]),
+                frame_height=int(delta.get("frame_height") or frame_bgr.shape[0]),
+                rotation=int(delta.get("rotation") or 0),
+                mirrored=bool(delta.get("mirrored")),
+            )
+
+    def _submit_ar_person_profile(
+        self,
+        *,
+        frame_bgr: np.ndarray,
+        crop: np.ndarray,
+        entity: dict[str, Any],
+        face_result: dict[str, Any] | None,
+        verdict: Any,
+        source_frame_id: str,
+        frame_width: int,
+        frame_height: int,
+        rotation: int,
+        mirrored: bool,
+    ) -> None:
+        """Project a known consented person or run one bounded Web lookup.
+
+        This path is impossible unless the optional AR service reports the
+        consented_people or pulse_aura feature active.  An unknown track is sent
+        at most once per session.  Web candidates remain probable UI only: this
+        function never enrolls a face or writes a name to memory.
+        """
+        bridge = self.augmented_reality
+        track_id = str(entity.get("track_id") or "")
+        if (
+            bridge is None
+            or not hasattr(bridge, "submit_consented_person")
+            or not track_id
+            or track_id in self._ar_profile_attempted_tracks
+            or not (
+                bridge.feature_active("consented_people")
+                or bridge.feature_active("pulse_aura")
+            )
+        ):
+            return
+        person_bbox = self._normalised_detector_bbox(
+            entity.get("bbox"), frame_width, frame_height
+        )
+        face_bbox = self._face_bbox_in_frame(
+            entity.get("bbox"),
+            (face_result or {}).get("face_box"),
+            frame_width,
+            frame_height,
+        )
+        payload: dict[str, Any] = {
+            "source_frame_id": source_frame_id,
+            "target_track_id": track_id,
+            "entity_id": getattr(verdict, "entity_id", None),
+            "person_id": getattr(verdict, "person_id", None),
+            "display_name": getattr(verdict, "name", None),
+            "identity_confidence": float(
+                getattr(verdict, "confidence", 0.0) or 0.0
+            ),
+            "identity_method": "+".join(getattr(verdict, "cues", []) or [])
+            or "unmatched_face",
+            "person_bbox": person_bbox,
+            "face_bbox": face_bbox,
+            "rotation": rotation if rotation in {0, 90, 180, 270} else 0,
+            "mirrored": mirrored,
+        }
+        if not getattr(verdict, "identified", False):
+            # The actual face crop, not the full frame, is sent to Google Web
+            # Detection only in explicit studio-release mode.  Bound resolution
+            # and JPEG quality keep the local request below 180 KiB.
+            try:
+                import base64
+                import cv2
+
+                query = crop
+                longest = max(int(crop.shape[0]), int(crop.shape[1]))
+                if longest > 480:
+                    scale = 480.0 / float(longest)
+                    query = cv2.resize(
+                        crop,
+                        None,
+                        fx=scale,
+                        fy=scale,
+                        interpolation=cv2.INTER_AREA,
+                    )
+                ok, encoded = cv2.imencode(
+                    ".jpg", query, [int(cv2.IMWRITE_JPEG_QUALITY), 82]
+                )
+                if ok and int(encoded.size) <= 180_000:
+                    payload["face_jpeg_b64"] = base64.b64encode(
+                        encoded.tobytes()
+                    ).decode("ascii")
+            except Exception as exc:
+                self._report_error("ar_person.jpeg", exc)
+        self._ar_profile_attempted_tracks.add(track_id)
+        bridge.submit_consented_person(
+            payload,
+            session_id=self.session_id,
+            on_result=self._on_ar_person_result,
+        )
+
+    def _on_ar_person_result(self, result: dict[str, Any]) -> None:
+        if not isinstance(result, dict):
+            return
+        for key in ("profile_intent", "bio_roi"):
+            message = result.get(key)
+            if isinstance(message, dict):
+                self._push_intent(message)
+
+    @staticmethod
+    def _normalised_detector_bbox(
+        raw: Any,
+        frame_width: int,
+        frame_height: int,
+    ) -> dict[str, float]:
+        if (
+            not isinstance(raw, (list, tuple))
+            or len(raw) != 4
+            or frame_width <= 0
+            or frame_height <= 0
+        ):
+            return {}
+        try:
+            x1, y1, x2, y2 = [float(value) for value in raw]
+        except (TypeError, ValueError):
+            return {}
+        x1 = max(0.0, min(float(frame_width), x1))
+        y1 = max(0.0, min(float(frame_height), y1))
+        x2 = max(x1, min(float(frame_width), x2))
+        y2 = max(y1, min(float(frame_height), y2))
+        return {
+            "x": round(x1 / frame_width, 6),
+            "y": round(y1 / frame_height, 6),
+            "w": round((x2 - x1) / frame_width, 6),
+            "h": round((y2 - y1) / frame_height, 6),
+        }
+
+    @classmethod
+    def _face_bbox_in_frame(
+        cls,
+        person_raw: Any,
+        face_raw: Any,
+        frame_width: int,
+        frame_height: int,
+    ) -> dict[str, float]:
+        if (
+            not isinstance(person_raw, (list, tuple))
+            or len(person_raw) != 4
+            or not isinstance(face_raw, (list, tuple))
+            or len(face_raw) != 4
+        ):
+            return {}
+        try:
+            px1, py1, px2, py2 = [float(value) for value in person_raw]
+            fx, fy, fw, fh = [float(value) for value in face_raw]
+        except (TypeError, ValueError):
+            return {}
+        return cls._normalised_detector_bbox(
+            [px1 + fx, py1 + fy, px1 + fx + fw, py1 + fy + fh],
+            frame_width,
+            frame_height,
+        )
 
     def _on_audio_segment(self, seg: np.ndarray, meta: dict[str, Any]) -> None:
         """Handle one FINAL raw VAD segment (E37 §1/§3), off the subtitle path.

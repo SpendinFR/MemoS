@@ -4,6 +4,7 @@ import importlib.util
 import json
 import sys
 import threading
+import base64
 from pathlib import Path
 
 
@@ -274,3 +275,165 @@ def test_product_launcher_keeps_augmented_reality_opt_in_and_cleans_it_up():
         "services\\augmented-reality\\service.py"
     )
     assert "Stop-Process -Id $augmentedRealityProcess.Id" in launcher
+
+
+def test_consented_profile_projects_verified_sources_and_physiology_roi(tmp_path):
+    registry_path = tmp_path / "people.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "people": [
+                    {
+                        "person_id": "actor-max",
+                        "display_name": "Max",
+                        "consent_id": "release-42",
+                        "signed_at": "2026-07-26T12:00:00+02:00",
+                        "scopes": [
+                            "profile_card",
+                            "public_sources",
+                            "physiology",
+                        ],
+                        "summary": "Acteur consenti.",
+                        "public_sources": [
+                            {
+                                "provider": "instagram",
+                                "handle": "max_actor",
+                                "url": "https://instagram.com/max_actor",
+                                "verified_at": "2026-07-26",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry = service_mod.ConsentedProfileRegistry.from_path(registry_path)
+    state = service_mod.PreferenceState(profile_registry=registry)
+    preferences = _payload()
+    preferences["features"]["object_menus"] = False
+    preferences["features"]["semantic_sound"] = False
+    preferences["features"]["consented_people"] = True
+    preferences["features"]["pulse_aura"] = True
+    clean = bridge_mod.normalise_preferences(
+        preferences, session_id="studio-1", person_id="me"
+    )
+    assert state.apply(clean)["active_features"] == [
+        "consented_people",
+        "pulse_aura",
+    ]
+    result = state.consented_person(
+        {
+            "session_id": "studio-1",
+            "person_id": "actor-max",
+            "identity_confidence": 0.88,
+            "identity_method": "face",
+            "target_track_id": "person-7",
+            "entity_id": "entity-7",
+            "source_frame_id": "f_19",
+            "person_bbox": {"x": 0.1, "y": 0.2, "w": 0.4, "h": 0.7},
+            "face_bbox": {"x": 0.2, "y": 0.22, "w": 0.16, "h": 0.2},
+            "rotation": 90,
+        }
+    )
+    assert result["profile_intent"]["component"] == "person_profile_card"
+    assert result["profile_intent"]["content"]["public_sources"][0]["handle"] == "max_actor"
+    assert result["bio_roi"]["signal"] == "rppg_experimental"
+    assert result["bio_roi"]["persist"] is False
+    assert result["bio_roi"]["rotation"] == 90
+
+
+def test_unknown_face_uses_real_web_detection_shape_but_never_confirms_identity():
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return json.dumps(
+                {
+                    "responses": [
+                        {
+                            "webDetection": {
+                                "bestGuessLabels": [{"label": "Max Actor"}],
+                                "webEntities": [
+                                    {"description": "Max Actor", "score": 0.81}
+                                ],
+                                "pagesWithMatchingImages": [
+                                    {"url": "https://instagram.com/max_actor"}
+                                ],
+                            }
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    discovery = service_mod.PublicProfileDiscovery(
+        api_key="test-key",
+        release_id="studio-release-9",
+        opener=lambda *_args, **_kwargs: Response(),
+        sherlock_command="",
+    )
+    result = discovery.discover(
+        {
+            "session_id": "studio-1",
+            "target_track_id": "person-unknown",
+            "source_frame_id": "f_20",
+            "person_bbox": {"x": 0.1, "y": 0.2, "w": 0.4, "h": 0.7},
+            "face_jpeg_b64": base64.b64encode(b"real-jpeg-bytes").decode("ascii"),
+        }
+    )
+    card = result["profile_intent"]
+    assert result["status"] == "candidate"
+    assert card["truth_level"] == "probable"
+    assert card["content"]["requires_confirmation"] is True
+    assert card["content"]["identity_method"] == "google_vision_web_detection"
+    assert "person_id" not in card["content"]
+
+
+def test_slow_public_lookup_never_blocks_object_card_worker():
+    bridge = bridge_mod.AugmentedRealityBridge(
+        enabled=True,
+        timeout_s=0.2,
+        public_lookup_timeout_s=50,
+    )
+    with bridge._lock:
+        bridge._active_features.update({"consented_people", "object_menus"})
+    lookup_started = threading.Event()
+    release_lookup = threading.Event()
+    object_done = threading.Event()
+    timeouts = []
+
+    def fake_post(path, payload, *, timeout_s=None):
+        timeouts.append((path, timeout_s))
+        if path == "/v1/consented-person":
+            lookup_started.set()
+            assert release_lookup.wait(2)
+            return {"status": "no_match"}
+        return {
+            "type": "ui_intent",
+            "component": "object_profile_card",
+            "ui_intent_id": "card-1",
+        }
+
+    bridge._post_json = fake_post
+    try:
+        bridge.submit_consented_person(
+            {"target_track_id": "person-1", "face_jpeg_b64": "eA=="},
+            session_id="s1",
+            on_result=lambda _: None,
+        )
+        assert lookup_started.wait(1)
+        bridge.submit_object_focus(
+            {"target_track_id": "object-1"},
+            session_id="s1",
+            on_intent=lambda _: object_done.set(),
+        )
+        assert object_done.wait(1), "public lookup blocked the live object-card worker"
+        assert ("/v1/consented-person", 50.0) in timeouts
+    finally:
+        release_lookup.set()
+        bridge.close()

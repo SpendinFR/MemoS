@@ -39,6 +39,10 @@ namespace MLOmega.XR.Editor
         private const string XrealDep = "\"com.xreal.xr\": \"file:xreal-sdk/com.xreal.xr.tar.gz\"";
         private const string ArFoundationDep =
             "\"com.unity.xr.arfoundation\": \"6.0.6\"";
+        private const string XrHandsDep =
+            "\"com.unity.xr.hands\": \"1.5.0\"";
+        private const string XrInteractionDep =
+            "\"com.unity.xr.interaction.toolkit\": \"3.0.9\"";
         private const string XrealLoader = "Unity.XR.XREAL.XREALXRLoader";
         private const string XrealSettingsType = "Unity.XR.XREAL.XREALSettings";
         private const string XrealSettingsKey = "com.unity.xr.management.xrealsettings";
@@ -52,7 +56,13 @@ namespace MLOmega.XR.Editor
         public static void PrepareDefines()
         {
             EnsureXrealPackage();
-            if (IsProviderGate()) EnsureArFoundationPackage();
+            // XREAL 3.1 implements its own planes/depth mesh/anchors through
+            // AR Foundation. This package is injected only by the glasses build;
+            // the committed manifest and PhoneOnly build remain dependency-free.
+            EnsureArFoundationPackage();
+            EnsurePackageDependency(XrHandsDep, "com.unity.xr.hands");
+            EnsurePackageDependency(
+                XrInteractionDep, "com.unity.xr.interaction.toolkit");
             SetDefine();
             AssetDatabase.Refresh();
             Debug.Log("[AndroidBuildXreal] Prepared: XREAL package referenced + XREAL_SDK_PRESENT set. " +
@@ -63,7 +73,10 @@ namespace MLOmega.XR.Editor
         public static void BuildApk()
         {
             EnsureXrealPackage();
-            if (IsProviderGate()) EnsureArFoundationPackage();
+            EnsureArFoundationPackage();
+            EnsurePackageDependency(XrHandsDep, "com.unity.xr.hands");
+            EnsurePackageDependency(
+                XrInteractionDep, "com.unity.xr.interaction.toolkit");
             SetDefine();
             ConfigureExternalTools();
             using (var xrealSettings = new XrealBuildSettingsScope())
@@ -71,11 +84,11 @@ namespace MLOmega.XR.Editor
                 ConfigurePlayerSettings();
                 ConfigureXrealSdkSettings();
                 EnableXrealLoader();
+                ValidateArFoundationLoaded();
                 EnsureScene();
                 string buildScene = ScenePath;
                 if (IsProviderGate())
                 {
-                    ValidateArFoundationLoaded();
                     AugmentedRealityGateSceneBuilder.BuildXrealProviderGateScene();
                     buildScene = AugmentedRealityGateSceneBuilder.GateScenePath;
                 }
@@ -149,9 +162,14 @@ namespace MLOmega.XR.Editor
         }
 
         private static void EnsureArFoundationPackage()
+            => EnsurePackageDependency(ArFoundationDep, "com.unity.xr.arfoundation");
+
+        private static void EnsurePackageDependency(
+            string dependency,
+            string packageName)
         {
             string manifest = File.ReadAllText(ManifestPath);
-            if (manifest.Contains("\"com.unity.xr.arfoundation\""))
+            if (manifest.Contains("\"" + packageName + "\""))
                 return;
             int deps = manifest.IndexOf("\"dependencies\"", StringComparison.Ordinal);
             int brace = manifest.IndexOf('{', deps);
@@ -177,23 +195,34 @@ namespace MLOmega.XR.Editor
             string separator = head.EndsWith(",") ? string.Empty : ",";
             File.WriteAllText(
                 ManifestPath,
-                head + separator + "\n    " + ArFoundationDep + "\n  " + tail);
+                head + separator + "\n    " + dependency + "\n  " + tail);
             Debug.Log(
-                "[AndroidBuildXreal] Provider-gate only: injected AR Foundation 6.0.6.");
+                "[AndroidBuildXreal] XREAL-only dependency injected: " +
+                packageName);
         }
 
         private static void ValidateArFoundationLoaded()
         {
+            bool arFoundation = false;
+            bool xrHands = false;
             foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
             {
                 if (assembly.GetType(
                         "UnityEngine.XR.ARFoundation.ARSession",
                         false) != null)
-                    return;
+                    arFoundation = true;
+                if (assembly.GetType(
+                        "UnityEngine.XR.Hands.XRHandSubsystem",
+                        false) != null)
+                    xrHands = true;
             }
-            throw new Exception(
-                "[AndroidBuildXreal] Provider gate requested but AR Foundation " +
-                "is not loaded. Run PrepareDefines as a separate first pass.");
+            if (!arFoundation || !xrHands)
+            {
+                throw new Exception(
+                    "[AndroidBuildXreal] XREAL spatial product dependencies are " +
+                    $"not loaded (ARFoundation={arFoundation}, XRHands={xrHands}). " +
+                    "Run PrepareDefines as a separate first pass.");
+            }
         }
 
         private static bool IsProviderGate() =>
@@ -207,9 +236,10 @@ namespace MLOmega.XR.Editor
             foreach (var group in new[] { BuildTargetGroup.Android, BuildTargetGroup.Standalone })
             {
                 string d = PlayerSettings.GetScriptingDefineSymbolsForGroup(group);
-                if (!d.Contains("XREAL_SDK_PRESENT"))
+                foreach (string define in new[] { "XREAL_SDK_PRESENT", "XR_HANDS" })
                 {
-                    d = string.IsNullOrEmpty(d) ? "XREAL_SDK_PRESENT" : d + ";XREAL_SDK_PRESENT";
+                    if (!d.Contains(define))
+                        d = string.IsNullOrEmpty(d) ? define : d + ";" + define;
                 }
                 // The glasses build is NOT PhoneOnly — drop that define if present.
                 d = d.Replace(";MLOMEGA_PHONE_ONLY", "").Replace("MLOMEGA_PHONE_ONLY;", "").Replace("MLOMEGA_PHONE_ONLY", "");
@@ -275,10 +305,10 @@ namespace MLOmega.XR.Editor
 
             SetEnumField(settings, "StereoRendering", "SinglePassInstanced");
             SetEnumField(settings, "InitialTrackingType", "MODE_6DOF");
-            // MLOmega's hand interaction is driven by its own Eye/MediaPipe
-            // pipeline. Keep the official phone controller available as a safe
-            // secondary input and ControlGlasses-compatible launch surface.
-            SetEnumField(settings, "InitialInputSource", "Controller");
+            // Product spatial tools (ballistic guide and direct manipulation)
+            // consume XREAL's real XR Hands joints. Eye/MediaPipe remains the
+            // fallback gesture path used by PhoneOnly and legacy commands.
+            SetEnumField(settings, "InitialInputSource", "Hands");
             SetBoolField(settings, "SupportMultiResume", true);
             SetBoolField(settings, "EnableNativeSessionManager", false);
             SetBoolField(
@@ -307,7 +337,7 @@ namespace MLOmega.XR.Editor
             }
             Debug.Log(
                 "[AndroidBuildXreal] XREAL SDK settings registered: " +
-                "SinglePassInstanced, MODE_6DOF, Controller, MultiResume, " +
+                "SinglePassInstanced, MODE_6DOF, Hands, MultiResume, " +
                 $"AutoLogcat={GetFieldValue(settings, "EnableAutoLogcat")}.");
         }
 
@@ -489,6 +519,15 @@ namespace MLOmega.XR.Editor
             {
                 throw new Exception("[AndroidBuildXreal] XREAL YUV shader asset missing.");
             }
+            if (AssetDatabase.LoadAssetAtPath<Shader>(
+                    PhoneOnlySceneBuilder.XrealDepthOcclusionShaderPath) == null ||
+                AssetDatabase.LoadAssetAtPath<Shader>(
+                    PhoneOnlySceneBuilder.XrealFreeGuyMeshShaderPath) == null)
+            {
+                throw new Exception(
+                    "[AndroidBuildXreal] XREAL depth occlusion/FreeGuy shader " +
+                    "assets are missing.");
+            }
             if (!EditorBuildSettings.TryGetConfigObject(
                     XrealSettingsKey, out ScriptableObject xrealSettings) ||
                 xrealSettings == null)
@@ -505,11 +544,15 @@ namespace MLOmega.XR.Editor
                     GetFieldValue(xrealSettings, "InitialTrackingType").ToString(),
                     "MODE_6DOF",
                     StringComparison.Ordinal) ||
+                !string.Equals(
+                    GetFieldValue(xrealSettings, "InitialInputSource").ToString(),
+                    "Hands",
+                    StringComparison.Ordinal) ||
                 !Equals(GetFieldValue(xrealSettings, "SupportMultiResume"), true))
             {
                 throw new Exception(
                     "[AndroidBuildXreal] XREAL settings are not " +
-                    "SinglePassInstanced + MODE_6DOF + MultiResume.");
+                    "SinglePassInstanced + MODE_6DOF + Hands + MultiResume.");
             }
         }
 
@@ -586,6 +629,22 @@ namespace MLOmega.XR.Editor
                     @"<service\s+android:name=""com\.mlomega\.xrg1gate\.EyeCaptureService""[\s\S]*?/>\s*",
                     Environment.NewLine,
                     RegexOptions.CultureInvariant);
+                const string networkPermission =
+                    "<uses-permission android:name=\"android.permission.ACCESS_NETWORK_STATE\" />";
+                if (!xrealManifest.Contains(
+                        "android.permission.ACCESS_WIFI_STATE",
+                        StringComparison.Ordinal))
+                {
+                    xrealManifest = xrealManifest.Replace(
+                        networkPermission,
+                        networkPermission + Environment.NewLine +
+                        "    <uses-permission android:name=\"android.permission.ACCESS_WIFI_STATE\" />" +
+                        Environment.NewLine +
+                        "    <uses-permission android:name=\"android.permission.ACCESS_FINE_LOCATION\" />" +
+                        Environment.NewLine +
+                        "    <uses-permission android:name=\"android.permission.NEARBY_WIFI_DEVICES\" " +
+                        "android:usesPermissionFlags=\"neverForLocation\" />");
+                }
                 File.WriteAllText(AndroidManifestPath, xrealManifest);
 
                 PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, false);

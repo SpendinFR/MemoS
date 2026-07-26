@@ -14,6 +14,9 @@ namespace MLOmega.XR.UI.Components
     /// </summary>
     public sealed class WorldSemanticMarker : UIComponentBase
     {
+        private static readonly List<WorldSemanticMarker> Live =
+            new List<WorldSemanticMarker>();
+
         public sealed class Marker
         {
             public Vector3 Position;
@@ -39,6 +42,8 @@ namespace MLOmega.XR.UI.Components
 
         public override string ComponentKey => "world_marker";
         public bool IsQualified => _qualified;
+        public string MarkerId => _marker?.MarkerId ?? string.Empty;
+        public string Label => _marker?.Label ?? string.Empty;
 
         protected override void OnConfigured()
         {
@@ -63,6 +68,14 @@ namespace MLOmega.XR.UI.Components
         protected override void Bind(UIIntent intent)
         {
             _qualified = TryReadMarker(intent, out _marker, out _);
+            if (_qualified)
+            {
+                if (!Live.Contains(this)) Live.Add(this);
+            }
+            else
+            {
+                Live.Remove(this);
+            }
             SetGeometryEnabled(_qualified);
             if (!_qualified) return;
             _kindAccent = KindColor(_marker.Kind);
@@ -88,7 +101,12 @@ namespace MLOmega.XR.UI.Components
         protected override void Update()
         {
             base.Update();
-            if (Phase == UIComponentPhase.Idle || !_qualified) return;
+            if (Phase == UIComponentPhase.Idle || !_qualified)
+            {
+                Live.Remove(this);
+                return;
+            }
+            if (!Live.Contains(this)) Live.Add(this);
             Draw(Time.unscaledTime);
         }
 
@@ -193,7 +211,67 @@ namespace MLOmega.XR.UI.Components
 
         private void OnDestroy()
         {
+            Live.Remove(this);
             if (_material != null) Destroy(_material);
+        }
+
+        private void OnDisable() => Live.Remove(this);
+
+        public static bool TryResolveAtViewport(
+            Camera camera,
+            Vector2 viewport,
+            out WorldSemanticMarker marker)
+        {
+            marker = null;
+            if (
+                camera == null ||
+                viewport.x < 0f || viewport.x > 1f ||
+                viewport.y < 0f || viewport.y > 1f)
+                return false;
+            float best = 0.065f * 0.065f;
+            // Bind registers a qualified marker immediately, before its first
+            // Update. Resolve that authoritative list first, then scan the active
+            // hierarchy as a pool/re-enable safety net.
+            var candidates = new List<WorldSemanticMarker>(Live);
+            foreach (WorldSemanticMarker candidate in FindObjectsByType<
+                WorldSemanticMarker>(
+                    FindObjectsInactive.Exclude,
+                    FindObjectsSortMode.None))
+            {
+                if (!candidates.Contains(candidate)) candidates.Add(candidate);
+            }
+            // EditMode and the first frame of a freshly instantiated pool do not
+            // always expose the object through FindObjectsByType yet. Restrict
+            // Resources' broader view to active scene instances (never assets).
+            foreach (WorldSemanticMarker candidate in
+                Resources.FindObjectsOfTypeAll<WorldSemanticMarker>())
+            {
+                if (
+                    candidate != null &&
+                    candidate.gameObject.scene.IsValid() &&
+                    candidate.gameObject.activeInHierarchy &&
+                    !candidates.Contains(candidate))
+                    candidates.Add(candidate);
+            }
+            foreach (WorldSemanticMarker candidate in candidates)
+            {
+                if (
+                    candidate == null ||
+                    !candidate._qualified ||
+                    candidate.Phase == UIComponentPhase.Idle ||
+                    candidate._marker == null)
+                    continue;
+                Vector3 world = candidate._marker.Position + Vector3.up * 0.42f;
+                Vector3 projected = camera.WorldToViewportPoint(world);
+                if (projected.z <= 0f) continue;
+                float distance = (
+                    new Vector2(projected.x, projected.y) - viewport
+                ).sqrMagnitude;
+                if (distance > best) continue;
+                best = distance;
+                marker = candidate;
+            }
+            return marker != null;
         }
 
         public static bool TryReadMarker(

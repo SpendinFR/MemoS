@@ -1930,3 +1930,60 @@ donc une reconstitution holographique alignée dépendante d'une géométrie/VPS
 un remplacement total. Beauté/face-swap/vêtements sont différés si le vrai sujet
 reste visible sous l'overlay. Cette abstention est une exigence qualité, pas un
 manque à masquer.
+
+## 2026-07-26 — Une recherche publique studio sépare visage, candidat Web et pseudo
+
+SFace reste l'autorité locale pour une personne déjà enrôlée. Une identité connue
+n'affiche une carte que si le registre `MLOMEGA_AR_CONSENTED_PEOPLE` contient un
+release signé et le scope `profile_card`; les sources publiques doivent y être
+explicitement vérifiées.
+
+Pour un acteur inconnu mais couvert par un release de tournage, le PC envoie une
+seule fois par track le crop visage réel à Google Cloud Vision Web Detection. Cette
+API fournit des pages contenant des images correspondantes, des entités et des
+labels : le résultat reste `probable`, exige confirmation et n'enrôle jamais la
+galerie. Si une page correspondante expose un pseudo, Sherlock peut rechercher ce
+pseudo en une passe sur ses réseaux supportés. Ses résultats portent
+`verification=username_only`; Sherlock n'est ni un moteur facial ni une preuve que
+les comptes appartiennent au sujet. Cette hiérarchie interdit qu'une homonymie
+devienne un fait mémoire.
+
+Le chemin est strictement opt-in : `-AugmentedReality -StudioReleaseId ...`, clé
+Google dans `.env`, taille de crop/réponse bornée, timeout, une tentative par track.
+Ni âge, genre, origine supposée, émotion faciale ni scraping autonome ne sont
+produits.
+
+## 2026-07-26 — L'aura physiologique est locale, consentie et abstentionniste
+
+Le PC ne calcule pas le pouls : il transmet uniquement une ROI SFace normalisée
+avec le consentement `physiology`. Le téléphone échantillonne un crop GPU 32×32 à
+8 FPS, conserve au plus 18 secondes de signal en mémoire vive et estime une
+fréquence par autocorrélation fractionnaire. Surexposition, obscurité, mouvement,
+signal faible ou valeur hors 40–200 BPM suppriment l'UI. Aucun pixel ou signal
+biométrique ne remonte au PC, ne rejoint BrainLive ou les archives.
+
+`pulse_aura` affiche fréquence estimée et qualité, avec le badge `rPPG exp.`. Elle
+ne déduit ni stress, ni calme, ni émotion et ne constitue pas un dispositif
+médical. La capability reste OFF sans registre signé et activation utilisateur.
+Les chemins Local/PRO et les prompts nocturnes ne sont pas modifiés.
+### 2026-07-26 — isolation du provider XREAL spatial et vérité des capacités
+
+Le code AR matériel ne réside plus dans `MLOmega.XR.UI`. Un assembly conditionnel
+`MLOmega.XR.XrealSpatial` référence seul XREAL SDK, AR Foundation, XR Hands et
+XR Interaction Toolkit; le tronc commun ne connaît que `IXrealSpatialProvider`.
+`PhoneOnlySceneBuilder` charge l'implémentation par type uniquement pour la scène
+XREAL. Cette frontière est obligatoire : le manifest PhoneOnly reste sans package
+AR/XREAL et les runs Local/PRO ne voient aucun changement.
+
+Le fournisseur spatial accepté est le provider XREAL unique, jamais ARCore
+simultané. Il active chaque capacité séparément après preuve runtime :
+pose suivie + mesh lisible pour Depth, subsystem anchor pour persistance, subsystem
+XR Hands pour balistique. L'occlusion est un shader depth-only; le style FreeGuy est
+un matériau visuel séparé et ne devient jamais une preuve. Les ancres sont affichées
+uniquement après sauvegarde/rechargement et `Tracking`.
+
+La navigation livrée avant VPS est nommée `direct_bearing`: destination résolue par
+Geocoder Android, origine GPS de précision ≤20 m, cap boussole et pose XREAL. Elle
+affiche `CAP DIRECT`, `turn_by_turn=false`; elle ne se présente pas comme Google
+Maps AR/VPS. Échec de permission, précision ou résolution = carte d'indisponibilité,
+pas une géométrie inventée. Le vrai test S24 + One Pro/Eye reste un gate distinct.

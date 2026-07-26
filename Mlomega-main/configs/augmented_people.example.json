@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "people": [
+    {
+      "person_id": "person_actor_example",
+      "display_name": "Acteur exemple",
+      "consent_id": "release-example-001",
+      "signed_at": "2026-01-01T12:00:00+01:00",
+      "revoked": false,
+      "scopes": [
+        "profile_card",
+        "public_sources",
+        "physiology"
+      ],
+      "summary": "Profil de tournage explicitement consenti.",
+      "public_sources": [
+        {
+          "provider": "website",
+          "handle": "exemple",
+          "url": "https://example.com/",
+          "verified_at": "2026-01-01"
+        }
+      ]
+    }
+  ]
+}

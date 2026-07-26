@@ -116,6 +116,29 @@ namespace MLOmega.XR.Tests
         }
 
         [Test]
+        public void AugmentedSettingsArePagedAndEveryFeatureRemainsReachable()
+        {
+            var root = NewObject("paged-root");
+            var handler = root.AddComponent<DeviceCommandHandler>();
+            InvokePrivate(handler, "Awake");
+            var menuObject = NewObject("paged-menu");
+            var menu = menuObject.AddComponent<MenuPanel>();
+            SetPrivate(menu, "_commandHandler", handler);
+            SetPrivate(menu, "_augmentedReality",
+                root.GetComponent<AugmentedRealityFeatureRegistry>());
+
+            menu.BuildAugmentedActions();
+            Assert.LessOrEqual(menu.Actions.Count, 9,
+                "a physical glass page must stay readable/selectable");
+            Assert.GreaterOrEqual(Find(menu, "Page suivante"), 0);
+            Assert.IsTrue(menu.Select(Find(menu, "Page suivante")));
+            Assert.IsTrue(menu.Select(Find(menu, "Page suivante")));
+            Assert.GreaterOrEqual(Find(menu, "Aura pouls (exp.) : OFF"), 0);
+            Assert.GreaterOrEqual(Find(menu, "Page précédente"), 0);
+            Assert.LessOrEqual(menu.Actions.Count, 9);
+        }
+
+        [Test]
         public void ProbeReportsSingleLoaderBoundaryNeverPackageCoexistence()
         {
             var root = NewObject("probe");

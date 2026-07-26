@@ -62,6 +62,10 @@ namespace MLOmega.XR.UI
         [SerializeField] private LiveTransportBridge _transport;
         [SerializeField] private XrSessionController _session;
         [SerializeField] private AugmentedRealityFeatureRegistry _augmentedReality;
+        [SerializeField] private MonoBehaviour _xrealSpatial;
+
+        private IXrealSpatialProvider SpatialProvider =>
+            _xrealSpatial as IXrealSpatialProvider;
 
         /// <summary>Raised when a "menu" command arrives (MenuPanel opens the panel).</summary>
         public event Action MenuRequested;
@@ -100,6 +104,18 @@ namespace MLOmega.XR.UI
                 _augmentedReality = FindAnyObjectByType<AugmentedRealityFeatureRegistry>();
             if (_augmentedReality == null)
                 _augmentedReality = gameObject.AddComponent<AugmentedRealityFeatureRegistry>();
+            if (_xrealSpatial == null)
+            {
+                foreach (MonoBehaviour behaviour in
+                    FindObjectsByType<MonoBehaviour>(FindObjectsSortMode.None))
+                {
+                    if (behaviour is IXrealSpatialProvider)
+                    {
+                        _xrealSpatial = behaviour;
+                        break;
+                    }
+                }
+            }
         }
 
         private void OnEnable()
@@ -295,7 +311,15 @@ namespace MLOmega.XR.UI
             }
             switch ((cmd.App ?? string.Empty).ToLowerInvariant())
             {
-                case "maps": return _appLauncher.OpenMaps(cmd.Destination);
+                case "maps":
+                    if (
+                        SpatialProvider != null &&
+                        _augmentedReality != null &&
+                        _augmentedReality.IsEffective(
+                            AugmentedRealityFeatureRegistry.StreetNavigation) &&
+                        SpatialProvider.StartNavigation(cmd.Destination))
+                        return true;
+                    return _appLauncher.OpenMaps(cmd.Destination);
                 case "youtube": return _appLauncher.OpenYouTube(cmd.Query);
                 default: return _appLauncher.OpenPackage(cmd.Package);
             }

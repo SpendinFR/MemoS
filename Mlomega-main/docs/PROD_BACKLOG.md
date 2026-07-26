@@ -2141,14 +2141,15 @@ ouvert).**
   surfaces compactes, les demandes/focus plus prioritaires pouvant toujours les
   évincer. Le service isolé connaît ces préférences mais les annonce `False`
   jusqu'à preuve du provider : classe présente ≠ capacité active.
-- [ ] **K4 — raccord spatial produit.** L'UI et le transport générique sont
-  branchés, mais aucun faux convertisseur GPS→Unity n'est ajouté. A2c doit déterminer
-  sur S24 + One Pro/Eye quel provider produit réellement pose locale, profondeur,
-  VPS/route et calibration Eye↔display. Ensuite seulement ce provider émettra les
-  UIIntent K1/K2. Une route Google/ARCore sert de données; elle ne remplace jamais
-  l'interface MLOmega et n'ouvre pas l'application Maps. Le bbox VisionRT en pixels
-  reste utile au tracking/mémoire, mais il n'est volontairement pas rendu dans le
-  World Canvas : seule sa promotion par Depth + pose peut créer un marqueur 3D.
+- [x] **K4 — raccord spatial produit.** Le provider produit est
+  `MLOmega.XR.XrealSpatial/XrealSpatialProvider`, assembly conditionnel absent du
+  graphe PhoneOnly. Il exige pose XREAL suivie et vrai mesh Depth AR Foundation,
+  promeut les bbox VisionRT uniquement après ray-hit 3D, puis émet K1/K2 dans
+  `tracking_local`. La navigation embarquée est honnêtement un **cap GPS direct** :
+  Geocoder Android + GPS ≤20 m + boussole valide + pose XREAL; elle ne prétend ni
+  VPS ni turn-by-turn et affiche une erreur plutôt qu'une route non qualifiée.
+  L'application Maps reste le fallback lorsque le mode AR n'est pas explicitement
+  armé. ARCore/Geospatial reste exclu du player XREAL conformément à A2a.
 - [ ] **K5 — gate visuel matériel.** Vérifier stéréo, stabilité monde quand la tête
   bouge, flèches/portail, 6–12 labels, occlusion et perte/relocalisation, puis mesurer
   FPS, chauffe, batterie et lisibilité extérieure. Les APK PhoneOnly et XREAL ne
@@ -2251,11 +2252,25 @@ encore ouverts).**
   Les types/alias sont inscrits dans `UIComponentRegistry`; service AR et bridge
   connaissent les IDs mais annoncent toutes ces capacités `False`. Local/PRO,
   prompts, writers mémoire et PhoneOnly normal restent inchangés.
-- [ ] **T6 — producteurs physiques.** Après A2c, brancher exactement :
+- [x] **T6 — producteurs physiques branchés côté produit.** Brancher exactement :
   tracks+Depth+pose → forecast; diff/flow+pose tête → event motion;
   main+objet+Depth+plan → ballistic; deux points hit-testés → measure;
   scan radio autorisé+pose → field; index-tip 3D → keyboard. Chaque producteur
   active sa capability séparément; aucune disponibilité groupée.
+  État code au 2026-07-26 :
+  - [x] `XrealSpatialProvider` exige pose XREAL suivie + mesh Depth AR Foundation
+    lisible, transforme les tracks réels en hits monde, rend labels, déplacements
+    et prévisions linéaires courtes; perte du mesh = capabilities locales OFF;
+  - [x] deux hits Depth explicites produisent le mètre, un plan Depth produit le
+    clavier et `XrealSpatialGestureController` relie pinch/index au hit-test monde;
+  - [x] des scans RSSI Android autorisés, pseudonymisés et liés à la pose produisent
+    la carte radio; refus permission/API = erreur explicite, jamais valeur inventée;
+  - [x] le lancer ludique exige une cible inanimée choisie par pinch sur Depth,
+    lit la vraie jointure `IndexTip` de `XRHandSubsystem`, mesure la vitesse de main,
+    calcule sous gravité une trajectoire idéale et une trajectoire actuelle et garde
+    `weapon=false`; aucune cible personne/arme ni calcul permanent;
+  - [ ] les gates physiques stabilité/occlusion/précision sur S24 + One Pro/Eye
+    restent T7. L'existence du provider compilé ne vaut pas validation matérielle.
 - [ ] **T7 — gates UX/thermiques.** Sur S24 + One Pro/Eye : stabilité monde,
   latence et probabilité des silhouettes, faux mouvement après rotation de tête,
   papier/balle positifs et armes/personnes négatifs, erreur du mètre, permissions
@@ -2269,20 +2284,28 @@ encore ouverts).**
 
 **Lot 4 — expérimental, biométrie et garde-fous.**
 
-- [ ] **4.0-P Reconnaissance de proches et recherche publique contrôlée.** DeepFace
-  peut être évalué uniquement pour embeddings de personnes consentantes/enrôlées,
-  anti-spoofing et identification probabiliste. Les modèles enveloppés conservent
-  leurs licences propres. Sherlock/snscrape ne sont jamais déclenchés automatiquement
-  depuis un visage : recherche explicite sur une identité confirmée, sources et
-  résultats non vérifiés séparés de la mémoire factuelle. Âge, genre, « race » et
-  émotion faciale ne sont ni identité ni faits fiables et ne doivent pas alimenter
-  BrainLive.
-- [ ] **4.0-Q Pouls et amplification eulérienne.** Prototype opt-in uniquement sur
+- [x] **4.0-P Reconnaissance studio consentie et recherche publique contrôlée.**
+  Deux voies réelles et bornées sont branchées sur le crop SFace produit :
+  (1) identité déjà enrôlée → registre de consentement signé → `person_profile_card`
+  vérifiée; (2) track inconnu + `StudioReleaseId` + clé Google → Google Cloud Vision
+  Web Detection sur le crop visage réel → candidat `probable` à confirmer. Une page
+  portant une image correspondante peut fournir un pseudo; Sherlock exécute alors
+  une recherche groupée unique sur ce pseudo et étiquette chaque résultat
+  `username_only`. Sherlock ne reconnaît jamais un visage. Une tentative maximum
+  est faite par track, le corps et les réponses sont bornés, et aucun candidat Web
+  n'enrôle la galerie ni n'écrit BrainLive. Âge, genre, « race », émotion faciale
+  et scraping sans release studio restent exclus.
+- [x] **4.0-Q Pouls optique expérimental et aura.** Prototype opt-in uniquement sur
   sujet immobile, ROI stable et lumière contrôlée. Afficher qualité du signal et
   estimation de fréquence; aucun diagnostic ni « aura de stress/calme ». Les
   mouvements de tête, lumière, compression, peau et distance doivent produire
   abstention. L'amplification eulérienne est un effet/outil d'inspection, pas une
-  preuve physiologique.
+  preuve physiologique. Le chemin produit consomme la bbox visage réelle de SFace,
+  exige le scope signé `physiology`, échantillonne uniquement un crop 32×32 à 8 FPS
+  sur le téléphone et estime la fréquence sur une fenêtre glissante locale. Les
+  pixels/séries ne sont ni transmis, ni archivés, ni écrits en mémoire. La carte
+  `pulse_aura` futuriste n'apparaît que si lumière, mouvement, plage 40–200 BPM et
+  qualité ≥ 0,45 passent le contrat.
 - [ ] **4.0-R Filtres visuels.** Beauté, rajeunissement, vêtements, CycleGAN et
   face-swap restent effets locaux explicitement activés, avec consentement lorsqu'une
   autre personne est transformée. Aucun pixel synthétique ne retourne dans VisionRT,
@@ -2295,6 +2318,57 @@ encore ouverts).**
   pas sûrement personnes, champs ou caméras cachées. Toute assistance balistique
   destinée à une arme est hors produit; une trajectoire ludique d'objet inoffensif
   resterait un simulateur séparé.
+
+**Avancement Lot 4 (2026-07-26 — code fermé, gate matériel/réseau encore ouvert).**
+
+- [x] `consented_people` et `pulse_aura` sont des interrupteurs menu indépendants,
+  OFF par défaut. Sans registre/release/clé, aucune recherche Web, aucun crop et
+  aucun worker physiologique ne démarre; les runs Local/PRO restent inchangés.
+- [x] Le launcher accepte `-StudioReleaseId` uniquement avec
+  `-AugmentedReality`; les secrets restent dans `.env`, jamais dans une scène,
+  un APK, un log ou le registre d'exemple.
+- [x] Tests ciblés : **12/12 Python** (service, bridge, registre, forme de la vraie
+  requête Web et absence d'enrôlement) et **13/13 Unity EditMode** (registre UI,
+  72 BPM synthétique, abstention qualité et rotation ROI), compilation complète
+  des assemblies Unity, exit 0.
+- [ ] Gate physique : enrôler un acteur signé, vérifier carte instantanée locale,
+  puis un inconnu autorisé avec une vraie clé Google/Sherlock; mesurer latence,
+  faux candidats, révocation et coupure réseau. Pour Q, mesurer 10–18 s immobile
+  sous plusieurs éclairages, mouvement de tête, chauffe et abstention.
+- [ ] `4.0-R` reste différé : aucun filtre cheap n'a été ajouté. `4.0-S` reste
+  fermé faute de capteurs dédiés; aucune simulation ne le rend disponible.
+- [ ] Les APK PhoneOnly/XREAL ne sont volontairement pas reconstruites ici :
+  un rebuild unique est prévu après stabilisation de tous les lots AR.
+
+**Clôture code 4.0 avant APK (2026-07-26).**
+
+- [x] Occlusion réelle : le mesh Depth XREAL écrit uniquement dans le Z-buffer via
+  `XrealDepthOcclusion.shader`; cartes, chemins et marqueurs passent donc derrière
+  les surfaces réelles. `Depth` absent ou shader absent = capability OFF.
+- [x] Style FreeGuy réel : un second matériau URP transparent dessine grille,
+  balayage et Fresnel sur le mesh monde. Ce n'est pas le filtre temporel O5, qui
+  reste différé; aucune frame stylisée ne retourne dans VisionRT ou Memory.
+- [x] Ancres locales persistantes : `ARAnchorManager` utilise le répertoire de
+  mapping XREAL, sauvegarde un GUID seulement après `Tracking`, recharge les GUID
+  au démarrage et n'affiche qu'une ancre réellement relocalisée.
+- [x] Mains/physique : le build XREAL force `InitialInputSource=Hands`, injecte
+  uniquement pendant ses deux passes AR Foundation 6.0.6, XR Hands 1.5.0 et XR
+  Interaction Toolkit 3.0.9, puis compile le provider dans un assembly séparé.
+- [x] Navigation et interaction : `open_app maps` reste PhoneOnly inchangé; sur
+  lunettes et opt-in navigation, il démarre le cap direct monde. Pinch marqueur
+  envoie le vrai `track_id` à `inspect_object`; mesure, clavier, ancre et cible
+  balistique utilisent leurs hit-tests Depth explicites.
+- [x] Non-régression de compilation : **118/118 EditMode XREAL** avec SDK/AR/Hands
+  réellement chargés, puis manifest/réglages restaurés byte-for-byte et
+  **118/118 EditMode PhoneOnly**, log propre sans erreur de compilation. Le premier
+  essai de player Android a trouvé un unique `System.IO` non qualifié dans le probe;
+  il est corrigé. Le rebuild player/APK après cette correction reste volontairement
+  reporté à la prochaine reprise, avec les fichiers Unity protégés à sauvegarder et
+  restaurer comme indiqué dans l'Executor Build Guide.
+- [ ] Gates qui ne peuvent pas être certifiés sans matériel : tracking/stéréo/Depth,
+  relocalisation d'ancre, occlusion optique, XR Hands, précision GPS/boussole,
+  stabilité/FPS/chauffe sur S24 + One Pro/Eye. Ne pas convertir les 118 tests en
+  certification physique.
 
 **Dépendances candidates à évaluer, jamais à copier sans audit licence/maintenance :**
 

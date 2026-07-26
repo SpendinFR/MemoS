@@ -1995,3 +1995,116 @@ alors capability `True`. Le clavier nécessite encore le raccord index-tip 3D ve
 `TryPressWorld`; les gestes écran existants ne sont pas réutilisés comme faux 3D.
 O5 attend la géométrie `4.0-N`; O6 reste conditionnel à une qualité optique qui
 évite un double visage/vêtement.
+
+### PASSATION 2026-07-26 — Lot 4 AR : profils studio et aura rPPG
+
+Le chemin produit est branché, mais demeure entièrement opt-in. Pour préparer un
+tournage, copier le registre exemple sans le committer :
+
+```powershell
+Copy-Item .\configs\augmented_people.example.json `
+  .\configs\augmented_people.json
+$env:MLOMEGA_AR_CONSENTED_PEOPLE="$pwd\configs\augmented_people.json"
+```
+
+Chaque entrée exige `person_id`, `display_name`, `consent_id`, `signed_at` et des
+scopes explicites parmi `profile_card`, `public_sources`, `physiology`. Le chemin
+rapide suppose que la personne a déjà été enrôlée par le flux produit : SFace
+résout l'identité, puis le registre autorise ou refuse la projection. Une personne
+absente/revoquée n'hérite d'aucune permission.
+
+Pour la recherche Web d'un acteur inconnu autorisé, placer uniquement dans `.env` :
+
+```text
+MLOMEGA_GOOGLE_VISION_API_KEY=...
+MLOMEGA_SHERLOCK_COMMAND=sherlock
+```
+
+Puis lancer :
+
+```powershell
+.\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -AugmentedReality `
+  -StudioReleaseId release-film-2026-001
+```
+
+Le raccord réel est : frame VisionRT → détecteur visage/SFace →
+`fusion.resolve` → crop JPEG visage borné → `/v1/consented-person` → Google Web
+Detection. Une page portant une image correspondante peut donner un pseudo;
+Sherlock cherche alors ce pseudo en groupe. Le résultat affiche
+`CORRESPONDANCE WEB / À CONFIRMER`; il ne modifie ni la galerie faciale ni
+BrainLive. Une seule tentative par track empêche une recherche continue.
+
+Pour l'aura, activer séparément `Aura pouls (exp.)` dans le menu et prévoir 10–18 s
+avec visage stable et éclairage constant. `PulseAuraBridge` reçoit uniquement la
+ROI SFace consentie, échantillonne un crop 32×32 à 8 FPS et garde le signal en RAM.
+Une qualité <0,45, une lumière extrême, un mouvement ou une fréquence hors plage
+produit une abstention. Aucun stress/émotion/diagnostic ne doit être déduit.
+
+Validations exécutées :
+
+```powershell
+.\.venv-live\Scripts\python.exe -m pytest `
+  tests\v19\test_augmented_reality_foundation.py -q -p no:cacheprovider
+
+cd .\apps\xr-mobile
+$u = 'C:\Program Files\Unity\Hub\Editor\6000.0.23f1\Editor\Unity.exe'
+$args = '-batchmode -runTests -testPlatform EditMode -projectPath "." ' +
+  '-testFilter "MLOmega.XR.Tests.WorldCanvasLot3Tests" ' +
+  '-testResults "' + $pwd.Path + '\world-canvas-lot4-editmode.xml" ' +
+  '-logFile "' + $pwd.Path + '\world-canvas-lot4-editmode.log"'
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = $u
+$psi.Arguments = $args
+$psi.UseShellExecute = $true
+$p = [System.Diagnostics.Process]::Start($psi)
+$p.WaitForExit()
+"exit=$($p.ExitCode)"
+```
+
+Résultat : Python **12/12**, Unity **13/13**, compilation complète, exit 0.
+La suite `test_phoneonly_runtime.py` donne 53 verts et un rouge ancien isolé :
+le test d'apparence crée une DB sans
+`brainlive_intervention_delivery_queue`; ce rouge n'est pas une régression AR et
+ne doit pas être contourné dans ce lot. Le gate réel Google/Sherlock, faux
+candidat, révocation, réseau perdu, éclairage/mouvement et thermique reste à faire
+avec les acteurs et le S24/One Pro Eye. Aucun APK n'a été reconstruit : attendre le
+rebuild final unique des deux variantes.
+### PASSATION 2026-07-26 — 4.0 spatial XREAL compilé, APK à reprendre
+
+État fiable au commit :
+
+- `MLOmega.XR.XrealSpatial` isole le provider AR matériel; ne jamais remettre ses
+  références dans `MLOmega.XR.UI` sous peine de casser le clone PhoneOnly sans SDK.
+- Le build lunettes exige désormais trois dépendances temporaires en plus du tarball
+  XREAL : AR Foundation `6.0.6`, XR Hands `1.5.0`, XR Interaction Toolkit `3.0.9`.
+  `PrepareDefines` les injecte et pose `XREAL_SDK_PRESENT;XR_HANDS`; le manifest
+  commité reste sans elles.
+- `AndroidBuildXreal` valide shaders Depth/FreeGuy, stéréo SPI, 6DoF,
+  `InitialInputSource=Hands`, MultiResume et manifest avant de produire l'APK.
+- Tests obtenus : configuration XREAL réelle **118/118**, puis restauration exacte
+  manifest/lock/ProjectSettings/scène protégée et configuration PhoneOnly
+  **118/118**, sans erreur de compilation au second passage.
+- Le premier essai de compilation player a atteint le code Android et a trouvé
+  `AugmentedRealityCapabilityProbe.HasDeviceModel` sans qualification `System.IO`.
+  Le correctif est présent; le player n'a volontairement pas été rebâti ensuite.
+
+Reprise APK (depuis `apps\xr-mobile`) :
+
+1. Fermer Unity et sauvegarder byte-for-byte les fichiers sales utilisateur
+   `PhoneOnly.unity`, `XRGeneralSettingsPerBuildTarget.asset` et
+   `QualitySettings.asset`.
+2. Exécuter les deux passes XREAL habituelles :
+   `AndroidBuildXreal.PrepareDefines`, puis `AndroidBuildXreal.BuildApk`.
+3. Vérifier `exit=0`, la ligne `Glasses PRODUCT APK OK`, package
+   `com.mlomega.xr.glasses`, taille/hash et présence de la scène produit.
+4. Restaurer les trois fichiers protégés depuis les copies; restaurer aussi
+   `manifest.json`, `packages-lock.json`, `ProjectSettings.asset` et
+   `EditorBuildSettings.asset`. Supprimer les artefacts générés XRI/XREAL non suivis
+   et l'AAR `nractivitylife_6-release` avant le build PhoneOnly.
+5. Ouvrir Unity une seconde fois après retrait des packages et exiger un log
+   PhoneOnly sans erreur transitoire, puis construire PhoneOnly. Ne jamais utiliser
+   `git add -A`.
+
+Les APK ne valent pas gate physique. Restent à observer sur S24 + One Pro/Eye :
+stéréo, 6DoF, Depth, occlusion, relocalisation d'ancre, XR Hands, navigation,
+FPS/chauffe/batterie.

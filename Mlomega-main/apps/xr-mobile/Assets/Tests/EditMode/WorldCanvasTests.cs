@@ -3,6 +3,7 @@ using MLOmega.Contracts.V19;
 using MLOmega.XR.UI;
 using MLOmega.XR.UI.Components;
 using NUnit.Framework;
+using UnityEngine;
 
 namespace MLOmega.XR.Tests
 {
@@ -84,6 +85,40 @@ namespace MLOmega.XR.Tests
             Assert.IsFalse(
                 WorldSemanticMarker.TryReadMarker(intent, out _, out error));
             Assert.AreEqual("evidence_missing", error);
+        }
+
+        [Test]
+        public void QualifiedMarkerCanBePinchedAtItsRealWorldProjection()
+        {
+            var cameraGo = new GameObject("MarkerHitCamera");
+            var markerGo = new GameObject("MarkerHit");
+            try
+            {
+                Camera camera = cameraGo.AddComponent<Camera>();
+                cameraGo.transform.SetPositionAndRotation(
+                    new Vector3(0f, 1.2f, 0f), Quaternion.identity);
+                WorldSemanticMarker component =
+                    markerGo.AddComponent<WorldSemanticMarker>();
+                component.Configure(
+                    new UIComponentContext(null, null, camera),
+                    null);
+                component.Admit(MarkerIntent(), null, null);
+                Vector3 world = new Vector3(0.3f, 1.52f, 2.2f);
+                Vector3 projected = camera.WorldToViewportPoint(world);
+
+                Assert.IsTrue(
+                    WorldSemanticMarker.TryResolveAtViewport(
+                        camera,
+                        new Vector2(projected.x, projected.y),
+                        out WorldSemanticMarker resolved));
+                Assert.AreSame(component, resolved);
+                Assert.AreEqual("storefront-42", resolved.MarkerId);
+            }
+            finally
+            {
+                Object.DestroyImmediate(markerGo);
+                Object.DestroyImmediate(cameraGo);
+            }
         }
 
         [Test]

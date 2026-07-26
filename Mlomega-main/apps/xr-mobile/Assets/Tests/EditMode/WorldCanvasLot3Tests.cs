@@ -1,8 +1,11 @@
+using System;
 using System.Collections.Generic;
 using MLOmega.Contracts.V19;
 using MLOmega.XR.UI;
 using MLOmega.XR.UI.Components;
+using MLOmega.XR.Reflex;
 using NUnit.Framework;
+using UnityEngine;
 
 namespace MLOmega.XR.Tests
 {
@@ -162,6 +165,120 @@ namespace MLOmega.XR.Tests
             Assert.IsFalse(
                 WorldKeyboardPlane.TryReadKeyboard(intent, out _, out error));
             Assert.AreEqual("keyboard_basis_not_orthogonal", error);
+        }
+
+        [Test]
+        public void XrealForecastKeepsAllBoundedWorldSamples()
+        {
+            List<Dictionary<string, object>> points =
+                XrealSpatialMath.ForecastLinear(
+                    new Vector3(1f, 0f, 2f),
+                    new Vector3(0.5f, 0f, 1f),
+                    2f,
+                    6);
+            Assert.AreEqual(6, points.Count);
+            Assert.AreEqual(1f, (float)points[0]["x"], 0.001f);
+            Assert.AreEqual(2f, (float)points[5]["x"], 0.001f);
+            Assert.AreEqual(4f, (float)points[5]["z"], 0.001f);
+        }
+
+        [Test]
+        public void LocalProviderCapabilityNeverOptsUserIn()
+        {
+            var go = new GameObject("local-capability-test");
+            try
+            {
+                var registry = go.AddComponent<AugmentedRealityFeatureRegistry>();
+                Assert.IsTrue(registry.SetLocalCapability(
+                    AugmentedRealityFeatureRegistry.ArMeasurement, true));
+                Assert.IsTrue(registry.IsLocalCapabilityAvailable(
+                    AugmentedRealityFeatureRegistry.ArMeasurement));
+                Assert.IsFalse(registry.IsSelected(
+                    AugmentedRealityFeatureRegistry.ArMeasurement));
+                Assert.IsFalse(registry.IsActive(
+                    AugmentedRealityFeatureRegistry.ArMeasurement));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(go);
+            }
+        }
+
+        [Test]
+        public void Lot4ProfileAndAuraRenderersAreRegistered()
+        {
+            Assert.AreEqual(
+                typeof(PersonProfileCard),
+                UIComponentRegistry.ResolveType("person_profile_card"));
+            Assert.AreEqual(
+                typeof(PulseAura),
+                UIComponentRegistry.ResolveType("pulse_aura"));
+        }
+
+        [Test]
+        public void PulseEstimatorFindsSyntheticPeriodWithoutPersistingAnything()
+        {
+            var estimator = new PulseSignalEstimator(18.0);
+            const double hz = 1.2; // 72 bpm
+            for (int i = 0; i < 144; i++)
+            {
+                double at = i / 8.0;
+                double pulse = Math.Sin(at * hz * Math.PI * 2.0) * 0.018;
+                estimator.Push(
+                    at,
+                    0.42 - pulse * 0.25,
+                    0.52 + pulse,
+                    0.38 - pulse * 0.25,
+                    0.01);
+            }
+            Assert.IsTrue(estimator.TryEstimate(out float bpm, out float quality));
+            Assert.AreEqual(72f, bpm, 3f);
+            Assert.GreaterOrEqual(quality, 0.45f);
+        }
+
+        [Test]
+        public void PulseAuraRejectsMedicalOrLowQualityContracts()
+        {
+            UIIntent intent = new UIIntent
+            {
+                Component = "pulse_aura",
+                Anchor = new Dictionary<string, object>
+                {
+                    {
+                        "bbox",
+                        new Dictionary<string, object>
+                        {
+                            { "x", 0.2 }, { "y", 0.2 },
+                            { "w", 0.2 }, { "h", 0.25 },
+                        }
+                    },
+                },
+                Content = new Dictionary<string, object>
+                {
+                    { "bpm", 72.0 },
+                    { "signal_quality", 0.72 },
+                    { "experimental", true },
+                    { "persisted", false },
+                },
+            };
+            Assert.IsTrue(PulseAura.TryReadPulse(intent, out _, out _, out _));
+            intent.Content["persisted"] = true;
+            Assert.IsFalse(PulseAura.TryReadPulse(intent, out _, out _, out _));
+            intent.Content["persisted"] = false;
+            intent.Content["signal_quality"] = 0.2;
+            Assert.IsFalse(PulseAura.TryReadPulse(intent, out _, out _, out _));
+        }
+
+        [Test]
+        public void UprightFaceRoiMapsBackToRotatedCapture()
+        {
+            Rect upright = new Rect(0.2f, 0.3f, 0.1f, 0.2f);
+            Rect source = PulseAuraBridge.SourceRectFromUpright(
+                upright, 90, false);
+            Assert.AreEqual(0.5f, source.x, 0.001f);
+            Assert.AreEqual(0.2f, source.y, 0.001f);
+            Assert.AreEqual(0.2f, source.width, 0.001f);
+            Assert.AreEqual(0.1f, source.height, 0.001f);
         }
 
         private static UIIntent PathIntent(string mode)

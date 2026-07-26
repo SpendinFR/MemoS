@@ -335,6 +335,20 @@ def test_structured_menu_actions_use_router_and_natural_multiturn():
     assert sink.ui[-1]["component"] == "virtual_screen"
 
 
+def test_world_marker_pinch_routes_exact_track_to_real_vision_focus():
+    sink = _Sink()
+    r = _router(sink)
+    out = r.on_device_action(
+        "inspect_object",
+        {"track_id": "track-glasses-7", "label": "lunettes"},
+    )
+    assert out["handled"] is True
+    assert out["intent"] == "what_is"
+    assert sink.vision == [
+        {"kind": "what_is", "track_id": "track-glasses-7", "bbox": None}
+    ]
+
+
 def test_structured_replay_menu_asks_for_time_then_routes_it():
     calls = []
 

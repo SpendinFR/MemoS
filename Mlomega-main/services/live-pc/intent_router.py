@@ -511,6 +511,21 @@ class IntentRouter:
             return self._dispatch({"intent": "paid_mode", "provider": params.get("provider", "openai")}, "")
         if action == "local_mode":
             return self._dispatch({"intent": "local_mode"}, "")
+        if action == "inspect_object":
+            track_id = str(
+                params.get("track_id") or params.get("target_track_id") or ""
+            ).strip()
+            if not track_id:
+                return self._unknown("inspect_object")
+            return self._dispatch(
+                {
+                    "intent": "what_is",
+                    "track_id": track_id,
+                    "bbox": params.get("bbox"),
+                    "deixis": True,
+                },
+                "",
+            )
         if action == "virtual_screen":
             intent = {
                 "type": "ui_intent", "ui_intent_id": str(uuid.uuid4()),

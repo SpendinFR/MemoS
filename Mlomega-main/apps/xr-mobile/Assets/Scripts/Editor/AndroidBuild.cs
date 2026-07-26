@@ -143,6 +143,9 @@ namespace MLOmega.XR.Editor
             defines = defines.Replace(";XREAL_SDK_PRESENT", "")
                 .Replace("XREAL_SDK_PRESENT;", "")
                 .Replace("XREAL_SDK_PRESENT", "")
+                .Replace(";XR_HANDS", "")
+                .Replace("XR_HANDS;", "")
+                .Replace("XR_HANDS", "")
                 .Trim(';');
             if (!defines.Contains("MLOMEGA_PHONE_ONLY"))
             {

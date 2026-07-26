@@ -25,6 +25,10 @@ namespace MLOmega.XR.Editor
         public const string XrealScenePath = "Assets/Scenes/XrealProduct.unity";
         public const string XrealConfigPath = "Assets/Config/MLOmegaXreal.asset";
         public const string XrealYuvShaderPath = "Assets/Shaders/YUV420ToRGB.shader";
+        public const string XrealDepthOcclusionShaderPath =
+            "Assets/Shaders/XrealDepthOcclusion.shader";
+        public const string XrealFreeGuyMeshShaderPath =
+            "Assets/Shaders/XrealFreeGuyMesh.shader";
         private const string CacheConfigPath = "Assets/Settings/PhoneOnlySceneCacheConfig.asset";
         private const string ThemePath = "Assets/Settings/PhoneOnlyUITheme.asset";
 
@@ -96,6 +100,27 @@ namespace MLOmega.XR.Editor
             var commands = root.AddComponent<DeviceCommandHandler>();
             var ttsPlayer = root.AddComponent<TtsAudioPlayer>();
             var augmentedReality = root.AddComponent<AugmentedRealityFeatureRegistry>();
+            Component xrealSpatial = null;
+            XrealSpatialGestureController xrealSpatialGestures = null;
+            if (adapterKind == XrAdapterKind.Xreal)
+            {
+                // Product-only XREAL provider. PhoneOnly receives neither this
+                // component nor AR Foundation/Depth managers.
+                Type spatialType = Type.GetType(
+                    "MLOmega.XR.UI.XrealSpatialProvider, " +
+                    "MLOmega.XR.XrealSpatial",
+                    false);
+                if (spatialType == null ||
+                    !typeof(MonoBehaviour).IsAssignableFrom(spatialType))
+                {
+                    throw new Exception(
+                        "XREAL spatial assembly is unavailable. Run " +
+                        "AndroidBuildXreal.PrepareDefines first.");
+                }
+                xrealSpatial = root.AddComponent(spatialType);
+                xrealSpatialGestures =
+                    root.AddComponent<XrealSpatialGestureController>();
+            }
 
             // E48-A: the Ultra-Live reflex layer (E26/E47). GAP FIX — these components
             // were never added to the PhoneOnly scene, so the E47 device gates (wake
@@ -108,6 +133,7 @@ namespace MLOmega.XR.Editor
             var gestureBridge = root.AddComponent<GestureBridge>();
             var instantImageLabels = root.AddComponent<InstantImageLabelBridge>();
             var semanticSound = root.AddComponent<SemanticSoundBridge>();
+            var pulseAura = root.AddComponent<PulseAuraBridge>();
             var wakeGate = root.AddComponent<WakeWordGate>();
             var stableTrack = root.AddComponent<StableTrackSkill>();
             var lensWindow = root.AddComponent<LensWindowSkill>();
@@ -179,9 +205,35 @@ namespace MLOmega.XR.Editor
             Assign(commands, "_appLauncher", appLauncher);
             Assign(commands, "_transport", transport);
             Assign(commands, "_session", session);
+            Assign(commands, "_augmentedReality", augmentedReality);
+            if (xrealSpatial != null)
+                Assign(commands, "_xrealSpatial", xrealSpatial);
             Assign(ttsPlayer, "_transport", transport);
             Assign(augmentedReality, "_transport", transport);
             Assign(augmentedReality, "_statusBar", statusBar);
+            if (xrealSpatial != null)
+            {
+                Assign(xrealSpatial, "_features", augmentedReality);
+                Assign(xrealSpatial, "_transport", transport);
+                Assign(xrealSpatial, "_intents", localIntents);
+                Assign(xrealSpatial, "_pose", pose);
+                Assign(xrealSpatial, "_camera", camera);
+                Assign(
+                    xrealSpatial,
+                    "_depthOcclusionShader",
+                    LoadRequiredShader(XrealDepthOcclusionShaderPath));
+                Assign(
+                    xrealSpatial,
+                    "_freeGuyMeshShader",
+                    LoadRequiredShader(XrealFreeGuyMeshShaderPath));
+            }
+            if (xrealSpatialGestures != null)
+            {
+                Assign(xrealSpatialGestures, "_gestures", gestureBridge);
+                Assign(xrealSpatialGestures, "_spatial", xrealSpatial);
+                Assign(xrealSpatialGestures, "_features", augmentedReality);
+                Assign(xrealSpatialGestures, "_transport", transport);
+            }
             // E48-A reflex wiring (the rest self-finds in Awake at scene load).
             Assign(translate, "_commands", commands);
             Assign(translate, "_statusBar", statusBar);
@@ -205,6 +257,10 @@ namespace MLOmega.XR.Editor
             Assign(semanticSound, "_transport", transport);
             Assign(semanticSound, "_features", augmentedReality);
             Assign(semanticSound, "_intentSource", localIntents);
+            Assign(pulseAura, "_capture", capture);
+            Assign(pulseAura, "_transport", transport);
+            Assign(pulseAura, "_features", augmentedReality);
+            Assign(pulseAura, "_intents", localIntents);
             Assign(panelManipulator, "_camera", camera);
             Assign(wakeGate, "_asr", asrBridge);
             Assign(translate, "_asrBridge", asrBridge);
@@ -310,6 +366,15 @@ namespace MLOmega.XR.Editor
             AssetDatabase.CreateAsset(asset, path);
             AssetDatabase.SaveAssets();
             return asset;
+        }
+
+        private static Shader LoadRequiredShader(string path)
+        {
+            Shader shader = AssetDatabase.LoadAssetAtPath<Shader>(path);
+            if (shader == null)
+                throw new FileNotFoundException(
+                    $"Required XREAL shader missing: {path}");
+            return shader;
         }
 
         private static void Assign(UnityEngine.Object target, string field, UnityEngine.Object value)
