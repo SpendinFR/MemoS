@@ -5,6 +5,9 @@ Ce document est le guide opérateur courant. Les anciennes sections v1–v5 ont
 
 Pour les XREAL One Pro + Eye, utilise
 [`FIRST_TRY_XREAL_S24.md`](FIRST_TRY_XREAL_S24.md).
+Pour valider toutes les commandes, gestes, fonctions Memory/UltraLive et leurs
+preuves, utilise ensuite
+[`A_TESTER_ALL_FEATURES_SCENARIOS.md`](A_TESTER_ALL_FEATURES_SCENARIOS.md).
 
 ## 1. Ce qui tourne où
 
@@ -90,7 +93,7 @@ objet et Home Assistant), ajoute `-AugmentedReality` :
 
 ```powershell
 .\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -AugmentedReality `
-  -BindHost 0.0.0.0 -Port 8710
+  -MemoryProfile lite -BindHost 0.0.0.0 -Port 8710
 ```
 
 Kiwix est exécuté sur le PC; le S24 reçoit seulement la carte courte. Les
@@ -116,13 +119,14 @@ Commande :
 ```powershell
 cd C:\Users\wabad\Downloads\ProjetMemobyFABLE\Mlomega-main
 .\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -Pro -ProTextModel pro `
-  -MemoryProfile full `
+  -MemoryProfile lite `
   -CloudBudgetEur 1.50 -CloudOnBudget stop `
   -BindHost 0.0.0.0 -Port 8710
 ```
 
 `-CloudOnBudget stop` interdit tout dépassement. `-ProTextModel flash` est
-moins coûteux mais moins profond.
+moins coûteux mais moins profond. Remplace `lite` par `full` pour la chaîne
+historique complète.
 
 ## 6. Vérifier le réseau depuis le S24
 

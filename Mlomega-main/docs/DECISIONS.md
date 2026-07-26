@@ -2170,3 +2170,18 @@ Un identifiant de contrat conservé pour compatibilité n'est pas forcément une
 feature publique. `enhanced_zoom` reste compris par les schémas de préférences,
 mais n'est plus proposé par le menu ni le routeur naturel tant que son provider
 de super-résolution n'est pas livré. Le crop/pinch GPU historique reste disponible.
+
+## 2026-07-26 — Un raccourci opérateur compose les options, il ne fork pas RUN
+
+Le démarrage S24/XREAL officiel est `START_XREAL_S24.cmd`, qui délègue à un
+petit wrapper PowerShell puis au `RUN_MLOMEGA_V19.ps1` validé. Ce choix évite
+un deuxième bootstrap, un deuxième préflight ou une divergence Local/PRO. Le
+raccourci choisit Lite + AR pour l'usage quotidien, sait réveiller Ollama et
+laisse Full/PRO explicites; le runner bas niveau conserve son défaut Full
+historique.
+
+La certification utilisateur est centralisée dans
+`A_TESTER_ALL_FEATURES_SCENARIOS.md`. Une capability y est validée par son
+effet terminal et sa preuve, jamais par la présence d'une classe, d'une route,
+d'un compteur `accepted` ou d'un test matériel simulé. Les limites physiques et
+les fonctions différées restent visibles dans la même checklist.

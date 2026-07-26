@@ -2496,3 +2496,36 @@ est `T0.7` : firmware Eye, pose/Depth/mains/radio, stéréo, FPS/chauffe et
 relocalisation réelle. Aucun pont logiciel connu ne reste ouvert dans les lots
 déclarés livrés; les éléments explicitement différés (`T0.4`, filtres/reconstruction
 historique/RF externe) ne sont pas prétendus présents.
+
+### PASSATION OPÉRATEUR S24/XREAL — lanceur unique et recette exhaustive
+
+Le chemin quotidien ne demande plus de recomposer les options de RUN :
+
+```powershell
+.\START_XREAL_S24.cmd
+```
+
+Le `.cmd` contourne seulement l'ExecutionPolicy locale puis appelle
+`scripts/START_XREAL_S24.ps1`. Ce dernier réveille Ollama si nécessaire et
+délègue au lanceur produit **sans modifier son pipeline** avec
+`-LivePhone -AugmentedReality -MemoryProfile lite`. Variantes officielles :
+
+```powershell
+.\START_XREAL_S24.cmd -MemoryProfile full
+.\START_XREAL_S24.cmd -Pro -MemoryProfile lite
+.\START_XREAL_S24.cmd -Pro -MemoryProfile full
+.\START_XREAL_S24.cmd -DryRun
+```
+
+Le mode PRO exige les trois clés dans `.env`; aucune valeur secrète n'est
+affichée ni enregistrée. `START_XREAL_S24.ps1` transmet aussi
+`ProTextModel`, budget, politique de dépassement, `StudioReleaseId`, personne,
+bind et port. Le runner principal garde `full` par défaut pour compatibilité;
+seul le raccourci opérateur choisit explicitement Lite.
+
+La procédure matérielle et les hashes APK sont dans
+`FIRST_TRY_XREAL_S24.md`. La recette canonique est
+`A_TESTER_ALL_FEATURES_SCENARIOS.md` : elle impose une preuve terminale pour
+les 13 commandes Gate B, gestes, 16 scénarios historiques, Memory, Replay,
+HotContext, les 24 features AR, Full/Lite, Local/PRO, chaos et Dashboard. Ne
+cocher aucune capacité au seul vu d'un `accepted` ou d'un test simulé.

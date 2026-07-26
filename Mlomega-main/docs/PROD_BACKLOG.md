@@ -2454,6 +2454,15 @@ et l'image Eye; GPS/boussole/cartographie fournissent seulement le repère terre
   import d'un paquet Atelier témoin, relocalisation après redémarrage, occlusion et
   20 minutes de FPS/chauffe/batterie. Valider `K5`; Local/PRO et PhoneOnly restent
   inchangés avec FreeGuy OFF.
+  **Préparation opérateur livrée le 26 juillet :**
+  `START_XREAL_S24.cmd` compose le chemin quotidien Local+Lite+AR en un clic,
+  réveille Ollama puis délègue au RUN historique; Full, PRO, budget et release
+  studio restent des options explicites. `FIRST_TRY_XREAL_S24.md` porte
+  installation/permissions/fin/recovery et
+  `A_TESTER_ALL_FEATURES_SCENARIOS.md` porte la recette exhaustive : gestes,
+  13 commandes Gate B, 16 scénarios, mémoire, les 24 features AR, chaos,
+  performance et preuves terminales. Cette préparation ne coche pas T0.7 :
+  pose/Depth/mains/stéréo/radio/FPS/relocalisation restent matériels.
 - [x] **T0.8 Composition vocale et retour VIKI visibles.** Le menu et la voix
   convergent sur `DeviceCommandHandler` et le même registre. « VIKI, active le
   mode FreeGuy » applique atomiquement `master + world_styling +

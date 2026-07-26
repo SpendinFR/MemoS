@@ -18,6 +18,11 @@ L'APK courante est `com.mlomega.xr.glasses`, SHA-256
 `24CB3942B389EEC5B9E37F06839A43827A1B6D6B18FAE014CA2CA585448DECB3`
 (222 260 749 octets, build Unity final du 26 juillet 2026).
 
+Après l'installation, la checklist exhaustive de validation est
+[`A_TESTER_ALL_FEATURES_SCENARIOS.md`](A_TESTER_ALL_FEATURES_SCENARIOS.md).
+Elle décrit chaque commande, geste, mode AR, scénario Memory/UltraLive et la
+preuve attendue. Le présent fichier reste le guide de démarrage quotidien.
+
 ## 1. Préparation unique du S24 et des lunettes
 
 ### 1.1 Firmware One Pro + Eye — obligatoire
@@ -43,8 +48,9 @@ si une mise à jour reste en attente.
 2. Installe Tailscale sur le S24, connecte-le au même tailnet que le PC et
    laisse le VPN actif.
 3. Dans Paramètres > Applications, retire l'optimisation batterie pour
-   MLOmega, ControlGlasses et Tailscale. Autorise caméra, micro, notifications
-   et affichage par-dessus les autres apps.
+   MLOmega, ControlGlasses et Tailscale. Pour MLOmega, autorise caméra, micro,
+   localisation précise, appareils à proximité, notifications et affichage
+   par-dessus les autres apps. Laisse Tailscale utiliser le VPN en arrière-plan.
 4. Active les options développeur et le débogage USB sur le S24.
 5. Pour le premier gate, note la version Android/One UI et évite une mise à jour
    majeure entre l'installation et le test : XREAL certifie le S24 avec le SDK
@@ -103,19 +109,41 @@ Ne supprime jamais la DB après le début d'une vraie capture. En cas de
 CloseDay interrompu, conserve DB et médias puis relance RUN : la recovery
 reprend le travail durable.
 
-## 2. Lancer le PC — mode Local
+## 2. Lancer le PC — une commande, mode Local Lite recommandé
 
 Ferme toute ancienne instance de MLOmega, puis ouvre PowerShell :
 
 ```powershell
 cd C:\Users\wabad\Downloads\ProjetMemobyFABLE\Mlomega-main
-ollama list
-.\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -AugmentedReality `
-  -BindHost 0.0.0.0 -Port 8710
+.\START_XREAL_S24.cmd
 ```
 
-Le lanceur démarre/vérifie Qdrant lui-même. Ollama doit déjà répondre ; s'il est
-arrêté, ouvre l'application Ollama ou lance `ollama serve`, puis relance RUN.
+Cette commande est le chemin quotidien recommandé. Elle :
+
+1. réveille Ollama si son service local ne répond pas ;
+2. sélectionne `MemoryProfile=lite` ;
+3. appelle le lanceur produit avec `-LivePhone -AugmentedReality` ;
+4. démarre/vérifie Qdrant, Kiwix configuré, le service AR et SessionHub ;
+5. exécute le préflight profond avant d'autoriser l'appairage.
+
+Elle ne lance ni l'app Android ni CloseDay à ta place : ouvre MLOmega seulement
+après le vert PC, puis utilise le bouton de fin dans l'app.
+
+Tu peux aussi double-cliquer `START_XREAL_S24.cmd` dans l'Explorateur : sans
+option, il lance exactement **Local + Lite + AR**. La fenêtre reste ouverte si
+le préflight échoue afin d'afficher la correction.
+
+Pour garder le CloseDay historique complet :
+
+```powershell
+.\START_XREAL_S24.cmd -MemoryProfile full
+```
+
+Pour voir la commande résolue sans rien démarrer :
+
+```powershell
+.\START_XREAL_S24.cmd -DryRun
+```
 
 RUN effectue le préflight profond : DB, modèles, Hugging Face/Pyannote,
 CUDA/cuDNN, Whisper, YOLOX, VLM, Ollama, Qdrant, espace disque et environnement
@@ -128,15 +156,23 @@ CloseDay. Ne contourne pas un check rouge : suis la ligne `[FIX]`. Attends :
 Garde cette console ouverte pendant toute la capture et tout CloseDay. Le
 pare-feu Windows doit autoriser Python sur le réseau privé et le port TCP 8710.
 
-Le profil mémoire est **Full par défaut**. Pour utiliser le nouveau CloseDay
-rapide, owner-centré et borné, ajoute `-MemoryProfile lite` à la même commande.
-Ce sélecteur ne change ni le Live, ni les fonctions lunettes, ni Local/PRO; le
-retour à Full se fait par `-MemoryProfile full` ou en omettant l'option.
+Le lanceur bas niveau `RUN_MLOMEGA_V19.ps1` conserve **Full par défaut** pour la
+compatibilité. Le nouveau raccourci S24/XREAL choisit explicitement **Lite** :
+archive lossless des tours, une analyse owner-centrée bornée par épisode et
+projection des faits utiles T1/vision/Sherlock. Ce sélecteur ne change ni le
+Live, ni les fonctions lunettes, ni Local/PRO.
 
 `-AugmentedReality` démarre aussi le service isolé sur
 `http://127.0.0.1:8791`; RUN doit afficher qu'il est prêt. Sans ce flag,
 Memory/BrainLive restent utilisables, mais les fonctions augmentées PC sont
 volontairement inertes.
+
+Commande bas niveau de secours, équivalente au raccourci Local Lite :
+
+```powershell
+.\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -AugmentedReality `
+  -MemoryProfile lite -BindHost 0.0.0.0 -Port 8710
+```
 
 ## 3. Lancer le PC — mode PRO optionnel
 
@@ -156,16 +192,14 @@ Puis :
 
 ```powershell
 cd C:\Users\wabad\Downloads\ProjetMemobyFABLE\Mlomega-main
-.\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -AugmentedReality `
-  -Pro -ProTextModel pro `
-  -MemoryProfile full `
-  -CloudBudgetEur 1.50 -CloudOnBudget stop `
-  -BindHost 0.0.0.0 -Port 8710
+.\START_XREAL_S24.cmd -Pro -MemoryProfile lite `
+  -ProTextModel pro -CloudBudgetEur 1.50 -CloudOnBudget stop
 ```
 
 Pour réduire le coût au prix d'une analyse moins profonde, remplace
 `-ProTextModel pro` par `-ProTextModel flash`. `-CloudOnBudget stop` est le
-choix sûr : aucune dépense au-delà du plafond.
+choix sûr : aucune dépense au-delà du plafond. Pour PRO avec toute la chaîne
+historique, remplace `lite` par `full`. Le Live reste local dans les deux cas.
 
 ## 4. Vérifier LAN et Tailscale avant la capture
 
@@ -291,8 +325,8 @@ MLOMEGA_GOOGLE_VISION_API_KEY=...
 Puis lance le tournage :
 
 ```powershell
-.\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -AugmentedReality `
-  -StudioReleaseId release-film-2026-001 -BindHost 0.0.0.0 -Port 8710
+.\START_XREAL_S24.cmd `
+  -StudioReleaseId release-film-2026-001
 ```
 
 RUN demande le code avant la capture. Un mauvais code ou une release inconnue
@@ -308,8 +342,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File `
 ```
 
 Les scénarios vocaux complets restent décrits dans
-[`FIRST_TRY_ANDROID.md`](FIRST_TRY_ANDROID.md). Ils utilisent les mêmes routes
-PC, BrainLive et UI sur le S24.
+[`A_TESTER_ALL_FEATURES_SCENARIOS.md`](A_TESTER_ALL_FEATURES_SCENARIOS.md).
+Ils utilisent les mêmes routes PC, BrainLive et UI sur le S24.
 
 Pour observer le runtime depuis le PC :
 
