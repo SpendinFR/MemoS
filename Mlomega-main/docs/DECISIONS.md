@@ -2031,3 +2031,31 @@ une polyline OSRM-compatible via une route token-gated; le S24/XREAL conserve
 l'autorité sur GPS, boussole et repère tracking-local. Perte du provider =
 `CAP DIRECT`, jamais une route synthétique. Le service ne fait aucun appel réseau
 au boot et ne participe ni aux runs Local/PRO ni à la clôture nocturne.
+
+## 2026-07-26 — T1 conserve les preuves, pas les conclusions
+
+Une reconnaissance temporelle utile à Sherlock doit survivre à la session, mais
+ne doit pas convertir une géométrie 2D fragile en biographie. Le premier provider
+T1 est donc déterministe et borné sur les tracks VisionRT : entrée/sortie, transitions
+assis/debout et prise/pose lorsque plusieurs frames et une relation personne/objet
+les soutiennent. Il ne reçoit aucune frame supplémentaire et ne charge ni MMAction2,
+ni LLM. Ses résultats vont dans `live_action_candidates_v19` avec l'état
+`probable/candidate`; le lot Memory/Sherlock est seul autorisé à les corroborer et
+les promouvoir. « Prendre le chocolat » n'est jamais reformulé en « le manger ».
+
+Le monde OCR suit la même épistémologie. L'utilisateur active séparément
+`world_text`; seul un focus explicite appelle l'OCR. Texte, lignes, source, bbox,
+date et lieu accuracy-gated sont durables. La position Android est quantifiée en
+cellule stable entre sessions; les zones `zone-N` de PoseKeyframeMap, qui redémarrent
+à chaque session, sont interdites comme identité de lieu. Les lectures sans lieu
+restent utilisables pour la mémoire, mais ne participent pas aux comparaisons locales.
+
+Une alerte de prix requiert trois historiques comparables au même lieu et utilise
+une médiane déterministe. Elle est `inferred/candidate`, jamais une accusation.
+Les textes juridiques et médicaux sont seulement catégorisés et sourcés avant le
+lot spécialisé T2.4. Le crop OCR n'est ancré dans le monde XREAL qu'après un vrai
+hit Depth; sinon l'ancien LensWindow head-locked reste autoritaire.
+
+Ces writers sont paresseux derrière les toggles AR. Ils n'altèrent ni les prompts,
+ni EpisodeBuilder, ni les backends Local/PRO, ni CloseDay. MediaRetention considère
+leurs preuves pour ne pas purger le média nécessaire au futur audit.

@@ -752,7 +752,27 @@ class VisionRT:
                         text = str(fallback["text"]).strip()
                         lines = [{"text": text, "confidence": 0.5, "box": None}]
                         source = "vlm_ocr_fallback"
-                content = {"kind": "ocr", "text": text, "lines": lines, "source": source}
+                content = {
+                    "kind": "ocr",
+                    "text": text,
+                    "lines": lines,
+                    "source": source,
+                    "frame_width": int(frame_bgr.shape[1]),
+                    "frame_height": int(frame_bgr.shape[0]),
+                }
+                # A user crop is geometry, not semantics. Preserve its exact
+                # screen location so XREAL may depth-project the short OCR panel.
+                # A full-frame voice request stays head-locked: pretending that
+                # its centre belongs to one physical sign would be false.
+                if bbox is not None:
+                    screen_bbox = self._crop_pixel_bbox_to_screen(
+                        (0.0, 0.0, float(crop.shape[1]), float(crop.shape[0])),
+                        crop_bbox=bbox,
+                        frame_width=frame_bgr.shape[1],
+                        frame_height=frame_bgr.shape[0],
+                    )
+                    if screen_bbox is not None:
+                        content["screen_bbox"] = screen_bbox
                 truth_level = "observed" if text and source == "rapidocr" else (
                     "probable" if text else "unknown"
                 )

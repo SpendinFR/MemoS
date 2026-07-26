@@ -2192,3 +2192,47 @@ Résultat : **16/16 verts**. À la fin de tous les lots seulement, lancer
 `MLOmega.XR.Tests.WorldFreeGuyT0Tests` avec les autres tests EditMode, puis les
 deux passes XREAL et le build PhoneOnly selon la procédure existante. Ne jamais
 committer les manifest/lock/ProjectSettings temporaires ni les logs Unity.
+
+### PASSATION T1 ACTIONS + MONDE TEXTE — 2026-07-26
+
+Ne pas lancer Unity/APK avant la fin des lots. Le raccord produit est :
+
+1. Le menu envoie `master + action_recognition/world_text` au service AR 8791.
+   Les capabilities sont disponibles mais restent OFF tant que l'utilisateur ne
+   les sélectionne pas.
+2. `LivePipeline._on_scene_delta` crée paresseusement
+   `TemporalActionRecognizer`; il écrit uniquement
+   `live_action_candidates_v19`. Ne pas déplacer ce travail dans la boucle frame,
+   ne pas charger MMAction2 et ne jamais promouvoir ces lignes directement.
+3. Lors d'un OCR explicite, le S24 envoie au plus toutes les 30 s une
+   `device_location` si la permission est accordée et l'accuracy <= 50 m.
+   `WorldTextMemory` écrit `world_text_observations_v19`; sans lieu, il écrit le
+   texte mais abstient la comparaison. Les anomalies sont dans
+   `world_text_anomalies_v19`.
+4. `StructuredMemoryResolver` relit directement la dernière valeur OCR pour les
+   questions de prix. T2.4 ajoutera l'interprétation juridique/médicale; ne pas
+   confondre catégorisation et conseil professionnel.
+5. Sur XREAL, `LensWindow` appelle `TryProjectImagePoint` uniquement pour un crop
+   OCR avec bbox. Sans Depth prouvé il reste head-locked. Ne pas ajouter de pose
+   3D à partir de la bbox seule.
+
+Validation ciblée :
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest `
+  tests\v19\test_t1_temporal_world_text.py `
+  tests\v19\test_augmented_reality_foundation.py `
+  tests\v19\test_route_provider.py `
+  tests\v19\test_media_retention.py `
+  -q -p no:cacheprovider
+
+.\.venv-live\Scripts\python.exe -m pytest `
+  tests\v19\test_phoneonly_runtime.py::test_visual_translation_ocr_is_forwarded_to_device_reflex `
+  -q -p no:cacheprovider
+```
+
+Verdict courant : **28/28 verts** dans `.venv`, puis **2/2 verts** dans
+`.venv-live`. `.venv` ne possède volontairement pas `webrtcvad`; lancer le test
+runtime audio/vision avec `.venv-live`, sinon le rouge est un mauvais environnement.
+Avant le commit du lot, ajouter seulement les fichiers T1 explicites; le worktree
+contient toujours des scènes/settings/logs appartenant aux builds précédents.

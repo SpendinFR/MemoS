@@ -46,6 +46,7 @@ KNOWN_FEATURES = (
     "consented_people",
     "pulse_aura",
     "automatic_world_fx",
+    "world_text",
 )
 MEMORY_ACCESS = {
     # Future modules consume existing product APIs; this isolated service never
@@ -69,6 +70,7 @@ MEMORY_ACCESS = {
     "consented_people": "read_enrolled_identity_and_explicit_consent_registry",
     "pulse_aura": "none_no_biometric_persistence",
     "automatic_world_fx": "none_ephemeral_device_only",
+    "world_text": "validated_ocr_observation_writer_only",
 }
 MAX_BODY_BYTES = 262_144
 MAX_SESSIONS = 16
@@ -130,11 +132,16 @@ class PreferenceState:
     def capabilities(self) -> dict[str, bool]:
         return {
             "object_menus": True,
-            "action_recognition": False,
+            # The bounded recogniser lives in LivePipeline so it can consume the
+            # existing VisionRT deltas without another video copy or GPU model.
+            "action_recognition": True,
             # Provider code is installed. Per-session activation additionally
             # requires the device probe to confirm the provisioned YAMNet file.
             "semantic_sound": True,
             "contextual_knowledge": bool(self.knowledge.available),
+            # Explicit focus OCR is persisted by LivePipeline.  This service only
+            # gates the user preference; it never receives raw frames or opens DB.
+            "world_text": True,
             # Base crop is device-local and does not need this service. The
             # optional super-resolution provider is not advertised until installed.
             "enhanced_zoom": False,

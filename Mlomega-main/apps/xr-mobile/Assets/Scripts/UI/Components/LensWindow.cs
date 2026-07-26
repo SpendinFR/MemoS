@@ -19,6 +19,9 @@ namespace MLOmega.XR.UI.Components
         private GlassPanel _panel;
         private RawImage _content;
         private XrSessionController _session;
+        private MLOmega.XR.UI.XrealSpatialProvider _spatial;
+        private Vector3 _worldPosition;
+        private bool _worldPlaced;
 
         public override string ComponentKey => "lens_window";
 
@@ -71,8 +74,25 @@ namespace MLOmega.XR.UI.Components
             if (_panel.Body != null) _panel.Body.text = IntentRead.Content(intent, "text",
                 IntentRead.Content(intent, "ocr", ""));
             if (_session == null) _session = FindAnyObjectByType<XrSessionController>();
+            if (_spatial == null)
+                _spatial = FindAnyObjectByType<MLOmega.XR.UI.XrealSpatialProvider>();
             if (!IntentRead.TryPoint(intent.Anchor, "center", out Vector2 center))
                 center = new Vector2(0.5f, 0.5f);
+            _worldPlaced = false;
+            if (
+                string.Equals(
+                    IntentRead.Content(intent, "kind", null),
+                    "ocr",
+                    System.StringComparison.OrdinalIgnoreCase) &&
+                IntentRead.TryRect(intent.Content, "screen_bbox", out Rect textRect) &&
+                _spatial != null)
+            {
+                Vector2 textCenter = new Vector2(
+                    textRect.x + textRect.width * 0.5f,
+                    textRect.y + textRect.height * 0.5f);
+                _worldPlaced = _spatial.TryProjectImagePoint(
+                    textCenter, out _worldPosition);
+            }
             float zoom = (float)IntentRead.Num(intent.Content, "zoom", 1.0);
             EyeFrame? frame = _session?.Adapter?.TryGetLatestFrame();
             SetContentTexture(frame.HasValue ? frame.Value.Texture : null, center, zoom);
@@ -96,6 +116,19 @@ namespace MLOmega.XR.UI.Components
         {
             Camera cam = Context != null ? Context.Camera : Camera.main;
             if (cam == null) return;
+            if (_worldPlaced)
+            {
+                Vector3 toCamera = cam.transform.position - _worldPosition;
+                if (toCamera.sqrMagnitude > 0.01f)
+                {
+                    transform.SetPositionAndRotation(
+                        _worldPosition + toCamera.normalized * 0.04f +
+                            Vector3.up * 0.08f,
+                        Quaternion.LookRotation(-toCamera.normalized, Vector3.up));
+                    return;
+                }
+                _worldPlaced = false;
+            }
             transform.SetPositionAndRotation(
                 cam.transform.TransformPoint(_focusOffset),
                 Quaternion.LookRotation(transform.position - cam.transform.position, Vector3.up));

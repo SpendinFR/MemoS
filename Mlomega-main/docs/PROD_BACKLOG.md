@@ -2488,19 +2488,56 @@ Suivi T0 logiciel — 26 juillet 2026 :
 
 **T1 — compréhension temporelle et monde sous-titré.**
 
-- [ ] **T1.1 Reconnaissance d'actions temporelles (`4.0-C`).** Fenêtres courtes de
+- [x] **T1.1 Reconnaissance d'actions temporelles (`4.0-C`).** Fenêtres courtes de
   tracks/poses Eye échantillonnés vers MMAction2 ou modèle mesuré, d'abord
   `s'asseoir`, `se lever`, `prendre`, `poser`, `entrer`, `sortir`, `préparer une
   boisson`. Émettre sujet, objet, intervalle, confiance et preuves avec vérité
   `probable`; promouvoir uniquement sur persistance/corroboration. Ce raccord est
   nécessaire au Sherlock causal (« qui a pris/mangé le chocolat ? »), que les seuls
   états avant/après ne peuvent pas prouver.
-- [ ] **T1.2 Monde sous-titré.** OCR Eye focalisé sur pancarte, contrat, ticket,
+- [x] **T1.2 Monde sous-titré.** OCR Eye focalisé sur pancarte, contrat, ticket,
   badge, graffiti, notice, menu, médicament et plaque de rue; traduction ML Kit
   on-device lorsque disponible. Produire une couche courte et lisible, puis une
   interprétation à la demande. Les alertes sensibles (clause, médicament, droit)
   citent texte/source/confiance et restent assistance, jamais verdict professionnel.
   Déduplication par track+texte, cooldown et focus empêchent de relire toute la rue.
+
+**Suivi T1 livré — 2026-07-26.**
+
+- `TemporalActionRecognizer` consomme le vrai flux `VisionRT -> SceneDelta` seulement
+  lorsque `action_recognition` est activé. Le premier provider choisi est un moteur
+  temporel déterministe borné sur tracks, sans copie vidéo, modèle GPU ni appel LLM :
+  entrée/sortie persistantes, prise/pose corroborées par déplacement + recouvrement
+  personne/objet, et transitions assis/debout sous trois observations cohérentes.
+  Chaque sortie entre dans `live_action_candidates_v19` avec sujet, objet, intervalle,
+  confiance, frames et preuves, en `probable/candidate`. Une image isolée n'écrit
+  rien. Il est interdit d'en déduire « a mangé/bu » : le futur Sherlock relira ces
+  candidats, l'identité faciale et l'avant/après avant promotion Memory.
+- `world_text` est un toggle distinct, OFF par défaut. Un OCR explicite conserve
+  texte/lignes, catégorie, source, confiance, frame/track et position Android
+  accuracy-gated dans `world_text_observations_v19`. La cellule géographique (~11 m)
+  est stable entre sessions; un `zone-N` local n'est jamais utilisé pour comparer
+  deux lieux. Sans permission ou précision <= 50 m, le texte reste mémorisé mais
+  aucune alerte locale n'est produite.
+- La comparaison de prix est déterministe : même lieu + même texte hors nombre/devise,
+  au moins trois observations antérieures, médiane et écart >= max(0,30 unité, 25 %).
+  L'anomalie reste candidate dans `world_text_anomalies_v19` et la carte cite valeur,
+  référence, échantillon et preuves. `StructuredMemoryResolver` répond désormais à
+  « combien coûtait X la dernière fois ? » directement depuis cette table.
+  Contrats/médicaments/droit sont catégorisés et conservés, mais leur interprétation
+  spécialisée reste `T2.4` : aucune conclusion juridique ou médicale n'est inventée.
+- Sur XREAL, un crop OCR porte sa bbox normalisée. `LensWindow` ne devient world-locked
+  que si le centre touche réellement le mesh Depth; sinon il garde l'ancien rendu
+  head-locked. La traduction ML Kit existante reste device-side et asynchrone.
+- `MediaRetention` relit les trois nouvelles colonnes de preuves afin qu'un futur
+  audit Sherlock/replay ne perde pas les médias cités. Les chemins Local/PRO et les
+  prompts nocturnes ne changent pas; tables et writers T1 sont créés paresseusement
+  après opt-in.
+- Validation sans Unity/APK : **28 tests verts**, dont actions faibles abstentionnistes,
+  prise/pose/entrée/sortie durables, déduplication OCR, anomalie après historique,
+  requête mémoire structurée, activation des capabilities et rétention. Le test live
+  OCR historique est aussi vert dans `.venv-live`. Tests Unity et APK restent groupés
+  à la fin de tous les lots.
 
 **T2 — localisation et overlays contextuels spécialisés.**
 

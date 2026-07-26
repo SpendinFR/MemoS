@@ -82,10 +82,28 @@ namespace MLOmega.XR.UI
         private WorldMapStore _worldMap;
         private readonly HashSet<string> _automaticWorldIntentIds =
             new HashSet<string>(StringComparer.Ordinal);
+        private float _nextWorldTextLocationAt;
+        private bool _worldTextLocationStarting;
 
         public bool DepthReady { get; private set; }
         public string LastProviderError { get; private set; } = string.Empty;
         public int ProjectedTrackCount => _tracks.Count;
+
+        /// <summary>
+        /// Project a top-left-origin normalised image point onto the proven XREAL
+        /// spatial mesh. Used by short-lived OCR lenses; no mesh hit means callers
+        /// must remain head-locked rather than inventing a world pose.
+        /// </summary>
+        public bool TryProjectImagePoint(Vector2 imagePoint, out Vector3 worldPoint)
+        {
+            worldPoint = default;
+            Vector2 viewport = new Vector2(
+                Mathf.Clamp01(imagePoint.x),
+                Mathf.Clamp01(1f - imagePoint.y));
+            if (!TryDepthHit(viewport, out RaycastHit hit)) return false;
+            worldPoint = hit.point;
+            return true;
+        }
 
         private static bool CompiledForXreal
         {
@@ -186,6 +204,13 @@ namespace MLOmega.XR.UI
                 _nextNavigationAt = Time.unscaledTime + 2f;
                 TickNavigation();
             }
+            if (
+                _features.IsActive(AugmentedRealityFeatureRegistry.WorldText) &&
+                Time.unscaledTime >= _nextWorldTextLocationAt)
+            {
+                _nextWorldTextLocationAt = Time.unscaledTime + 30f;
+                PublishWorldTextLocation();
+            }
         }
 
         private bool AnySpatialFeatureSelected()
@@ -204,6 +229,7 @@ namespace MLOmega.XR.UI
                 AugmentedRealityFeatureRegistry.BallisticPreview,
                 AugmentedRealityFeatureRegistry.StreetNavigation,
                 AugmentedRealityFeatureRegistry.AutomaticWorldFx,
+                AugmentedRealityFeatureRegistry.WorldText,
             };
             foreach (string id in ids)
                 if (_features.IsSelected(id)) return true;
@@ -230,6 +256,11 @@ namespace MLOmega.XR.UI
                     feature == AugmentedRealityFeatureRegistry.AutomaticWorldFx ||
                     feature == AugmentedRealityFeatureRegistry.Master)
                     WithdrawAutomaticWorldEffects();
+            }
+            else if (feature == AugmentedRealityFeatureRegistry.WorldText)
+            {
+                _nextWorldTextLocationAt = 0f;
+                EnsureWorldTextLocationAsync();
             }
             _nextCapabilityProbe = 0f;
             UpdateMeshRendering();
@@ -1508,6 +1539,64 @@ namespace MLOmega.XR.UI
 #endif
         }
 
+        private async void EnsureWorldTextLocationAsync()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_worldTextLocationStarting) return;
+            _worldTextLocationStarting = true;
+            try
+            {
+                if (!FineLocationPermissionReady(request: true)) return;
+                if (Input.location.status == LocationServiceStatus.Stopped)
+                    Input.location.Start(15f, 5f);
+                for (int i = 0;
+                    i < 300 &&
+                    Input.location.status == LocationServiceStatus.Initializing;
+                    i++)
+                    await Awaitable.NextFrameAsync();
+                PublishWorldTextLocation();
+            }
+            finally
+            {
+                _worldTextLocationStarting = false;
+            }
+#endif
+        }
+
+        private void PublishWorldTextLocation()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (
+                _transport == null ||
+                _features == null ||
+                !_features.IsActive(AugmentedRealityFeatureRegistry.WorldText))
+                return;
+            if (Input.location.status == LocationServiceStatus.Stopped)
+            {
+                EnsureWorldTextLocationAsync();
+                return;
+            }
+            if (Input.location.status != LocationServiceStatus.Running) return;
+            LocationInfo info = Input.location.lastData;
+            if (
+                info.horizontalAccuracy <= 0f ||
+                info.horizontalAccuracy > 50f ||
+                double.IsNaN(info.latitude) ||
+                double.IsNaN(info.longitude))
+                return;
+            _transport.SendContractMessage(ContractJson.Serialize(new
+            {
+                type = "device_location",
+                latitude = info.latitude,
+                longitude = info.longitude,
+                altitude_m = info.altitude,
+                horizontal_accuracy_m = info.horizontalAccuracy,
+                captured_at_utc = DateTime.UtcNow.ToString("O"),
+                purpose = "world_text_evidence",
+            }));
+#endif
+        }
+
         private void TickNavigation()
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
@@ -2128,6 +2217,16 @@ namespace MLOmega.XR.UI
         }
 
 #if UNITY_ANDROID && !UNITY_EDITOR
+        private static bool FineLocationPermissionReady(bool request)
+        {
+            const string permission = "android.permission.ACCESS_FINE_LOCATION";
+            bool ready =
+                UnityEngine.Android.Permission.HasUserAuthorizedPermission(permission);
+            if (!ready && request)
+                UnityEngine.Android.Permission.RequestUserPermission(permission);
+            return ready;
+        }
+
         private static bool RadioPermissionReady(bool request)
         {
             const string location = "android.permission.ACCESS_FINE_LOCATION";

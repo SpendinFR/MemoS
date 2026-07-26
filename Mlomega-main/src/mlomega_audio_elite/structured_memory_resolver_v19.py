@@ -397,6 +397,9 @@ class StructuredMemoryResolver:
     def _latest_attribute(
         self, con: sqlite3.Connection, question: str
     ) -> dict[str, Any] | None:
+        world_text = self._latest_world_text_value(con, question)
+        if world_text is not None:
+            return world_text
         if not self._has_table(con, "attribute_memory_observations"):
             return None
         terms = _tokens(question)
@@ -422,6 +425,53 @@ class StructuredMemoryResolver:
             f"{row['value']} ({row['source']}).",
             (f"attribute_memory_observations:{row['obs_id']}",),
             "latest_attribute",
+            data=dict(row),
+        ).packet()
+
+    def _latest_world_text_value(
+        self, con: sqlite3.Connection, question: str
+    ) -> dict[str, Any] | None:
+        """Answer exact observed price/value questions from explicit OCR evidence."""
+        if not self._has_table(con, "world_text_observations_v19"):
+            return None
+        terms = _tokens(question) - {
+            "prix", "cout", "coute", "combien", "derniere", "fois"
+        }
+        rows = con.execute(
+            """SELECT * FROM world_text_observations_v19
+               WHERE person_id=? AND numeric_value IS NOT NULL
+               ORDER BY observed_at DESC LIMIT 300""",
+            (self.person_id,),
+        ).fetchall()
+        scored: list[tuple[int, sqlite3.Row]] = []
+        for row in rows:
+            haystack = _tokens(
+                f"{row['text']} {row['normalized_text']} {row['place_key'] or ''}"
+            )
+            score = len(terms & haystack)
+            if score or not terms:
+                scored.append((score, row))
+        if not scored:
+            return None
+        scored.sort(
+            key=lambda item: (item[0], str(item[1]["observed_at"] or "")),
+            reverse=True,
+        )
+        row = scored[0][1]
+        currency = str(row["currency"] or "")
+        unit = "€" if currency == "EUR" else currency
+        place = str(row["place_key"] or "").strip()
+        where = f" à {place}" if place else ""
+        return StructuredAnswer(
+            f"La dernière valeur lue{where} le {_human_date(row['observed_at'])} "
+            f"était {float(row['numeric_value']):.2f} {unit}. "
+            f"Texte observé : « {row['text']} ».",
+            (
+                f"world_text_observations_v19:{row['text_observation_id']}",
+                *tuple(_loads(row["evidence_refs_json"], []) or []),
+            ),
+            "world_text_value",
+            confidence=float(row["confidence"] or 0.0),
             data=dict(row),
         ).packet()
 

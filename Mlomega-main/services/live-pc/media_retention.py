@@ -58,6 +58,11 @@ _EVIDENCE_COLUMNS: tuple[tuple[str, str], ...] = (
     ("visual_events_v19", "evidence_refs_json"),
     ("visual_events_v19", "observation_json"),
     ("visual_events_v19", "entity_json"),
+    # T1 raw evidence remains candidate-only until Memory corroboration, but its
+    # source frames/clips must survive long enough for Sherlock/replay to audit it.
+    ("live_action_candidates_v19", "evidence_refs_json"),
+    ("world_text_observations_v19", "evidence_refs_json"),
+    ("world_text_anomalies_v19", "evidence_refs_json"),
     ("scene_session_summaries_v19", "evidence_refs_json"),
     ("world_entity_links_v19", "evidence_refs_json"),
     ("brain2_spatial_routine_models", "evidence_refs_json"),

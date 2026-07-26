@@ -1001,6 +1001,26 @@ def test_augmented_reality_preferences_are_isolated_and_disabled_by_default(monk
     assert status["status"] == "disabled"
 
 
+def test_opt_in_device_location_reaches_pipeline_without_affecting_transport():
+    rt = runtime_mod.PhoneOnlyRuntime(
+        "s-world-text-location",
+        ingress_factory=FakeIngress,
+        pipeline_factory=FakePipeline,
+        close_day=lambda **_: {"status": "completed"},
+    )
+    received = []
+    rt.pipeline.on_device_location = received.append
+    rt._on_receipt(json.dumps({
+        "type": "device_location",
+        "latitude": 48.85661,
+        "longitude": 2.35221,
+        "horizontal_accuracy_m": 8.0,
+        "captured_at_utc": "2026-07-26T10:00:00Z",
+    }))
+    assert len(received) == 1
+    assert received[0]["type"] == "device_location"
+
+
 def test_device_semantic_sound_is_routed_and_persisted_without_fake_direction(
     tmp_path,
 ):

@@ -85,6 +85,10 @@ attribute_memory = _load_sibling("v19_attribute_memory", "attribute_memory.py")
 routine_associations = _load_sibling("v19_routine_associations", "routine_associations.py")
 change_attention = _load_sibling("v19_change_attention", "change_attention.py")
 help_mode = _load_sibling("v19_help_mode", "help_mode.py")
+temporal_actions = _load_sibling(
+    "v19_temporal_action_recognizer", "temporal_action_recognizer.py"
+)
+world_text_memory = _load_sibling("v19_world_text_memory", "world_text_memory.py")
 
 
 def load_profile(profile_path: Path | str | None = None) -> dict[str, Any]:
@@ -287,6 +291,12 @@ class LivePipeline:
         self.augmented_reality: Any = None
         self._ar_action_lock = threading.Lock()
         self._ar_action_inflight = False
+        # Optional T1 writers are created lazily only after the device has enabled
+        # their feature.  Mode OFF therefore creates no table, worker or extra
+        # inference and cannot alter the historical Local/PRO run.
+        self._temporal_actions: Any = None
+        self._world_text_memory: Any = None
+        self._device_location: dict[str, Any] | None = None
         vcfg = self.profile.get("vision", {}) if isinstance(self.profile, dict) else {}
         acfg = self.profile.get("audio", {}) if isinstance(self.profile, dict) else {}
 
@@ -1438,6 +1448,8 @@ class LivePipeline:
 
         if not is_find:
             forwarded = self._forward_visual_translation(request, current_result)
+            if kind == "ocr":
+                self._record_world_text_observation(request, forwarded)
             self._submit_ar_object_profile(forwarded)
             return forwarded
 
@@ -1586,6 +1598,28 @@ class LivePipeline:
                 self.worldbrain.ingest_scene_delta(delta)
             except Exception as exc:
                 self._report_error("worldbrain.ingest_scene_delta", exc)
+        # T1 temporal actions consume the same real detector delta.  They remain
+        # candidates in a dedicated durable table; Memory promotion is reserved
+        # for the later corroboration lot.
+        bridge = self.augmented_reality
+        if (
+            bridge is not None
+            and hasattr(bridge, "feature_active")
+            and bridge.feature_active("action_recognition")
+        ):
+            try:
+                if self._temporal_actions is None:
+                    self._temporal_actions = temporal_actions.TemporalActionRecognizer(
+                        person_id=self.person_id,
+                        live_session_id=self.live_session_id,
+                        db_path=self.db_path,
+                    )
+                self._temporal_actions.ingest(
+                    delta,
+                    monotonic_s=time.monotonic(),
+                )
+            except Exception as exc:
+                self._report_error("temporal_actions.ingest", exc)
         # E48-B §2: zone re-entry → compare current vs memorized state, one sober
         # cue if the difference is net (never on first visit, never below the
         # confidence/map_quality floor, never twice within the cooldown).
@@ -1626,6 +1660,81 @@ class LivePipeline:
                 self._external_scene_cb(delta)
             except Exception as exc:
                 self._report_error("scene_delta.external_callback", exc)
+
+    def _record_world_text_observation(
+        self, request: dict[str, Any], result: Any
+    ) -> None:
+        """Persist explicit OCR evidence and emit only corroborated price changes."""
+        bridge = self.augmented_reality
+        if (
+            bridge is None
+            or not hasattr(bridge, "feature_active")
+            or not bridge.feature_active("world_text")
+            or not isinstance(result, dict)
+        ):
+            return
+        try:
+            if self._world_text_memory is None:
+                self._world_text_memory = world_text_memory.WorldTextMemory(
+                    person_id=self.person_id,
+                    live_session_id=self.live_session_id,
+                    db_path=self.db_path,
+                )
+            observation, anomaly = self._world_text_memory.record(
+                result,
+                request={
+                    **dict(request),
+                    "location": dict(self._device_location or {}),
+                },
+                place_key=self._world_text_place_key(),
+            )
+            if observation is not None and anomaly is not None:
+                self._push_intent(
+                    self._world_text_memory.anomaly_intent(
+                        anomaly, text=str(observation.get("text") or "")
+                    )
+                )
+        except Exception as exc:
+            self._report_error("world_text.persist", exc)
+
+    def on_device_location(self, payload: dict[str, Any]) -> None:
+        """Accept an opt-in, accuracy-bounded Android location for OCR evidence."""
+        try:
+            latitude = float(payload.get("latitude"))
+            longitude = float(payload.get("longitude"))
+            accuracy = float(payload.get("horizontal_accuracy_m"))
+        except (TypeError, ValueError):
+            return
+        if (
+            not (-90.0 <= latitude <= 90.0)
+            or not (-180.0 <= longitude <= 180.0)
+            or accuracy <= 0.0
+            or accuracy > 50.0
+        ):
+            return
+        self._device_location = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "horizontal_accuracy_m": accuracy,
+            "captured_at_utc": str(payload.get("captured_at_utc") or ""),
+            "source": "android_location",
+        }
+
+    def _world_text_place_key(self) -> str | None:
+        location = self._device_location
+        if location is not None:
+            # Roughly 11 m latitude cells: fine enough to distinguish shops while
+            # remaining stable under normal phone GPS jitter.
+            return (
+                f"geo:{float(location['latitude']):.4f},"
+                f"{float(location['longitude']):.4f}"
+            )
+        place = self._current_place_subject()
+        # PoseKeyframeMap's zone-N ids restart every session and must never be
+        # mistaken for cross-session places.
+        if place and not re.fullmatch(r"zone-\d+", str(place).strip()):
+            return str(place)
+        return None
 
     def _on_focus_tracking_update(self, intent: dict[str, Any]) -> None:
         """Refresh a VLM-seeded outline while the camera moves.
@@ -2863,6 +2972,12 @@ class LivePipeline:
             m["help_steps_advanced"] = hem.get("steps_advanced", 0)
             m["help_grounding_hits"] = hem.get("grounding_hits", 0)
             m["help_cloud_hints"] = hem.get("cloud_hints", 0)
+        if self._temporal_actions is not None:
+            for key, value in self._temporal_actions.metrics.items():
+                m[f"temporal_action_{key}"] = value
+        if self._world_text_memory is not None:
+            for key, value in self._world_text_memory.metrics.items():
+                m[f"world_text_{key}"] = value
         if self.ingress is not None and hasattr(self.ingress, "matcher"):
             try:
                 m["envelope_match"] = self.ingress.matcher.stats()

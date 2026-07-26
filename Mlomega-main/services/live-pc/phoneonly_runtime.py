@@ -763,6 +763,13 @@ class PhoneOnlyRuntime:
                 except Exception as exc:
                     self.recent_errors.append(("device_object_labels: " + str(exc))[:500])
             return
+        if isinstance(payload, dict) and payload.get("type") == "device_location":
+            if hasattr(self.pipeline, "on_device_location"):
+                try:
+                    self.pipeline.on_device_location(payload)
+                except Exception as exc:
+                    self.recent_errors.append(("device_location: " + str(exc))[:500])
+            return
         if isinstance(payload, dict) and payload.get("type") == "device_semantic_sound":
             if hasattr(self.pipeline, "on_device_semantic_sound"):
                 try:
