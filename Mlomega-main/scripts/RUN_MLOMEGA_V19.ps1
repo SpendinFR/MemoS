@@ -99,10 +99,12 @@ function Initialize-CoreCudaPath {
 if ($LivePhone) {
   Import-DotEnv
   $augmentedRealityProcess = $null
+  $kiwixProcess = $null
   if ($AugmentedReality) { $env:MLOMEGA_AUGMENTED_REALITY = "1" }
   if (-not $env:MLOMEGA_AUGMENTED_REALITY) { $env:MLOMEGA_AUGMENTED_REALITY = "0" }
-  if ($AugmentedReality -and $StudioReleaseId) {
-    $env:MLOMEGA_AR_STUDIO_RELEASE_ID = $StudioReleaseId
+  if ($StudioReleaseId -and -not $AugmentedReality) {
+    Write-Host "[FAIL] -StudioReleaseId exige -AugmentedReality." -ForegroundColor Red
+    exit 2
   }
   if ($Pro) {
     $env:MLOMEGA_CLOUD_MODE = "pro"
@@ -127,6 +129,14 @@ if ($LivePhone) {
   if (-not $env:MLOMEGA_REQUIRE_AI_READY_FOR_PAIRING) { $env:MLOMEGA_REQUIRE_AI_READY_FOR_PAIRING = "1" }
   $Python = Resolve-Python
   if (-not $Python) { Write-Host "[FAIL] Aucun interpreteur Python." -ForegroundColor Red; exit 1 }
+  if ($AugmentedReality -and $StudioReleaseId) {
+    & $Python (Join-Path $ProjectRoot "scripts\configure_augmented_reality.py") studio-check --release-id $StudioReleaseId
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host "[FAIL] Mode profils studio refuse avant capture." -ForegroundColor Red
+      exit 2
+    }
+    $env:MLOMEGA_AR_STUDIO_RELEASE_ID = $StudioReleaseId
+  }
   & $Python -c "import aiortc, aiohttp, av, fastapi, uvicorn, numpy, python_multipart, dotenv, faster_whisper, webrtcvad, onnxruntime, rapidocr_onnxruntime"
   if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] Dependances live manquantes dans $Python" -ForegroundColor Red; exit 2 }
   $startQdrant = Join-Path $ScriptDir "START_QDRANT.ps1"
@@ -148,6 +158,60 @@ if ($LivePhone) {
     Write-Host "       VLM, CUDA/cuDNN, disque, Qdrant et venv sont verifies avant capture." -ForegroundColor Yellow
     exit 4
   }
+  if ($AugmentedReality) {
+    $kiwixExe = [string]$env:MLOMEGA_KIWIX_EXE
+    $kiwixZim = [string]$env:MLOMEGA_KIWIX_ZIM
+    $kiwixUrl = [string]$env:MLOMEGA_KIWIX_URL
+    if (($kiwixExe -and -not $kiwixZim) -or ($kiwixZim -and -not $kiwixExe)) {
+      Write-Host "[FAIL] Kiwix partiellement configure : executable ET ZIM sont requis." -ForegroundColor Red
+      exit 5
+    }
+    $kiwixReady = $false
+    if ($kiwixUrl) {
+      try {
+        $probe = Invoke-WebRequest -Uri $kiwixUrl -UseBasicParsing -TimeoutSec 1
+        $kiwixReady = $probe.StatusCode -eq 200
+      }
+      catch { $kiwixReady = $false }
+    }
+    if (-not $kiwixReady -and $kiwixExe -and $kiwixZim) {
+      if (-not (Test-Path -LiteralPath $kiwixExe)) {
+        Write-Host "[FAIL] kiwix-serve introuvable : $kiwixExe" -ForegroundColor Red
+        exit 5
+      }
+      if (-not (Test-Path -LiteralPath $kiwixZim)) {
+        Write-Host "[FAIL] Corpus ZIM introuvable : $kiwixZim" -ForegroundColor Red
+        exit 5
+      }
+      if (-not $kiwixUrl) {
+        $kiwixUrl = "http://127.0.0.1:8792"
+        $env:MLOMEGA_KIWIX_URL = $kiwixUrl
+      }
+      $kiwixProcess = Start-Process -FilePath $kiwixExe -ArgumentList @(
+        "-i", "127.0.0.1", "-p", "8792", $kiwixZim
+      ) -WindowStyle Hidden -PassThru
+      for ($i = 0; $i -lt 40; $i++) {
+        try {
+          $probe = Invoke-WebRequest -Uri $kiwixUrl -UseBasicParsing -TimeoutSec 1
+          if ($probe.StatusCode -eq 200) { $kiwixReady = $true; break }
+        }
+        catch { Start-Sleep -Milliseconds 250 }
+      }
+    }
+    if ($kiwixUrl -and -not $kiwixReady) {
+      if ($kiwixProcess -and -not $kiwixProcess.HasExited) {
+        Stop-Process -Id $kiwixProcess.Id -Force -ErrorAction SilentlyContinue
+      }
+      Write-Host "[FAIL] Kiwix configure mais indisponible sur $kiwixUrl." -ForegroundColor Red
+      exit 5
+    }
+    if ($kiwixReady) {
+      Write-Host "[OK]   Wikipedia/Kiwix local pret; aucune requete Internet par carte." -ForegroundColor Green
+    }
+    else {
+      Write-Host "[INFO] Kiwix non configure : connaissance contextuelle indisponible honnetement." -ForegroundColor Yellow
+    }
+  }
   $addresses = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
     Where-Object { $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" } |
     Select-Object -ExpandProperty IPAddress -Unique
@@ -161,10 +225,18 @@ if ($LivePhone) {
   }
   Write-Host "[INFO] Ce lancement ne prouve pas le build Unity/Gradle ni le flux materiel Android." -ForegroundColor Yellow
   if ($env:MLOMEGA_AUGMENTED_REALITY.Trim().ToLowerInvariant() -in @("1", "true", "yes", "on")) {
-    $augmentedRealityProcess = Start-Process -FilePath $Python -ArgumentList @(
-      (Join-Path $ProjectRoot "services\augmented-reality\service.py"),
-      "--host", "127.0.0.1", "--port", "8791"
-    ) -WindowStyle Hidden -PassThru
+    try {
+      $augmentedRealityProcess = Start-Process -FilePath $Python -ArgumentList @(
+        (Join-Path $ProjectRoot "services\augmented-reality\service.py"),
+        "--host", "127.0.0.1", "--port", "8791"
+      ) -WindowStyle Hidden -PassThru
+    }
+    catch {
+      if ($kiwixProcess -and -not $kiwixProcess.HasExited) {
+        Stop-Process -Id $kiwixProcess.Id -Force -ErrorAction SilentlyContinue
+      }
+      throw
+    }
     $augmentedRealityReady = $false
     for ($i = 0; $i -lt 20; $i++) {
       try {
@@ -181,14 +253,28 @@ if ($LivePhone) {
       if ($augmentedRealityProcess -and -not $augmentedRealityProcess.HasExited) {
         Stop-Process -Id $augmentedRealityProcess.Id -Force -ErrorAction SilentlyContinue
       }
+      if ($kiwixProcess -and -not $kiwixProcess.HasExited) {
+        Stop-Process -Id $kiwixProcess.Id -Force -ErrorAction SilentlyContinue
+      }
       Write-Host "[FAIL] Service Augmented Reality indisponible sur http://127.0.0.1:8791/." -ForegroundColor Red
       exit 5
     }
     Write-Host "[OK]   Service Augmented Reality isole pret; toutes les capacites restent pilotees depuis le menu." -ForegroundColor Green
   }
-  $companion = Start-Process -FilePath $Python -ArgumentList @(
-    (Join-Path $ProjectRoot "services\live-pc\delivery_adapter.py"), "--host", $BindHost, "--port", "8706"
-  ) -WindowStyle Hidden -PassThru
+  try {
+    $companion = Start-Process -FilePath $Python -ArgumentList @(
+      (Join-Path $ProjectRoot "services\live-pc\delivery_adapter.py"), "--host", $BindHost, "--port", "8706"
+    ) -WindowStyle Hidden -PassThru
+  }
+  catch {
+    if ($augmentedRealityProcess -and -not $augmentedRealityProcess.HasExited) {
+      Stop-Process -Id $augmentedRealityProcess.Id -Force -ErrorAction SilentlyContinue
+    }
+    if ($kiwixProcess -and -not $kiwixProcess.HasExited) {
+      Stop-Process -Id $kiwixProcess.Id -Force -ErrorAction SilentlyContinue
+    }
+    throw
+  }
   $companionReady = $false
   for ($i = 0; $i -lt 20; $i++) {
     try {
@@ -202,6 +288,9 @@ if ($LivePhone) {
     if ($augmentedRealityProcess -and -not $augmentedRealityProcess.HasExited) {
       Stop-Process -Id $augmentedRealityProcess.Id -Force -ErrorAction SilentlyContinue
     }
+    if ($kiwixProcess -and -not $kiwixProcess.HasExited) {
+      Stop-Process -Id $kiwixProcess.Id -Force -ErrorAction SilentlyContinue
+    }
     Write-Host "[FAIL] Companion-web n'a pas démarré sur http://127.0.0.1:8706/." -ForegroundColor Red
     exit 5
   }
@@ -213,6 +302,9 @@ if ($LivePhone) {
     if ($companion -and -not $companion.HasExited) { Stop-Process -Id $companion.Id -Force -ErrorAction SilentlyContinue }
     if ($augmentedRealityProcess -and -not $augmentedRealityProcess.HasExited) {
       Stop-Process -Id $augmentedRealityProcess.Id -Force -ErrorAction SilentlyContinue
+    }
+    if ($kiwixProcess -and -not $kiwixProcess.HasExited) {
+      Stop-Process -Id $kiwixProcess.Id -Force -ErrorAction SilentlyContinue
     }
   }
   exit $serverCode

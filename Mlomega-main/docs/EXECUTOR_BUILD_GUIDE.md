@@ -2135,3 +2135,30 @@ FreeGuy, RUN doit porter `-AugmentedReality`, puis l'utilisateur active
 isolé doit être prêt sur le loopback 8791. Les capacités spatiales restent
 conditionnées par la pose, Depth, les permissions et le matériel; aucun build
 vert ne ferme A2c/K5/T7.
+
+### Raccord opérateur AR post-APK — 2026-07-26
+
+Ce lot est exclusivement PC/config; ne pas rebâtir les APK pour lui.
+
+```powershell
+# Installe outils + Wikipédia FR top/mini, vérifie le SHA et configure .env
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\INSTALL_KIWIX_FR.ps1
+
+# Ajoute une entité Home Assistant; le jeton est demandé sans écho
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\CONFIGURE_AUGMENTED_REALITY.ps1 `
+  -Mode device -Label "lampe salon" -EntityId "light.salon"
+
+# Initialise une release puis choisit un code unique
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\CONFIGURE_AUGMENTED_REALITY.ps1 `
+  -Mode studio -ReleaseId "release-film-2026-001"
+```
+
+Au lancement studio, utiliser le même `ReleaseId`; RUN redemande le code avant
+capture. Ne jamais mettre ce code ou les jetons dans la commande, le registre,
+une scène ou Git. Validation : **18 tests Python verts**, parse PowerShell vert,
+Kiwix réel démarré depuis le corpus installé et lookup réel vers un article.
+Les tests couvrent aussi mauvais code, absence de secret dans le registre,
+arrêt Kiwix par le launcher et maintien des gates `-AugmentedReality`/`-Pro`.

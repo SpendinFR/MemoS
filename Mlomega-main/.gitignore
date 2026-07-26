@@ -24,6 +24,8 @@ models/
 .scenario_runs/
 simulators/scenarios/assets/
 configs/user_profile.yaml
+configs/augmented_devices.local.json
+configs/augmented_studio.local.json
 
 # Test-created core memory DB (E31/E32 core imports)
 .mlomega_audio_elite/

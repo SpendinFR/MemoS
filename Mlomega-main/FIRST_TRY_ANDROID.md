@@ -79,6 +79,19 @@ un rouge : applique sa ligne `[FIX]`. Avant d'ouvrir l'app, exige :
 Garde cette console ouverte pendant la capture et CloseDay. Autorise le port
 TCP 8710 sur le réseau privé Windows.
 
+Pour activer aussi les fonctions augmentées PC (Wikipédia hors ligne, cartes
+objet et Home Assistant), ajoute `-AugmentedReality` :
+
+```powershell
+.\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -AugmentedReality `
+  -BindHost 0.0.0.0 -Port 8710
+```
+
+Kiwix est exécuté sur le PC; le S24 reçoit seulement la carte courte. Les
+commandes uniques d'installation Kiwix, d'ajout domotique et d'ouverture studio
+par code sont dans
+[`FIRST_TRY_XREAL_S24.md`](FIRST_TRY_XREAL_S24.md#connaissance-hors-ligne-domotique-et-profils-studio).
+
 ## 5. Lancer le PC — PRO optionnel
 
 PRO ne change pas le Live local. Il utilise DeepSeek, Groq Whisper et Gemini

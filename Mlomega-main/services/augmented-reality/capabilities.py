@@ -338,10 +338,11 @@ def clean_kiwix_extract(raw_html: str, *, limit: int = 520) -> str:
 class KiwixKnowledgeProvider:
     """Queries an operator-owned local Kiwix server; never the public network."""
 
-    def __init__(self, base_url: str | None = None) -> None:
+    def __init__(self, base_url: str | None = None, opener: Any | None = None) -> None:
         self.base_url = (
             base_url or os.environ.get("MLOMEGA_KIWIX_URL", "")
         ).rstrip("/")
+        self._opener = opener or urllib.request.urlopen
 
     @property
     def available(self) -> bool:
@@ -351,15 +352,42 @@ class KiwixKnowledgeProvider:
         if not self.available:
             raise RuntimeError("local Kiwix endpoint is not configured")
         query = urllib.parse.quote(_text(topic, 160))
-        url = f"{self.base_url}/search?pattern={query}"
-        with urllib.request.urlopen(url, timeout=2.0) as response:
-            raw = response.read(128_001)
-        if len(raw) > 128_000:
-            raise ValueError("Kiwix response too large")
-        summary = clean_kiwix_extract(raw.decode("utf-8", errors="replace"))
+        search_url = f"{self.base_url}/search?pattern={query}"
+        with self._opener(search_url, timeout=2.0) as response:
+            raw = response.read(256_001)
+        if len(raw) > 256_000:
+            raise ValueError("Kiwix search response too large")
+        search_html = raw.decode("utf-8", errors="replace")
+        match = re.search(
+            r"""href\s*=\s*["'](?P<href>/content/[^"'#?]+)["']""",
+            search_html,
+            flags=re.I,
+        )
+        if match:
+            article_url = self.base_url + match.group("href")
+            with self._opener(article_url, timeout=2.0) as response:
+                article_raw = response.read(512_001)
+            if len(article_raw) > 512_000:
+                raise ValueError("Kiwix article response too large")
+            article_html = article_raw.decode("utf-8", errors="replace")
+            for paragraph in re.findall(
+                r"<p\b[^>]*>(.*?)</p>", article_html, flags=re.I | re.S
+            )[:12]:
+                summary = clean_kiwix_extract(paragraph)
+                if len(summary) >= 80:
+                    return {
+                        "title": _text(topic, 160),
+                        "summary": summary,
+                        "source": article_url,
+                    }
+        summary = clean_kiwix_extract(search_html)
         if not summary:
             raise LookupError("no local knowledge result")
-        return {"title": _text(topic, 160), "summary": summary, "source": url}
+        return {
+            "title": _text(topic, 160),
+            "summary": summary,
+            "source": search_url,
+        }
 
 
 class ContextualKnowledgeGate:

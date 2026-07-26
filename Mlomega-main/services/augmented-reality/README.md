@@ -34,6 +34,24 @@ Démarrage produit opt-in :
   -StudioReleaseId release-film-2026-001
 ```
 
+Configuration opérateur locale :
+
+```powershell
+# Wikipédia FR hors ligne (~149 Mo outils inclus), SHA-256 vérifié
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\INSTALL_KIWIX_FR.ps1
+
+# Un objet Home Assistant; le jeton est demandé sans écho
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\CONFIGURE_AUGMENTED_REALITY.ps1 `
+  -Mode device -Label "lampe salon" -EntityId "light.salon"
+
+# Un code unique pour toute la session de tournage
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\CONFIGURE_AUGMENTED_REALITY.ps1 `
+  -Mode studio -ReleaseId "release-film-2026-001"
+```
+
 Le service reste sur `127.0.0.1:8791`. Les futurs workers consommeront les
 frames/audio/poses par un contrat distinct; aucune boucle média ne doit passer
 par l'endpoint HTTP de préférences.
@@ -54,17 +72,21 @@ qu'après l'action explicite « Manuel court ».
 Variables optionnelles :
 
 - `MLOMEGA_AR_DEVICE_REGISTRY` : chemin du registre objet/domotique ;
-- `MLOMEGA_AR_CONSENTED_PEOPLE` : copie locale de
-  `configs/augmented_people.example.json`, jamais embarquée dans l'APK ;
+- `MLOMEGA_AR_CONSENTED_PEOPLE` : registre local optionnel pour les profils déjà
+  enrôlés et la physiologie; il n'est plus requis pour la recherche Web studio ;
 - `MLOMEGA_GOOGLE_VISION_API_KEY` : clé Web Detection conservée dans `.env` ;
 - `MLOMEGA_SHERLOCK_COMMAND` : chemin optionnel vers la commande `sherlock` ;
 - le `token_env` de chaque entrée désigne la variable du token Home Assistant ;
-- `MLOMEGA_KIWIX_URL` : endpoint Kiwix local (`127.0.0.1`/`localhost`).
+- `MLOMEGA_KIWIX_URL` : endpoint Kiwix local (`127.0.0.1`/`localhost`) ;
+- `MLOMEGA_KIWIX_EXE` + `MLOMEGA_KIWIX_ZIM` : permettent à RUN de démarrer et
+  arrêter automatiquement le serveur ;
+- `MLOMEGA_AR_STUDIO_CONFIG` : hash local du code de release, jamais le code en
+  clair.
 
-La recherche publique exige aussi `-StudioReleaseId`. Sans release ou clé, elle
-est indisponible et aucun crop ne quitte le PC. Sherlock cherche un **pseudo** sur
-plusieurs sites; il ne reconnaît pas le visage et ses résultats ne sont jamais
-promus automatiquement dans la mémoire.
+La recherche publique exige aussi `-StudioReleaseId` et le code de cette release.
+Sans release, code valide ou clé, elle est indisponible et aucun crop ne quitte le
+PC. Sherlock cherche un **pseudo** sur plusieurs sites; il ne reconnaît pas le
+visage et ses résultats ne sont jamais promus automatiquement dans la mémoire.
 
 La mémoire n'est accessible que par les frontières produit déclarées dans le
 manifeste : lecture WorldBrain/MemoryQuery/HotContext lorsqu'elle est utile, ou

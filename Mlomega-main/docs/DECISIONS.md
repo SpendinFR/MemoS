@@ -1987,3 +1987,26 @@ Geocoder Android, origine GPS de précision ≤20 m, cap boussole et pose XREAL.
 affiche `CAP DIRECT`, `turn_by_turn=false`; elle ne se présente pas comme Google
 Maps AR/VPS. Échec de permission, précision ou résolution = carte d'indisponibilité,
 pas une géométrie inventée. Le vrai test S24 + One Pro/Eye reste un gate distinct.
+
+## 2026-07-26 — Les providers AR optionnels ont une configuration opérateur unique
+
+E2 est un service **PC** : `kiwix-serve` écoute seulement sur loopback et le
+S24/XREAL reçoit une carte bornée. Le corpus retenu pour le premier essai est
+Wikipédia FR `top_mini 2026-04` (131 Mo), suffisamment petit pour le FirstTry et
+installé avec vérification SHA-256. RUN possède le processus Kiwix et l'arrête;
+un endpoint déclaré mais mort bloque avant capture au lieu de produire un faux
+provider disponible. Le provider suit le premier article du résultat et extrait
+un paragraphe utile; la page de recherche brute n'est pas une fiche produit.
+
+La domotique conserve le contrat B2; seul l'outillage change. L'opérateur fournit
+label + `entity_id` Home Assistant, puis le jeton via une invite sans écho. Le
+registre local ne contient jamais le secret. La confirmation, la lecture avant
+et après et le receipt terminal restent dans le chemin produit existant.
+
+Pour le tournage, un code unique ouvre toute la release. Il est hashé PBKDF2,
+jamais stocké en clair, et validé par RUN avant que
+`MLOMEGA_AR_STUDIO_RELEASE_ID` soit exposé au service. Ce code est un gate
+d'exploitation, pas une preuve d'identité : Google Web Detection/Sherlock
+produisent toujours un candidat `probable`, ne l'enrôlent pas et n'écrivent pas
+la mémoire. Sans les flags AR/studio, les runs Local et PRO restent sur leur
+ancien chemin d'exécution.

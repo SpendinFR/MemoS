@@ -217,16 +217,73 @@ la boussole ne sont pas qualifiés, l'app affiche une indisponibilité et ouvre
 Maps comme fallback. ARCore Geospatial n'est volontairement pas chargé en même
 temps que le loader XREAL avant le gate matériel A2c.
 
-Le mode **Profils studio** exige en plus un registre de consentement et un
-identifiant de tournage :
+### Connaissance hors ligne, domotique et profils studio
+
+E2 tourne sur le **PC**, pas sur le S24 : le téléphone/lunettes ne reçoivent que
+la petite carte UI. Sur cette machine, `kiwix-tools 3.8.1` et le corpus
+`wikipedia_fr_top_mini_2026-04.zim` sont installés et vérifiés par SHA-256. Pour
+réinstaller proprement :
 
 ```powershell
-$env:MLOMEGA_AR_CONSENTED_PEOPLE="$pwd\configs\augmented_people.json"
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\INSTALL_KIWIX_FR.ps1
+```
+
+RUN démarre Kiwix sur `127.0.0.1:8792` avant le service AR, refuse un endpoint
+configuré mais mort, puis l'arrête à la fin. Une demande explicite contourne le
+cooldown; les cartes automatiques restent bornées à une toutes les 90 secondes.
+
+Pour ajouter un objet Home Assistant, récupère d'abord son `entity_id` dans
+**Paramètres → Appareils et services → Entités**, puis crée un jeton longue durée
+dans ton profil Home Assistant. Exemple pour `light.salon` :
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\CONFIGURE_AUGMENTED_REALITY.ps1 `
+  -Mode device -Label "lampe salon" -EntityId "light.salon" `
+  -HomeAssistantUrl "http://homeassistant.local:8123"
+```
+
+La commande demande le jeton sans l'afficher, le conserve seulement dans `.env`
+et crée le registre local ignoré par Git. Ensuite : regarde la lampe, ouvre sa
+carte objet, sélectionne **Marche / arrêt**, puis confirme par un second pinch.
+MLOmega lit l'état avant, commande Home Assistant et relit l'état terminal.
+
+Le mode **Profils studio** est volontairement simple : un seul code ouvre la
+release entière, sans créer une fiche préalable pour chaque acteur. Configuration
+unique :
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\CONFIGURE_AUGMENTED_REALITY.ps1 `
+  -Mode studio -ReleaseId "release-film-2026-001"
+```
+
+Choisis le code à 6–12 chiffres lorsqu'il est demandé. Ajoute aussi la clé Web
+Detection dans `.env` :
+
+```text
+MLOMEGA_GOOGLE_VISION_API_KEY=...
+```
+
+Puis lance le tournage :
+
+```powershell
 .\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -AugmentedReality `
   -StudioReleaseId release-film-2026-001 -BindHost 0.0.0.0 -Port 8710
 ```
 
-Ne l'active pas pour l'usage quotidien sans registre signé.
+RUN demande le code avant la capture. Un mauvais code ou une release inconnue
+bloque le mode studio. La recherche Web reste limitée à une tentative par track,
+affiche **candidat à confirmer** et ne modifie jamais l'identité faciale ni la
+mémoire automatiquement.
+
+État des trois raccords :
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\CONFIGURE_AUGMENTED_REALITY.ps1 -Mode status
+```
 
 Les scénarios vocaux complets restent décrits dans
 [`FIRST_TRY_ANDROID.md`](FIRST_TRY_ANDROID.md). Ils utilisent les mêmes routes

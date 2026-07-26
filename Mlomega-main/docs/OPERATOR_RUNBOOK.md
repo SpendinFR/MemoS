@@ -56,6 +56,34 @@ mais pas encore actif, et `ON` n'est affiché qu'après confirmation du service.
 Une capacité absente ou incompatible reste jaune/rouge; ne jamais interpréter la
 préférence enregistrée comme une preuve qu'un worker ou ARCore fonctionne.
 
+Configuration locale des providers, sans toucher aux APK :
+
+```powershell
+# Wikipédia FR/Kiwix sur le PC
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\INSTALL_KIWIX_FR.ps1
+
+# Ajout d'une entité Home Assistant (invite sécurisée pour le jeton)
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\CONFIGURE_AUGMENTED_REALITY.ps1 `
+  -Mode device -Label "lampe salon" -EntityId "light.salon"
+
+# Release studio : un code unique pour toute la session
+powershell -NoProfile -ExecutionPolicy Bypass -File `
+  .\scripts\CONFIGURE_AUGMENTED_REALITY.ps1 `
+  -Mode studio -ReleaseId "release-film-2026-001"
+```
+
+Le lancement studio réutilise le dernier identifiant et redemande le code :
+
+```powershell
+.\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -AugmentedReality `
+  -StudioReleaseId release-film-2026-001
+```
+
+Kiwix et la recherche de profils sont des providers PC; le S24/XREAL ne reçoit
+que les UIIntents bornés. Un candidat Web ne devient jamais une identité mémoire.
+
 Ne pas démarrer manuellement P1 et plusieurs modèles Ollama avant cette commande :
 l'orchestrateur GPU gère leur résidence par phase. Le CloseDay enfant utilise `.venv` de
 façon intentionnelle; le live reste dans `.venv-live`.

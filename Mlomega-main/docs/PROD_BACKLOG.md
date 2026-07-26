@@ -2061,9 +2061,17 @@ d'assembly ne prouve la coexistence ARCore/XREAL sur le matériel.
   une carte/90 s; même sujet : 15 min; les demandes explicites peuvent contourner
   le cooldown automatique. La carte courte est sourcée, refermable et n'écrit pas
   dans la mémoire personnelle. Aucun LLM ni appel par tour.
-- [ ] **E2 — corpus opérateur.** Installer/choisir le ZIM et fournir
+- [x] **E2 — corpus opérateur.** Installer/choisir le ZIM et fournir
   `MLOMEGA_KIWIX_URL`; vérifier la pertinence des fiches sur le S24. Sans endpoint
   local, la capacité reste honnêtement indisponible.
+- [x] **E3 — raccord opérateur Kiwix.** `INSTALL_KIWIX_FR.ps1` installe
+  `kiwix-tools 3.8.1` et Wikipédia FR `top_mini 2026-04`, vérifie le SHA-256 puis
+  écrit uniquement les chemins locaux dans `.env`. RUN démarre le serveur sur
+  loopback avant le service AR, refuse une configuration morte et l'arrête en
+  `finally`. La preuve PC réelle a résolu « intelligence artificielle » vers le
+  premier article et extrait son premier paragraphe utile, au lieu d'afficher la
+  page de résultats de recherche. La pertinence/rendu sur verre reste incluse
+  dans le gate matériel général, pas dans l'installation du corpus.
 - [x] **F1 — décision zoom/mesure.** Le crop/track GPU `LensWindow` existant est le
   zoom UltraLive de base. Real-ESRGAN n'est pas ajouté au flux continu : coût,
   chaleur et pixels synthétiques sans gain produit suffisant. Aucun faux bouton de
@@ -2325,8 +2333,11 @@ encore ouverts).**
   OFF par défaut. Sans registre/release/clé, aucune recherche Web, aucun crop et
   aucun worker physiologique ne démarre; les runs Local/PRO restent inchangés.
 - [x] Le launcher accepte `-StudioReleaseId` uniquement avec
-  `-AugmentedReality`; les secrets restent dans `.env`, jamais dans une scène,
-  un APK, un log ou le registre d'exemple.
+  `-AugmentedReality`; un code unique 6–12 chiffres, hashé PBKDF2 dans un fichier
+  local ignoré par Git, ouvre la release entière avant capture. Aucun registre
+  par acteur n'est requis pour la voie Web : chaque résultat reste néanmoins
+  `probable`, à confirmer, sans enrôlement ni écriture mémoire. Les clés restent
+  dans `.env`, jamais dans une scène, un APK ou un log.
 - [x] Tests ciblés : **12/12 Python** (service, bridge, registre, forme de la vraie
   requête Web et absence d'enrôlement) et **13/13 Unity EditMode** (registre UI,
   72 BPM synthétique, abstention qualité et rotation ROI), compilation complète
@@ -2344,6 +2355,21 @@ encore ouverts).**
   seconde passe `exit=0`, zéro erreur C#, package `com.mlomega.xr.phoneonly`,
   113 549 162 octets, SHA-256
   `B9418B290B26677F98A4199BDEA5BD3AAA48EBF8FF386D1A066AB011D8FE3E1F`.
+
+**Raccords opérateur post-APK (2026-07-26 — aucun rebuild requis).**
+
+- [x] Ajout d'appareil domotique réduit à une commande
+  `CONFIGURE_AUGMENTED_REALITY.ps1 -Mode device`; elle écrit le mapping
+  label/entity Home Assistant dans un JSON local et le jeton uniquement dans
+  `.env`. Les invariants B2 restent inchangés : allowlist, deuxième pinch,
+  lecture avant/après et receipt terminal.
+- [x] Le profil studio se configure une fois avec `-Mode studio -ReleaseId ...`;
+  RUN redemande le même code et refuse la capture studio en cas d'échec. Le mode
+  Local/PRO normal sans `-StudioReleaseId` n'exécute aucun de ces contrôles.
+- [x] Validation ciblée : **18/18 Python**, parse PowerShell des trois scripts,
+  téléchargement Kiwix réel avec checksum officiel et lookup réel sur le corpus.
+  Ces changements sont PC/config seulement : aucune scène, aucun package Unity,
+  aucun prompt et aucun writer Local/PRO n'est modifié.
 
 **Clôture code 4.0 avant APK (2026-07-26).**
 
