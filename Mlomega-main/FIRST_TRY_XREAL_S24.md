@@ -15,7 +15,8 @@ dans cet ordre :
 2. Tailscale : `100.113.42.19:8710`.
 
 L'APK courante est `com.mlomega.xr.glasses`, SHA-256
-`EFA4AEC207CA2BFB1602FDDB39D348447F75B560DE475A8CE1D4160405C891C9`.
+`4BE699AB9ED68C92B3714ED5748A7F77B00597670F598069F956E20E61A2AD7D`
+(221 478 517 octets, build Unity du 26 juillet 2026).
 
 ## 1. Préparation unique du S24 et des lunettes
 
@@ -109,7 +110,8 @@ Ferme toute ancienne instance de MLOmega, puis ouvre PowerShell :
 ```powershell
 cd C:\Users\wabad\Downloads\ProjetMemobyFABLE\Mlomega-main
 ollama list
-.\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -BindHost 0.0.0.0 -Port 8710
+.\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -AugmentedReality `
+  -BindHost 0.0.0.0 -Port 8710
 ```
 
 Le lanceur démarre/vérifie Qdrant lui-même. Ollama doit déjà répondre ; s'il est
@@ -125,6 +127,11 @@ CloseDay. Ne contourne pas un check rouge : suis la ligne `[FIX]`. Attends :
 
 Garde cette console ouverte pendant toute la capture et tout CloseDay. Le
 pare-feu Windows doit autoriser Python sur le réseau privé et le port TCP 8710.
+
+`-AugmentedReality` démarre aussi le service isolé sur
+`http://127.0.0.1:8791`; RUN doit afficher qu'il est prêt. Sans ce flag,
+Memory/BrainLive restent utilisables, mais les fonctions augmentées PC sont
+volontairement inertes.
 
 ## 3. Lancer le PC — mode PRO optionnel
 
@@ -144,7 +151,8 @@ Puis :
 
 ```powershell
 cd C:\Users\wabad\Downloads\ProjetMemobyFABLE\Mlomega-main
-.\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -Pro -ProTextModel pro `
+.\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -AugmentedReality `
+  -Pro -ProTextModel pro `
   -CloudBudgetEur 1.50 -CloudOnBudget stop `
   -BindHost 0.0.0.0 -Port 8710
 ```
@@ -195,6 +203,30 @@ Contrôle rapide conseillé :
 - « aide-moi à faire un café », puis « étape suivante » ;
 - une requête mémoire après avoir dit un fait dans la session ;
 - UI stéréo stable, Eye active et pose 6DoF sans faux saut.
+
+Pour les fonctions FreeGuy, ouvre **Menu → Réglages AR**. Active d'abord
+**AR globale**, puis uniquement les fonctions voulues : navigation, labels,
+ancres, occlusion, style FreeGuy, mesure, clavier, lancer, etc. Tous les
+interrupteurs sont OFF au premier démarrage afin de protéger FPS, batterie et
+lisibilité. `ACTIF` signifie que le capteur/provider requis est réellement
+disponible; `SYNCHRO`, `OFF` ou une erreur ne doivent pas être forcés.
+
+La navigation embarquée actuelle est un cap GPS/boussole 3D vers la
+destination, pas du turn-by-turn ni du VPS Google. Si la pose XREAL, le GPS ou
+la boussole ne sont pas qualifiés, l'app affiche une indisponibilité et ouvre
+Maps comme fallback. ARCore Geospatial n'est volontairement pas chargé en même
+temps que le loader XREAL avant le gate matériel A2c.
+
+Le mode **Profils studio** exige en plus un registre de consentement et un
+identifiant de tournage :
+
+```powershell
+$env:MLOMEGA_AR_CONSENTED_PEOPLE="$pwd\configs\augmented_people.json"
+.\scripts\RUN_MLOMEGA_V19.ps1 -LivePhone -AugmentedReality `
+  -StudioReleaseId release-film-2026-001 -BindHost 0.0.0.0 -Port 8710
+```
+
+Ne l'active pas pour l'usage quotidien sans registre signé.
 
 Les scénarios vocaux complets restent décrits dans
 [`FIRST_TRY_ANDROID.md`](FIRST_TRY_ANDROID.md). Ils utilisent les mêmes routes

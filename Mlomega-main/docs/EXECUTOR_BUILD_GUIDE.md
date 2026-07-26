@@ -2108,3 +2108,30 @@ Reprise APK (depuis `apps\xr-mobile`) :
 Les APK ne valent pas gate physique. Restent à observer sur S24 + One Pro/Eye :
 stéréo, 6DoF, Depth, occlusion, relocalisation d'ancre, XR Hands, navigation,
 FPS/chauffe/batterie.
+
+### BUILD FINAL 2026-07-26 — PhoneOnly et XREAL
+
+Les deux variantes ont été reconstruites depuis le code `909ede4`.
+
+- XREAL : `PrepareDefines=0`, `BuildApk=0`, ligne
+  `Glasses PRODUCT APK OK`, package `com.mlomega.xr.glasses`, activité
+  `ai.nreal.activitylife.NRXRActivity`, 221 478 517 octets, SHA-256
+  `4BE699AB9ED68C92B3714ED5748A7F77B00597670F598069F956E20E61A2AD7D`.
+- PhoneOnly : après restauration du manifest/lock sans XREAL, la première ouverture
+  a purgé des sources AR Foundation obsolètes puis a produit l'APK. Une seconde
+  passe incrémentale a fini `exit=0` avec **zéro** `error CS`,
+  `Scripts have compiler errors`, `FAILURE: Build failed` ou
+  `BuildFailedException`. Package `com.mlomega.xr.phoneonly`,
+  113 549 162 octets, SHA-256
+  `B9418B290B26677F98A4199BDEA5BD3AAA48EBF8FF386D1A066AB011D8FE3E1F`.
+- Après les builds, `PhoneOnly.unity`, `XRGeneralSettingsPerBuildTarget.asset`,
+  `QualitySettings.asset`, `manifest.json`, `packages-lock.json`,
+  `ProjectSettings.asset` et `EditorBuildSettings.asset` ont été restaurés
+  byte-for-byte depuis la sauvegarde. Le delta de statut Git avant/après est nul.
+
+Le guide opérateur courant est `FIRST_TRY_XREAL_S24.md`. Pour utiliser le mode
+FreeGuy, RUN doit porter `-AugmentedReality`, puis l'utilisateur active
+`AR globale` et les capacités voulues dans `Menu > Réglages AR`. Le service
+isolé doit être prêt sur le loopback 8791. Les capacités spatiales restent
+conditionnées par la pose, Depth, les permissions et le matériel; aucun build
+vert ne ferme A2c/K5/T7.

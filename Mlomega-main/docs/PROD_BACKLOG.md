@@ -2337,8 +2337,13 @@ encore ouverts).**
   sous plusieurs éclairages, mouvement de tête, chauffe et abstention.
 - [ ] `4.0-R` reste différé : aucun filtre cheap n'a été ajouté. `4.0-S` reste
   fermé faute de capteurs dédiés; aucune simulation ne le rend disponible.
-- [ ] Les APK PhoneOnly/XREAL ne sont volontairement pas reconstruites ici :
-  un rebuild unique est prévu après stabilisation de tous les lots AR.
+- [x] **Rebuild final des deux variantes (2026-07-26).** XREAL deux passes
+  `prep=0/build=0`, package `com.mlomega.xr.glasses`, 221 478 517 octets,
+  SHA-256 `4BE699AB9ED68C92B3714ED5748A7F77B00597670F598069F956E20E61A2AD7D`.
+  PhoneOnly a été recompilé après retrait/restauration des packages XREAL :
+  seconde passe `exit=0`, zéro erreur C#, package `com.mlomega.xr.phoneonly`,
+  113 549 162 octets, SHA-256
+  `B9418B290B26677F98A4199BDEA5BD3AAA48EBF8FF386D1A066AB011D8FE3E1F`.
 
 **Clôture code 4.0 avant APK (2026-07-26).**
 
@@ -2362,9 +2367,9 @@ encore ouverts).**
   réellement chargés, puis manifest/réglages restaurés byte-for-byte et
   **118/118 EditMode PhoneOnly**, log propre sans erreur de compilation. Le premier
   essai de player Android a trouvé un unique `System.IO` non qualifié dans le probe;
-  il est corrigé. Le rebuild player/APK après cette correction reste volontairement
-  reporté à la prochaine reprise, avec les fichiers Unity protégés à sauvegarder et
-  restaurer comme indiqué dans l'Executor Build Guide.
+  il est corrigé. Les deux players/APK ont ensuite été reconstruits avec succès le
+  26 juillet; après build, les sept fichiers Unity protégés ont retrouvé exactement
+  leurs hashes pré-build et le statut Git préexistant.
 - [ ] Gates qui ne peuvent pas être certifiés sans matériel : tracking/stéréo/Depth,
   relocalisation d'ancre, occlusion optique, XR Hands, précision GPS/boussole,
   stabilité/FPS/chauffe sur S24 + One Pro/Eye. Ne pas convertir les 118 tests en
@@ -2431,6 +2436,15 @@ et [appareils ARCore](https://developers.google.com/ar/devices).
   Les warnings licence peuvent être du bruit non fatal, mais une exception JSON/XREAL ne
   doit jamais être ignorée même si Unity retourne 0. L'installation et la preuve
   matérielle restent 4.2+.
+
+  **Build courant du 26 juillet 2026, qui supersède tous les hashes précédents :**
+  XREAL `prep=0/build=0`, package/activité relus avec `aapt`
+  (`com.mlomega.xr.glasses` / `ai.nreal.activitylife.NRXRActivity`),
+  221 478 517 octets, SHA-256
+  `4BE699AB9ED68C92B3714ED5748A7F77B00597670F598069F956E20E61A2AD7D`.
+  PhoneOnly, après restauration du manifest sans packages XREAL, seconde passe
+  `exit=0` et zéro erreur de compilation, 113 549 162 octets, SHA-256
+  `B9418B290B26677F98A4199BDEA5BD3AAA48EBF8FF386D1A066AB011D8FE3E1F`.
 
 - [x] **4.1b Contre-audit pré-matériel XREAL One Pro + Eye fermé.** L'APK du 23 juillet
   était bien complète côté contrats, mais quatre frontières matérielles n'étaient pas
