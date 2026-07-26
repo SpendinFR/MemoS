@@ -77,7 +77,7 @@ namespace MLOmega.XR.UI.Components
         private static readonly string[] AugmentedLabels =
         {
             "AR globale", "Menus objets", "Actions", "Sons", "Contexte",
-            "Super-zoom", "Mesure AR", "Navigation monde", "Labels du monde",
+            "Mesure AR", "Navigation monde", "Labels du monde",
             "Ancres persistantes", "Occlusion Depth", "Style FreeGuy",
             "Futurs de foule", "Clavier spatial", "Vision mouvement",
             "Lancer ludique", "Carte radio", "Profils studio", "Aura pouls (exp.)",
@@ -92,7 +92,6 @@ namespace MLOmega.XR.UI.Components
             AugmentedRealityFeatureRegistry.ActionRecognition,
             AugmentedRealityFeatureRegistry.SemanticSound,
             AugmentedRealityFeatureRegistry.ContextualKnowledge,
-            AugmentedRealityFeatureRegistry.EnhancedZoom,
             AugmentedRealityFeatureRegistry.ArMeasurement,
             AugmentedRealityFeatureRegistry.StreetNavigation,
             AugmentedRealityFeatureRegistry.WorldLabels,

@@ -2165,3 +2165,8 @@ Une activation vocale explicite (`on=true`) allume également le master AR afin
 que « active X » ne signifie jamais seulement « arme X pour plus tard ». Le menu
 envoie `on=null` et conserve volontairement la possibilité de préparer plusieurs
 features sous master OFF avant de les rendre visibles ensemble.
+
+Un identifiant de contrat conservé pour compatibilité n'est pas forcément une
+feature publique. `enhanced_zoom` reste compris par les schémas de préférences,
+mais n'est plus proposé par le menu ni le routeur naturel tant que son provider
+de super-résolution n'est pas livré. Le crop/pinch GPU historique reste disponible.

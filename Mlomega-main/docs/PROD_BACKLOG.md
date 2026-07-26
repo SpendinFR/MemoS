@@ -2479,6 +2479,9 @@ et l'image Eye; GPS/boussole/cartographie fournissent seulement le repère terre
   ciblés, puis **126/126 Unity EditMode** sous PhoneOnly et de nouveau
   **126/126** avec le SDK XREAL 3.1 réellement injecté. APK PhoneOnly et XREAL
   produit : exit 0, packages/activités/ABI contrôlés. Seul `T0.7` reste matériel.
+  Le switch public `Super-zoom` a été retiré : le crop/pinch historique reste
+  fonctionnel, mais le provider Real-ESRGAN de `4.0-F` est différé et ne doit pas
+  produire un bouton qui resterait `ATTENTE` même sur matériel.
 
 Suivi T0 logiciel — 26 juillet 2026 :
 

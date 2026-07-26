@@ -15,8 +15,8 @@ dans cet ordre :
 2. Tailscale : `100.113.42.19:8710`.
 
 L'APK courante est `com.mlomega.xr.glasses`, SHA-256
-`FD203780CC799165EFAE1697591AB8428D6127998091C6E700B5AF0DDC96AB2E`
-(222 262 805 octets, build Unity final du 26 juillet 2026).
+`24CB3942B389EEC5B9E37F06839A43827A1B6D6B18FAE014CA2CA585448DECB3`
+(222 260 749 octets, build Unity final du 26 juillet 2026).
 
 ## 1. Préparation unique du S24 et des lunettes
 

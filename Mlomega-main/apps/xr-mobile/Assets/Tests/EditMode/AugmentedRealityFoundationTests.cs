@@ -163,7 +163,8 @@ namespace MLOmega.XR.Tests
             Assert.IsTrue(menu.Select(Find(menu, "Page suivante")));
             Assert.IsTrue(menu.Select(Find(menu, "Page suivante")));
             Assert.IsTrue(menu.Select(Find(menu, "Page suivante")));
-            Assert.GreaterOrEqual(Find(menu, "Aura pouls (exp.) : OFF"), 0);
+            Assert.GreaterOrEqual(
+                Find(menu, "Aide contexte social/juridique : OFF"), 0);
             Assert.GreaterOrEqual(Find(menu, "Page précédente"), 0);
             Assert.LessOrEqual(menu.Actions.Count, 9);
         }

@@ -2458,6 +2458,12 @@ capabilities locales XREAL. Un défaut certain a été fermé : une commande voc
 explicite d'une feature enfant active désormais aussi le master AR. Le menu garde
 le comportement `ARMÉ` avec `on=null`.
 
+Le contre-audit a également retiré `Super-zoom` du menu et du routage naturel :
+`enhanced_zoom` reste un identifiant compatible du contrat, mais son provider
+Real-ESRGAN est explicitement différé dans `4.0-F`. Le zoom local crop/pinch
+existant reste fonctionnel; aucune feature publique livrée ne doit rester
+perpétuellement `ATTENTE` faute de producteur.
+
 Validations finales :
 
 - **102/102** tests Python Prélude T0–T3, opérateur, route, intents et spatial;
@@ -2475,12 +2481,12 @@ Artefacts finaux :
 
 - `build/android/mlomega-phoneonly.apk` — package
   `com.mlomega.xr.phoneonly`, activité `UnityPlayerActivity`, ARM64,
-  **113 620 638 octets**, SHA-256
-  `E0292A8BDB7AE6091DF45A2ED08798D461CD98DB8992DD2F798BD48BFEF2975F`;
+  **113 613 566 octets**, SHA-256
+  `6863B26CFD12E007E61128B409917A380C9398EB97056FD76A8CDF81D9E12C54`;
 - `build/android/mlomega-xreal.apk` — package `com.mlomega.xr.glasses`,
   activité `ai.nreal.activitylife.NRXRActivity`, ARM64,
-  **222 262 805 octets**, SHA-256
-  `FD203780CC799165EFAE1697591AB8428D6127998091C6E700B5AF0DDC96AB2E`.
+  **222 260 749 octets**, SHA-256
+  `24CB3942B389EEC5B9E37F06839A43827A1B6D6B18FAE014CA2CA585448DECB3`.
 
 Les deux embarquent LAN `192.168.1.199:8710`, puis Tailscale
 `100.113.42.19:8710`. Le build XREAL contient la scène produit, pas le provider
