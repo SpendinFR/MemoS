@@ -228,6 +228,18 @@ namespace MLOmega.XR.UI
         }
 
         /// <summary>
+        /// Producer withdrawal for ephemeral overlays. Unlike a user dismissal it
+        /// does not suppress the stable id, so an explicitly re-enabled feature may
+        /// render it again later.
+        /// </summary>
+        public void Withdraw(string uiIntentId)
+        {
+            if (string.IsNullOrEmpty(uiIntentId)) return;
+            if (_active.TryGetValue(uiIntentId, out ActiveIntent ai))
+                RemoveNow(ai, UIIntentDropReason.TtlExpired);
+        }
+
+        /// <summary>
         /// Advance arbitration: admit incoming intents, then age/evict the active
         /// set. Exposed so EditMode tests drive time deterministically.
         /// </summary>

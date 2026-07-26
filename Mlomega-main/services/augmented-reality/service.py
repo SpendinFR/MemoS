@@ -45,6 +45,7 @@ KNOWN_FEATURES = (
     "radio_field",
     "consented_people",
     "pulse_aura",
+    "automatic_world_fx",
 )
 MEMORY_ACCESS = {
     # Future modules consume existing product APIs; this isolated service never
@@ -67,6 +68,7 @@ MEMORY_ACCESS = {
     "radio_field": "none",
     "consented_people": "read_enrolled_identity_and_explicit_consent_registry",
     "pulse_aura": "none_no_biometric_persistence",
+    "automatic_world_fx": "none_ephemeral_device_only",
 }
 MAX_BODY_BYTES = 262_144
 MAX_SESSIONS = 16
@@ -160,6 +162,8 @@ class PreferenceState:
                 or self.public_discovery.available
             ),
             "pulse_aura": self.profile_registry.supports("physiology"),
+            # Rendered entirely on the XREAL device after a proven Depth hit.
+            "automatic_world_fx": False,
         }
 
     def apply(self, payload: Any) -> dict[str, Any]:

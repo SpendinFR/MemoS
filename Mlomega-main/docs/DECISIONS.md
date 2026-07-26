@@ -2010,3 +2010,24 @@ d'exploitation, pas une preuve d'identité : Google Web Detection/Sherlock
 produisent toujours un candidat `probable`, ne l'enrôlent pas et n'écrivent pas
 la mémoire. Sans les flags AR/studio, les runs Local et PRO restent sur leur
 ancien chemin d'exécution.
+
+## 2026-07-26 — Le runtime FreeGuy charge et anime; il n'édite pas le monde
+
+La création manuelle de décors est sortie de l'APK production. Une future APK
+Atelier produira un paquet versionné `world-map-v1`; l'APK lunettes ne fait que
+charger le catalogue, relocaliser les GUID d'ancres XREAL et rendre les contenus
+dont l'état matériel est réellement `Tracking`. Le catalogue ne contient aucune
+mémoire personnelle et ses IDs sont indépendants de Live, BrainLive et CloseDay.
+
+Les effets automatiques restent dans l'APK production parce qu'ils sont une fonction
+UltraLive : ils sont strictement opt-in, éphémères, produits après observation
+stable + hit Depth, retirables sans suppression durable de leur ID et portent
+`memory_write=false`. Une détection 2D seule ne crée jamais de publicité, logo,
+fumée, néon ou ancre 3D. Les surfaces exigent quatre hits cohérents sur le même
+collider; sinon le renderer s'abstient.
+
+La navigation extérieure n'est plus vendue comme un VPS. Le PC fournit au besoin
+une polyline OSRM-compatible via une route token-gated; le S24/XREAL conserve
+l'autorité sur GPS, boussole et repère tracking-local. Perte du provider =
+`CAP DIRECT`, jamais une route synthétique. Le service ne fait aucun appel réseau
+au boot et ne participe ni aux runs Local/PRO ni à la clôture nocturne.

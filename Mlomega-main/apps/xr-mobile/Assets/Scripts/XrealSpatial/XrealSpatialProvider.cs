@@ -8,7 +8,9 @@ using System.Text;
 using MLOmega.Contracts.V19;
 using MLOmega.XR.Core;
 using MLOmega.XR.Transport;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
+using UnityEngine.Networking;
 #if XREAL_SDK_PRESENT
 using Unity.Collections;
 using Unity.XR.CoreUtils;
@@ -42,7 +44,9 @@ namespace MLOmega.XR.UI
         [SerializeField] private AugmentedRealityFeatureRegistry _features;
         [SerializeField] private LiveTransportBridge _transport;
         [SerializeField] private LocalIntentSource _intents;
+        [SerializeField] private UIIntentBroker _broker;
         [SerializeField] private PosePublisher _pose;
+        [SerializeField] private SessionPairing _pairing;
         [SerializeField] private Camera _camera;
         [SerializeField] private Shader _depthOcclusionShader;
         [SerializeField] private Shader _freeGuyMeshShader;
@@ -73,6 +77,11 @@ namespace MLOmega.XR.UI
         private GeoDestination _navigationDestination;
         private float _nextNavigationAt;
         private bool _navigationStarting;
+        private bool _routeRequestInFlight;
+        private float _nextRouteRequestAt;
+        private WorldMapStore _worldMap;
+        private readonly HashSet<string> _automaticWorldIntentIds =
+            new HashSet<string>(StringComparer.Ordinal);
 
         public bool DepthReady { get; private set; }
         public string LastProviderError { get; private set; } = string.Empty;
@@ -97,8 +106,13 @@ namespace MLOmega.XR.UI
             if (_transport == null)
                 _transport = FindAnyObjectByType<LiveTransportBridge>();
             if (_intents == null) _intents = FindAnyObjectByType<LocalIntentSource>();
+            if (_broker == null) _broker = FindAnyObjectByType<UIIntentBroker>();
             if (_pose == null) _pose = FindAnyObjectByType<PosePublisher>();
+            if (_pairing == null) _pairing = FindAnyObjectByType<SessionPairing>();
             if (_camera == null) _camera = Camera.main;
+            _worldMap = new WorldMapStore(
+                Path.Combine(Application.persistentDataPath, "xreal-world-maps"),
+                CalibrationId);
             if (_depthOcclusionShader != null)
                 _depthOcclusionMaterial = new Material(_depthOcclusionShader);
             if (_freeGuyMeshShader != null)
@@ -115,6 +129,7 @@ namespace MLOmega.XR.UI
         {
             if (_transport != null) _transport.MessageReceived -= OnTransportMessage;
             if (_features != null) _features.FeatureChanged -= OnFeatureChanged;
+            WithdrawAutomaticWorldEffects();
             SetLocalCapabilities(false);
             SetManagersEnabled(false);
         }
@@ -187,6 +202,8 @@ namespace MLOmega.XR.UI
                 AugmentedRealityFeatureRegistry.DepthOcclusion,
                 AugmentedRealityFeatureRegistry.WorldStyling,
                 AugmentedRealityFeatureRegistry.BallisticPreview,
+                AugmentedRealityFeatureRegistry.StreetNavigation,
+                AugmentedRealityFeatureRegistry.AutomaticWorldFx,
             };
             foreach (string id in ids)
                 if (_features.IsSelected(id)) return true;
@@ -209,6 +226,10 @@ namespace MLOmega.XR.UI
                     _features?.SetLocalCapability(
                         AugmentedRealityFeatureRegistry.StreetNavigation, false);
                 }
+                if (
+                    feature == AugmentedRealityFeatureRegistry.AutomaticWorldFx ||
+                    feature == AugmentedRealityFeatureRegistry.Master)
+                    WithdrawAutomaticWorldEffects();
             }
             _nextCapabilityProbe = 0f;
             UpdateMeshRendering();
@@ -261,6 +282,26 @@ namespace MLOmega.XR.UI
                     hit.point,
                     confidence,
                     delta.SourceFrameId);
+                if (
+                    _features.IsActive(
+                        AugmentedRealityFeatureRegistry.AutomaticWorldFx) &&
+                    _tracks.TryGetValue(trackId, out TrackHistory history) &&
+                    history.SeenCount >= 3 &&
+                    Time.unscaledTime >= history.NextSurfaceAt &&
+                    IsSurfaceCandidate(label, kind) &&
+                    TryDepthSurface(entity, delta, out List<Vector3> surface))
+                {
+                    history.NextSurfaceAt = Time.unscaledTime + 0.9f;
+                    EmitAutomaticSurface(
+                        trackId,
+                        string.IsNullOrWhiteSpace(label) ? kind : label,
+                        kind,
+                        surface,
+                        confidence,
+                        string.IsNullOrWhiteSpace(delta.SourceFrameId)
+                            ? "depth:xreal-live"
+                            : "frame:" + delta.SourceFrameId);
+                }
             }
         }
 
@@ -287,12 +328,23 @@ namespace MLOmega.XR.UI
             history.HasValue = true;
             history.Label = label;
             history.Kind = kind;
+            history.SeenCount++;
 
             string evidence = string.IsNullOrWhiteSpace(frameId)
                 ? "depth:xreal-live"
                 : "frame:" + frameId;
             if (_features.IsActive(AugmentedRealityFeatureRegistry.WorldLabels))
                 EmitWorldMarker(trackId, label, kind, position, confidence, evidence);
+            if (
+                _features.IsActive(
+                    AugmentedRealityFeatureRegistry.AutomaticWorldFx) &&
+                history.SeenCount >= 3 &&
+                now >= history.NextWorldFxAt)
+            {
+                history.NextWorldFxAt = now + 0.65f;
+                EmitAutomaticWorldEffect(
+                    trackId, label, kind, position, confidence, evidence);
+            }
 
             if (!hadPrevious) return;
             Vector3 delta = position - previous;
@@ -308,6 +360,274 @@ namespace MLOmega.XR.UI
                 EmitTrajectory(
                     trackId, label, position, delta / elapsed, confidence, evidence);
             }
+        }
+
+        private void EmitAutomaticWorldEffect(
+            string trackId,
+            string label,
+            string kind,
+            Vector3 position,
+            float confidence,
+            string evidence)
+        {
+            if (
+                _intents == null ||
+                _camera == null ||
+                confidence < 0.70f ||
+                string.IsNullOrWhiteSpace(trackId))
+                return;
+            float distance = Vector3.Distance(_camera.transform.position, position);
+            if (distance < 0.35f || distance > 24f) return;
+            if (!TryWorldTemplate(label, kind, distance, out string template))
+                return;
+
+            string id = "xreal-auto-world:" + trackId;
+            float quality = Mathf.Clamp(confidence, 0.72f, 0.94f);
+            _automaticWorldIntentIds.Add(id);
+            _intents.Emit(new UIIntent
+            {
+                Type = "ui_intent",
+                ContractsVersion = ContractDefaults.Version,
+                UiIntentId = id,
+                Producer = "ultralive",
+                TargetTrackId = trackId,
+                Component = "world_hologram",
+                Anchor = new Dictionary<string, object>
+                {
+                    { "coordinate_space", "tracking_local" },
+                    { "position", Point(position) },
+                },
+                Content = SpatialContent(quality, true,
+                    new Dictionary<string, object>
+                    {
+                        { "anchor_quality", quality },
+                        { "marker_id", "auto-" + trackId },
+                        { "template_id", template },
+                        { "label", string.IsNullOrWhiteSpace(label)
+                            ? "MONDE AUGMENTÉ"
+                            : label },
+                        { "subtitle", AutoWorldSubtitle(template) },
+                        { "kind", NormaliseMarkerKind(kind) },
+                        { "distance_m", distance },
+                        { "persistence", "ephemeral" },
+                        { "memory_write", false },
+                    }),
+                TruthLevel = "observed",
+                Confidence = quality,
+                Priority = template == "poi_beacon" ? 0.48 : 0.38,
+                TtlMs = 950,
+                EvidenceRefs = Evidence(evidence),
+            });
+        }
+
+        private static bool TryWorldTemplate(
+            string label,
+            string kind,
+            float distance,
+            out string template)
+        {
+            string value = ((label ?? string.Empty) + " " +
+                (kind ?? string.Empty)).Trim().ToLowerInvariant();
+            if (
+                ContainsAny(value, "car", "vehicle", "voiture", "truck",
+                    "camion", "bus", "motorcycle", "moto", "bicycle", "vélo"))
+            {
+                template = "vehicle_fx";
+                return true;
+            }
+            if (
+                ContainsAny(value, "store", "storefront", "shop", "boutique",
+                    "window", "vitrine", "restaurant", "café", "cafe"))
+            {
+                template = "holo_billboard";
+                return true;
+            }
+            if (
+                ContainsAny(value, "sign", "logo", "panel", "panneau",
+                    "enseigne", "poster", "affiche"))
+            {
+                template = "neon_sign";
+                return true;
+            }
+            if (
+                ContainsAny(value, "building", "bâtiment", "batiment",
+                    "monument", "tower", "gare", "station"))
+            {
+                template = "poi_beacon";
+                return true;
+            }
+            // Keep ordinary objects readable rather than turning every detector
+            // box into a billboard. Nearby stable objects receive only a compact
+            // neon annotation; people never receive an automatic decoration.
+            if (
+                distance <= 8f &&
+                !ContainsAny(value, "person", "people", "homme", "femme",
+                    "face", "visage"))
+            {
+                template = "annotation";
+                return true;
+            }
+            template = null;
+            return false;
+        }
+
+        private static bool ContainsAny(string value, params string[] needles)
+        {
+            foreach (string needle in needles)
+                if (value.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+            return false;
+        }
+
+        private static string AutoWorldSubtitle(string template)
+        {
+            switch (template)
+            {
+                case "vehicle_fx": return "MOTION FX // LIVE";
+                case "holo_billboard": return "HOLO DISPLAY // LIVE";
+                case "poi_beacon": return "POINT D'INTÉRÊT // LIVE";
+                case "annotation": return "OBJET // LIVE";
+                default: return "NEON OVERLAY // LIVE";
+            }
+        }
+
+        private void WithdrawAutomaticWorldEffects()
+        {
+            if (_broker != null)
+                foreach (string id in _automaticWorldIntentIds)
+                    _broker.Withdraw(id);
+            _automaticWorldIntentIds.Clear();
+        }
+
+        private static bool IsSurfaceCandidate(string label, string kind)
+        {
+            string value = ((label ?? string.Empty) + " " +
+                (kind ?? string.Empty)).ToLowerInvariant();
+            return ContainsAny(
+                value,
+                "store",
+                "storefront",
+                "shop",
+                "boutique",
+                "window",
+                "vitrine",
+                "sign",
+                "panneau",
+                "enseigne",
+                "building",
+                "bâtiment",
+                "batiment");
+        }
+
+        private bool TryDepthSurface(
+            Dictionary<string, object> entity,
+            SceneDelta delta,
+            out List<Vector3> points)
+        {
+            points = null;
+            if (
+                entity == null ||
+                delta?.FrameWidth == null ||
+                delta.FrameHeight == null ||
+                !entity.TryGetValue("bbox", out object raw) ||
+                raw == null)
+                return false;
+            JArray box;
+            try { box = raw as JArray ?? JArray.FromObject(raw); }
+            catch { return false; }
+            if (box.Count < 4) return false;
+            float width = delta.FrameWidth.Value;
+            float height = delta.FrameHeight.Value;
+            float x1 = Mathf.Clamp((float)box[0], 0f, width);
+            float y1 = Mathf.Clamp((float)box[1], 0f, height);
+            float x2 = Mathf.Clamp((float)box[2], 0f, width);
+            float y2 = Mathf.Clamp((float)box[3], 0f, height);
+            if (x2 - x1 < 8f || y2 - y1 < 8f) return false;
+            // Stay inside the detector box: edges frequently include unrelated
+            // geometry and would turn one façade into a folded polygon.
+            float insetX = (x2 - x1) * 0.12f;
+            float insetY = (y2 - y1) * 0.12f;
+            x1 += insetX;
+            x2 -= insetX;
+            y1 += insetY;
+            y2 -= insetY;
+            Vector2[] viewports =
+            {
+                new Vector2(x1 / width, 1f - y1 / height),
+                new Vector2(x1 / width, 1f - y2 / height),
+                new Vector2(x2 / width, 1f - y2 / height),
+                new Vector2(x2 / width, 1f - y1 / height),
+            };
+            var hits = new RaycastHit[4];
+            for (int i = 0; i < viewports.Length; i++)
+                if (!TryDepthHit(viewports[i], out hits[i])) return false;
+            Collider collider = hits[0].collider;
+            Vector3 normal = hits[0].normal;
+            for (int i = 1; i < hits.Length; i++)
+            {
+                if (
+                    hits[i].collider != collider ||
+                    Vector3.Dot(normal, hits[i].normal) < 0.86f)
+                    return false;
+            }
+            var result = new List<Vector3>(4);
+            foreach (RaycastHit hit in hits) result.Add(hit.point);
+            points = result;
+            return true;
+        }
+
+        private void EmitAutomaticSurface(
+            string trackId,
+            string label,
+            string kind,
+            List<Vector3> points,
+            float confidence,
+            string evidence)
+        {
+            if (_intents == null || points == null || points.Count != 4) return;
+            string id = "xreal-auto-surface:" + trackId;
+            float quality = Mathf.Clamp(confidence, 0.76f, 0.93f);
+            var encoded = new List<Dictionary<string, object>>(points.Count);
+            foreach (Vector3 point in points) encoded.Add(Point(point));
+            _automaticWorldIntentIds.Add(id);
+            _intents.Emit(new UIIntent
+            {
+                Type = "ui_intent",
+                ContractsVersion = ContractDefaults.Version,
+                UiIntentId = id,
+                Producer = "ultralive",
+                TargetTrackId = trackId,
+                Component = "world_surface",
+                Anchor = TrackingAnchor(),
+                Content = SpatialContent(quality, true,
+                    new Dictionary<string, object>
+                    {
+                        { "surface_id", "auto-" + trackId },
+                        { "surface_kind", NormaliseSurfaceKind(label, kind) },
+                        { "surface_quality", quality },
+                        { "surface_points", encoded },
+                        { "convex", true },
+                        { "label", label ?? string.Empty },
+                        { "persistence", "ephemeral" },
+                        { "memory_write", false },
+                    }),
+                TruthLevel = "observed",
+                Confidence = quality,
+                Priority = 0.34,
+                TtlMs = 1200,
+                EvidenceRefs = Evidence(evidence),
+            });
+        }
+
+        private static string NormaliseSurfaceKind(string label, string kind)
+        {
+            string value = ((label ?? string.Empty) + " " +
+                (kind ?? string.Empty)).ToLowerInvariant();
+            if (ContainsAny(value, "store", "shop", "boutique", "vitrine"))
+                return "storefront";
+            if (ContainsAny(value, "sign", "panneau", "enseigne"))
+                return "sign";
+            return "building";
         }
 
         private void EmitWorldMarker(
@@ -780,7 +1100,10 @@ namespace MLOmega.XR.UI
                         var load = await manager.TryLoadAnchorAsync(id);
                         if (load.status.IsSuccess() && load.value != null)
                             StartCoroutine(EmitAnchorWhenTracked(
-                                load.value, id.ToString(), "restored"));
+                                load.value,
+                                id.ToString(),
+                                "restored",
+                                _worldMap?.FindByAnchor(id.ToString())));
                     }
                 }
                 finally
@@ -855,7 +1178,8 @@ namespace MLOmega.XR.UI
         private IEnumerator EmitAnchorWhenTracked(
             ARAnchor anchor,
             string persistentId,
-            string state)
+            string state,
+            WorldMapStore.WorldContent content)
         {
             float deadline = Time.unscaledTime + 8f;
             while (anchor != null &&
@@ -864,13 +1188,76 @@ namespace MLOmega.XR.UI
                 yield return null;
             if (anchor != null &&
                 anchor.trackingState == TrackingState.Tracking)
-                EmitPersistentAnchor(
-                    anchor.transform.position, persistentId, state);
+            {
+                if (content != null)
+                    EmitPersistentWorldContent(
+                        anchor.transform.position,
+                        persistentId,
+                        content);
+                else
+                    EmitPersistentAnchor(
+                        anchor.transform.position, persistentId, state);
+            }
             else
+            {
+                _worldMap?.MarkUnresolved(persistentId);
                 LastProviderError =
                     "xreal_anchor_restore:not_tracking:" + persistentId;
+            }
         }
 #endif
+
+        private void EmitPersistentWorldContent(
+            Vector3 position,
+            string persistentId,
+            WorldMapStore.WorldContent content)
+        {
+            if (
+                _intents == null ||
+                content == null ||
+                string.IsNullOrWhiteSpace(content.worldContentId) ||
+                !_emittedAnchorIds.Add(persistentId))
+                return;
+            float quality = Mathf.Clamp(content.quality, 0.72f, 0.94f);
+            _intents.Emit(new UIIntent
+            {
+                Type = "ui_intent",
+                ContractsVersion = ContractDefaults.Version,
+                UiIntentId = "xreal-world-content:" + content.worldContentId,
+                Producer = "xreal-world-map",
+                TargetTrackId = content.targetTrackId,
+                Component = "world_hologram",
+                Anchor = new Dictionary<string, object>
+                {
+                    { "coordinate_space", "tracking_local" },
+                    { "position", Point(position) },
+                },
+                Content = SpatialContent(quality, true,
+                    new Dictionary<string, object>
+                    {
+                        { "anchor_quality", quality },
+                        { "marker_id", content.worldContentId },
+                        { "template_id", content.templateId },
+                        { "label", content.label },
+                        { "subtitle", content.subtitle },
+                        { "kind", "place" },
+                        { "persistence", "xreal_anchor" },
+                        { "world_map_id", _worldMap?.WorldMapId ?? string.Empty },
+                        { "memory_write", false },
+                    }),
+                TruthLevel = "observed",
+                Confidence = quality,
+                Priority = 0.56,
+                TtlMs = 86400000,
+                EvidenceRefs = new List<string>
+                {
+                    "xreal:persistent-anchor:" + persistentId,
+                    "world-map:" + (_worldMap?.WorldMapId ?? "unknown"),
+                    "pose:xreal-head",
+                    "depth:xreal-mesh",
+                },
+            });
+        }
 
         private void EmitPersistentAnchor(
             Vector3 position,
@@ -1124,7 +1511,33 @@ namespace MLOmega.XR.UI
         private void TickNavigation()
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
-            EmitDirectNavigation();
+            LocationInfo current = Input.location.lastData;
+            if (
+                _navigationDestination != null &&
+                _navigationDestination.RoutePoints.Count >= 2)
+            {
+                EmitRouteNavigation();
+                if (
+                    DistanceToRouteMeters(current) > 25d &&
+                    Time.unscaledTime >= _nextRouteRequestAt)
+                    BeginRouteRequest(
+                        current.latitude,
+                        current.longitude,
+                        _navigationDestination.Latitude,
+                        _navigationDestination.Longitude);
+            }
+            else
+            {
+                EmitDirectNavigation();
+                if (
+                    _navigationDestination != null &&
+                    Time.unscaledTime >= _nextRouteRequestAt)
+                    BeginRouteRequest(
+                        current.latitude,
+                        current.longitude,
+                        _navigationDestination.Latitude,
+                        _navigationDestination.Longitude);
+            }
 #endif
         }
 
@@ -1167,8 +1580,26 @@ namespace MLOmega.XR.UI
                     Latitude = coordinate[0],
                     Longitude = coordinate[1],
                 };
+                LocationInfo origin = Input.location.lastData;
+                float worldNorthYaw =
+                    _camera.transform.eulerAngles.y - Input.compass.trueHeading;
+                Vector3 groundOrigin =
+                    _camera.transform.position + Vector3.down * 1.25f;
+                _worldMap?.SetGeoOrigin(
+                    origin.latitude,
+                    origin.longitude,
+                    origin.altitude,
+                    origin.horizontalAccuracy,
+                    worldNorthYaw,
+                    groundOrigin,
+                    force: true);
                 _features.SetLocalCapability(
                     AugmentedRealityFeatureRegistry.StreetNavigation, true);
+                BeginRouteRequest(
+                    origin.latitude,
+                    origin.longitude,
+                    coordinate[0],
+                    coordinate[1]);
                 EmitDirectNavigation();
             }
             catch (Exception ex)
@@ -1186,6 +1617,117 @@ namespace MLOmega.XR.UI
             {
                 _navigationStarting = false;
             }
+        }
+
+        private void BeginRouteRequest(
+            double originLatitude,
+            double originLongitude,
+            double destinationLatitude,
+            double destinationLongitude)
+        {
+            if (_routeRequestInFlight) return;
+            _routeRequestInFlight = true;
+            _nextRouteRequestAt = Time.unscaledTime + 20f;
+            StartCoroutine(RequestRoutePolyline(
+                originLatitude,
+                originLongitude,
+                destinationLatitude,
+                destinationLongitude));
+        }
+
+        private IEnumerator RequestRoutePolyline(
+            double originLatitude,
+            double originLongitude,
+            double destinationLatitude,
+            double destinationLongitude)
+        {
+            if (
+                _pairing == null ||
+                string.IsNullOrWhiteSpace(_pairing.ActiveBaseUrl) ||
+                !_pairing.TryGetActiveSession(
+                    out string sessionId, out string token))
+            {
+                _routeRequestInFlight = false;
+                yield break;
+            }
+            string json = ContractJson.Serialize(new
+            {
+                session_id = sessionId,
+                token,
+                origin_latitude = originLatitude,
+                origin_longitude = originLongitude,
+                destination_latitude = destinationLatitude,
+                destination_longitude = destinationLongitude,
+            });
+            byte[] body = Encoding.UTF8.GetBytes(json);
+            using var request = new UnityWebRequest(
+                _pairing.ActiveBaseUrl.TrimEnd('/') + "/navigation/route",
+                UnityWebRequest.kHttpVerbPOST)
+            {
+                uploadHandler = new UploadHandlerRaw(body),
+                downloadHandler = new DownloadHandlerBuffer(),
+                timeout = 15,
+            };
+            request.SetRequestHeader(
+                "Content-Type", "application/json; charset=utf-8");
+            yield return request.SendWebRequest();
+            if (request.result != UnityWebRequest.Result.Success)
+            {
+                LastProviderError =
+                    "xreal_route_provider:" + request.responseCode + ":" +
+                    (request.error ?? "unavailable");
+                _routeRequestInFlight = false;
+                yield break;
+            }
+            try
+            {
+                JObject payload = JObject.Parse(request.downloadHandler.text);
+                JArray points = payload["points"] as JArray;
+                if (points == null || points.Count < 2 || points.Count > 512)
+                    throw new InvalidDataException(
+                        "route points cardinality is invalid");
+                var decoded = new List<GeoPoint>(points.Count);
+                foreach (JToken tokenPoint in points)
+                {
+                    if (!(tokenPoint is JArray pair) || pair.Count < 2)
+                        throw new InvalidDataException("route point is invalid");
+                    double latitude = pair[0].Value<double>();
+                    double longitude = pair[1].Value<double>();
+                    if (
+                        double.IsNaN(latitude) || double.IsInfinity(latitude) ||
+                        double.IsNaN(longitude) || double.IsInfinity(longitude) ||
+                        latitude < -90d || latitude > 90d ||
+                        longitude < -180d || longitude > 180d)
+                        throw new InvalidDataException(
+                            "route point is non-finite");
+                    decoded.Add(new GeoPoint
+                    {
+                        Latitude = latitude,
+                        Longitude = longitude,
+                    });
+                }
+                if (_navigationDestination != null)
+                {
+                    _navigationDestination.RoutePoints.Clear();
+                    _navigationDestination.RoutePoints.AddRange(decoded);
+                    _navigationDestination.RouteDistanceM =
+                        Math.Max(0d, payload.Value<double?>("distance_m") ?? 0d);
+                    _navigationDestination.DurationS =
+                        Math.Max(0d, payload.Value<double?>("duration_s") ?? 0d);
+                    _navigationDestination.Provider =
+                        (payload.Value<string>("provider") ?? "route-provider")
+                        .Trim();
+                    _broker?.Withdraw("xreal-direct-navigation");
+                    EmitRouteNavigation();
+                }
+            }
+            catch (Exception ex)
+            {
+                LastProviderError =
+                    "xreal_route_decode:" + ex.GetType().Name + ":" + ex.Message;
+                // Honest direct-bearing navigation remains visible.
+            }
+            _routeRequestInFlight = false;
         }
 
         private static double[] ResolveWithAndroidGeocoder(string destination)
@@ -1284,6 +1826,152 @@ namespace MLOmega.XR.UI
             });
         }
 
+        private void EmitRouteNavigation()
+        {
+            if (
+                _navigationDestination == null ||
+                _navigationDestination.RoutePoints.Count < 2 ||
+                _worldMap == null ||
+                _intents == null ||
+                !NavigationSensorsReady())
+                return;
+            LocationInfo current = Input.location.lastData;
+            List<Dictionary<string, object>> points =
+                BuildVisibleRoutePoints(current);
+            if (points.Count < 2)
+            {
+                EmitDirectNavigation();
+                return;
+            }
+            double directRemaining = HaversineMeters(
+                current.latitude,
+                current.longitude,
+                _navigationDestination.Latitude,
+                _navigationDestination.Longitude);
+            double distance = Math.Max(
+                directRemaining,
+                Math.Min(
+                    _navigationDestination.RouteDistanceM,
+                    _navigationDestination.RouteDistanceM *
+                    directRemaining /
+                    Math.Max(1d, HaversineMeters(
+                        _navigationDestination.RoutePoints[0].Latitude,
+                        _navigationDestination.RoutePoints[0].Longitude,
+                        _navigationDestination.Latitude,
+                        _navigationDestination.Longitude))));
+            float sensorQuality = Mathf.Clamp01(
+                1f - (current.horizontalAccuracy - 3f) / 30f);
+            float quality = Mathf.Clamp(sensorQuality, 0.7f, 0.92f);
+            string eta = _navigationDestination.DurationS > 0d
+                ? Math.Max(1, (int)Math.Ceiling(
+                    _navigationDestination.DurationS / 60d)) + " min"
+                : "itinéraire";
+            _intents.Emit(new UIIntent
+            {
+                Type = "ui_intent",
+                ContractsVersion = ContractDefaults.Version,
+                UiIntentId = "xreal-route-navigation",
+                Producer = "ultralive",
+                Component = "world_navigation",
+                Anchor = TrackingAnchor(),
+                Content = SpatialContent(quality, DepthReady,
+                    new Dictionary<string, object>
+                    {
+                        { "route_id", "route-" +
+                            HashId(_navigationDestination.Name) },
+                        { "destination", _navigationDestination.Name },
+                        { "eta", eta },
+                        { "distance_m", distance },
+                        { "map_quality", quality },
+                        { "route_quality", quality },
+                        { "route_points", points },
+                        { "navigation_mode", "road_polyline" },
+                        { "turn_by_turn", true },
+                        { "gps_accuracy_m", current.horizontalAccuracy },
+                        { "heading_accuracy_deg",
+                            Input.compass.headingAccuracy },
+                    }),
+                TruthLevel = "observed",
+                Confidence = quality,
+                Priority = 0.9,
+                TtlMs = 3000,
+                EvidenceRefs = new List<string>
+                {
+                    "android:gps",
+                    "android:compass",
+                    "route:" + (_navigationDestination.Provider ?? "provider"),
+                    "pose:xreal-head",
+                },
+            });
+        }
+
+        private List<Dictionary<string, object>> BuildVisibleRoutePoints(
+            LocationInfo current)
+        {
+            var output = new List<Dictionary<string, object>>();
+            List<GeoPoint> route = _navigationDestination.RoutePoints;
+            int nearest = 0;
+            double nearestDistance = double.MaxValue;
+            for (int i = 0; i < route.Count; i++)
+            {
+                double distance = HaversineMeters(
+                    current.latitude,
+                    current.longitude,
+                    route[i].Latitude,
+                    route[i].Longitude);
+                if (distance < nearestDistance)
+                {
+                    nearestDistance = distance;
+                    nearest = i;
+                }
+            }
+            Vector3 localCurrent =
+                _camera.transform.position + Vector3.down * 1.25f;
+            output.Add(Point(localCurrent));
+            Vector3 previous = localCurrent;
+            float visibleDistance = 0f;
+            for (int i = nearest; i < route.Count && output.Count < 128; i++)
+            {
+                if (!_worldMap.TryGeoToLocal(
+                        route[i].Latitude,
+                        route[i].Longitude,
+                        _worldMap.Document.originAltitudeM,
+                        out Vector3 local))
+                    continue;
+                local.y = localCurrent.y;
+                float segment = Vector3.Distance(previous, local);
+                if (segment < 0.55f) continue;
+                int pieces = Mathf.Max(1, Mathf.CeilToInt(segment / 12f));
+                for (int piece = 1;
+                    piece <= pieces && output.Count < 128;
+                    piece++)
+                    output.Add(Point(Vector3.Lerp(
+                        previous, local, piece / (float)pieces)));
+                visibleDistance += segment;
+                previous = local;
+                if (visibleDistance >= 150f) break;
+            }
+            return output;
+        }
+
+        private double DistanceToRouteMeters(LocationInfo current)
+        {
+            if (
+                _navigationDestination == null ||
+                _navigationDestination.RoutePoints.Count == 0)
+                return double.MaxValue;
+            double nearest = double.MaxValue;
+            foreach (GeoPoint point in _navigationDestination.RoutePoints)
+                nearest = Math.Min(
+                    nearest,
+                    HaversineMeters(
+                        current.latitude,
+                        current.longitude,
+                        point.Latitude,
+                        point.Longitude));
+            return nearest;
+        }
+
         private void EmitNavigationUnavailable(string destination, string detail)
         {
             if (_intents == null) return;
@@ -1370,6 +2058,9 @@ namespace MLOmega.XR.UI
             _features.SetLocalCapability(
                 AugmentedRealityFeatureRegistry.BallisticPreview,
                 depthReady && HandProviderReady());
+            _features.SetLocalCapability(
+                AugmentedRealityFeatureRegistry.AutomaticWorldFx,
+                depthReady);
 #if UNITY_ANDROID && !UNITY_EDITOR
             _features.SetLocalCapability(
                 AugmentedRealityFeatureRegistry.RadioField,
@@ -1695,6 +2386,9 @@ namespace MLOmega.XR.UI
             public float At;
             public string Label;
             public string Kind;
+            public int SeenCount;
+            public float NextWorldFxAt;
+            public float NextSurfaceAt;
         }
 
         private sealed class KeyboardPlacement
@@ -1717,6 +2411,17 @@ namespace MLOmega.XR.UI
         private sealed class GeoDestination
         {
             public string Name;
+            public double Latitude;
+            public double Longitude;
+            public double RouteDistanceM;
+            public double DurationS;
+            public string Provider;
+            public readonly List<GeoPoint> RoutePoints =
+                new List<GeoPoint>();
+        }
+
+        private sealed class GeoPoint
+        {
             public double Latitude;
             public double Longitude;
         }

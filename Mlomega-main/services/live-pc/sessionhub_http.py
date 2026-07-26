@@ -448,6 +448,7 @@ def create_app(
     runtime_manager: Any | None = None,
     person_id: str = "me",
     readiness_probe: Callable[[], dict[str, Any]] | None = None,
+    route_provider: Any | None = None,
 ):
     """Build the FastAPI app fronting ``hub`` and (optionally) media signaling.
 
@@ -466,6 +467,9 @@ def create_app(
         raise RuntimeError("fastapi is required for sessionhub_http.create_app()")
 
     hub = hub or SessionHub()
+    if route_provider is None:
+        route_mod = _load_sibling("route_provider", "route_provider.py")
+        route_provider = route_mod.RouteProvider()
     if runtime_manager is None and ingress is None and enable_signaling and _gateway.AIORTC_AVAILABLE:
         runtime_mod = _load_sibling("phoneonly_runtime", "phoneonly_runtime.py")
         runtime_manager = runtime_mod.SinglePhoneRuntimeManager(person_id=person_id)
@@ -516,6 +520,7 @@ def create_app(
     app.state.readiness_cache = None
     app.state.readiness_cache_at = 0.0
     app.state.readiness_task = None
+    app.state.route_provider = route_provider
     if readiness_probe is None:
         def _production_readiness_probe() -> dict[str, Any]:
             # Never run the heavy GPU probe in SessionHub: /health refreshes every
@@ -703,6 +708,54 @@ def create_app(
             "expires_at_utc": session.token_expires_at_utc,
             "expires_in_seconds": hub.token_ttl_seconds,
         }
+
+    @app.post("/navigation/route")
+    async def navigation_route(request: Request) -> dict[str, Any]:
+        """Authenticated, bounded map polyline for the XREAL world ribbon.
+
+        This endpoint never participates in capture/BrainLive/CloseDay and does
+        no work until the wearer explicitly starts navigation.
+        """
+        body = await request.json()
+        session_id = body.get("session_id")
+        token = body.get("token")
+        if not session_id or not token:
+            raise HTTPException(
+                status_code=422, detail="session_id and token are required"
+            )
+        _authenticate(session_id, token)
+        required = (
+            "origin_latitude",
+            "origin_longitude",
+            "destination_latitude",
+            "destination_longitude",
+        )
+        if any(name not in body for name in required):
+            raise HTTPException(
+                status_code=422,
+                detail="origin and destination coordinates are required",
+            )
+        provider = app.state.route_provider
+        if provider is None:
+            raise HTTPException(status_code=503, detail="route provider unavailable")
+        try:
+            result = await asyncio.to_thread(
+                provider.resolve,
+                origin_latitude=body["origin_latitude"],
+                origin_longitude=body["origin_longitude"],
+                destination_latitude=body["destination_latitude"],
+                destination_longitude=body["destination_longitude"],
+            )
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)[:200]) from exc
+        except Exception as exc:
+            # The public/custom route service is optional. Unity keeps the honest
+            # CAP DIRECT fallback rather than receiving fabricated road geometry.
+            raise HTTPException(
+                status_code=503,
+                detail=f"route unavailable: {type(exc).__name__}: {str(exc)[:160]}",
+            ) from exc
+        return result
 
     @app.post("/session/renew")
     async def renew_token(request: Request) -> dict[str, Any]:

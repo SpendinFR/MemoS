@@ -80,6 +80,7 @@ namespace MLOmega.XR.UI.Components
             "Ancres persistantes", "Occlusion Depth", "Style FreeGuy",
             "Futurs de foule", "Clavier spatial", "Vision mouvement",
             "Lancer ludique", "Carte radio", "Profils studio", "Aura pouls (exp.)",
+            "Effets monde auto",
         };
         private static readonly string[] AugmentedFeatures =
         {
@@ -102,6 +103,7 @@ namespace MLOmega.XR.UI.Components
             AugmentedRealityFeatureRegistry.RadioField,
             AugmentedRealityFeatureRegistry.ConsentedPeople,
             AugmentedRealityFeatureRegistry.PulseAura,
+            AugmentedRealityFeatureRegistry.AutomaticWorldFx,
         };
 
         private void Awake()

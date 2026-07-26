@@ -37,6 +37,7 @@ namespace MLOmega.XR.UI
         public const string RadioField = "radio_field";
         public const string ConsentedPeople = "consented_people";
         public const string PulseAura = "pulse_aura";
+        public const string AutomaticWorldFx = "automatic_world_fx";
 
         private const string PreferencePrefix = "mlomega.augmented_reality.";
 
@@ -60,6 +61,7 @@ namespace MLOmega.XR.UI
             RadioField,
             ConsentedPeople,
             PulseAura,
+            AutomaticWorldFx,
         };
 
         [SerializeField] private LiveTransportBridge _transport;

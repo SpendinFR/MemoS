@@ -36,6 +36,7 @@ KNOWN_FEATURES = {
     "radio_field",
     "consented_people",
     "pulse_aura",
+    "automatic_world_fx",
 }
 MAX_PREFERENCES_BYTES = 32_768
 MAX_FEATURE_REQUEST_BYTES = 262_144

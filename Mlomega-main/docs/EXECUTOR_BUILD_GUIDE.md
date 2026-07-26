@@ -2162,3 +2162,33 @@ une scène ou Git. Validation : **18 tests Python verts**, parse PowerShell vert
 Kiwix réel démarré depuis le corpus installé et lookup réel vers un article.
 Les tests couvrent aussi mauvais code, absence de secret dans le registre,
 arrêt Kiwix par le launcher et maintien des gates `-AugmentedReality`/`-Pro`.
+
+### PASSATION T0 FREEGUY — 2026-07-26, ne pas builder avant la fin des lots
+
+Le lot ajoute uniquement des consommateurs/effets AR optionnels et une route HTTP :
+
+- `services/live-pc/route_provider.py` puis `POST /navigation/route`, token de
+  session obligatoire. Le défaut de développement utilise OSRM public
+  (`driving`); production/piéton doit fixer `MLOMEGA_ROUTE_BASE_URL` et
+  `MLOMEGA_ROUTE_PROFILE` vers le provider autorisé. Aucun réseau au démarrage.
+- `XrealSpatialProvider` convertit la polyline en ENU/tracking-local et garde le
+  fallback `CAP DIRECT`. Il émet `world_hologram`/`world_surface` seulement avec
+  pose et Depth qualifiés. Ne jamais ajouter un fallback screen-space.
+- `automatic_world_fx` est OFF par défaut et distinct du mode `freeguy` de densité.
+  L'utilisateur active `AR globale`, `Style FreeGuy` puis `Effets monde auto`.
+- `WorldMapStore` lit le catalogue privé `xreal-world-maps/world-map-v1.json`.
+  L'import Android et l'APK Atelier sont volontairement ouverts (`T0.4`).
+
+Validation déjà faite, sans Unity ni APK :
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest `
+  tests\v19\test_route_provider.py `
+  tests\v19\test_augmented_reality_foundation.py `
+  -q -p no:cacheprovider
+```
+
+Résultat : **16/16 verts**. À la fin de tous les lots seulement, lancer
+`MLOmega.XR.Tests.WorldFreeGuyT0Tests` avec les autres tests EditMode, puis les
+deux passes XREAL et le build PhoneOnly selon la procédure existante. Ne jamais
+committer les manifest/lock/ProjectSettings temporaires ni les logs Unity.

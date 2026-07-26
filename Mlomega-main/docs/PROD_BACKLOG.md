@@ -2401,6 +2401,161 @@ encore ouverts).**
   stabilité/FPS/chauffe sur S24 + One Pro/Eye. Ne pas convertir les 118 tests en
   certification physique.
 
+##### 4.0-T — feuille de route finale XREAL-first, sans dépendance produit ARCore
+
+Décision de travail : la caméra ARCore du S24 ne correspond pas au champ de vision
+de l'XREAL Eye et Google ne documente pas ARCore Extensions au-dessus du provider
+XREAL. Le mode FreeGuy ne dépend donc ni d'une coexistence supposée ni d'un masque
+produit par la caméra du téléphone. `4.0-A2c` reste un diagnostic matériel facultatif,
+pas un préalable produit. Toute projection visible est calculée depuis la pose XREAL
+et l'image Eye; GPS/boussole/cartographie fournissent seulement le repère terrestre.
+
+**T0 — chantier prioritaire : ville/appartement FreeGuy persistant.**
+
+- [x] **T0.1 Carte monde canonique et ancres rechargeables.** Créer un
+  `world_map_id` distinct de toute session réseau, lié au mapping XREAL, avec origine
+  WGS84, repère local ENU, calibration de yaw, précision, version et date de dernière
+  relocalisation. Chaque contenu possède `world_content_id`, pose locale, éventuelle
+  latitude/longitude, `anchor_guid`, incertitude, TTL/persistance, auteur
+  (`manual|automatic`) et provenance. Une ancre non résolue n'est jamais affichée à
+  une ancienne position comme si elle était suivie.
+- [x] **T0.2 Navigation extérieure sans faux VPS.** Remplacer le simple cap direct
+  par une polyline issue d'un `RouteProvider` interchangeable (OSM/OSRM ou provider
+  autorisé), convertie en points ENU puis recalée sur la pose XREAL. Afficher grandes
+  flèches 3D sur le trajet, embranchements, distance et portail de destination;
+  recalculer sur sortie de route. GPS, boussole et précision restent visibles :
+  quelques mètres sont acceptables, mais jamais une façade précise inventée.
+- [x] **T0.3 Détection Eye → géométrie → UI monde.** Réutiliser VisionRT/YOLO,
+  tracking, ray-hit Depth/plan et pose XREAL pour transformer véhicule, panneau,
+  vitrine, enseigne, bâtiment et objet focalisé en cible 3D. Sans hit spatial valide,
+  aucune UI « ancrée » n'est produite. Les logos/POI issus d'une base cartographique
+  doivent être séparés des classes seulement reconnues visuellement.
+- [ ] **T0.4 Format chargeable; création reportée dans une APK Atelier séparée.**
+  L'APK production ne crée, ne déplace et ne sauvegarde aucun décor manuel : elle
+  valide puis charge un paquet `world-map-v1`, relocalise ses ancres XREAL et affiche
+  uniquement les contenus réellement suivis. Une future APK Atelier partagera ce
+  format pour placer/redimensionner/confirmer les enseignes, néons, logos,
+  publicités, portails, particules et annotations, puis exporter la carte sans
+  mémoire personnelle. Les deux APK ne partagent ni processus ni base; l'import
+  reste explicite et versionné.
+- [x] **T0.5 Mode automatique éphémère, opt-in et réversible.** Sur templates stricts :
+  vitrine→affichage transparent, voiture→effet visuel arrière, panneau→hologramme,
+  enseigne→logo, bâtiment/POI→label 3D. L'automatique propose puis confirme avant
+  toute future persistance Atelier; dans l'APK production ces effets expirent et ne
+  sont jamais sauvegardés. Densité, distance, catégories, style, batterie et
+  suppression sont réglables. Aucun effet ne modifie les frames envoyées à
+  Memory/VisionRT.
+- [x] **T0.6 Composition FreeGuy.** Exploiter les composants 3D K1/K2 existants :
+  profondeur/occlusion, LOD, pooling, animation douce, contraste extérieur, halo,
+  néons et portail de destination. Limiter les surfaces selon FPS/chauffe et garantir
+  un bouton maître OFF instantané. Le mode normal conserve l'UI sobre historique.
+- [ ] **T0.7 Gate matériel de référence.** Sur S24 + One Pro/Eye : route réelle,
+  demi-tour, perte GPS, entrée/sortie d'un bâtiment, 6–12 contenus automatiques,
+  import d'un paquet Atelier témoin, relocalisation après redémarrage, occlusion et
+  20 minutes de FPS/chauffe/batterie. Valider `K5`; Local/PRO et PhoneOnly restent
+  inchangés avec FreeGuy OFF.
+
+Suivi T0 logiciel — 26 juillet 2026 :
+
+- `WorldMapStore` porte `world_map_id`, origine WGS84/ENU, calibration, poses
+  locales/géographiques et contenus liés à un GUID XREAL. Le provider ne rend un
+  paquet que si `TryLoadAnchorAsync` retourne réellement `Tracking`; une ancre non
+  résolue devient `unresolved`. Aucun ID Live/BrainLive/transport n'est réutilisé.
+- `RouteProvider` est un adaptateur OSRM-compatible borné (512 points/200 km/10 s)
+  derrière la nouvelle route authentifiée `/navigation/route`. L'XREAL transforme
+  la polyline WGS84 en tracking-local, densifie les segments à moins de 50 m,
+  n'affiche que les 150 m proches et redemande la route après un écart supérieur à
+  25 m. Sans PC/cartographie, l'ancien `CAP DIRECT` reste affiché avec
+  `turn_by_turn=false`; aucune rue n'est inventée. Le profil de développement par
+  défaut est `driving`; un service piéton OSRM-compatible se configure par
+  `MLOMEGA_ROUTE_BASE_URL`/`MLOMEGA_ROUTE_PROFILE`.
+- `automatic_world_fx`, OFF par défaut, attend trois observations et un ray-hit
+  Depth réel. Véhicule→traînée holographique, vitrine→écran transparent,
+  panneau/enseigne→néon, bâtiment→balise, objet proche→annotation. Les façades
+  exigent quatre hits sur le même collider avec normales cohérentes. IDs stables,
+  TTL court, pooling/densité FreeGuy et retrait producteur instantané empêchent
+  allocations/accumulation; `memory_write=false` et aucune frame n'est transformée.
+- `WorldHologram` est un renderer procédural 3D (néon, billboard, véhicule, balise,
+  écho), fail-closed sur pose/calibration/qualité/preuves et réutilise
+  `WorldSemanticSurface`/`WorldNavigationRibbon` pour occlusion, surfaces, grandes
+  flèches et portail. Aucun modèle 3D téléchargé ou licence tierce n'est nécessaire.
+- Tests PC ciblés : **16/16 verts** (`test_route_provider.py` +
+  `test_augmented_reality_foundation.py`). Les tests Unity T0 sont ajoutés mais,
+  conformément à la décision de ne compiler qu'après tous les lots, ils ne sont pas
+  encore exécutés. `T0.4` reste ouvert : paquet commun présent et chargement interne
+  branché, mais APK Atelier et import Android explicite ne sont pas construits.
+  `T0.7/K5` restent exclusivement matériels. Aucun APK n'est produit dans ce lot.
+
+**T1 — compréhension temporelle et monde sous-titré.**
+
+- [ ] **T1.1 Reconnaissance d'actions temporelles (`4.0-C`).** Fenêtres courtes de
+  tracks/poses Eye échantillonnés vers MMAction2 ou modèle mesuré, d'abord
+  `s'asseoir`, `se lever`, `prendre`, `poser`, `entrer`, `sortir`, `préparer une
+  boisson`. Émettre sujet, objet, intervalle, confiance et preuves avec vérité
+  `probable`; promouvoir uniquement sur persistance/corroboration. Ce raccord est
+  nécessaire au Sherlock causal (« qui a pris/mangé le chocolat ? »), que les seuls
+  états avant/après ne peuvent pas prouver.
+- [ ] **T1.2 Monde sous-titré.** OCR Eye focalisé sur pancarte, contrat, ticket,
+  badge, graffiti, notice, menu, médicament et plaque de rue; traduction ML Kit
+  on-device lorsque disponible. Produire une couche courte et lisible, puis une
+  interprétation à la demande. Les alertes sensibles (clause, médicament, droit)
+  citent texte/source/confiance et restent assistance, jamais verdict professionnel.
+  Déduplication par track+texte, cooldown et focus empêchent de relire toute la rue.
+
+**T2 — localisation et overlays contextuels spécialisés.**
+
+- [ ] **T2.1 Navigation intérieure, jamais appelée GPS indoor.** Définir des cartes
+  locales et points de passage XREAL, complétés au besoin par balises BLE
+  Eddystone/AltBeacon, empreintes Wi-Fi/magnétiques et fusion inertielle. L'installation
+  calibre explicitement chaque lieu; afficher précision et perte de localisation.
+  Tester parking/centre commercial avant de promettre un usage générique.
+- [ ] **T2.2 Planétarium personnel.** Calculer localement les éphémérides depuis
+  heure, position et orientation XREAL; afficher étoiles, planètes et constellations
+  derrière un toggle FreeGuy. Évaluer Stardroid/Stellarium et licences, sans appel
+  LLM ni écriture Memory automatique.
+- [ ] **T2.3 Météo contextuelle.** Open-Meteo sans clé, cache local 10–15 minutes,
+  widget ambiant discret lié au lieu courant. Réseau perdu = dernière mesure datée,
+  jamais une valeur silencieusement périmée.
+- [ ] **T2.4 Contexte social/juridique opt-in.** Généraliser la carte Wikipédia à un
+  moteur de contexte déclenché par commande/focus, pas chaque mot entendu. Le profil
+  juridique choisit pays/juridiction, corpus officiel daté, articles cités et phrases
+  prudentes; il enregistre si demandé mais ne constitue ni conseil juridique ni
+  analyse automatique permanente d'un contrôle.
+
+**T3 — vrai Sherlock manuel et traçable.**
+
+- [ ] **T3.1 Session d'enquête explicite.** Un bouton/commande ouvre une session
+  Sherlock bornée : captures Eye haute qualité, timeline, zone/crop choisi, mesures,
+  objets/personnes/actions et chaîne de preuves. Le mode ne tourne jamais en secret
+  et respecte consentement, droit local et suppression immédiate.
+- [ ] **T3.2 Rehaussement sans fabriquer de preuve.** Real-ESRGAN et scikit-image
+  peuvent produire une vue améliorée d'empreinte, cheveu, trace de pneu/semelle ou
+  plaque; conserver toujours l'original, paramètres, hash et résultat côte à côte.
+  Un détail créé uniquement par super-résolution n'est jamais présenté comme observé.
+- [ ] **T3.3 Comparaison contrôlée.** OCR/ALPR et index locaux/licites peuvent
+  proposer type, similarité ou correspondance candidate avec confiance. Aucune
+  « base policière » supposée, aucune identification faciale/incrimination
+  automatique. Fusionner T1.1 + ChangeAttention + replay pour séparer strictement
+  observation, hypothèse et conclusion corroborée.
+
+**T4 — profil Memory complet ou allégé, avant tout fork de dépôt.**
+
+- [ ] **T4.1 Mesure A/B sur les mêmes journées.** Conserver le pipeline actuel comme
+  référence et créer un profil `memory_lite` derrière flag : médias/transcriptions
+  lossless identiques, conversations regroupées par épisodes cohérents (cible
+  indicative 10–20 minutes, sans couper un échange), extraction déterministe puis
+  un ou deux appels de synthèse/relations. Comparer rappels factuels, causalité,
+  longitudinal, prédictions, contradictions, coût, latence et volume de doublons.
+- [ ] **T4.2 Aucun second dépôt avant verdict.** Ne pas supprimer les moteurs ni
+  diverger deux cœurs. Mutualiser capture, schémas, writers et requêtes; faire du
+  mode allégé un profil de CloseDay. Un clone produit n'est autorisé qu'après plusieurs
+  jours shadow montrant une qualité suffisante et un besoin de distribution réellement
+  différent.
+
+**Ordre d'exécution :** `T0` FreeGuy complet → `T1.1/T1.2` actions et lecture du
+monde → `T2` overlays spécialisés → `T3` Sherlock → expérimentation `T4` en shadow.
+Chaque lot reste OFF par défaut et doit satisfaire le gate commun ci-dessous.
+
 **Dépendances candidates à évaluer, jamais à copier sans audit licence/maintenance :**
 
 - perception : `open-mmlab/mmaction2`, `ultralytics/ultralytics`,
