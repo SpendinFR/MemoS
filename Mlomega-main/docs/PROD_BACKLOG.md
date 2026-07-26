@@ -2338,6 +2338,9 @@ encore ouverts).**
   par acteur n'est requis pour la voie Web : chaque résultat reste néanmoins
   `probable`, à confirmer, sans enrôlement ni écriture mémoire. Les clés restent
   dans `.env`, jamais dans une scène, un APK ou un log.
+- [x] Le même code validé autorise `pulse_aura` sur tous les tracks visage du run
+  sans fiche individuelle : ROI anonyme, `persist=false`, aucune identité ni
+  écriture Memory; l'utilisateur doit encore activer la feature.
 - [x] Tests ciblés : **12/12 Python** (service, bridge, registre, forme de la vraie
   requête Web et absence d'enrôlement) et **13/13 Unity EditMode** (registre UI,
   72 BPM synthétique, abstention qualité et rotation ROI), compilation complète

@@ -711,6 +711,8 @@ Phrase : « Viki, active les profils studio ».
 Phrase : « Viki, active l'aura pouls ».
 
 - [ ] Sujet immobile, éclairage stable et visage assez grand.
+- [ ] Avec `-StudioReleaseId` validé : fonctionne sans fiche individuelle et sans
+  nommer le visage; la ROI anonyme expire avec le run.
 - [ ] Période de calibration visible.
 - [ ] Aura marquée expérimentale avec qualité.
 - [ ] Mouvement/lumière variable : abstention.

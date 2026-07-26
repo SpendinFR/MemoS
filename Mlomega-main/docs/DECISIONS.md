@@ -1964,8 +1964,11 @@ biométrique ne remonte au PC, ne rejoint BrainLive ou les archives.
 
 `pulse_aura` affiche fréquence estimée et qualité, avec le badge `rPPG exp.`. Elle
 ne déduit ni stress, ni calme, ni émotion et ne constitue pas un dispositif
-médical. La capability reste OFF sans registre signé et activation utilisateur.
-Les chemins Local/PRO et les prompts nocturnes ne sont pas modifiés.
+médical. La capability reste OFF sans registre signé ou code `StudioReleaseId`
+validé, et exige toujours l'activation utilisateur. En studio, le code autorise
+une ROI anonyme pour chaque track visible : aucune identité, fiche ou écriture
+Memory, et le token expire avec le run. Les chemins Local/PRO et les prompts
+nocturnes ne sont pas modifiés.
 ### 2026-07-26 — isolation du provider XREAL spatial et vérité des capacités
 
 Le code AR matériel ne réside plus dans `MLOmega.XR.UI`. Un assembly conditionnel

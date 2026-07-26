@@ -173,6 +173,41 @@ class ConsentedProfileRegistry:
                 }
         return result
 
+    @staticmethod
+    def project_anonymous_studio_pulse(
+        payload: dict[str, Any],
+        *,
+        studio_release_id: str,
+    ) -> dict[str, Any]:
+        """Authorise a transient ROI for a code-validated studio run.
+
+        The ROI deliberately carries no identity or profile data and is never
+        persisted.  The release id is used only as the short-lived consent
+        token required by the device bridge.
+        """
+        release_id = str(studio_release_id or "").strip()[:160]
+        face_bbox = _bounded_bbox(payload.get("face_bbox"))
+        if not release_id or not face_bbox:
+            return {"status": "face_unavailable"}
+        return {
+            "status": "ready",
+            "bio_roi": {
+                "type": "bio_roi",
+                "schema_version": 1,
+                "session_id": str(payload.get("session_id") or "")[:160],
+                "source_frame_id": str(payload.get("source_frame_id") or ""),
+                "target_track_id": str(payload.get("target_track_id") or ""),
+                "face_bbox": face_bbox,
+                "rotation": int(payload.get("rotation") or 0),
+                "mirrored": bool(payload.get("mirrored")),
+                "consent_id": f"studio:{release_id}",
+                "signal": "rppg_experimental",
+                "persist": False,
+                "identity_required": False,
+                "ttl_ms": 5000,
+            },
+        }
+
 
 def _normalise_person(raw: Any) -> ConsentedPerson:
     if not isinstance(raw, dict):

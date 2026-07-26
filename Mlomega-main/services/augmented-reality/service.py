@@ -154,6 +154,9 @@ class PreferenceState:
         )
 
     def capabilities(self) -> dict[str, bool]:
+        studio_release_id = os.environ.get(
+            "MLOMEGA_AR_STUDIO_RELEASE_ID", ""
+        ).strip()
         return {
             "object_menus": True,
             # The bounded recogniser lives in LivePipeline so it can consume the
@@ -192,7 +195,10 @@ class PreferenceState:
                 self.profile_registry.supports("profile_card")
                 or self.public_discovery.available
             ),
-            "pulse_aura": self.profile_registry.supports("physiology"),
+            "pulse_aura": bool(
+                self.profile_registry.supports("physiology")
+                or studio_release_id
+            ),
             # Rendered entirely on the XREAL device after a proven Depth hit.
             "automatic_world_fx": False,
             # Indoor geometry/fingerprints are produced and stored on-device.
@@ -297,6 +303,21 @@ class PreferenceState:
             profile_enabled=profile_enabled,
             pulse_enabled=pulse_enabled,
         )
+        if (
+            result.get("status") == "no_consent"
+            and pulse_enabled
+            and os.environ.get("MLOMEGA_AR_STUDIO_RELEASE_ID", "").strip()
+        ):
+            studio_result = self.profile_registry.project_anonymous_studio_pulse(
+                payload,
+                studio_release_id=os.environ["MLOMEGA_AR_STUDIO_RELEASE_ID"],
+            )
+            if profile_enabled and payload.get("face_jpeg_b64"):
+                profile_result = self.public_discovery.discover(payload)
+                if studio_result.get("bio_roi"):
+                    profile_result["bio_roi"] = studio_result["bio_roi"]
+                return profile_result
+            return studio_result
         if (
             result.get("status") == "no_consent"
             and profile_enabled

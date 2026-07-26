@@ -344,6 +344,39 @@ def test_consented_profile_projects_verified_sources_and_physiology_roi(tmp_path
     assert result["bio_roi"]["rotation"] == 90
 
 
+def test_studio_release_authorises_anonymous_non_persistent_pulse(monkeypatch):
+    monkeypatch.setenv("MLOMEGA_AR_STUDIO_RELEASE_ID", "release-film-001")
+    state = service_mod.PreferenceState(
+        profile_registry=service_mod.ConsentedProfileRegistry()
+    )
+    preferences = _payload()
+    preferences["features"]["object_menus"] = False
+    preferences["features"]["semantic_sound"] = False
+    preferences["features"]["pulse_aura"] = True
+    clean = bridge_mod.normalise_preferences(
+        preferences, session_id="studio-anonymous", person_id="me"
+    )
+
+    assert state.apply(clean)["active_features"] == ["pulse_aura"]
+    result = state.consented_person(
+        {
+            "session_id": "studio-anonymous",
+            "person_id": "",
+            "identity_confidence": 0.0,
+            "target_track_id": "face-track-7",
+            "source_frame_id": "frame-19",
+            "face_bbox": {"x": 0.2, "y": 0.22, "w": 0.16, "h": 0.2},
+        }
+    )
+
+    roi = result["bio_roi"]
+    assert roi["consent_id"] == "studio:release-film-001"
+    assert roi["identity_required"] is False
+    assert roi["persist"] is False
+    assert "person_id" not in roi
+    assert "display_name" not in roi
+
+
 def test_unknown_face_uses_real_web_detection_shape_but_never_confirms_identity():
     class Response:
         def __enter__(self):

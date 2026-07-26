@@ -334,6 +334,10 @@ bloque le mode studio. La recherche Web reste limitée à une tentative par trac
 affiche **candidat à confirmer** et ne modifie jamais l'identité faciale ni la
 mémoire automatiquement.
 
+Le même code autorise aussi **Aura pouls** pour tous les visages visibles pendant
+ce run : dis « Viki, active l'aura pouls ». Aucun profil individuel n'est requis;
+les ROI restent anonymes, en mémoire vive, et expirent après la session.
+
 État des trois raccords :
 
 ```powershell
