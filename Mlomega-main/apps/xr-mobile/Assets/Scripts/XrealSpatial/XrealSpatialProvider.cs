@@ -134,10 +134,12 @@ namespace MLOmega.XR.UI
             if (_pairing == null) _pairing = FindAnyObjectByType<SessionPairing>();
             if (_camera == null) _camera = Camera.main;
             _worldMap = new WorldMapStore(
-                Path.Combine(Application.persistentDataPath, "xreal-world-maps"),
+                System.IO.Path.Combine(
+                    Application.persistentDataPath, "xreal-world-maps"),
                 CalibrationId);
             _indoorMap = new IndoorLiveMapStore(
-                Path.Combine(Application.persistentDataPath, "xreal-indoor-maps"));
+                System.IO.Path.Combine(
+                    Application.persistentDataPath, "xreal-indoor-maps"));
             if (_depthOcclusionShader != null)
                 _depthOcclusionMaterial = new Material(_depthOcclusionShader);
             if (_freeGuyMeshShader != null)

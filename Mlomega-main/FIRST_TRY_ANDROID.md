@@ -16,9 +16,9 @@ L'APK PhoneOnly courante :
 
 - fichier : `apps\xr-mobile\build\android\mlomega-phoneonly.apk` ;
 - package : `com.mlomega.xr.phoneonly` ;
-- taille : 113 549 162 octets ;
+- taille : 113 620 638 octets ;
 - SHA-256 :
-  `B9418B290B26677F98A4199BDEA5BD3AAA48EBF8FF386D1A066AB011D8FE3E1F` ;
+  `E0292A8BDB7AE6091DF45A2ED08798D461CD98DB8992DD2F798BD48BFEF2975F` ;
 - endpoints embarqués : LAN `192.168.1.199:8710`, puis Tailscale
   `100.113.42.19:8710`.
 

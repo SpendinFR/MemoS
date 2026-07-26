@@ -2449,3 +2449,44 @@ $p = Start-Process $u -ArgumentList `
 Résultat : **31/31 verts**, exit 0. Les XML/logs ne doivent pas être commités.
 Les builders matérialisent le câblage dans les scènes au prochain build; ne pas
 committer les scènes/ProjectSettings/manifest générés sans contre-audit ciblé.
+
+### PASSATION FINALE PRÉLUDE + DEUX APK — 2026-07-26
+
+La passe finale a relu les 24 identifiants du registre de bout en bout
+(Unity/menu/voix, bridge PC et service AR), les builders produit et les
+capabilities locales XREAL. Un défaut certain a été fermé : une commande vocale
+explicite d'une feature enfant active désormais aussi le master AR. Le menu garde
+le comportement `ARMÉ` avec `on=null`.
+
+Validations finales :
+
+- **102/102** tests Python Prélude T0–T3, opérateur, route, intents et spatial;
+- **3/3** tests Memory Lite et **5/5** intégrations runtime ciblées;
+- **126/126** Unity EditMode sous le profil PhoneOnly;
+- après `AndroidBuildXreal.PrepareDefines`, **126/126** Unity EditMode avec
+  `XREAL_SDK_PRESENT`, AR Foundation 6.0.6, XR Hands 1.5.0 et le SDK XREAL 3.1.
+
+Le premier passage XREAL a trouvé une vraie erreur masquée par le build
+PhoneOnly : la méthode locale `Path(...)` entrait en collision avec
+`System.IO.Path` dans l'assembly spatial. Les deux appels stockage monde/indoor
+sont maintenant qualifiés; la recompilation SDK puis l'IL2CPP sont verts.
+
+Artefacts finaux :
+
+- `build/android/mlomega-phoneonly.apk` — package
+  `com.mlomega.xr.phoneonly`, activité `UnityPlayerActivity`, ARM64,
+  **113 620 638 octets**, SHA-256
+  `E0292A8BDB7AE6091DF45A2ED08798D461CD98DB8992DD2F798BD48BFEF2975F`;
+- `build/android/mlomega-xreal.apk` — package `com.mlomega.xr.glasses`,
+  activité `ai.nreal.activitylife.NRXRActivity`, ARM64,
+  **222 262 805 octets**, SHA-256
+  `FD203780CC799165EFAE1697591AB8428D6127998091C6E700B5AF0DDC96AB2E`.
+
+Les deux embarquent LAN `192.168.1.199:8710`, puis Tailscale
+`100.113.42.19:8710`. Le build XREAL contient la scène produit, pas le provider
+gate. Les permissions caméra, micro, réseau, localisation, Wi-Fi et
+`BLUETOOTH_SCAN` sont présentes. Le seul verdict encore impossible sans matériel
+est `T0.7` : firmware Eye, pose/Depth/mains/radio, stéréo, FPS/chauffe et
+relocalisation réelle. Aucun pont logiciel connu ne reste ouvert dans les lots
+déclarés livrés; les éléments explicitement différés (`T0.4`, filtres/reconstruction
+historique/RF externe) ne sont pas prétendus présents.

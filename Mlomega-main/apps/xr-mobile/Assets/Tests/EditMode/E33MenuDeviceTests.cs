@@ -185,6 +185,26 @@ namespace MLOmega.XR.Tests
         }
 
         [Test]
+        public void ExplicitVoiceFeatureActivationAlsoEnablesArMaster()
+        {
+            var handler = Make<DeviceCommandHandler>("handler-feature-voice");
+
+            Assert.IsTrue(handler.Execute(new DeviceCommand
+            {
+                Type = "device_command",
+                Action = "set_augmented_feature",
+                Feature = AugmentedRealityFeatureRegistry.TrajectoryForecast,
+                On = true,
+            }));
+
+            var registry = handler.GetComponent<AugmentedRealityFeatureRegistry>();
+            Assert.IsTrue(registry.MasterEnabled,
+                "an explicit voice activation must run the feature, not leave it ARMÉ");
+            Assert.IsTrue(registry.IsSelected(
+                AugmentedRealityFeatureRegistry.TrajectoryForecast));
+        }
+
+        [Test]
         public void NonDeviceCommandJson_IsNotClaimed()
         {
             var handler = Make<DeviceCommandHandler>("handler");

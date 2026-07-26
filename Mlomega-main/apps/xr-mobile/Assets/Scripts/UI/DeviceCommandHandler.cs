@@ -205,8 +205,7 @@ namespace MLOmega.XR.UI
                     ok = SetWakeWord(cmd.Word);
                     break;
                 case "set_augmented_feature":
-                    ok = EnsureAugmentedReality() != null &&
-                         _augmentedReality.SetFeature(cmd.Feature, cmd.On);
+                    ok = SetAugmentedFeature(cmd.Feature, cmd.On);
                     break;
                 default:
                     Debug.LogWarning($"[DeviceCommand] unknown action: {cmd.Action}");
@@ -272,6 +271,23 @@ namespace MLOmega.XR.UI
             if (_augmentedReality == null)
                 _augmentedReality = gameObject.AddComponent<AugmentedRealityFeatureRegistry>();
             return _augmentedReality;
+        }
+
+        private bool SetAugmentedFeature(string feature, bool? requested)
+        {
+            AugmentedRealityFeatureRegistry registry = EnsureAugmentedReality();
+            string id = (feature ?? string.Empty).Trim().ToLowerInvariant();
+            bool known = Array.Exists(
+                AugmentedRealityFeatureRegistry.FeatureIds,
+                candidate => string.Equals(candidate, id, StringComparison.Ordinal));
+            if (registry == null || !known) return false;
+
+            // A spoken explicit activation means "make it run", not merely
+            // "preselect it for later". Menu toggles use null and preserve the
+            // master-as-kill-switch/ARMÉ workflow.
+            if (requested == true && !registry.MasterEnabled)
+                registry.SetFeature(AugmentedRealityFeatureRegistry.Master, true);
+            return registry.SetFeature(id, requested);
         }
 
         private void EmitCommandFeedback(DeviceCommand cmd, bool ok)

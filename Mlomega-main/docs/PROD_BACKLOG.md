@@ -2470,6 +2470,16 @@ et l'image Eye; GPS/boussole/cartographie fournissent seulement le repère terre
   l'empilement thermique réel reste le gate T7, jamais une promesse de test
   EditMode. Validation : **45/45 Python** et **31/31 Unity EditMode** ciblés.
 
+  **Gate logiciel final du 26 juillet.** Une activation vocale explicite d'une
+  feature enfant allume maintenant aussi le master AR; le menu conserve son
+  workflow volontaire `ARMÉ` lorsque l'utilisateur prépare plusieurs switches.
+  Le premier build XREAL réel a révélé puis fermé un conflit C# `Path` visible
+  seulement sous `XREAL_SDK_PRESENT`. Preuves finales : **102/102 Python**
+  Prélude T0–T3/opérateurs/intents/spatial, **3/3 Memory Lite**, **5/5 runtime**
+  ciblés, puis **126/126 Unity EditMode** sous PhoneOnly et de nouveau
+  **126/126** avec le SDK XREAL 3.1 réellement injecté. APK PhoneOnly et XREAL
+  produit : exit 0, packages/activités/ABI contrôlés. Seul `T0.7` reste matériel.
+
 Suivi T0 logiciel — 26 juillet 2026 :
 
 - `WorldMapStore` porte `world_map_id`, origine WGS84/ENU, calibration, poses

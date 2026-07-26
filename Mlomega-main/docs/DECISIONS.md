@@ -2160,3 +2160,8 @@ Après le wake word, l'utilisateur voit désormais successivement l'état
 `activé`, `désactivé` ou `indisponible`. Les formulations usuelles sont routées
 localement et instantanément; les formulations moins littérales conservent le
 routeur en langage naturel. Aucun chemin Memory Local/PRO n'est modifié.
+
+Une activation vocale explicite (`on=true`) allume également le master AR afin
+que « active X » ne signifie jamais seulement « arme X pour plus tard ». Le menu
+envoie `on=null` et conserve volontairement la possibilité de préparer plusieurs
+features sous master OFF avant de les rendre visibles ensemble.
