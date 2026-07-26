@@ -38,6 +38,10 @@ KNOWN_FEATURES = {
     "pulse_aura",
     "automatic_world_fx",
     "world_text",
+    "indoor_navigation",
+    "planetarium",
+    "weather_context",
+    "legal_context",
 }
 MAX_PREFERENCES_BYTES = 32_768
 MAX_FEATURE_REQUEST_BYTES = 262_144
@@ -74,6 +78,9 @@ class AugmentedRealityBridge:
             "object_actions": 0,
             "knowledge_cards": 0,
             "person_profiles": 0,
+            "weather_cards": 0,
+            "planetarium_domes": 0,
+            "context_assist_cards": 0,
         }
         if self.enabled:
             self._validate_loopback_endpoint()
@@ -230,6 +237,61 @@ class AugmentedRealityBridge:
             request_timeout_s=self.public_lookup_timeout_s,
         )
 
+    def submit_weather(
+        self,
+        payload: dict[str, Any],
+        *,
+        session_id: str,
+        on_intent: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        return self._submit_feature(
+            "weather",
+            "weather_context",
+            "/v1/weather",
+            {"session_id": session_id, **dict(payload or {})},
+            lambda result: self._deliver_ui_result(
+                result, on_intent, metric="weather_cards"
+            ),
+            request_timeout_s=4.0,
+        )
+
+    def submit_planetarium(
+        self,
+        payload: dict[str, Any],
+        *,
+        session_id: str,
+        on_intent: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        return self._submit_feature(
+            "planetarium",
+            "planetarium",
+            "/v1/planetarium",
+            {"session_id": session_id, **dict(payload or {})},
+            lambda result: self._deliver_ui_result(
+                result, on_intent, metric="planetarium_domes"
+            ),
+        )
+
+    def submit_context_assist(
+        self,
+        payload: dict[str, Any],
+        *,
+        session_id: str,
+        on_intent: Callable[[dict[str, Any]], None],
+    ) -> dict[str, Any]:
+        return self._submit_feature(
+            "context-assist",
+            "legal_context",
+            "/v1/context-assist",
+            {"session_id": session_id, **dict(payload or {})},
+            lambda result: self._deliver_context_assist_result(
+                result,
+                on_intent,
+                session_id=session_id,
+            ),
+            request_timeout_s=3.0,
+        )
+
     def metrics(self) -> dict[str, Any]:
         with self._lock:
             return dict(self._metrics)
@@ -378,6 +440,49 @@ class AugmentedRealityBridge:
     ) -> None:
         self._increment(metric)
         callback(result)
+
+    def _deliver_context_assist_result(
+        self,
+        result: dict[str, Any],
+        callback: Callable[[dict[str, Any]], None],
+        *,
+        session_id: str,
+    ) -> None:
+        if result.get("type") == "ui_intent":
+            self._increment("context_assist_cards")
+            callback(result)
+            return
+        if result.get("status") not in {"unavailable", "rejected"}:
+            return
+        self._increment("context_assist_cards")
+        callback(
+            {
+                "type": "ui_intent",
+                "contracts_version": "v19.0",
+                "ui_intent_id": (
+                    "ar-context-assist-unavailable-" + str(session_id)[:80]
+                ),
+                "producer": "ultralive",
+                "component": "context_card",
+                "anchor": {"type": "head_locked", "side": "right"},
+                "content": {
+                    "kind": "context_assist_unavailable",
+                    "title": "SOURCE CONTEXTUELLE INDISPONIBLE",
+                    "text": (
+                        "Je n’ai pas de source vérifiable pour cet échange. "
+                        "Je préfère ne pas proposer d’article."
+                    ),
+                    "detail": str(result.get("detail") or "")[:180],
+                    "memory_write": False,
+                },
+                "truth_level": "observed",
+                "confidence": 1.0,
+                "priority": 0.9,
+                "ttl_ms": 9000,
+                "ui_hint": {"dismissible": True},
+                "evidence_refs": ["provider:context-assist-unavailable"],
+            }
+        )
 
     def _validate_loopback_endpoint(self) -> None:
         parsed = urllib.parse.urlparse(self.base_url)

@@ -85,6 +85,9 @@ attribute_memory = _load_sibling("v19_attribute_memory", "attribute_memory.py")
 routine_associations = _load_sibling("v19_routine_associations", "routine_associations.py")
 change_attention = _load_sibling("v19_change_attention", "change_attention.py")
 help_mode = _load_sibling("v19_help_mode", "help_mode.py")
+contextual_assist = _load_sibling(
+    "v19_contextual_assist", "contextual_assist.py"
+)
 temporal_actions = _load_sibling(
     "v19_temporal_action_recognizer", "temporal_action_recognizer.py"
 )
@@ -297,6 +300,8 @@ class LivePipeline:
         self._temporal_actions: Any = None
         self._world_text_memory: Any = None
         self._device_location: dict[str, Any] | None = None
+        self._next_weather_submit_at = 0.0
+        self._next_planetarium_submit_at = 0.0
         vcfg = self.profile.get("vision", {}) if isinstance(self.profile, dict) else {}
         acfg = self.profile.get("audio", {}) if isinstance(self.profile, dict) else {}
 
@@ -706,6 +711,14 @@ class LivePipeline:
                 db_path=self.db_path,
             )
 
+        self.context_assist: Any = None
+        if self.augmented_reality is not None:
+            self.context_assist = contextual_assist.ContextualAssistSession(
+                bridge=self.augmented_reality,
+                session_id=self.session_id,
+                emit_ui_intent=self._push_intent,
+            )
+
         if enable_intents:
             if self.llm_router is None:
                 self.llm_router = llm_providers.LLMRouter(
@@ -730,6 +743,7 @@ class LivePipeline:
                 replay_service=self.replay,
                 owner_setup=self.owner_setup,
                 help_engine=self.help_engine,
+                context_assist=self.context_assist,
                 person_id=self.person_id,
             )
             # E64-i grâce: learn the routed intent the MOMENT it is decided (before
@@ -1712,13 +1726,54 @@ class LivePipeline:
             or accuracy > 50.0
         ):
             return
+        tracking = payload.get("tracking_position")
+        clean_tracking: dict[str, float] | None = None
+        if isinstance(tracking, dict):
+            try:
+                clean_tracking = {
+                    axis: float(tracking.get(axis))
+                    for axis in ("x", "y", "z")
+                }
+            except (TypeError, ValueError):
+                clean_tracking = None
         self._device_location = {
             "latitude": latitude,
             "longitude": longitude,
             "horizontal_accuracy_m": accuracy,
             "captured_at_utc": str(payload.get("captured_at_utc") or ""),
             "source": "android_location",
+            "tracking_position": clean_tracking,
+            "true_heading_deg": payload.get("true_heading_deg"),
+            "heading_accuracy_deg": payload.get("heading_accuracy_deg"),
+            "north_calibrated": payload.get("north_calibrated") is True,
+            "world_north_yaw_deg": payload.get("world_north_yaw_deg"),
+            "calibration_id": str(payload.get("calibration_id") or "")[:160],
         }
+        bridge = self.augmented_reality
+        if bridge is None:
+            return
+        now = time.monotonic()
+        if (
+            bridge.feature_active("weather_context")
+            and now >= self._next_weather_submit_at
+        ):
+            self._next_weather_submit_at = now + 600.0
+            bridge.submit_weather(
+                dict(self._device_location),
+                session_id=self.session_id,
+                on_intent=self._push_intent,
+            )
+        if (
+            bridge.feature_active("planetarium")
+            and clean_tracking is not None
+            and now >= self._next_planetarium_submit_at
+        ):
+            self._next_planetarium_submit_at = now + 120.0
+            bridge.submit_planetarium(
+                dict(self._device_location),
+                session_id=self.session_id,
+                on_intent=self._push_intent,
+            )
 
     def _world_text_place_key(self) -> str | None:
         location = self._device_location
@@ -2640,6 +2695,11 @@ class LivePipeline:
                     self.enrollment.on_transcript(text)
                 except Exception:
                     pass
+            if self.context_assist is not None:
+                try:
+                    self.context_assist.ingest(text)
+                except Exception as exc:
+                    self._report_error("context_assist.ingest", exc)
             # E36 §3: if this transcript was an enrollment, fold any provisional
             # stranger profile of the active person track into the now-named entity.
             self._maybe_fuse_stranger(text)

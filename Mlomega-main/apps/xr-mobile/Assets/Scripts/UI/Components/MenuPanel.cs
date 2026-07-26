@@ -81,6 +81,8 @@ namespace MLOmega.XR.UI.Components
             "Futurs de foule", "Clavier spatial", "Vision mouvement",
             "Lancer ludique", "Carte radio", "Profils studio", "Aura pouls (exp.)",
             "Effets monde auto", "Texte du monde",
+            "Navigation intérieure", "Planétarium", "Météo contextuelle",
+            "Aide contexte social/juridique",
         };
         private static readonly string[] AugmentedFeatures =
         {
@@ -105,6 +107,10 @@ namespace MLOmega.XR.UI.Components
             AugmentedRealityFeatureRegistry.PulseAura,
             AugmentedRealityFeatureRegistry.AutomaticWorldFx,
             AugmentedRealityFeatureRegistry.WorldText,
+            AugmentedRealityFeatureRegistry.IndoorNavigation,
+            AugmentedRealityFeatureRegistry.Planetarium,
+            AugmentedRealityFeatureRegistry.WeatherContext,
+            AugmentedRealityFeatureRegistry.LegalContext,
         };
 
         private void Awake()

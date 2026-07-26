@@ -3,6 +3,7 @@ from __future__ import annotations
 """Loopback-only foundation service for optional augmented-reality modules."""
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -18,12 +19,18 @@ if str(_HERE) not in sys.path:
 
 from capabilities import (  # noqa: E402
     ContextualKnowledgeGate,
+    KiwixKnowledgeProvider,
     ObjectActionRegistry,
     build_object_profile_card,
     execute_object_action,
 )
 from consented_profiles import ConsentedProfileRegistry  # noqa: E402
 from public_profile_discovery import PublicProfileDiscovery  # noqa: E402
+from contextual_overlays import (  # noqa: E402
+    FrenchLegalCorpusProvider,
+    LocalPlanetariumProvider,
+    OpenMeteoWeatherProvider,
+)
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
 KNOWN_FEATURES = (
@@ -47,6 +54,10 @@ KNOWN_FEATURES = (
     "pulse_aura",
     "automatic_world_fx",
     "world_text",
+    "indoor_navigation",
+    "planetarium",
+    "weather_context",
+    "legal_context",
 )
 MEMORY_ACCESS = {
     # Future modules consume existing product APIs; this isolated service never
@@ -71,6 +82,10 @@ MEMORY_ACCESS = {
     "pulse_aura": "none_no_biometric_persistence",
     "automatic_world_fx": "none_ephemeral_device_only",
     "world_text": "validated_ocr_observation_writer_only",
+    "indoor_navigation": "device_local_graph_no_memory_db",
+    "planetarium": "none_ephemeral_device_only",
+    "weather_context": "none_ephemeral_cached_provider",
+    "legal_context": "official_corpus_read_only_no_personal_write",
 }
 MAX_BODY_BYTES = 262_144
 MAX_SESSIONS = 16
@@ -121,6 +136,8 @@ class PreferenceState:
         knowledge: ContextualKnowledgeGate | None = None,
         profile_registry: ConsentedProfileRegistry | None = None,
         public_discovery: PublicProfileDiscovery | None = None,
+        weather: OpenMeteoWeatherProvider | None = None,
+        planetarium: LocalPlanetariumProvider | None = None,
     ) -> None:
         self._lock = threading.Lock()
         self._sessions: OrderedDict[str, dict[str, Any]] = OrderedDict()
@@ -128,6 +145,13 @@ class PreferenceState:
         self.knowledge = knowledge or ContextualKnowledgeGate()
         self.profile_registry = profile_registry or ConsentedProfileRegistry.from_env()
         self.public_discovery = public_discovery or PublicProfileDiscovery()
+        self.weather = weather or OpenMeteoWeatherProvider()
+        self.planetarium = planetarium or LocalPlanetariumProvider()
+        self.legal_knowledge = FrenchLegalCorpusProvider(
+            fallback=KiwixKnowledgeProvider(
+                base_url=os.environ.get("MLOMEGA_LEGAL_KIWIX_URL", "")
+            )
+        )
 
     def capabilities(self) -> dict[str, bool]:
         return {
@@ -171,6 +195,13 @@ class PreferenceState:
             "pulse_aura": self.profile_registry.supports("physiology"),
             # Rendered entirely on the XREAL device after a proven Depth hit.
             "automatic_world_fx": False,
+            # Indoor geometry/fingerprints are produced and stored on-device.
+            "indoor_navigation": False,
+            "planetarium": bool(self.planetarium.available),
+            "weather_context": bool(self.weather.available),
+            # Global lookup over the consolidated French LEGI corpus. Kiwix is
+            # merely an optional network-independent fallback.
+            "legal_context": bool(self.legal_knowledge.available),
         }
 
     def apply(self, payload: Any) -> dict[str, Any]:
@@ -274,6 +305,125 @@ class PreferenceState:
             return self.public_discovery.discover(payload)
         return result
 
+    def weather_card(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be an object")
+        session_id = str(payload.get("session_id") or "")
+        if not self.feature_active(session_id, "weather_context"):
+            raise PermissionError("weather_context is not active for this session")
+        return self.weather.card(payload)
+
+    def planetarium_dome(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be an object")
+        session_id = str(payload.get("session_id") or "")
+        if not self.feature_active(session_id, "planetarium"):
+            raise PermissionError("planetarium is not active for this session")
+        return self.planetarium.dome(payload)
+
+    def contextual_assist(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be an object")
+        session_id = str(payload.get("session_id") or "")
+        if not self.feature_active(session_id, "legal_context"):
+            raise PermissionError("legal_context is not active for this session")
+        if payload.get("explicit_session") is not True:
+            raise PermissionError("context assistance requires explicit activation")
+        turns = payload.get("recent_turns")
+        if not isinstance(turns, list) or not turns:
+            raise ValueError("recent_turns is required")
+        clean_turns = [
+            " ".join(str(turn).split())[:500]
+            for turn in turns[-8:]
+            if len(" ".join(str(turn).split())) >= 3
+        ]
+        if not clean_turns:
+            raise ValueError("no usable contextual turn")
+        query = " ".join(clean_turns[-3:])[:600]
+        profile = str(payload.get("profile") or "legal").strip().lower()
+        if profile == "social":
+            provider = getattr(self.knowledge, "provider", None)
+            if provider is None or not bool(getattr(provider, "available", False)):
+                raise RuntimeError(
+                    "social context requires the local Kiwix knowledge corpus"
+                )
+            result = provider.lookup(query)
+            result = {
+                **result,
+                "provider": "local-kiwix",
+                "status": "REFERENCE",
+                "dataset_source": result.get("source"),
+            }
+        else:
+            profile = "legal"
+            result = self.legal_knowledge.lookup(query)
+        jurisdiction = os.environ.get(
+            "MLOMEGA_LEGAL_JURISDICTION", "FR"
+        ).strip()[:40]
+        source_date = (
+            result.get("start_date")
+            or result.get("retrieved_at_utc")
+            or ""
+        )
+        return {
+            "type": "ui_intent",
+            "contracts_version": "v19.0",
+            "ui_intent_id": "ar-context-assist-" + session_id + "-" +
+                hashlib.sha256(
+                    "|".join(clean_turns).encode("utf-8")
+                ).hexdigest()[:16],
+            "producer": "ultralive",
+            "component": "context_card",
+            "anchor": {"type": "head_locked", "side": "right"},
+            "content": {
+                "kind": "context_assist",
+                "title": (
+                    f"REPÈRE LEGI · {jurisdiction}"
+                    if profile == "legal"
+                    else "REPÈRE CONTEXTUEL"
+                ),
+                "text": (
+                    f"{result['summary']}\n"
+                    + (
+                        "À dire prudemment : « Pouvez-vous préciser le motif et "
+                        "la base légale applicable ? »\n"
+                        "Information contextuelle, pas un avis juridique."
+                        if profile == "legal"
+                        else "Référence contextuelle : vérifie-la avant de "
+                        "l’utiliser comme un fait."
+                    )
+                )[:900],
+                "source": result["source"],
+                "dataset_source": result.get("dataset_source"),
+                "source_date": source_date,
+                "source_status": result.get("status"),
+                "source_doc_id": result.get("doc_id"),
+                "relevance": result.get("relevance"),
+                "matched_terms": result.get("matched_terms", []),
+                "alternative_sources": result.get("alternatives", []),
+                "cache_state": result.get("cache_state"),
+                "jurisdiction": jurisdiction,
+                "profile": profile,
+                "not_legal_advice": profile == "legal",
+                "memory_write": False,
+            },
+            "truth_level": "remembered",
+            "confidence": 1.0,
+            "priority": 0.92,
+            "ttl_ms": 18000,
+            "ui_hint": {"dismissible": True},
+            "evidence_refs": [
+                result["source"],
+                result.get("dataset_source") or result["source"],
+                f"source-date:{source_date}",
+                f"jurisdiction:{jurisdiction}",
+            ] + [
+                item["source"]
+                for item in result.get("alternatives", [])
+                if isinstance(item, dict) and item.get("source")
+            ],
+        }
+
 
 def capability_manifest(
     *,
@@ -317,6 +467,9 @@ def build_handler(state: PreferenceState, *, enabled: bool) -> type[BaseHTTPRequ
                 "/v1/object-action": state.object_action,
                 "/v1/contextual-knowledge": state.contextual_knowledge,
                 "/v1/consented-person": state.consented_person,
+                "/v1/weather": state.weather_card,
+                "/v1/planetarium": state.planetarium_dome,
+                "/v1/context-assist": state.contextual_assist,
             }
             handler = routes.get(self.path)
             if handler is None:

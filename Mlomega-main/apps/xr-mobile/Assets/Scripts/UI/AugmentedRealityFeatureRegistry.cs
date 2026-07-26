@@ -39,6 +39,10 @@ namespace MLOmega.XR.UI
         public const string PulseAura = "pulse_aura";
         public const string AutomaticWorldFx = "automatic_world_fx";
         public const string WorldText = "world_text";
+        public const string IndoorNavigation = "indoor_navigation";
+        public const string Planetarium = "planetarium";
+        public const string WeatherContext = "weather_context";
+        public const string LegalContext = "legal_context";
 
         private const string PreferencePrefix = "mlomega.augmented_reality.";
 
@@ -64,6 +68,10 @@ namespace MLOmega.XR.UI
             PulseAura,
             AutomaticWorldFx,
             WorldText,
+            IndoorNavigation,
+            Planetarium,
+            WeatherContext,
+            LegalContext,
         };
 
         [SerializeField] private LiveTransportBridge _transport;

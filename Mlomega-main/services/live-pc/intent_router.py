@@ -66,6 +66,14 @@ def _build_rules() -> list[tuple[re.Pattern[str], str, dict[str, Any]]]:
     add(r"\b(?:mode\s+)?minimal\b", "set_ui_mode", ui_mode="minimal")
     add(r"\b(?:affiche\s+tout|montre\s+tout|show\s+(?:all|everything)|mode\s+normal)\b", "set_ui_mode", ui_mode="normal")
     add(r"\b(?:pause\s+priv[ée]e?|mode\s+priv[ée]|privacy\s+pause|private\s+mode|pause\s+la\s+cam)\b", "privacy_pause")
+    add(
+        r"\b(?:active|lance|demarre|démarre)\s+(?:le\s+)?(?:mode|aide|assistance)\s+(?:juridique|contextuel(?:le)?|contexte)\b",
+        "context_assist_start",
+    )
+    add(
+        r"\b(?:arrete|arrête|stoppe|coupe|desactive|désactive)\s+(?:le\s+)?(?:mode|aide|assistance)\s+(?:juridique|contextuel(?:le)?|contexte)\b",
+        "context_assist_stop",
+    )
 
     add(r"\bmode\s+payant\b\s*(?:avec\s+)?(openai|gpt|gemini|google)?", "paid_mode")
     add(r"\bpaid\s+mode\b\s*(openai|gpt|gemini|google)?", "paid_mode")
@@ -102,6 +110,10 @@ def _build_rules() -> list[tuple[re.Pattern[str], str, dict[str, Any]]]:
     add(r"\b(?:traduis|traduire|translate)\b(?:[- ](?:le|la|ça|ca|it|this))?\s*(?:en\s+([\w]+))?", "translate")
 
     # --- explicit memory / current-scene queries ---
+    add(
+        r"\b(?:nomme|appelle|memorise|mémorise)\s+(?:cet\s+)?endroit\s+(?:comme\s+)?(.+)",
+        "name_indoor_place",
+    )
     add(r"\b(?:retiens|m[ée]morise|remember)\b\s*[:,]?\s+(.+)", "remember_fact")
     add(r"\b(?:qu'?est[- ]?ce\s+qui|quoi)\s+a\s+chang[ée]\b(?:\s+dans\s+(?:la\s+)?pi[èe]ce)?", "scene_changes")
 
@@ -168,6 +180,7 @@ _HIGH_CONFIDENCE: list[tuple[re.Pattern[str], str]] = [
         (r"(?:c'?est\s+quoi|qu'?est-?ce\s+que\s+c'?est|what\s+is\s+(?:this|that))\b", "what_is"),
         (r"(?:lis|lire|ocr|read|d[ée]chiffre)\b", "ocr"),
         (r"(?:traduis|traduire|translate)\b", "translate"),
+        (r"(?:nomme|appelle|memorise|mémorise)\s+(?:cet\s+)?endroit\b", "name_indoor_place"),
         (r"(?:interroge\s+ma\s+m[ée]moire|demande\s+[àa]\s+ma\s+m[ée]moire|ask\s+my\s+memory)\b", "ask_memory"),
         (r"o[ùu]\s+(?:est|sont)\b", "find"),
         (r"o[ùu]\s+se\s+trouv(?:e|ent)\b", "find"),
@@ -180,6 +193,8 @@ _HIGH_CONFIDENCE: list[tuple[re.Pattern[str], str]] = [
         (r"mode\s+local\b", "local_mode"),
         (r"local\s+mode\b", "local_mode"),
         (r"mode\s+gratuit\b", "local_mode"),
+        (r"(?:active|lance|demarre|démarre)\s+(?:le\s+)?(?:mode|aide|assistance)\s+(?:juridique|contextuel(?:le)?|contexte)\b", "context_assist_start"),
+        (r"(?:arrete|arrête|stoppe|coupe|desactive|désactive)\s+(?:le\s+)?(?:mode|aide|assistance)\s+(?:juridique|contextuel(?:le)?|contexte)\b", "context_assist_stop"),
         (r"configure\s+ma\s+voix\b", "owner_enroll"),
         (r"c'?est\s+moi\s+qui\s+parle\b", "owner_enroll"),
         (r"set\s*up\s+my\s+voice\b", "owner_enroll"),
@@ -324,6 +339,7 @@ class IntentRouter:
         replay_service: Any = None,
         owner_setup: Any = None,
         help_engine: Any = None,
+        context_assist: Any = None,
         person_id: str = "me",
     ) -> None:
         self.vision_focus = vision_focus
@@ -347,6 +363,7 @@ class IntentRouter:
         # "c'est fait" / "répète" / "pause"/"reprends"/"termine" are pre-routed to it
         # (before the generic grammar can swallow them).
         self.help_engine = help_engine
+        self.context_assist = context_assist
         self.person_id = person_id
         self._pending_device_action: str | None = None
         self.context = IntentContext()
@@ -572,6 +589,18 @@ class IntentRouter:
                 out["question"] = q or text
             elif intent == "remember_fact":
                 out["fact"] = _clean_target(m.group(1)) if m.groups() else text
+            elif intent == "name_indoor_place":
+                out["destination"] = (
+                    _clean_target(m.group(1)) if m.groups() else ""
+                )
+                if not out["destination"]:
+                    continue
+            elif intent == "context_assist_start":
+                out["profile"] = (
+                    "legal"
+                    if re.search(r"\bjuridique\b", text, re.IGNORECASE)
+                    else "social"
+                )
             elif intent == "help_start":
                 # "mode aide" (no group) → empty desc (multi-turn ask); "aide-moi à X"
                 # → the task description in group 1.
@@ -605,7 +634,7 @@ class IntentRouter:
         schema = {
             "intent": "one of: what_is|who_is|find|ocr|translate|translate_live|zoom|set_ui_mode|privacy_pause|"
                       "open_app|paid_mode|local_mode|menu|replay|ask_memory|remember_fact|scene_changes|"
-                      "owner_enroll|help_start|unknown",
+                      "owner_enroll|help_start|name_indoor_place|context_assist_start|context_assist_stop|unknown",
             "help_desc": "string (help_start: the task the user wants help with, e.g. 'monter l'étagère'; '' if none given)",
             "on": "bool (translate_live: true='traduis en direct', false='stop traduction')",
             "query": "string (target for find, or search text for open_app youtube)",
@@ -658,6 +687,8 @@ class IntentRouter:
             out["question"] = text
         if intent == "remember_fact" and "fact" not in out:
             out["fact"] = text
+        if intent == "name_indoor_place" and "destination" not in out:
+            out["destination"] = text
         return out
 
     # ---- dispatch (route to existing handlers only) -------------------------
@@ -694,6 +725,18 @@ class IntentRouter:
                                     "on": bool(routed.get("on", True))}, intent)
         if intent == "open_app":
             return self._do_open_app(routed)
+        if intent == "name_indoor_place":
+            destination = _clean_target(
+                routed.get("destination") or routed.get("query") or text
+            )
+            return self._do_device(
+                {
+                    "type": "device_command",
+                    "action": "name_indoor_place",
+                    "destination": destination,
+                },
+                intent,
+            )
         if intent == "menu":
             return self._do_device({"type": "device_command", "action": "open_menu"}, intent)
         if intent == "paid_mode":
@@ -711,6 +754,24 @@ class IntentRouter:
             return self._do_owner_enroll()
         if intent == "help_start":
             return self._do_help_start(routed)
+        if intent == "context_assist_start":
+            if self.context_assist is None:
+                return self._unavailable(
+                    intent, "Assistance contextuelle indisponible."
+                )
+            result = self.context_assist.start(
+                str(routed.get("profile") or "legal")
+            )
+            self._ui(result)
+            return RoutedIntent(intent=intent, result=result, handled=True)
+        if intent == "context_assist_stop":
+            if self.context_assist is None:
+                return self._unavailable(
+                    intent, "Assistance contextuelle indisponible."
+                )
+            result = self.context_assist.stop()
+            self._ui(result)
+            return RoutedIntent(intent=intent, result=result, handled=True)
         return self._unknown(text)
 
     def _do_owner_enroll(self) -> RoutedIntent:

@@ -102,6 +102,11 @@ if ($LivePhone) {
   $kiwixProcess = $null
   if ($AugmentedReality) { $env:MLOMEGA_AUGMENTED_REALITY = "1" }
   if (-not $env:MLOMEGA_AUGMENTED_REALITY) { $env:MLOMEGA_AUGMENTED_REALITY = "0" }
+  # T2.4: jurisdiction is explicit and stable. The legal capability still stays
+  # unavailable until an operator provides a dated official Kiwix corpus.
+  if (-not $env:MLOMEGA_LEGAL_JURISDICTION) {
+    $env:MLOMEGA_LEGAL_JURISDICTION = "FR"
+  }
   if ($StudioReleaseId -and -not $AugmentedReality) {
     Write-Host "[FAIL] -StudioReleaseId exige -AugmentedReality." -ForegroundColor Red
     exit 2

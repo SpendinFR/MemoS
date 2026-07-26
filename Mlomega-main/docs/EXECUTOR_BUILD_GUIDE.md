@@ -2236,3 +2236,59 @@ Verdict courant : **28/28 verts** dans `.venv`, puis **2/2 verts** dans
 runtime audio/vision avec `.venv-live`, sinon le rouge est un mauvais environnement.
 Avant le commit du lot, ajouter seulement les fichiers T1 explicites; le worktree
 contient toujours des scènes/settings/logs appartenant aux builds précédents.
+
+### PASSATION T2 LOCALISATION + CONTEXTE — 2026-07-26
+
+Ne pas reconstruire les APK avant la fin des lots. Le raccord produit livré est :
+
+1. `IndoorFingerprintBridge.kt` scanne Wi-Fi/BLE en basse consommation et le
+   magnétomètre; les identifiants sont hachés localement. `IndoorLiveMapStore`
+   construit le graphe depuis la pose XREAL et persiste sous
+   `Application.persistentDataPath/xreal-indoor-maps`. Radio/magnétique ne font
+   que la relocalisation initiale. Android demande `ACCESS_FINE_LOCATION` et
+   `BLUETOOTH_SCAN`; refus = capability `ATTENTE`, jamais une fausse route.
+2. Dire `nomme cet endroit comme cuisine` envoie `name_indoor_place`. Une demande
+   Maps essaie d'abord ce graphe intérieur nommé, puis le provider extérieur. La
+   première visite apprend la carte en marchant; aucun plan n'est requis.
+3. `device_location` contient GPS, cap, pose tracking et calibration. Weather est
+   soumis au plus toutes les dix minutes; planetarium toutes les deux minutes.
+   Open-Meteo est caché 15 minutes et `SkyDome` rejette toute pose non calibrée.
+4. `active le mode juridique` ouvre une session explicite de quinze minutes
+   maximum, huit tours et un appel toutes les six secondes. Le provider recherche
+   globalement `AgentPublic/legi` (`latest/train`) via Dataset Viewer, conserve les
+   articles en vigueur, reclasse et cite Légifrance. Aucun token PISTE ni liste de
+   cas n'est requis; il faut HTTPS vers `datasets-server.huggingface.co`.
+   `MLOMEGA_LEGAL_KIWIX_URL` est le fallback. `active le mode contextuel` utilise
+   le Kiwix général. Les deux s'arrêtent par `arrête le mode ...`, ne constituent
+   pas un conseil et n'écrivent pas la mémoire.
+5. `RUN_MLOMEGA_V19.ps1 -LivePhone -AugmentedReality` pose la juridiction `FR`.
+   Local/PRO/CloseDay ne sont pas modifiés. `LensWindow` passe par l'interface
+   commune; ne pas réintroduire le type concret XREAL dans l'assembly UI.
+
+Validation ciblée déjà exécutée :
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest `
+  tests\v19\test_t2_contextual_world.py `
+  tests\v19\test_augmented_reality_foundation.py `
+  tests\v19\test_augmented_reality_operator.py `
+  tests\v19\test_t1_temporal_world_text.py -q -p no:cacheprovider
+
+.\.venv-live\Scripts\python.exe -m pytest `
+  tests\v19\test_phoneonly_runtime.py::test_augmented_reality_preferences_are_isolated_and_disabled_by_default `
+  tests\v19\test_phoneonly_runtime.py::test_viki_context_callbacks_use_live_product_state `
+  -q -p no:cacheprovider
+
+cd apps\xr-mobile
+$u = "C:\Program Files\Unity\Hub\Editor\6000.0.23f1\Editor\Unity.exe"
+$p = Start-Process $u -ArgumentList '-batchmode','-runTests',
+  '-testPlatform','EditMode','-projectPath','.',
+  '-testFilter','MLOmega.XR.Tests.T2ContextualWorldTests',
+  '-testResults',"$pwd\t2-contextual-world.xml",
+  '-logFile',"$pwd\t2-contextual-world.log" -Wait -PassThru -NoNewWindow
+```
+
+Verdict : **29/29 + 2/2 + 2/2 verts** et plugin Android reconstruit. Ne pas
+committer XML/logs, scènes/settings/packages temporaires. Le test final reste
+S24 + One Pro/Eye : permissions, stabilité des empreintes, relocalisation après
+redémarrage, précision cap/GPS et lisibilité du SkyDome.

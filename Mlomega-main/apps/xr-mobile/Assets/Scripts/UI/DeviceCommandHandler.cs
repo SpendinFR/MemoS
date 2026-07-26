@@ -176,6 +176,13 @@ namespace MLOmega.XR.UI
                 case "open_app":
                     ok = OpenApp(cmd);
                     break;
+                case "name_indoor_place":
+                    ok = SpatialProvider != null &&
+                        SpatialProvider.NameCurrentIndoorPlace(
+                            string.IsNullOrWhiteSpace(cmd.Destination)
+                                ? cmd.Text
+                                : cmd.Destination);
+                    break;
                 case "open_menu":
                     MenuRequested?.Invoke();
                     ok = true;

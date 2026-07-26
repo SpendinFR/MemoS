@@ -80,6 +80,11 @@ namespace MLOmega.XR.UI
         private bool _routeRequestInFlight;
         private float _nextRouteRequestAt;
         private WorldMapStore _worldMap;
+        private IndoorLiveMapStore _indoorMap;
+#if UNITY_ANDROID && !UNITY_EDITOR
+        private AndroidJavaObject _indoorFingerprint;
+#endif
+        private float _nextIndoorSampleAt;
         private readonly HashSet<string> _automaticWorldIntentIds =
             new HashSet<string>(StringComparer.Ordinal);
         private float _nextWorldTextLocationAt;
@@ -131,6 +136,8 @@ namespace MLOmega.XR.UI
             _worldMap = new WorldMapStore(
                 Path.Combine(Application.persistentDataPath, "xreal-world-maps"),
                 CalibrationId);
+            _indoorMap = new IndoorLiveMapStore(
+                Path.Combine(Application.persistentDataPath, "xreal-indoor-maps"));
             if (_depthOcclusionShader != null)
                 _depthOcclusionMaterial = new Material(_depthOcclusionShader);
             if (_freeGuyMeshShader != null)
@@ -148,6 +155,7 @@ namespace MLOmega.XR.UI
             if (_transport != null) _transport.MessageReceived -= OnTransportMessage;
             if (_features != null) _features.FeatureChanged -= OnFeatureChanged;
             WithdrawAutomaticWorldEffects();
+            StopIndoorFingerprint();
             SetLocalCapabilities(false);
             SetManagersEnabled(false);
         }
@@ -156,6 +164,7 @@ namespace MLOmega.XR.UI
         {
             if (_depthOcclusionMaterial != null) Destroy(_depthOcclusionMaterial);
             if (_freeGuyMeshMaterial != null) Destroy(_freeGuyMeshMaterial);
+            StopIndoorFingerprint();
         }
 
         private void Update()
@@ -188,6 +197,13 @@ namespace MLOmega.XR.UI
                 _nextRadioAt = Time.unscaledTime + 5f;
                 SampleCurrentWifi();
             }
+            if (
+                _features.IsActive(AugmentedRealityFeatureRegistry.IndoorNavigation) &&
+                Time.unscaledTime >= _nextIndoorSampleAt)
+            {
+                _nextIndoorSampleAt = Time.unscaledTime + 1f;
+                SampleIndoorFingerprint();
+            }
             if (DepthReady &&
                 _features.IsActive(AugmentedRealityFeatureRegistry.PersistentAnchors) &&
                 !_anchorsLoadStarted)
@@ -205,7 +221,11 @@ namespace MLOmega.XR.UI
                 TickNavigation();
             }
             if (
-                _features.IsActive(AugmentedRealityFeatureRegistry.WorldText) &&
+                (
+                    _features.IsActive(AugmentedRealityFeatureRegistry.WorldText) ||
+                    _features.IsActive(AugmentedRealityFeatureRegistry.WeatherContext) ||
+                    _features.IsActive(AugmentedRealityFeatureRegistry.Planetarium)
+                ) &&
                 Time.unscaledTime >= _nextWorldTextLocationAt)
             {
                 _nextWorldTextLocationAt = Time.unscaledTime + 30f;
@@ -230,6 +250,9 @@ namespace MLOmega.XR.UI
                 AugmentedRealityFeatureRegistry.StreetNavigation,
                 AugmentedRealityFeatureRegistry.AutomaticWorldFx,
                 AugmentedRealityFeatureRegistry.WorldText,
+                AugmentedRealityFeatureRegistry.IndoorNavigation,
+                AugmentedRealityFeatureRegistry.Planetarium,
+                AugmentedRealityFeatureRegistry.WeatherContext,
             };
             foreach (string id in ids)
                 if (_features.IsSelected(id)) return true;
@@ -252,15 +275,25 @@ namespace MLOmega.XR.UI
                     _features?.SetLocalCapability(
                         AugmentedRealityFeatureRegistry.StreetNavigation, false);
                 }
+                if (feature == AugmentedRealityFeatureRegistry.IndoorNavigation)
+                    StopIndoorFingerprint();
                 if (
                     feature == AugmentedRealityFeatureRegistry.AutomaticWorldFx ||
                     feature == AugmentedRealityFeatureRegistry.Master)
                     WithdrawAutomaticWorldEffects();
             }
-            else if (feature == AugmentedRealityFeatureRegistry.WorldText)
+            else if (
+                feature == AugmentedRealityFeatureRegistry.WorldText ||
+                feature == AugmentedRealityFeatureRegistry.WeatherContext ||
+                feature == AugmentedRealityFeatureRegistry.Planetarium)
             {
                 _nextWorldTextLocationAt = 0f;
                 EnsureWorldTextLocationAsync();
+            }
+            else if (feature == AugmentedRealityFeatureRegistry.IndoorNavigation)
+            {
+                _nextIndoorSampleAt = 0f;
+                EnsureIndoorFingerprintBridge();
             }
             _nextCapabilityProbe = 0f;
             UpdateMeshRendering();
@@ -1509,20 +1542,113 @@ namespace MLOmega.XR.UI
         /// </summary>
         public bool StartNavigation(string destination)
         {
+            if (_features == null || string.IsNullOrWhiteSpace(destination))
+                return false;
+            string clean = destination.Trim();
+            if (
+                _features.IsActive(AugmentedRealityFeatureRegistry.IndoorNavigation) &&
+                _indoorMap != null &&
+                _indoorMap.TryRoute(clean, out IndoorLiveMapStore.RouteResult indoor))
+            {
+                EmitIndoorNavigation(indoor);
+                return true;
+            }
             if (
                 _navigationStarting ||
-                _features == null ||
                 !_features.IsEffective(
-                    AugmentedRealityFeatureRegistry.StreetNavigation) ||
-                string.IsNullOrWhiteSpace(destination))
+                    AugmentedRealityFeatureRegistry.StreetNavigation))
                 return false;
 #if UNITY_ANDROID && !UNITY_EDITOR
             _navigationStarting = true;
-            ResolveNavigationAsync(destination.Trim());
+            ResolveNavigationAsync(clean);
             return true;
 #else
             return false;
 #endif
+        }
+
+        public bool NameCurrentIndoorPlace(string label)
+        {
+            bool ok =
+                _features != null &&
+                _features.IsActive(AugmentedRealityFeatureRegistry.IndoorNavigation) &&
+                _indoorMap != null &&
+                _indoorMap.NameCurrent(label);
+            if (ok)
+                EmitIndoorStatus(
+                    "LIEU INTÉRIEUR MÉMORISÉ",
+                    "Ce point est maintenant nommé « " + label.Trim() + " ».",
+                    "indoor_place_named");
+            return ok;
+        }
+
+        private void EmitIndoorNavigation(IndoorLiveMapStore.RouteResult route)
+        {
+            if (_intents == null || route == null ||
+                route.TrackingLocalPoints.Count < 2)
+                return;
+            var points = new List<Dictionary<string, object>>();
+            foreach (Vector3 point in route.TrackingLocalPoints)
+                points.Add(Point(point));
+            _intents.Emit(new UIIntent
+            {
+                UiIntentId = "xreal-indoor-navigation-" + HashId(route.MapId),
+                Producer = "ultralive",
+                Component = "world_navigation",
+                Anchor = TrackingAnchor(),
+                Content = SpatialContent(
+                    route.Quality,
+                    DepthReady,
+                    new Dictionary<string, object>
+                    {
+                        { "route_id", route.MapId + ":" +
+                            HashId(route.Destination) },
+                        { "destination", route.Destination },
+                        { "eta", "trajet appris" },
+                        { "distance_m", route.DistanceM },
+                        { "map_quality", route.Quality },
+                        { "route_quality", route.Quality },
+                        { "route_points", points },
+                        { "navigation_mode", "indoor_live_fingerprint_graph" },
+                        { "turn_by_turn", true },
+                        { "map_node_count", _indoorMap.NodeCount },
+                        { "radio_relocalisation_quality",
+                            _indoorMap.LastRelocalisationQuality },
+                    }),
+                TruthLevel = "observed",
+                Confidence = route.Quality,
+                Priority = 0.9,
+                TtlMs = 12000,
+                EvidenceRefs = Evidence(
+                    "xreal:indoor-map:" + route.MapId),
+            });
+        }
+
+        private void EmitIndoorStatus(string title, string text, string kind)
+        {
+            _intents?.Emit(new UIIntent
+            {
+                UiIntentId = "xreal-" + kind + "-" + DateTime.UtcNow.Ticks,
+                Producer = "ultralive",
+                Component = "context_card",
+                Anchor = new Dictionary<string, object>
+                {
+                    { "type", "head_locked" },
+                    { "side", "left" },
+                },
+                Content = new Dictionary<string, object>
+                {
+                    { "kind", kind },
+                    { "title", title },
+                    { "text", text },
+                    { "memory_write", false },
+                },
+                TruthLevel = "observed",
+                Confidence = 1.0,
+                Priority = 0.72,
+                TtlMs = 5000,
+                EvidenceRefs = Evidence("xreal:indoor-map-local"),
+            });
         }
 
         private bool NavigationSensorsReady()
@@ -1569,7 +1695,11 @@ namespace MLOmega.XR.UI
             if (
                 _transport == null ||
                 _features == null ||
-                !_features.IsActive(AugmentedRealityFeatureRegistry.WorldText))
+                !(
+                    _features.IsActive(AugmentedRealityFeatureRegistry.WorldText) ||
+                    _features.IsActive(AugmentedRealityFeatureRegistry.WeatherContext) ||
+                    _features.IsActive(AugmentedRealityFeatureRegistry.Planetarium)
+                ))
                 return;
             if (Input.location.status == LocationServiceStatus.Stopped)
             {
@@ -1592,7 +1722,23 @@ namespace MLOmega.XR.UI
                 altitude_m = info.altitude,
                 horizontal_accuracy_m = info.horizontalAccuracy,
                 captured_at_utc = DateTime.UtcNow.ToString("O"),
-                purpose = "world_text_evidence",
+                purpose = "augmented_context",
+                tracking_position = new
+                {
+                    x = _camera != null ? _camera.transform.position.x : 0f,
+                    y = _camera != null ? _camera.transform.position.y : 0f,
+                    z = _camera != null ? _camera.transform.position.z : 0f,
+                },
+                true_heading_deg = Input.compass.trueHeading,
+                heading_accuracy_deg = Input.compass.headingAccuracy,
+                north_calibrated =
+                    Input.compass.enabled &&
+                    Input.compass.headingAccuracy >= 0f &&
+                    Input.compass.headingAccuracy <= 30f,
+                world_north_yaw_deg = _camera != null
+                    ? _camera.transform.eulerAngles.y - Input.compass.trueHeading
+                    : 0f,
+                calibration_id = CalibrationId,
             }));
 #endif
         }
@@ -2166,6 +2312,112 @@ namespace MLOmega.XR.UI
             _features.SetLocalCapability(
                 AugmentedRealityFeatureRegistry.StreetNavigation,
                 _navigationDestination != null && NavigationSensorsReady());
+#if UNITY_ANDROID && !UNITY_EDITOR
+            bool trackedPoseReady = isActiveAndEnabled && PoseTracked();
+            bool indoorReady =
+                trackedPoseReady &&
+                _indoorMap != null &&
+                IndoorFingerprintPermissionReady(
+                    request: _features.IsSelected(
+                        AugmentedRealityFeatureRegistry.IndoorNavigation));
+            _features.SetLocalCapability(
+                AugmentedRealityFeatureRegistry.IndoorNavigation,
+                indoorReady);
+            _features.SetLocalCapability(
+                AugmentedRealityFeatureRegistry.Planetarium,
+                trackedPoseReady);
+            _features.SetLocalCapability(
+                AugmentedRealityFeatureRegistry.WeatherContext,
+                FineLocationPermissionReady(
+                    request: _features.IsSelected(
+                        AugmentedRealityFeatureRegistry.WeatherContext)));
+#else
+            _features.SetLocalCapability(
+                AugmentedRealityFeatureRegistry.IndoorNavigation, false);
+            _features.SetLocalCapability(
+                AugmentedRealityFeatureRegistry.Planetarium, false);
+            _features.SetLocalCapability(
+                AugmentedRealityFeatureRegistry.WeatherContext, false);
+#endif
+        }
+
+        private void SampleIndoorFingerprint()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (
+                _camera == null ||
+                _indoorMap == null ||
+                !PoseTracked() ||
+                !IndoorFingerprintPermissionReady(request: true) ||
+                !EnsureIndoorFingerprintBridge())
+                return;
+            Input.compass.enabled = true;
+            float northYaw =
+                Input.compass.headingAccuracy >= 0f &&
+                Input.compass.headingAccuracy <= 30f
+                    ? _camera.transform.eulerAngles.y - Input.compass.trueHeading
+                    : 0f;
+            try
+            {
+                string fingerprint = _indoorFingerprint.Call<string>("snapshotJson");
+                if (_indoorMap.Observe(
+                    _camera.transform.position,
+                    northYaw,
+                    fingerprint,
+                    out string state))
+                {
+                    LastProviderError = state == "map_full"
+                        ? "indoor_map_full"
+                        : string.Empty;
+                }
+            }
+            catch (Exception ex)
+            {
+                LastProviderError =
+                    "indoor_fingerprint:" + ex.GetType().Name;
+                StopIndoorFingerprint();
+            }
+#endif
+        }
+
+        private bool EnsureIndoorFingerprintBridge()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_indoorFingerprint != null) return true;
+            try
+            {
+                using var player =
+                    new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+                using AndroidJavaObject activity =
+                    player.GetStatic<AndroidJavaObject>("currentActivity");
+                using AndroidJavaObject context =
+                    activity.Call<AndroidJavaObject>("getApplicationContext");
+                _indoorFingerprint = new AndroidJavaObject(
+                    "com.mlomega.xr.livetransport.IndoorFingerprintBridge",
+                    context);
+                return _indoorFingerprint.Call<bool>("start");
+            }
+            catch (Exception ex)
+            {
+                LastProviderError =
+                    "indoor_bridge:" + ex.GetType().Name;
+                StopIndoorFingerprint();
+                return false;
+            }
+#else
+            return false;
+#endif
+        }
+
+        private void StopIndoorFingerprint()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_indoorFingerprint == null) return;
+            try { _indoorFingerprint.Call("stop"); }
+            catch (Exception) { }
+            _indoorFingerprint.Dispose();
+            _indoorFingerprint = null;
+#endif
         }
 
         private void SampleCurrentWifi()
@@ -2255,6 +2507,36 @@ namespace MLOmega.XR.UI
                 return false;
             }
             return locationReady && (sdk < 33 || nearbyReady);
+        }
+
+        private static bool IndoorFingerprintPermissionReady(bool request)
+        {
+            const string location = "android.permission.ACCESS_FINE_LOCATION";
+            const string bluetooth = "android.permission.BLUETOOTH_SCAN";
+            bool locationReady =
+                UnityEngine.Android.Permission.HasUserAuthorizedPermission(location);
+            int sdk;
+            try
+            {
+                using var version =
+                    new AndroidJavaClass("android.os.Build$VERSION");
+                sdk = version.GetStatic<int>("SDK_INT");
+            }
+            catch
+            {
+                return false;
+            }
+            bool bluetoothReady =
+                sdk < 31 ||
+                UnityEngine.Android.Permission.HasUserAuthorizedPermission(bluetooth);
+            if (request)
+            {
+                if (!locationReady)
+                    UnityEngine.Android.Permission.RequestUserPermission(location);
+                if (!bluetoothReady)
+                    UnityEngine.Android.Permission.RequestUserPermission(bluetooth);
+            }
+            return locationReady && bluetoothReady;
         }
 #endif
 

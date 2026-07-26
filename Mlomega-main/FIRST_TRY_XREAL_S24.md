@@ -211,11 +211,27 @@ interrupteurs sont OFF au premier démarrage afin de protéger FPS, batterie et
 lisibilité. `ACTIF` signifie que le capteur/provider requis est réellement
 disponible; `SYNCHRO`, `OFF` ou une erreur ne doivent pas être forcés.
 
-La navigation embarquée actuelle est un cap GPS/boussole 3D vers la
-destination, pas du turn-by-turn ni du VPS Google. Si la pose XREAL, le GPS ou
-la boussole ne sont pas qualifiés, l'app affiche une indisponibilité et ouvre
-Maps comme fallback. ARCore Geospatial n'est volontairement pas chargé en même
-temps que le loader XREAL avant le gate matériel A2c.
+La navigation extérieure utilise la route réseau lorsqu'elle est disponible,
+puis un cap GPS/boussole honnête comme fallback; ce n'est pas du VPS Google. Si
+pose, GPS ou boussole ne sont pas qualifiés, l'app affiche l'indisponibilité et
+ouvre Maps. ARCore Geospatial n'est volontairement pas chargé en même temps que
+le loader XREAL avant le gate matériel A2c.
+
+Pour un lieu intérieur, active **Navigation intérieure**, accorde Localisation
+précise et Appareils à proximité, puis marche normalement : la pose XREAL trace
+le chemin, tandis que Wi-Fi/BLE/magnétique servent seulement à reconnaître un
+lieu déjà parcouru. Dis par exemple **« nomme cet endroit comme cuisine »**.
+Plus tard, **« ouvre Maps vers cuisine »** affiche le chemin appris. `ATTENTE`
+signifie que pose ou permissions manquent; ce mode n'est jamais présenté comme
+un GPS indoor.
+
+**Planétarium** exige une pose suivie, GPS <= 50 m et cap <= 30°; sinon il
+s'abstient. **Météo contextuelle** est facultative et n'appelle Open-Meteo qu'au
+plus toutes les dix minutes. Pour l'aide globale France, active **Aide contexte
+social/juridique**, puis dis **« active le mode juridique »**. Le PC cherche dans
+LEGI, cite Légifrance et s'arrête avec **« arrête le mode juridique »** ou après
+15 minutes d'inactivité. Internet est requis pour LEGI; le mode contextuel
+général utilise le Kiwix local.
 
 ### Connaissance hors ligne, domotique et profils studio
 

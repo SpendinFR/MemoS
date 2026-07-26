@@ -9,10 +9,12 @@ namespace MLOmega.XR.UI
     /// </summary>
     public interface IXrealSpatialProvider
     {
+        bool TryProjectImagePoint(Vector2 imagePoint, out Vector3 worldPoint);
         bool CaptureMeasurementPoint(Vector2 viewport);
         bool PressKeyboard(Vector2 viewport, bool pinchBegin);
         bool PersistAnchorAtViewport(Vector2 viewport);
         bool SetBallisticTarget(Vector2 viewport);
         bool StartNavigation(string destination);
+        bool NameCurrentIndoorPlace(string label);
     }
 }

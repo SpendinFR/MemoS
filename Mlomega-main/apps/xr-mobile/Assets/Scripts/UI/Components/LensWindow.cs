@@ -19,7 +19,7 @@ namespace MLOmega.XR.UI.Components
         private GlassPanel _panel;
         private RawImage _content;
         private XrSessionController _session;
-        private MLOmega.XR.UI.XrealSpatialProvider _spatial;
+        private IXrealSpatialProvider _spatial;
         private Vector3 _worldPosition;
         private bool _worldPlaced;
 
@@ -75,7 +75,15 @@ namespace MLOmega.XR.UI.Components
                 IntentRead.Content(intent, "ocr", ""));
             if (_session == null) _session = FindAnyObjectByType<XrSessionController>();
             if (_spatial == null)
-                _spatial = FindAnyObjectByType<MLOmega.XR.UI.XrealSpatialProvider>();
+            {
+                foreach (MonoBehaviour behaviour in
+                    FindObjectsByType<MonoBehaviour>(FindObjectsSortMode.None))
+                {
+                    if (!(behaviour is IXrealSpatialProvider provider)) continue;
+                    _spatial = provider;
+                    break;
+                }
+            }
             if (!IntentRead.TryPoint(intent.Anchor, "center", out Vector2 center))
                 center = new Vector2(0.5f, 0.5f);
             _worldPlaced = false;

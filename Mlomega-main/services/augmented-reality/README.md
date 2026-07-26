@@ -20,6 +20,12 @@ n'écrit la base mémoire et n'est jamais lancé par défaut.
   optionnelle du pseudo par Sherlock, toujours `probable` jusqu'à confirmation;
 - `pulse_aura` : seule la ROI consentie est envoyée au téléphone; le signal rPPG
   reste local, volatile et abstentionniste.
+- `indoor_navigation` : graphe appris par la pose XREAL; Wi-Fi/BLE/magnétique
+  servent uniquement à relocaliser et n'inventent jamais une coordonnée ;
+- `planetarium` : calcul local JPL/catalogue borné, rendu après preuve de nord ;
+- `weather_context` : Open-Meteo opt-in, cache daté de 15 minutes ;
+- `legal_context` : recherche globale LEGI France en vigueur, session explicite
+  et bornée, aucune écriture mémoire.
 
 Probe sans démarrer le serveur :
 
@@ -64,6 +70,10 @@ Routes du Lot 1 :
 - `POST /v1/contextual-knowledge` : fiche Kiwix courte et sourcée ;
 - `POST /v1/consented-person` : carte d'une identité locale consentie, candidat Web
   autorisé ou ROI physiologique locale.
+- `POST /v1/weather` : widget actuel/caché et daté ;
+- `POST /v1/planetarium` : contrat `sky_dome` en espace `tracking_local` ;
+- `POST /v1/context-assist` : repère LEGI/Kiwix sourcé, seulement pendant une
+  session explicitement active.
 
 Le service ne reçoit pas le flux vidéo ou PCM. ML Kit et YAMNet tournent sur le
 S24; le bridge PC ne transmet que les événements bornés. Le VLM n'est invoqué
@@ -80,6 +90,8 @@ Variables optionnelles :
 - `MLOMEGA_KIWIX_URL` : endpoint Kiwix local (`127.0.0.1`/`localhost`) ;
 - `MLOMEGA_KIWIX_EXE` + `MLOMEGA_KIWIX_ZIM` : permettent à RUN de démarrer et
   arrêter automatiquement le serveur ;
+- `MLOMEGA_LEGAL_JURISDICTION` : `FR` par défaut dans le lanceur ;
+- `MLOMEGA_LEGAL_KIWIX_URL` : fallback local optionnel pour le profil juridique ;
 - `MLOMEGA_AR_STUDIO_CONFIG` : hash local du code de release, jamais le code en
   clair.
 

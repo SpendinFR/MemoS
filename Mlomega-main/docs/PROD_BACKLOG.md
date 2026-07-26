@@ -2541,23 +2541,55 @@ Suivi T0 logiciel — 26 juillet 2026 :
 
 **T2 — localisation et overlays contextuels spécialisés.**
 
-- [ ] **T2.1 Navigation intérieure, jamais appelée GPS indoor.** Définir des cartes
+- [x] **T2.1 Navigation intérieure, jamais appelée GPS indoor.** Définir des cartes
   locales et points de passage XREAL, complétés au besoin par balises BLE
   Eddystone/AltBeacon, empreintes Wi-Fi/magnétiques et fusion inertielle. L'installation
   calibre explicitement chaque lieu; afficher précision et perte de localisation.
   Tester parking/centre commercial avant de promettre un usage générique.
-- [ ] **T2.2 Planétarium personnel.** Calculer localement les éphémérides depuis
+- [x] **T2.2 Planétarium personnel.** Calculer localement les éphémérides depuis
   heure, position et orientation XREAL; afficher étoiles, planètes et constellations
   derrière un toggle FreeGuy. Évaluer Stardroid/Stellarium et licences, sans appel
   LLM ni écriture Memory automatique.
-- [ ] **T2.3 Météo contextuelle.** Open-Meteo sans clé, cache local 10–15 minutes,
+- [x] **T2.3 Météo contextuelle.** Open-Meteo sans clé, cache local 10–15 minutes,
   widget ambiant discret lié au lieu courant. Réseau perdu = dernière mesure datée,
   jamais une valeur silencieusement périmée.
-- [ ] **T2.4 Contexte social/juridique opt-in.** Généraliser la carte Wikipédia à un
+- [x] **T2.4 Contexte social/juridique opt-in.** Généraliser la carte Wikipédia à un
   moteur de contexte déclenché par commande/focus, pas chaque mot entendu. Le profil
   juridique choisit pays/juridiction, corpus officiel daté, articles cités et phrases
-  prudentes; il enregistre si demandé mais ne constitue ni conseil juridique ni
-  analyse automatique permanente d'un contrôle.
+  prudentes; il ne constitue ni conseil juridique ni analyse automatique permanente
+  d'un contrôle. Ce mode temporaire n'écrit jamais la mémoire personnelle.
+
+**Suivi T2 livré — 2026-07-26.**
+
+- La navigation intérieure apprend un graphe au fil de la marche avec la pose XREAL
+  comme seule géométrie. Wi-Fi/BLE sont salés et hachés avant JNI; radio et champ
+  magnétique relocalisent seulement le départ d'une nouvelle session. Ils ne créent
+  jamais de coordonnées et ne recollapsent pas un trajet quand le Wi-Fi reste
+  stable. `nomme cet endroit comme cuisine` persiste le point; une demande Maps
+  réutilise d'abord le chemin intérieur connu puis seulement la route extérieure.
+  Aucun plan préalable n'est requis.
+- Le planétarium est calculé localement avec les éléments orbitaux JPL 1800–2050
+  et un catalogue borné d'étoiles. `SkyDome` exige GPS <= 50 m, cap <= 30°, nord
+  calibré, pose `tracking_local`, calibration et preuves. Sinon il s'abstient.
+- La météo, secondaire, reste entièrement opt-in : Open-Meteo, aucun LLM, appel
+  au plus toutes les dix minutes et cache durable 15 minutes. Hors réseau, seule
+  une mesure antérieure explicitement datée `stale` peut être affichée.
+- Le profil juridique ne contient aucune liste de situations ou d'articles. Après
+  `active le mode juridique`, au plus huit tours récents deviennent une requête
+  globale sur LEGI. Statut/date d'effet sont filtrés, les candidats sont reclassés
+  sur le contexte complet, le meilleur et deux alternatives maximum sont sourcés
+  Légifrance, et une pertinence faible provoque une abstention. L'écoute est bornée
+  (cooldown 6 s, expiration 15 min, arrêt vocal), sans écriture `memory.db`.
+  `active le mode contextuel` utilise séparément le Kiwix local général.
+- LEGI global ne demande pas de clé mais requiert l'accès HTTPS à
+  `datasets-server.huggingface.co`; `MLOMEGA_LEGAL_KIWIX_URL` est un fallback
+  local facultatif. Une indisponibilité sans cache/fallback est visible, jamais
+  remplacée par un article inventé. Le lanceur sélectionne `FR`.
+- Plugin Android reconstruit; **29/29** tests Python AR/T1/T2, **2/2** runtime
+  `.venv-live` et **2/2** EditMode T2 verts. L'EditMode a aussi fermé une dépendance
+  PhoneOnly directe de `LensWindow` vers l'assembly XREAL via
+  `IXrealSpatialProvider`. Aucun APK n'est produit dans T2; permissions, radio,
+  cap, GPS et pose restent à vérifier sur S24 + One Pro/Eye avec tous les lots.
 
 **T3 — vrai Sherlock manuel et traçable.**
 

@@ -2059,3 +2059,29 @@ hit Depth; sinon l'ancien LensWindow head-locked reste autoritaire.
 Ces writers sont paresseux derrière les toggles AR. Ils n'altèrent ni les prompts,
 ni EpisodeBuilder, ni les backends Local/PRO, ni CloseDay. MediaRetention considère
 leurs preuves pour ne pas purger le média nécessaire au futur audit.
+
+## 2026-07-26 — T2 apprend le lieu localement et interroge les corpus globalement
+
+La navigation intérieure n'est pas un « GPS indoor ». La pose XREAL suivie est la
+seule source géométrique; Wi-Fi, BLE et champ magnétique forment une empreinte
+locale hachée qui peut seulement recaler le début d'une session sur un nœud déjà
+parcouru. Une empreinte radio stable n'est jamais réappliquée pendant la marche,
+sinon toute une pièce s'effondrerait sur un seul point. Graphe et libellés restent
+dans `Application.persistentDataPath`, séparés de `memory.db`.
+
+Météo et ciel sont des overlays opt-in sans inférence : Open-Meteo est mis en
+cache et daté; le ciel vient du calcul local JPL/catalogue borné. Un corps céleste
+n'est placé que si GPS, cap, nord, tracking local, calibration et preuves sont
+qualifiés.
+
+Le contexte juridique est global et non configuré « cas par cas ». Le transcript
+temporaire explicite devient une recherche sur tout LEGI, puis seuls les textes en
+vigueur à la date courante sont candidats. Le résultat garde identifiant, statut,
+date, termes appariés, pertinence, source Légifrance et alternatives. Sous le seuil
+ou sans source joignable/cache/fallback, le système s'abstient. Le profil social
+reste une recherche Kiwix locale distincte. Ces modes ne modifient ni les prompts
+Local/PRO, ni les writers Memory, ni le CloseDay.
+
+La frontière UI commune ne dépend plus du type concret XREAL : `LensWindow`
+consomme `IXrealSpatialProvider`. L'assembly PhoneOnly compile donc sans le
+define/package XREAL tout en conservant la projection Depth dans l'APK lunettes.
