@@ -2188,3 +2188,32 @@ La certification utilisateur est centralisée dans
 effet terminal et sa preuve, jamais par la présence d'une classe, d'une route,
 d'un compteur `accepted` ou d'un test matériel simulé. Les limites physiques et
 les fonctions différées restent visibles dans la même checklist.
+
+## 2026-07-28 — L'Atelier XREAL reste une APK séparée et transporte les mappings natifs
+
+Mettre l'éditeur de monde dans l'APK produit aurait ajouté catalogue, deck
+d'édition, import d'images et writes d'ancres au runtime déjà chargé par Eye,
+Reflex, UI et transport. Le produit conserve donc deux packages :
+`com.mlomega.xr.worldatelier` crée la carte sans pairing/Memory/capture, tandis
+que `com.mlomega.xr.glasses` est uniquement lecteur de paquets importés.
+
+Un GUID et une pose JSON ne suffisent pas pour déplacer une ancre entre deux
+sandboxes Android. Le paquet `mlomega.world-map/v1` embarque donc aussi, pour
+chaque GUID, le fichier natif écrit par le sous-système XREAL dans son répertoire
+de mapping. L'export vérifie présence, taille et SHA-256. L'import par Storage
+Access Framework valide l'enveloppe et les digests, installe atomiquement les
+fichiers dans le répertoire du package produit, puis demande à AR Foundation de
+les charger. Seul un `TrackingState.Tracking` déclenche le rendu; une ancre
+absente ou non relocalisée reste invisible et remonte une erreur.
+
+Le format accepte des logos PNG/JPEG bornés, mais la géométrie reste procédurale
+et world-space : dix-huit grammaires 3D, palettes et animations composent plus de
+3 000 presets. Aucun écran 2D n'est superposé dans le player Android; le deck
+Atelier est lui-même un canvas spatial épaissi et le `OnGUI` résiduel est
+Editor-only. Les modes FreeGuy dynamique et ancré sont deux switches distincts
+et composables. L'import ne touche ni `memory.db`, ni BrainLive, ni les runners
+Local/PRO.
+
+Cette décision ferme le raccord logiciel inter-APK, pas le gate matériel :
+l'équivalence du fichier natif entre packages et la relocalisation après marche,
+redémarrage et changement de zone doivent être vérifiées sur S24 + One Pro/Eye.

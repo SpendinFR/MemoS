@@ -1027,8 +1027,6 @@ Ne pas attendre ces capacités dans l'APK actuelle :
 
 - `enhanced_zoom` Real-ESRGAN temps réel : le crop/pinch de base fonctionne,
   mais le super-zoom public est masqué ;
-- APK Atelier de création manuelle de ville/monde : le format
-  `world-map-v1` et le chargement existent, l'outil de création n'est pas livré ;
 - filtre temporel transformant une rue en autre époque ;
 - reconstruction 3D historique/gaussian splatting ;
 - face swap, beauté et remplacement de vêtements ;
@@ -1041,6 +1039,29 @@ Ne pas attendre ces capacités dans l'APK actuelle :
 
 Une entrée `ATTENTE` correspondant à cette liste est correcte. Il ne faut pas la
 contourner par un faux résultat.
+
+## 27 bis. APK World Atelier et FreeGuy ancré
+
+Suivre `FIRST_TRY_XREAL_WORLD_ATELIER.md`, puis vérifier :
+
+- [ ] l'Atelier démarre sans pairing PC, micro, capture Eye WebRTC ni Memory ;
+- [ ] le pupitre et les presets sont de vrais éléments world-space/stéréo, pas une
+  fenêtre Android 2D ;
+- [ ] hit Depth absent : `ANCRER` refuse, aucune pose n'est inventée ;
+- [ ] sol et mur : position, verticale, rotation et resize sont conservés ;
+- [ ] un logo PNG/JPEG valide apparaît dans son volume 3D, un asset trop gros est
+  refusé ;
+- [ ] l'export contient un mapping natif pour chaque GUID et refuse tout mapping
+  absent ;
+- [ ] l'APK produit importe le paquet sans accès à la DB de l'Atelier ;
+- [ ] après redémarrage et retour au lieu, seules les ancres réellement
+  `Tracking` réapparaissent ;
+- [ ] `FreeGuy ancré` fonctionne seul ;
+- [ ] `FreeGuy dynamique` fonctionne seul ;
+- [ ] les deux modes se composent sans doublons, head-lock ni dépassement
+  thermique ;
+- [ ] `Importer monde` et `VIKI, importe mon monde ancré` ouvrent le même picker ;
+- [ ] Local/PRO, Memory, Eye et CloseDay gardent leurs résultats historiques.
 
 ## 28. Verdict final matériel
 

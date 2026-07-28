@@ -557,3 +557,16 @@ les surfaces, expire les éléments par TTL et plafonne FreeGuy à 12 surfaces.
 Pour le premier test physique, activer les fonctions progressivement plutôt
 que tout le menu : la fluidité et la température finales doivent encore être
 mesurées sur S24 + XREAL Eye.
+
+## Monde FreeGuy ancré créé dans l'Atelier
+
+L'éditeur n'est volontairement pas embarqué dans cette APK afin de ne pas
+charger le runtime Eye/Memory. Installe l'APK séparée
+`build\android\mlomega-xreal-world-atelier.apk`, crée et exporte le monde, puis
+reviens ici et utilise `Importer monde` + `FreeGuy ancré`. Le mode
+`FreeGuy dynamique` historique reste indépendant et les deux peuvent être
+activés ensemble.
+
+La procédure complète de création, export/import, commandes vocales, rebuild et
+gate de relocalisation est dans
+[`FIRST_TRY_XREAL_WORLD_ATELIER.md`](FIRST_TRY_XREAL_WORLD_ATELIER.md).

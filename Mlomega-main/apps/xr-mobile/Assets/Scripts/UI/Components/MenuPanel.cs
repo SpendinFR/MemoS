@@ -158,7 +158,15 @@ namespace MLOmega.XR.UI.Components
             ResolveAugmentedRegistry();
             _actions.Clear();
             // Modes.
-            _actions.Add(Mode("FreeGuy", "freeguy"));
+            _actions.Add(Mode("FreeGuy dynamique", "freeguy"));
+            _actions.Add(Mode("FreeGuy ancré", "freeguy_anchored"));
+            _actions.Add(new MenuAction(
+                "Importer monde",
+                new DeviceCommand
+                {
+                    Type = "device_command",
+                    Action = "import_world_map",
+                }));
             _actions.Add(Mode("Minimal", "minimal"));
             _actions.Add(Mode("Cacher", "hide_all"));
             _actions.Add(new MenuAction("Privé", new DeviceCommand { Type = "device_command", Action = "privacy_pause" }));

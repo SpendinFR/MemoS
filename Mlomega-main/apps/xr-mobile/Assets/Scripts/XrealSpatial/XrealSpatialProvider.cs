@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections;
 using System.IO;
+using System.Globalization;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
@@ -11,12 +12,14 @@ using MLOmega.XR.Transport;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.Networking;
+using UnityEngine.XR;
 #if XREAL_SDK_PRESENT
 using Unity.Collections;
 using Unity.XR.CoreUtils;
 using Unity.XR.XREAL;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
+using SerializableGuid = UnityEngine.XR.ARSubsystems.SerializableGuid;
 #endif
 #if XREAL_SDK_PRESENT && XR_HANDS
 using UnityEngine.XR.Hands;
@@ -35,7 +38,8 @@ namespace MLOmega.XR.UI
     /// </summary>
     public sealed class XrealSpatialProvider :
         MonoBehaviour,
-        IXrealSpatialProvider
+        IXrealSpatialProvider,
+        IWorldCreatorSpatialProvider
     {
         private const string CalibrationId = "xreal-eye-tracking-local-v1";
         private const float SceneCadenceSeconds = 0.20f;
@@ -50,6 +54,7 @@ namespace MLOmega.XR.UI
         [SerializeField] private Camera _camera;
         [SerializeField] private Shader _depthOcclusionShader;
         [SerializeField] private Shader _freeGuyMeshShader;
+        [SerializeField] private bool _creatorMode;
 
         private readonly Dictionary<string, TrackHistory> _tracks =
             new Dictionary<string, TrackHistory>(StringComparer.Ordinal);
@@ -68,6 +73,7 @@ namespace MLOmega.XR.UI
         private Material _depthOcclusionMaterial;
         private Material _freeGuyMeshMaterial;
         private bool _anchorsLoadStarted;
+        private string _anchorMappingDirectory;
         private readonly HashSet<string> _emittedAnchorIds =
             new HashSet<string>(StringComparer.Ordinal);
         private Vector3? _ballisticTarget;
@@ -80,6 +86,7 @@ namespace MLOmega.XR.UI
         private bool _routeRequestInFlight;
         private float _nextRouteRequestAt;
         private WorldMapStore _worldMap;
+        private WorldMapDocumentExchange _worldMapExchange;
         private IndoorLiveMapStore _indoorMap;
 #if UNITY_ANDROID && !UNITY_EDITOR
         private AndroidJavaObject _indoorFingerprint;
@@ -93,6 +100,10 @@ namespace MLOmega.XR.UI
         public bool DepthReady { get; private set; }
         public string LastProviderError { get; private set; } = string.Empty;
         public int ProjectedTrackCount => _tracks.Count;
+        public bool CreatorReady =>
+            _creatorMode && DepthReady && AnchorProviderReady();
+        public WorldMapStore CreatorMap => _worldMap;
+        public event Action<string, bool, string> CreatorOperationCompleted;
 
         /// <summary>
         /// Project a top-left-origin normalised image point onto the proven XREAL
@@ -137,6 +148,9 @@ namespace MLOmega.XR.UI
                 System.IO.Path.Combine(
                     Application.persistentDataPath, "xreal-world-maps"),
                 CalibrationId);
+            _worldMapExchange =
+                GetComponent<WorldMapDocumentExchange>() ??
+                gameObject.AddComponent<WorldMapDocumentExchange>();
             _indoorMap = new IndoorLiveMapStore(
                 System.IO.Path.Combine(
                     Application.persistentDataPath, "xreal-indoor-maps"));
@@ -150,12 +164,16 @@ namespace MLOmega.XR.UI
         {
             if (_transport != null) _transport.MessageReceived += OnTransportMessage;
             if (_features != null) _features.FeatureChanged += OnFeatureChanged;
+            if (_worldMapExchange != null)
+                _worldMapExchange.Imported += OnWorldMapImported;
         }
 
         private void OnDisable()
         {
             if (_transport != null) _transport.MessageReceived -= OnTransportMessage;
             if (_features != null) _features.FeatureChanged -= OnFeatureChanged;
+            if (_worldMapExchange != null)
+                _worldMapExchange.Imported -= OnWorldMapImported;
             WithdrawAutomaticWorldEffects();
             StopIndoorFingerprint();
             SetLocalCapabilities(false);
@@ -171,7 +189,26 @@ namespace MLOmega.XR.UI
 
         private void Update()
         {
-            if (!CompiledForXreal || _features == null) return;
+            if (!CompiledForXreal) return;
+            if (_creatorMode)
+            {
+                const bool wantedByCreator = true;
+                if (!_managersRequested &&
+                    Time.unscaledTime >= _nextManagerRetryAt)
+                    EnsureSpatialManagers();
+                SetManagersEnabled(wantedByCreator);
+                if (Time.unscaledTime >= _nextCapabilityProbe)
+                {
+                    _nextCapabilityProbe =
+                        Time.unscaledTime + CapabilityCadenceSeconds;
+                    DepthReady = PoseTracked() && HasReadableDepthMesh();
+                    UpdateMeshRendering();
+                }
+                if (DepthReady && !_anchorsLoadStarted)
+                    LoadPersistentAnchors();
+                return;
+            }
+            if (_features == null) return;
             bool wanted = _features.MasterEnabled && AnySpatialFeatureSelected();
             if (wanted && !_managersRequested &&
                 Time.unscaledTime >= _nextManagerRetryAt)
@@ -992,8 +1029,24 @@ namespace MLOmega.XR.UI
             return found;
         }
 
-        private bool PoseTracked() =>
-            _pose != null && _pose.Latest.IsTracking;
+        private bool PoseTracked()
+        {
+            if (!_creatorMode)
+                return _pose != null && _pose.Latest.IsTracking;
+            var devices = new List<InputDevice>();
+            InputDevices.GetDevicesAtXRNode(XRNode.CenterEye, devices);
+            foreach (InputDevice device in devices)
+            {
+                if (
+                    device.isValid &&
+                    device.TryGetFeatureValue(
+                        CommonUsages.isTracked,
+                        out bool tracked) &&
+                    tracked)
+                    return true;
+            }
+            return false;
+        }
 
         private bool HasReadableDepthMesh()
         {
@@ -1120,9 +1173,10 @@ namespace MLOmega.XR.UI
         {
 #if XREAL_SDK_PRESENT
             if (!(_anchorManager is ARAnchorManager manager)) return;
+            _anchorMappingDirectory = System.IO.Path.Combine(
+                Application.persistentDataPath, "xreal-anchor-maps");
             manager.SetAndCreateAnchorMappingDirectory(
-                System.IO.Path.Combine(
-                    Application.persistentDataPath, "xreal-anchor-maps"));
+                _anchorMappingDirectory);
 #endif
         }
 
@@ -1160,9 +1214,28 @@ namespace MLOmega.XR.UI
                 var ids = idsResult.value;
                 try
                 {
-                    foreach (
-                        UnityEngine.XR.ARSubsystems.SerializableGuid id in ids)
+                    var candidates =
+                        new Dictionary<string, SerializableGuid>(
+                            StringComparer.Ordinal);
+                    foreach (SerializableGuid id in ids)
+                        candidates[id.ToString()] = id;
+                    if (_worldMap != null)
                     {
+                        foreach (WorldMapStore.WorldContent content in
+                            _worldMap.Contents)
+                        {
+                            if (
+                                content != null &&
+                                TryParsePersistentGuid(
+                                    content.anchorGuid,
+                                    out SerializableGuid imported))
+                                candidates[imported.ToString()] = imported;
+                        }
+                    }
+                    foreach (KeyValuePair<string, SerializableGuid> pair in
+                        candidates)
+                    {
+                        SerializableGuid id = pair.Value;
                         var load = await manager.TryLoadAnchorAsync(id);
                         if (load.status.IsSuccess() && load.value != null)
                             StartCoroutine(EmitAnchorWhenTracked(
@@ -1185,6 +1258,287 @@ namespace MLOmega.XR.UI
             }
 #endif
         }
+
+        public void EnableCreatorMode()
+        {
+            _creatorMode = true;
+            _nextManagerRetryAt = 0f;
+        }
+
+        public bool TryCreatorPlacement(
+            Vector2 viewport,
+            out Vector3 position,
+            out Quaternion rotation)
+        {
+            position = default;
+            rotation = Quaternion.identity;
+            if (
+                !_creatorMode ||
+                !DepthReady ||
+                !TryDepthHit(viewport, out RaycastHit hit))
+                return false;
+            position = hit.point;
+            rotation = CreatorSurfaceRotation(hit, 0f);
+            return true;
+        }
+
+        public bool PersistCreatorContent(
+            Vector2 viewport,
+            WorldCreatorCatalog.Entry preset,
+            string label,
+            string subtitle,
+            Vector3 scale,
+            float yawDegrees,
+            string assetId)
+        {
+            if (
+                !_creatorMode ||
+                preset == null ||
+                !CreatorReady ||
+                !TryDepthHit(viewport, out RaycastHit hit) ||
+                !AnchorProviderReady())
+                return false;
+            Quaternion rotation =
+                CreatorSurfaceRotation(hit, yawDegrees);
+            SaveCreatorContentAt(
+                hit.point,
+                rotation,
+                preset,
+                label,
+                subtitle,
+                new Vector3(
+                    Mathf.Clamp(scale.x, 0.1f, 4f),
+                    Mathf.Clamp(scale.y, 0.1f, 4f),
+                    Mathf.Clamp(scale.z, 0.1f, 4f)),
+                assetId);
+            return true;
+        }
+
+        private Quaternion CreatorSurfaceRotation(
+            RaycastHit hit,
+            float angleDegrees)
+        {
+            Vector3 normal = hit.normal.sqrMagnitude < .5f
+                ? Vector3.up
+                : hit.normal.normalized;
+            bool floorLike = Mathf.Abs(
+                Vector3.Dot(normal, Vector3.up)) >= .65f;
+            Vector3 forward;
+            if (floorLike)
+            {
+                forward = _camera == null
+                    ? Vector3.forward
+                    : Vector3.ProjectOnPlane(
+                        _camera.transform.forward,
+                        Vector3.up);
+                if (forward.sqrMagnitude < .001f)
+                    forward = Vector3.forward;
+            }
+            else
+            {
+                // Wall-mounted signs face away from the supporting surface
+                // while retaining a true world vertical.
+                forward = -normal;
+            }
+            Quaternion basis = Quaternion.LookRotation(
+                forward.normalized,
+                Vector3.up);
+            float bounded =
+                Mathf.Repeat(angleDegrees + 180f, 360f) - 180f;
+            return floorLike
+                ? Quaternion.AngleAxis(bounded, Vector3.up) * basis
+                : basis * Quaternion.AngleAxis(
+                    bounded,
+                    Vector3.forward);
+        }
+
+        private async void SaveCreatorContentAt(
+            Vector3 position,
+            Quaternion rotation,
+            WorldCreatorCatalog.Entry preset,
+            string label,
+            string subtitle,
+            Vector3 scale,
+            string assetId)
+        {
+#if XREAL_SDK_PRESENT
+            if (!(_anchorManager is ARAnchorManager manager)) return;
+            var go = new GameObject("MLOmega Atelier Anchor");
+            go.transform.SetPositionAndRotation(position, rotation);
+            ARAnchor anchor = go.AddComponent<ARAnchor>();
+            string contentId = "atelier-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                for (int i = 0;
+                    i < 90 && anchor != null &&
+                    anchor.trackingState != TrackingState.Tracking;
+                    i++)
+                    await Awaitable.NextFrameAsync();
+                if (
+                    anchor == null ||
+                    anchor.trackingState != TrackingState.Tracking)
+                    throw new InvalidOperationException(
+                        "creator anchor did not reach Tracking");
+                var saved = await manager.TrySaveAnchorAsync(anchor);
+                if (!saved.status.IsSuccess())
+                    throw new InvalidOperationException(
+                        "creator save status=" + saved.status.statusCode);
+                string anchorGuid = saved.value.ToString();
+                WorldMapStore.WorldContent content = _worldMap.Upsert(
+                    contentId,
+                    anchorGuid,
+                    preset.templateId,
+                    string.IsNullOrWhiteSpace(label) ? preset.label : label,
+                    string.IsNullOrWhiteSpace(subtitle)
+                        ? preset.subtitle
+                        : subtitle,
+                    string.Empty,
+                    "manual",
+                    "atelier:xreal-depth:" + preset.presetId,
+                    position,
+                    rotation,
+                    scale,
+                    0.94f);
+                _worldMap.ApplyVisualPreset(content.worldContentId, preset);
+                if (!string.IsNullOrWhiteSpace(assetId))
+                    _worldMap.AssignAsset(content.worldContentId, assetId);
+                CreatorOperationCompleted?.Invoke(contentId, true, "saved");
+            }
+            catch (Exception ex)
+            {
+                LastProviderError =
+                    "xreal_creator_save:" + ex.GetType().Name + ":" + ex.Message;
+                CreatorOperationCompleted?.Invoke(
+                    contentId, false, LastProviderError);
+                if (go != null) Destroy(go);
+            }
+#endif
+        }
+
+        public bool RemoveCreatorContent(string worldContentId)
+        {
+            if (!_creatorMode || _worldMap == null) return false;
+            WorldMapStore.WorldContent content =
+                _worldMap.FindById(worldContentId);
+            if (content == null) return false;
+            EraseCreatorContent(content);
+            return true;
+        }
+
+        public bool PrepareCreatorExport(out string error)
+        {
+            error = string.Empty;
+            if (!_creatorMode || _worldMap == null)
+            {
+                error = "creator_map_unavailable";
+                return false;
+            }
+            if (string.IsNullOrWhiteSpace(_anchorMappingDirectory))
+            {
+                error = "anchor_mapping_directory_unavailable";
+                return false;
+            }
+            return _worldMap.CaptureAnchorMappings(
+                _anchorMappingDirectory,
+                out error);
+        }
+
+        private async void EraseCreatorContent(
+            WorldMapStore.WorldContent content)
+        {
+#if XREAL_SDK_PRESENT
+            bool erased = false;
+            string error = "anchor_guid_invalid";
+            try
+            {
+                if (
+                    _anchorManager is ARAnchorManager manager &&
+                    TryParsePersistentGuid(
+                        content.anchorGuid,
+                        out SerializableGuid guid))
+                {
+                    XRResultStatus result =
+                        await manager.TryEraseAnchorAsync(guid);
+                    erased = result.IsSuccess();
+                    error = erased
+                        ? string.Empty
+                        : "erase status=" + result.statusCode;
+                }
+                if (erased) _worldMap.Remove(content.worldContentId);
+            }
+            catch (Exception ex)
+            {
+                error = ex.GetType().Name + ":" + ex.Message;
+            }
+            CreatorOperationCompleted?.Invoke(
+                content.worldContentId, erased, error);
+#endif
+        }
+
+        public bool ImportAnchoredWorld() =>
+            !_creatorMode &&
+            _worldMapExchange != null &&
+            _worldMapExchange.BeginImport();
+
+        private void OnWorldMapImported(string packagePath)
+        {
+            string error = string.Empty;
+            if (
+                _worldMap == null ||
+                !_worldMap.ReplaceFromPackage(packagePath, out error))
+            {
+                LastProviderError = "world_map_import:" + error;
+                return;
+            }
+            if (
+                string.IsNullOrWhiteSpace(_anchorMappingDirectory) ||
+                !_worldMap.InstallAnchorMappings(
+                    _anchorMappingDirectory,
+                    out error))
+            {
+                LastProviderError =
+                    "world_map_anchor_install:" + error;
+                return;
+            }
+            // The native files are now in the SDK directory. Do not keep a
+            // second 24 MiB base64 copy in the production APK's durable map.
+            _worldMap.ReleaseEmbeddedAnchorMappings();
+            _emittedAnchorIds.Clear();
+            _anchorsLoadStarted = false;
+            LastProviderError = string.Empty;
+        }
+
+#if XREAL_SDK_PRESENT
+        private static bool TryParsePersistentGuid(
+            string value,
+            out SerializableGuid guid)
+        {
+            guid = SerializableGuid.empty;
+            string[] parts = (value ?? string.Empty).Split('-');
+            if (
+                parts.Length == 2 &&
+                ulong.TryParse(
+                    parts[0],
+                    NumberStyles.HexNumber,
+                    CultureInfo.InvariantCulture,
+                    out ulong low) &&
+                ulong.TryParse(
+                    parts[1],
+                    NumberStyles.HexNumber,
+                    CultureInfo.InvariantCulture,
+                    out ulong high))
+            {
+                guid = new SerializableGuid(low, high);
+                return guid != SerializableGuid.empty;
+            }
+            if (Guid.TryParse(value, out Guid systemGuid))
+            {
+                guid = new SerializableGuid(systemGuid);
+                return guid != SerializableGuid.empty;
+            }
+            return false;
+        }
+#endif
 
         public bool PersistAnchorAtViewport(Vector2 viewport)
         {
@@ -1258,6 +1612,7 @@ namespace MLOmega.XR.UI
                 if (content != null)
                     EmitPersistentWorldContent(
                         anchor.transform.position,
+                        anchor.transform.rotation,
                         persistentId,
                         content);
                 else
@@ -1275,6 +1630,7 @@ namespace MLOmega.XR.UI
 
         private void EmitPersistentWorldContent(
             Vector3 position,
+            Quaternion rotation,
             string persistentId,
             WorldMapStore.WorldContent content)
         {
@@ -1285,6 +1641,10 @@ namespace MLOmega.XR.UI
                 !_emittedAnchorIds.Add(persistentId))
                 return;
             float quality = Mathf.Clamp(content.quality, 0.72f, 0.94f);
+            WorldMapStore.WorldAsset asset =
+                string.IsNullOrWhiteSpace(content.assetId)
+                    ? null
+                    : _worldMap?.FindAsset(content.assetId);
             _intents.Emit(new UIIntent
             {
                 Type = "ui_intent",
@@ -1302,9 +1662,27 @@ namespace MLOmega.XR.UI
                     new Dictionary<string, object>
                     {
                         { "anchor_quality", quality },
-                        { "marker_id", content.worldContentId },
-                        { "template_id", content.templateId },
-                        { "label", content.label },
+                         { "marker_id", content.worldContentId },
+                         { "template_id", content.templateId },
+                         { "preset_id", content.presetId },
+                         { "archetype_id", content.archetypeId },
+                         { "style_id", content.styleId },
+                         { "animation_id", content.animationId },
+                         { "accent_hex", content.accentHex },
+                         { "secondary_hex", content.secondaryHex },
+                         {
+                             "scale",
+                             Point(content.localScale.Value)
+                         },
+                         {
+                             "local_euler",
+                             Point(rotation.eulerAngles)
+                         },
+                         { "asset_id", asset?.assetId ?? string.Empty },
+                         { "asset_mime", asset?.mimeType ?? string.Empty },
+                         { "asset_sha256", asset?.sha256 ?? string.Empty },
+                         { "asset_base64", asset?.base64Data ?? string.Empty },
+                         { "label", content.label },
                         { "subtitle", content.subtitle },
                         { "kind", "place" },
                         { "persistence", "xreal_anchor" },

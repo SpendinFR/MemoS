@@ -105,15 +105,27 @@ namespace MLOmega.XR.UI
                 .ToLowerInvariant()
                 .Replace("_", string.Empty)
                 .Replace(" ", string.Empty);
-            if (id != "freeguy") return false;
+            bool anchored = id == "freeguyanchored";
+            if (id != "freeguy" && !anchored) return false;
 
             var changed = new List<KeyValuePair<string, bool>>();
             if (enabled && StoreSelection(Master, true))
                 changed.Add(new KeyValuePair<string, bool>(Master, true));
-            if (StoreSelection(WorldStyling, enabled))
-                changed.Add(new KeyValuePair<string, bool>(WorldStyling, enabled));
-            if (StoreSelection(AutomaticWorldFx, enabled))
-                changed.Add(new KeyValuePair<string, bool>(AutomaticWorldFx, enabled));
+            bool styling =
+                enabled ||
+                (anchored
+                    ? IsSelected(AutomaticWorldFx)
+                    : IsSelected(PersistentAnchors));
+            if (StoreSelection(WorldStyling, styling))
+                changed.Add(new KeyValuePair<string, bool>(
+                    WorldStyling, styling));
+            string primary =
+                anchored ? PersistentAnchors : AutomaticWorldFx;
+            if (StoreSelection(primary, enabled))
+                changed.Add(new KeyValuePair<string, bool>(primary, enabled));
+            if (anchored && enabled && StoreSelection(DepthOcclusion, true))
+                changed.Add(new KeyValuePair<string, bool>(
+                    DepthOcclusion, true));
 
             if (enabled && changed.Exists(pair => pair.Key == Master))
             {

@@ -20,10 +20,20 @@ namespace MLOmega.XR.UI.Components
             public string Id;
             public string CalibrationId;
             public string TemplateId;
+            public string ArchetypeId;
+            public string AnimationId;
             public string Label;
             public string Subtitle;
             public float Quality;
             public bool DepthValid;
+            public Color Accent;
+            public Color Secondary;
+            public Vector3 Scale;
+            public Quaternion AnchorRotation;
+            public string AssetMime;
+            public string AssetSha256;
+            public string AssetBase64;
+            public float MaxRenderDistanceM;
         }
 
         private readonly List<LineRenderer> _lines = new List<LineRenderer>();
@@ -34,6 +44,9 @@ namespace MLOmega.XR.UI.Components
         private Hologram _hologram;
         private bool _qualified;
         private Color _accent;
+        private Color _secondary;
+        private Texture2D _assetTexture;
+        private string _assetSha256 = string.Empty;
 
         public override string ComponentKey => "world_hologram";
         public bool IsQualified => _qualified;
@@ -76,7 +89,9 @@ namespace MLOmega.XR.UI.Components
             SetEnabled(_qualified);
             if (!_qualified) return;
 
-            _accent = TemplateColor(_hologram.TemplateId);
+            _accent = _hologram.Accent;
+            _secondary = _hologram.Secondary;
+            BindAsset();
             _label.text =
                 $"<color=#{ColorUtility.ToHtmlStringRGB(_accent)}>" +
                 CleanLabel(_hologram.Label).ToUpperInvariant() +
@@ -106,16 +121,34 @@ namespace MLOmega.XR.UI.Components
 
         private void Draw(float now)
         {
+            now = AnimatedTime(now);
             Camera cam = Context != null ? Context.Camera : Camera.main;
             Vector3 origin = _hologram.Position;
+            if (
+                cam != null &&
+                Vector3.Distance(cam.transform.position, origin) >
+                _hologram.MaxRenderDistanceM)
+            {
+                SetEnabled(false);
+                return;
+            }
+            SetEnabled(true);
             Vector3 toCamera = cam == null
                 ? Vector3.back
                 : cam.transform.position - origin;
-            Vector3 flatForward = Vector3.ProjectOnPlane(toCamera, Vector3.up);
-            if (flatForward.sqrMagnitude < 0.0001f) flatForward = Vector3.back;
+            Vector3 anchoredUp = _hologram.AnchorRotation * Vector3.up;
+            Vector3 anchoredForward =
+                _hologram.AnchorRotation * Vector3.forward;
+            Vector3 flatForward =
+                Vector3.ProjectOnPlane(anchoredForward, anchoredUp);
+            if (flatForward.sqrMagnitude < 0.0001f)
+                flatForward = Vector3.ProjectOnPlane(toCamera, anchoredUp);
+            if (flatForward.sqrMagnitude < 0.0001f)
+                flatForward = Vector3.forward;
             flatForward.Normalize();
-            Vector3 right = Vector3.Cross(Vector3.up, flatForward).normalized;
-            float pulse = 0.75f + 0.25f * Mathf.Sin(now * 3.1f);
+            Vector3 right =
+                Vector3.Cross(anchoredUp, flatForward).normalized;
+            float pulse = AnimatedPulse(now);
 
             switch (_hologram.TemplateId)
             {
@@ -131,6 +164,42 @@ namespace MLOmega.XR.UI.Components
                 case "memory_echo":
                     DrawMemoryEcho(origin, right, flatForward, now);
                     break;
+                case "portal_arch":
+                    DrawPortal(origin, right, flatForward, now);
+                    break;
+                case "sky_drone":
+                    DrawDrone(origin, right, flatForward, now);
+                    break;
+                case "giant_hologram":
+                    DrawGiantHologram(origin, right, flatForward, now);
+                    break;
+                case "direction_arrow":
+                    DrawDirectionArrow(origin, right, flatForward, now);
+                    break;
+                case "building_crown":
+                    DrawBuildingCrown(origin, right, flatForward, now);
+                    break;
+                case "window_display":
+                    DrawWindowDisplay(origin, right, flatForward, now);
+                    break;
+                case "particle_column":
+                    DrawParticleColumn(origin, right, flatForward, now);
+                    break;
+                case "street_totem":
+                    DrawStreetTotem(origin, right, flatForward, now);
+                    break;
+                case "home_widget":
+                    DrawHomeWidget(origin, right, flatForward, now);
+                    break;
+                case "room_boundary":
+                    DrawRoomBoundary(origin, right, flatForward, now);
+                    break;
+                case "logo_orbit":
+                    DrawLogoOrbit(origin, right, flatForward, now);
+                    break;
+                case "warning_barrier":
+                    DrawWarningBarrier(origin, right, flatForward, now);
+                    break;
                 default:
                     DrawNeonSign(origin, right, flatForward, now);
                     break;
@@ -138,17 +207,61 @@ namespace MLOmega.XR.UI.Components
             ApplyColor(CurrentAlpha, pulse);
         }
 
+        private float AnimatedTime(float now)
+        {
+            switch ((_hologram?.AnimationId ?? string.Empty)
+                    .Trim().ToLowerInvariant())
+            {
+                case "scan": return now * 1.45f;
+                case "orbit": return now * .72f;
+                case "data_rain": return now * 2.1f;
+                default: return now;
+            }
+        }
+
+        private float AnimatedPulse(float now)
+        {
+            switch ((_hologram?.AnimationId ?? string.Empty)
+                    .Trim().ToLowerInvariant())
+            {
+                case "scan":
+                    return .72f + .28f * Mathf.PingPong(now, 1f);
+                case "orbit":
+                    return .82f + .18f * Mathf.Sin(now * 1.7f);
+                case "data_rain":
+                    return .68f + .32f *
+                        Mathf.Abs(Mathf.Sin(now * 4.6f));
+                default:
+                    return .75f + .25f * Mathf.Sin(now * 3.1f);
+            }
+        }
+
         private void DrawNeonSign(
             Vector3 origin, Vector3 right, Vector3 forward, float now)
         {
-            float hover = 0.62f + Mathf.Sin(now * 2.2f) * 0.025f;
+            float hover =
+                (0.62f + Mathf.Sin(now * 2.2f) * 0.025f) * Sy;
             Vector3 center = origin + Vector3.up * hover;
-            Rectangle(_lines[0], center, right, Vector3.up, 0.48f, 0.16f);
-            Rectangle(_lines[1], center, right, Vector3.up, 0.43f, 0.125f);
-            Ring(_lines[2], origin + Vector3.up * 0.025f, right, forward, 0.16f, 32);
-            SetLine(_lines[3], origin, center - right * 0.48f, center + right * 0.48f);
-            SetLine(_lines[4], center - Vector3.up * 0.16f, center + Vector3.up * 0.16f);
-            PlacePanel(center, right, Vector3.up, 0.88f, 0.25f, forward);
+            Rectangle(
+                _lines[0], center, right, Vector3.up,
+                0.48f * Sx, 0.16f * Sy);
+            Rectangle(
+                _lines[1], center, right, Vector3.up,
+                0.43f * Sx, 0.125f * Sy);
+            Ring(
+                _lines[2], origin + Vector3.up * 0.025f,
+                right, forward, 0.16f * Sx, 32);
+            SetLine(
+                _lines[3], origin,
+                center - right * 0.48f * Sx,
+                center + right * 0.48f * Sx);
+            SetLine(
+                _lines[4],
+                center - Vector3.up * 0.16f * Sy,
+                center + Vector3.up * 0.16f * Sy);
+            PlacePanel(
+                center, right, Vector3.up,
+                0.88f * Sx, 0.25f * Sy, forward);
             PlaceLabel(center, forward);
         }
 
@@ -156,34 +269,43 @@ namespace MLOmega.XR.UI.Components
             Vector3 origin, Vector3 right, Vector3 forward, float now)
         {
             Vector3 center =
-                origin + Vector3.up * (0.48f + Mathf.Sin(now * 1.7f) * 0.02f);
-            Rectangle(_lines[0], center, right, Vector3.up, 0.58f, 0.28f);
-            Rectangle(_lines[1], center, right, Vector3.up, 0.53f, 0.23f);
+                origin + Vector3.up *
+                (0.48f + Mathf.Sin(now * 1.7f) * 0.02f) * Sy;
+            Rectangle(
+                _lines[0], center, right, Vector3.up,
+                0.58f * Sx, 0.28f * Sy);
+            Rectangle(
+                _lines[1], center, right, Vector3.up,
+                0.53f * Sx, 0.23f * Sy);
             for (int i = 2; i < _lines.Count; i++)
             {
-                float x = Mathf.Lerp(-0.48f, 0.48f, (i - 1) / 4f);
+                float x =
+                    Mathf.Lerp(-0.48f, 0.48f, (i - 1) / 4f) * Sx;
                 SetLine(
                     _lines[i],
-                    center + right * x - Vector3.up * 0.2f,
-                    center + right * x + Vector3.up * 0.2f);
+                    center + right * x - Vector3.up * 0.2f * Sy,
+                    center + right * x + Vector3.up * 0.2f * Sy);
             }
-            PlacePanel(center, right, Vector3.up, 1.04f, 0.45f, forward);
+            PlacePanel(
+                center, right, Vector3.up,
+                1.04f * Sx, 0.45f * Sy, forward);
             PlaceLabel(center, forward);
         }
 
         private void DrawVehicleFx(
             Vector3 origin, Vector3 right, Vector3 forward, float now)
         {
-            Vector3 basePoint = origin + Vector3.up * 0.12f;
+            Vector3 basePoint = origin + Vector3.up * 0.12f * Sy;
             for (int i = 0; i < _lines.Count; i++)
             {
-                float lane = (i - 2f) * 0.07f;
+                float lane = (i - 2f) * 0.07f * Sx;
                 float phase = Mathf.Repeat(now * 0.9f + i * 0.17f, 1f);
-                float length = Mathf.Lerp(0.16f, 0.62f, phase);
+                float length = Mathf.Lerp(0.16f, 0.62f, phase) * Sz;
                 Vector3 start = basePoint + right * lane;
                 Vector3 end =
                     start + forward * length +
-                    Vector3.up * (0.04f + Mathf.Sin(now * 4f + i) * 0.035f);
+                    Vector3.up *
+                    (0.04f + Mathf.Sin(now * 4f + i) * 0.035f) * Sy;
                 SetLine(_lines[i], start, Vector3.Lerp(start, end, 0.48f), end);
             }
             _panel.enabled = false;
@@ -194,15 +316,24 @@ namespace MLOmega.XR.UI.Components
         private void DrawBeacon(
             Vector3 origin, Vector3 right, Vector3 forward, float now)
         {
-            float height = 1.15f + Mathf.Sin(now * 2.1f) * 0.08f;
+            float height =
+                (1.15f + Mathf.Sin(now * 2.1f) * 0.08f) * Sy;
             Vector3 top = origin + Vector3.up * height;
             SetLine(_lines[0], origin, top);
-            Ring(_lines[1], origin + Vector3.up * 0.03f, right, forward, 0.26f, 36);
+            Ring(
+                _lines[1], origin + Vector3.up * 0.03f,
+                right, forward, 0.26f * Sx, 36);
             Ring(_lines[2], origin + Vector3.up * 0.05f, right, forward,
-                0.42f + Mathf.Sin(now * 2f) * 0.04f, 36);
-            Ring(_lines[3], top, right, Vector3.up, 0.18f, 32);
-            SetLine(_lines[4], top - right * 0.22f, top + right * 0.22f);
-            PlacePanel(top, right, Vector3.up, 0.62f, 0.22f, forward);
+                (0.42f + Mathf.Sin(now * 2f) * 0.04f) * Sx, 36);
+            Ring(
+                _lines[3], top, right, Vector3.up, 0.18f * Sx, 32);
+            SetLine(
+                _lines[4],
+                top - right * 0.22f * Sx,
+                top + right * 0.22f * Sx);
+            PlacePanel(
+                top, right, Vector3.up,
+                0.62f * Sx, 0.22f * Sy, forward);
             PlaceLabel(top, forward);
         }
 
@@ -211,11 +342,11 @@ namespace MLOmega.XR.UI.Components
         {
             for (int i = 0; i < _lines.Count; i++)
             {
-                float radius = 0.13f + i * 0.075f +
-                    Mathf.Sin(now * 1.7f + i) * 0.015f;
+                float radius = (0.13f + i * 0.075f +
+                    Mathf.Sin(now * 1.7f + i) * 0.015f) * Sx;
                 Ring(
                     _lines[i],
-                    origin + Vector3.up * (0.08f + i * 0.06f),
+                    origin + Vector3.up * (0.08f + i * 0.06f) * Sy,
                     right,
                     forward,
                     radius,
@@ -224,6 +355,288 @@ namespace MLOmega.XR.UI.Components
             _panel.enabled = false;
             _label.transform.position = origin + Vector3.up * 0.62f;
             PlaceLabel(_label.transform.position, forward);
+        }
+
+        private void DrawPortal(
+            Vector3 origin, Vector3 right, Vector3 forward, float now)
+        {
+            float w = 0.62f * Sx;
+            float h = 1.25f * Sy;
+            Vector3 left = origin - right * w;
+            Vector3 rightFoot = origin + right * w;
+            SetLine(
+                _lines[0],
+                left,
+                left + Vector3.up * h,
+                origin + Vector3.up * (h + .32f * Sy),
+                rightFoot + Vector3.up * h,
+                rightFoot);
+            SetLine(
+                _lines[1],
+                left + right * .12f,
+                left + right * .12f + Vector3.up * h,
+                rightFoot - right * .12f + Vector3.up * h,
+                rightFoot - right * .12f);
+            Ring(
+                _lines[2],
+                origin + Vector3.up * .05f,
+                right,
+                forward,
+                (.45f + Mathf.Sin(now * 2.4f) * .05f) * Sx,
+                36);
+            SetLine(_lines[3], origin, origin + Vector3.up * (h + .3f));
+            Ring(
+                _lines[4],
+                origin + Vector3.up * h,
+                right,
+                Vector3.up,
+                .22f * Sx,
+                28);
+            _panel.enabled = false;
+            _label.transform.position = origin + Vector3.up * (h + .55f * Sy);
+            PlaceLabel(_label.transform.position, forward);
+        }
+
+        private void DrawDrone(
+            Vector3 origin, Vector3 right, Vector3 forward, float now)
+        {
+            float hover = Mathf.Sin(now * 2.3f) * .08f * Sy;
+            Vector3 center = origin + Vector3.up * (.75f * Sy + hover);
+            SetLine(
+                _lines[0],
+                center - right * .5f * Sx,
+                center,
+                center + right * .5f * Sx);
+            SetLine(
+                _lines[1],
+                center - forward * .38f * Sz,
+                center,
+                center + forward * .38f * Sz);
+            Ring(_lines[2], center - right * .5f * Sx, right, forward, .17f * Sx, 24);
+            Ring(_lines[3], center + right * .5f * Sx, right, forward, .17f * Sx, 24);
+            SetLine(
+                _lines[4],
+                center,
+                center - Vector3.up * (.75f + Mathf.PingPong(now, .5f)) * Sy);
+            _panel.enabled = false;
+            _label.transform.position = center + Vector3.up * .32f * Sy;
+            PlaceLabel(_label.transform.position, forward);
+        }
+
+        private void DrawGiantHologram(
+            Vector3 origin, Vector3 right, Vector3 forward, float now)
+        {
+            float h = 2.4f * Sy;
+            Vector3 head = origin + Vector3.up * h;
+            Ring(_lines[0], head, right, Vector3.up, .26f * Sx, 32);
+            SetLine(
+                _lines[1],
+                head - Vector3.up * .3f,
+                origin + Vector3.up * 1.35f * Sy,
+                origin + Vector3.up * .3f);
+            SetLine(
+                _lines[2],
+                origin + Vector3.up * 1.7f * Sy - right * .75f * Sx,
+                origin + Vector3.up * 1.85f * Sy,
+                origin + Vector3.up * 1.7f * Sy + right * .75f * Sx);
+            SetLine(
+                _lines[3],
+                origin + Vector3.up * .35f,
+                origin - right * .42f * Sx,
+                origin + right * .42f * Sx);
+            for (int i = 0; i < 18; i++)
+            {
+                float y = i / 17f * h;
+                float glitch = Mathf.Sin(now * 7f + i * 1.7f) * .07f * Sx;
+                if (i == 0)
+                    _lines[4].positionCount = 18;
+                _lines[4].SetPosition(
+                    i,
+                    origin + Vector3.up * y + right * glitch);
+            }
+            _panel.enabled = false;
+            _label.transform.position = head + Vector3.up * .45f;
+            PlaceLabel(_label.transform.position, forward);
+        }
+
+        private void DrawDirectionArrow(
+            Vector3 origin, Vector3 right, Vector3 forward, float now)
+        {
+            float travel = Mathf.Repeat(now * .8f, 1f) * 1.1f * Sz;
+            Vector3 center = origin + forward * travel + Vector3.up * .08f;
+            SetLine(
+                _lines[0],
+                center - forward * .42f * Sz,
+                center + forward * .42f * Sz);
+            SetLine(
+                _lines[1],
+                center + forward * .42f * Sz,
+                center + forward * .1f * Sz - right * .28f * Sx);
+            SetLine(
+                _lines[2],
+                center + forward * .42f * Sz,
+                center + forward * .1f * Sz + right * .28f * Sx);
+            Ring(_lines[3], origin, right, forward, .22f * Sx, 28);
+            SetLine(_lines[4], origin, center);
+            _panel.enabled = false;
+            _label.transform.position = origin + Vector3.up * .58f * Sy;
+            PlaceLabel(_label.transform.position, forward);
+        }
+
+        private void DrawBuildingCrown(
+            Vector3 origin, Vector3 right, Vector3 forward, float now)
+        {
+            Vector3 center = origin + Vector3.up * .3f * Sy;
+            float radius = (.65f + Mathf.Sin(now * 1.8f) * .04f) * Sx;
+            Ring(_lines[0], center, right, forward, radius, 40);
+            Ring(_lines[1], center + Vector3.up * .22f * Sy, right, forward, radius * .82f, 40);
+            Ring(_lines[2], center + Vector3.up * .45f * Sy, right, forward, radius * .58f, 40);
+            SetLine(_lines[3], center - right * radius, center + Vector3.up * .45f, center + right * radius);
+            SetLine(_lines[4], center - forward * radius, center + Vector3.up * .45f, center + forward * radius);
+            _panel.enabled = false;
+            _label.transform.position = center + Vector3.up * .75f * Sy;
+            PlaceLabel(_label.transform.position, forward);
+        }
+
+        private void DrawWindowDisplay(
+            Vector3 origin, Vector3 right, Vector3 forward, float now)
+        {
+            Vector3 center = origin + Vector3.up * .65f * Sy;
+            Rectangle(_lines[0], center, right, Vector3.up, .72f * Sx, .48f * Sy);
+            for (int i = 1; i < 5; i++)
+            {
+                float y = Mathf.Lerp(-.34f, .34f, (i - 1) / 3f) * Sy;
+                float scan = i == 4
+                    ? Mathf.Repeat(now * .7f, 1f) * .68f * Sy - .34f * Sy
+                    : y;
+                SetLine(
+                    _lines[i],
+                    center - right * .65f * Sx + Vector3.up * scan,
+                    center + right * .65f * Sx + Vector3.up * scan);
+            }
+            PlacePanel(center, right, Vector3.up, 1.35f * Sx, .86f * Sy, forward);
+            PlaceLabel(center, forward);
+        }
+
+        private void DrawParticleColumn(
+            Vector3 origin, Vector3 right, Vector3 forward, float now)
+        {
+            for (int line = 0; line < 5; line++)
+            {
+                _lines[line].loop = false;
+                _lines[line].positionCount = 14;
+                for (int i = 0; i < 14; i++)
+                {
+                    float t = i / 13f;
+                    float phase = now * (1.1f + line * .08f) + line * 1.7f + t * 9f;
+                    _lines[line].SetPosition(
+                        i,
+                        origin +
+                        Vector3.up * (t * 1.8f * Sy) +
+                        right * Mathf.Sin(phase) * (.18f + line * .035f) * Sx +
+                        forward * Mathf.Cos(phase * .83f) * .16f * Sz);
+                }
+            }
+            _panel.enabled = false;
+            _label.transform.position = origin + Vector3.up * 2.1f * Sy;
+            PlaceLabel(_label.transform.position, forward);
+        }
+
+        private void DrawStreetTotem(
+            Vector3 origin, Vector3 right, Vector3 forward, float now)
+        {
+            float h = 1.35f * Sy;
+            SetLine(_lines[0], origin, origin + Vector3.up * h);
+            Rectangle(
+                _lines[1],
+                origin + Vector3.up * h,
+                right,
+                Vector3.up,
+                .4f * Sx,
+                .18f * Sy);
+            Ring(_lines[2], origin + Vector3.up * .04f, right, forward, .25f * Sx, 32);
+            Ring(_lines[3], origin + Vector3.up * h, right, forward, .13f * Sx, 28);
+            SetLine(
+                _lines[4],
+                origin + Vector3.up * .25f,
+                origin + Vector3.up * (h - .25f));
+            PlacePanel(
+                origin + Vector3.up * h,
+                right,
+                Vector3.up,
+                .72f * Sx,
+                .28f * Sy,
+                forward);
+            PlaceLabel(origin + Vector3.up * h, forward);
+        }
+
+        private void DrawHomeWidget(
+            Vector3 origin, Vector3 right, Vector3 forward, float now)
+        {
+            Vector3 center = origin + Vector3.up * .45f * Sy;
+            Ring(_lines[0], center, right, Vector3.up, .42f * Sx, 36);
+            Ring(_lines[1], center, right, Vector3.up, .31f * Sx, 36);
+            float angle = now * .8f;
+            SetLine(
+                _lines[2],
+                center,
+                center + right * Mathf.Cos(angle) * .28f * Sx +
+                Vector3.up * Mathf.Sin(angle) * .28f * Sy);
+            SetLine(_lines[3], origin, center - right * .42f, center + right * .42f);
+            SetLine(_lines[4], center - Vector3.up * .42f, center + Vector3.up * .42f);
+            _panel.enabled = false;
+            _label.transform.position = center;
+            PlaceLabel(center, forward);
+        }
+
+        private void DrawRoomBoundary(
+            Vector3 origin, Vector3 right, Vector3 forward, float now)
+        {
+            float x = .8f * Sx;
+            float z = .8f * Sz;
+            float h = 1.2f * Sy;
+            Rectangle(_lines[0], origin, right, forward, x, z);
+            Rectangle(_lines[1], origin + Vector3.up * h, right, forward, x, z);
+            SetLine(_lines[2], origin - right * x - forward * z, origin - right * x - forward * z + Vector3.up * h);
+            SetLine(_lines[3], origin + right * x - forward * z, origin + right * x - forward * z + Vector3.up * h);
+            SetLine(_lines[4], origin + right * x + forward * z, origin + right * x + forward * z + Vector3.up * h);
+            _panel.enabled = false;
+            _label.transform.position = origin + Vector3.up * (h + .25f);
+            PlaceLabel(_label.transform.position, forward);
+        }
+
+        private void DrawLogoOrbit(
+            Vector3 origin, Vector3 right, Vector3 forward, float now)
+        {
+            Vector3 center = origin + Vector3.up * .55f * Sy;
+            Ring(_lines[0], center, right, Vector3.up, .36f * Sx, 40);
+            Ring(_lines[1], center, forward, Vector3.up, .48f * Sz, 40);
+            Ring(_lines[2], center, right, forward, .58f * Sx, 40);
+            Vector3 satellite = center +
+                right * Mathf.Cos(now) * .58f * Sx +
+                forward * Mathf.Sin(now) * .58f * Sz;
+            Ring(_lines[3], satellite, right, Vector3.up, .08f * Sx, 20);
+            SetLine(_lines[4], center, satellite);
+            _panel.enabled = false;
+            _label.transform.position = center;
+            PlaceLabel(center, forward);
+        }
+
+        private void DrawWarningBarrier(
+            Vector3 origin, Vector3 right, Vector3 forward, float now)
+        {
+            Vector3 center = origin + Vector3.up * .55f * Sy;
+            Rectangle(_lines[0], center, right, Vector3.up, .85f * Sx, .45f * Sy);
+            for (int i = 1; i < 5; i++)
+            {
+                float x = Mathf.Lerp(-.72f, .72f, (i - 1) / 3f) * Sx;
+                SetLine(
+                    _lines[i],
+                    center + right * (x - .18f * Sx) - Vector3.up * .36f * Sy,
+                    center + right * (x + .18f * Sx) + Vector3.up * .36f * Sy);
+            }
+            PlacePanel(center, right, Vector3.up, 1.6f * Sx, .82f * Sy, forward);
+            PlaceLabel(center, forward);
         }
 
         private void PlacePanel(
@@ -251,11 +664,16 @@ namespace MLOmega.XR.UI.Components
             Color edge = _accent;
             edge.a = Mathf.Clamp01(alpha) * Mathf.Lerp(0.62f, 0.98f, pulse);
             Color fill = _accent;
-            fill.a = Mathf.Clamp01(alpha) * 0.13f;
+            fill.a = Mathf.Clamp01(alpha) *
+                (_assetTexture == null ? 0.13f : 0.82f);
+            if (_assetTexture != null) fill = new Color(1f, 1f, 1f, fill.a);
             foreach (LineRenderer line in _lines)
             {
-                line.startColor = edge;
-                line.endColor = edge;
+                int index = _lines.IndexOf(line);
+                Color lineColor = index % 2 == 0 ? edge : _secondary;
+                lineColor.a = edge.a;
+                line.startColor = lineColor;
+                line.endColor = lineColor;
             }
             SetMaterialColor(_lineMaterial, edge);
             SetMaterialColor(_panelMaterial, fill);
@@ -335,6 +753,7 @@ namespace MLOmega.XR.UI.Components
         {
             if (_lineMaterial != null) Destroy(_lineMaterial);
             if (_panelMaterial != null) Destroy(_panelMaterial);
+            if (_assetTexture != null) Destroy(_assetTexture);
         }
 
         public static bool TryReadHologram(
@@ -361,10 +780,34 @@ namespace MLOmega.XR.UI.Components
                 Id = marker.MarkerId,
                 CalibrationId = marker.CalibrationId,
                 TemplateId = template,
+                ArchetypeId = IntentRead.Content(
+                    intent, "archetype_id", template),
+                AnimationId = IntentRead.Content(
+                    intent, "animation_id", "soft_pulse"),
                 Label = marker.Label,
                 Subtitle = marker.Subtitle,
                 Quality = marker.AnchorQuality,
                 DepthValid = marker.DepthValid,
+                Accent = ReadColor(
+                    IntentRead.Content(intent, "accent_hex", ""),
+                    TemplateColor(template)),
+                Secondary = ReadColor(
+                    IntentRead.Content(intent, "secondary_hex", ""),
+                    new Color(.48f, .24f, 1f, 1f)),
+                Scale = ReadScale(intent),
+                AnchorRotation = Quaternion.Euler(ReadEuler(intent)),
+                AssetMime = IntentRead.Content(intent, "asset_mime", ""),
+                AssetSha256 =
+                    IntentRead.Content(intent, "asset_sha256", ""),
+                AssetBase64 =
+                    IntentRead.Content(intent, "asset_base64", ""),
+                MaxRenderDistanceM = Mathf.Clamp(
+                    (float)IntentRead.Num(
+                        intent.Content,
+                        "max_render_distance_m",
+                        350d),
+                    5f,
+                    1000f),
             };
             error = null;
             return true;
@@ -380,6 +823,18 @@ namespace MLOmega.XR.UI.Components
                 case "poi_beacon":
                 case "memory_echo":
                 case "annotation":
+                case "portal_arch":
+                case "sky_drone":
+                case "giant_hologram":
+                case "direction_arrow":
+                case "building_crown":
+                case "window_display":
+                case "particle_column":
+                case "street_totem":
+                case "home_widget":
+                case "room_boundary":
+                case "logo_orbit":
+                case "warning_barrier":
                     return true;
                 default:
                     return false;
@@ -402,6 +857,99 @@ namespace MLOmega.XR.UI.Components
                 case "memory_echo": return new Color(0.65f, 0.38f, 1f, 1f);
                 default: return new Color(0.15f, 0.92f, 1f, 1f);
             }
+        }
+
+        private float Sx => Mathf.Clamp(_hologram?.Scale.x ?? 1f, .1f, 4f);
+        private float Sy => Mathf.Clamp(_hologram?.Scale.y ?? 1f, .1f, 4f);
+        private float Sz => Mathf.Clamp(_hologram?.Scale.z ?? 1f, .1f, 4f);
+
+        private static Vector3 ReadScale(UIIntent intent)
+        {
+            if (
+                intent?.Content != null &&
+                intent.Content.TryGetValue("scale", out object raw) &&
+                WorldContractRead.TryVector(raw, out Vector3 scale) &&
+                scale.x >= .1f && scale.x <= 4f &&
+                scale.y >= .1f && scale.y <= 4f &&
+                scale.z >= .1f && scale.z <= 4f)
+                return scale;
+            return Vector3.one;
+        }
+
+        private static Vector3 ReadEuler(UIIntent intent)
+        {
+            if (
+                intent?.Content != null &&
+                intent.Content.TryGetValue(
+                    "local_euler", out object raw) &&
+                WorldContractRead.TryVector(raw, out Vector3 euler))
+                return euler;
+            return Vector3.zero;
+        }
+
+        private void BindAsset()
+        {
+            string sha = _hologram?.AssetSha256 ?? string.Empty;
+            if (string.Equals(
+                    sha, _assetSha256, StringComparison.Ordinal))
+                return;
+            if (_assetTexture != null) Destroy(_assetTexture);
+            _assetTexture = null;
+            _assetSha256 = string.Empty;
+            if (
+                string.IsNullOrWhiteSpace(sha) ||
+                string.IsNullOrWhiteSpace(_hologram.AssetBase64) ||
+                (_hologram.AssetMime != "image/png" &&
+                 _hologram.AssetMime != "image/jpeg"))
+            {
+                SetPanelTexture(null);
+                return;
+            }
+            try
+            {
+                byte[] bytes =
+                    Convert.FromBase64String(_hologram.AssetBase64);
+                if (
+                    bytes.Length <= 0 ||
+                    bytes.Length > WorldMapStore.MaxAssetBytes)
+                    return;
+                var texture =
+                    new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                if (
+                    !texture.LoadImage(bytes, true) ||
+                    texture.width > WorldMapStore.MaxAssetDimension ||
+                    texture.height > WorldMapStore.MaxAssetDimension)
+                {
+                    Destroy(texture);
+                    return;
+                }
+                texture.wrapMode = TextureWrapMode.Clamp;
+                texture.filterMode = FilterMode.Bilinear;
+                _assetTexture = texture;
+                _assetSha256 = sha;
+                SetPanelTexture(texture);
+            }
+            catch (FormatException)
+            {
+                SetPanelTexture(null);
+            }
+        }
+
+        private void SetPanelTexture(Texture texture)
+        {
+            if (_panelMaterial == null) return;
+            if (_panelMaterial.HasProperty("_BaseMap"))
+                _panelMaterial.SetTexture("_BaseMap", texture);
+            if (_panelMaterial.HasProperty("_MainTex"))
+                _panelMaterial.SetTexture("_MainTex", texture);
+        }
+
+        private static Color ReadColor(string hex, Color fallback)
+        {
+            string clean = (hex ?? string.Empty).Trim().TrimStart('#');
+            return ColorUtility.TryParseHtmlString("#" + clean, out Color color)
+                ? color
+                : fallback;
         }
 
         private static Material TransparentMaterial(Shader shader)

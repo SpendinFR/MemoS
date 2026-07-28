@@ -79,6 +79,92 @@ namespace MLOmega.XR.Tests
             }
         }
 
+        [Test]
+        public void CreatorCatalogueProvidesHundredsOfBoundedProceduralPresets()
+        {
+            Assert.GreaterOrEqual(WorldCreatorCatalog.Entries.Count, 500);
+            Assert.GreaterOrEqual(
+                WorldCreatorCatalog.ForCategory("urban").Count, 20);
+            foreach (WorldCreatorCatalog.Entry entry in WorldCreatorCatalog.Entries)
+            {
+                Assert.IsNotEmpty(entry.presetId);
+                Assert.IsNotEmpty(entry.templateId);
+                Assert.AreEqual(6, entry.accentHex.Length);
+                Assert.GreaterOrEqual(entry.defaultScale.x, 0.1f);
+                Assert.LessOrEqual(entry.defaultScale.x, 4f);
+            }
+        }
+
+        [Test]
+        public void AtelierPackageRoundTripsWithDigestAndNoMemoryPayload()
+        {
+            string sourceDir = Path.Combine(
+                Path.GetTempPath(), "mlomega-atelier-source-" + Guid.NewGuid());
+            string targetDir = Path.Combine(
+                Path.GetTempPath(), "mlomega-atelier-target-" + Guid.NewGuid());
+            string package = Path.Combine(sourceDir, "paris-night.world-map-v1.json");
+            try
+            {
+                var source = new WorldMapStore(sourceDir, "xreal-test");
+                string nativeMapDir = Path.Combine(sourceDir, "native-maps");
+                Directory.CreateDirectory(nativeMapDir);
+                string anchorGuid =
+                    "0000000000000001-0000000000000002";
+                File.WriteAllBytes(
+                    Path.Combine(
+                        nativeMapDir,
+                        "00000001-0000-0000-0200-000000000000"),
+                    new byte[] { 1, 4, 9, 16, 25, 36 });
+                WorldCreatorCatalog.Entry preset =
+                    WorldCreatorCatalog.ForCategory("cinematic")[0];
+                WorldMapStore.WorldContent item = source.Upsert(
+                    "world-content-1",
+                    anchorGuid,
+                    preset.templateId,
+                    "RUE CYBER",
+                    "ATELIER",
+                    "",
+                    "manual",
+                    "atelier:xreal-depth",
+                    new Vector3(1f, 1.5f, 3f),
+                    Quaternion.Euler(0f, 25f, 0f),
+                    preset.defaultScale,
+                    0.91f);
+                source.ApplyVisualPreset(item.worldContentId, preset);
+                Assert.IsTrue(
+                    source.CaptureAnchorMappings(
+                        nativeMapDir,
+                        out string error),
+                    error);
+
+                Assert.IsTrue(source.ExportPackage(package, out error), error);
+                string exported = File.ReadAllText(package);
+                StringAssert.Contains("\"packageType\": \"mlomega.world-map\"", exported);
+                StringAssert.DoesNotContain("memory.db", exported);
+                StringAssert.DoesNotContain("brainlive", exported.ToLowerInvariant());
+
+                var target = new WorldMapStore(targetDir, "xreal-target");
+                Assert.IsTrue(target.ReplaceFromPackage(package, out error), error);
+                Assert.AreEqual(1, target.Contents.Count);
+                Assert.AreEqual(
+                    preset.presetId,
+                    target.Contents[0].presetId);
+                Assert.AreEqual(
+                    anchorGuid,
+                    target.Contents[0].anchorGuid);
+                string installed = Path.Combine(targetDir, "installed-maps");
+                Assert.IsTrue(target.InstallAnchorMappings(installed, out error), error);
+                Assert.IsTrue(File.Exists(Path.Combine(
+                    installed,
+                    "00000001-0000-0000-0200-000000000000")));
+            }
+            finally
+            {
+                if (Directory.Exists(sourceDir)) Directory.Delete(sourceDir, true);
+                if (Directory.Exists(targetDir)) Directory.Delete(targetDir, true);
+            }
+        }
+
         private static UIIntent HologramIntent() => new UIIntent
         {
             UiIntentId = "freeguy-store-1",

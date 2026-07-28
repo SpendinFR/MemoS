@@ -2529,3 +2529,48 @@ La procédure matérielle et les hashes APK sont dans
 les 13 commandes Gate B, gestes, 16 scénarios historiques, Memory, Replay,
 HotContext, les 24 features AR, Full/Lite, Local/PRO, chaos et Dashboard. Ne
 cocher aucune capacité au seul vu d'un `accepted` ou d'un test simulé.
+
+### PASSATION T0.4 — WORLD ATELIER ET IMPORT INTER-APK — 2026-07-28
+
+L'éditeur de monde est un troisième player isolé, pas une scène du produit :
+
+- builder : `MLOmega.XR.Editor.AndroidBuildXreal.BuildCreatorApk`;
+- scène générée : `Assets/Scenes/XrealWorldCreator.unity`;
+- package : `com.mlomega.xr.worldatelier`;
+- sortie : `build/android/mlomega-xreal-world-atelier.apk`.
+
+Il faut toujours exécuter `AndroidBuildXreal.PrepareDefines` avant le build,
+exactement comme pour l'APK lunettes. Ensuite reconstruire aussi
+`AndroidBuildXreal.BuildApk`, car le lecteur/importeur se trouve dans l'APK
+produit. Commandes complètes dans `FIRST_TRY_XREAL_WORLD_ATELIER.md`.
+
+Le paquet `mlomega.world-map/v1` est sélectionné par Android SAF et contient la
+carte, les images et les fichiers de mapping natifs XREAL. Ne remplacer ce
+mécanisme ni par une pose JSON seule, ni par un partage direct de
+`Application.persistentDataPath` : les deux packages Android ont des sandboxes
+distinctes et XREAL a besoin de ses blobs natifs pour relocaliser.
+
+Validation logicielle du lot :
+
+```powershell
+$u = "C:\Program Files\Unity\Hub\Editor\6000.0.23f1\Editor\Unity.exe"
+$p = Start-Process $u -ArgumentList `
+  '-batchmode','-runTests','-testPlatform','EditMode','-projectPath','.', `
+  '-testFilter','MLOmega.XR.Tests.WorldFreeGuyT0Tests', `
+  '-testResults',"$pwd\world-atelier-editmode.xml", `
+  '-logFile',"$pwd\world-atelier-editmode.log" `
+  -Wait -PassThru -NoNewWindow
+"test=$($p.ExitCode)"
+```
+
+Verdict obtenu : **5/5 verts**, puis deux players IL2CPP exit 0. Artefacts :
+
+- Atelier : 222 394 517 octets,
+  `8BD43E314FD46C22AF54CC56529F77B758E4D0D199ED18799599909D89AFC4A1`;
+- produit : 222 400 265 octets,
+  `AB7656AA091E39775DA69E831DF8D004700557CE7E376352038973C05200AA41`.
+
+Les lignes de licence 500/token absentes au début des logs n'étaient pas le
+verdict : les deux logs finissent par `World Atelier APK OK` et
+`Glasses PRODUCT APK OK`. Le gate encore ouvert est physique :
+relocalisation, occlusion, stéréo et tenue thermique sur S24 + One Pro/Eye.

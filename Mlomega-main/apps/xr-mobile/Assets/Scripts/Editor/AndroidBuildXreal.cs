@@ -127,6 +127,60 @@ namespace MLOmega.XR.Editor
             }
         }
 
+        [MenuItem("MLOmega/XREAL/3. Build World Atelier APK")]
+        public static void BuildCreatorApk()
+        {
+            EnsureXrealPackage();
+            EnsureArFoundationPackage();
+            EnsurePackageDependency(XrHandsDep, "com.unity.xr.hands");
+            EnsurePackageDependency(
+                XrInteractionDep, "com.unity.xr.interaction.toolkit");
+            SetDefine();
+            ConfigureExternalTools();
+            using (var xrealSettings = new XrealBuildSettingsScope())
+            {
+                ConfigurePlayerSettings();
+                PlayerSettings.productName = "MLOmega World Atelier";
+                PlayerSettings.SetApplicationIdentifier(
+                    BuildTargetGroup.Android,
+                    "com.mlomega.xr.worldatelier");
+                ConfigureXrealSdkSettings();
+                EnableXrealLoader();
+                ValidateArFoundationLoaded();
+                WorldCreatorSceneBuilder.BuildScene();
+                ValidateXrealBuildSettings();
+                if (!File.Exists(WorldCreatorSceneBuilder.ScenePath))
+                    throw new Exception(
+                        "[AndroidBuildXreal] World Atelier scene missing.");
+
+                string outPath = Env(
+                    "MLOMEGA_CREATOR_APK_OUT",
+                    Path.GetFullPath(Path.Combine(
+                        "build",
+                        "android",
+                        "mlomega-xreal-world-atelier.apk")));
+                Directory.CreateDirectory(Path.GetDirectoryName(outPath));
+                BuildReport report = BuildPipeline.BuildPlayer(
+                    new BuildPlayerOptions
+                    {
+                        scenes = new[] { WorldCreatorSceneBuilder.ScenePath },
+                        locationPathName = outPath,
+                        target = BuildTarget.Android,
+                        targetGroup = BuildTargetGroup.Android,
+                        options = BuildOptions.None,
+                    });
+                BuildSummary summary = report.summary;
+                if (summary.result != BuildResult.Succeeded)
+                    throw new Exception(
+                        "[AndroidBuildXreal] World Atelier APK failed: " +
+                        summary.result + " (" + summary.totalErrors +
+                        " errors) -> " + outPath);
+                Debug.Log(
+                    "[AndroidBuildXreal] World Atelier APK OK: " +
+                    outPath + " (" + summary.totalSize + " bytes)");
+            }
+        }
+
         // --- SDK package injection (keeps the committed manifest XREAL-free) -------
         private static void EnsureXrealPackage()
         {

@@ -2433,14 +2433,16 @@ et l'image Eye; GPS/boussole/cartographie fournissent seulement le repère terre
   vitrine, enseigne, bâtiment et objet focalisé en cible 3D. Sans hit spatial valide,
   aucune UI « ancrée » n'est produite. Les logos/POI issus d'une base cartographique
   doivent être séparés des classes seulement reconnues visuellement.
-- [ ] **T0.4 Format chargeable; création reportée dans une APK Atelier séparée.**
-  L'APK production ne crée, ne déplace et ne sauvegarde aucun décor manuel : elle
-  valide puis charge un paquet `world-map-v1`, relocalise ses ancres XREAL et affiche
-  uniquement les contenus réellement suivis. Une future APK Atelier partagera ce
-  format pour placer/redimensionner/confirmer les enseignes, néons, logos,
-  publicités, portails, particules et annotations, puis exporter la carte sans
-  mémoire personnelle. Les deux APK ne partagent ni processus ni base; l'import
-  reste explicite et versionné.
+- [x] **T0.4 Format chargeable et APK Atelier séparée.** L'APK production ne crée,
+  ne déplace et ne sauvegarde aucun décor manuel : elle valide puis charge un paquet
+  `mlomega.world-map/v1`, installe ses mappings natifs XREAL, relocalise les ancres
+  et affiche uniquement les contenus réellement suivis. L'APK
+  `com.mlomega.xr.worldatelier` place/redimensionne/oriente enseignes, néons, logos,
+  publicités, portails, drones, particules et annotations sur de vrais hits Depth,
+  puis sauvegarde de vraies ancres AR Foundation/XREAL. Elle exporte par le sélecteur
+  Android un paquet borné et SHA-256 contenant carte, images et fichiers de mapping
+  XREAL. Les deux APK ne partagent ni processus, ni DB, ni Memory; l'import est
+  explicite, versionné et fail-closed. Le gate physique de relocalisation reste T0.7.
 - [x] **T0.5 Mode automatique éphémère, opt-in et réversible.** Sur templates stricts :
   vitrine→affichage transparent, voiture→effet visuel arrière, panneau→hologramme,
   enseigne→logo, bâtiment/POI→label 3D. L'automatique propose puis confirme avant
@@ -2520,11 +2522,40 @@ Suivi T0 logiciel — 26 juillet 2026 :
   `WorldSemanticSurface`/`WorldNavigationRibbon` pour occlusion, surfaces, grandes
   flèches et portail. Aucun modèle 3D téléchargé ou licence tierce n'est nécessaire.
 - Tests PC ciblés : **16/16 verts** (`test_route_provider.py` +
-  `test_augmented_reality_foundation.py`). Les tests Unity T0 sont ajoutés mais,
-  conformément à la décision de ne compiler qu'après tous les lots, ils ne sont pas
-  encore exécutés. `T0.4` reste ouvert : paquet commun présent et chargement interne
-  branché, mais APK Atelier et import Android explicite ne sont pas construits.
-  `T0.7/K5` restent exclusivement matériels. Aucun APK n'est produit dans ce lot.
+  `test_augmented_reality_foundation.py`). Le 28 juillet, les **5/5** tests Unity T0
+  du catalogue/format/digest/import de mappings sont verts sous le vrai define
+  XREAL. Les players IL2CPP Atelier et produit sont construits avec succès :
+  `mlomega-xreal-world-atelier.apk` (`com.mlomega.xr.worldatelier`) et
+  `mlomega-xreal.apk` (`com.mlomega.xr.glasses`). `T0.7/K5` restent exclusivement
+  matériels : la compilation ne certifie pas la relocalisation dans le monde réel.
+
+**Clôture logicielle T0.4 — 28 juillet 2026.**
+
+- Le catalogue procédural combine environ cent grammaires 3D, huit palettes et
+  quatre animations : plus de 3 000 presets sans télécharger de modèles tiers.
+  Tout contenu visible passe par `WorldHologram` en world-space; le panneau Atelier
+  est lui-même un deck spatial avec profondeur et rails néon. Le vieux `OnGUI`
+  n'existe qu'en Editor et ne s'affiche jamais dans le player Android.
+- Une ancre exportée transporte son GUID AR Foundation et le fichier natif généré
+  par `XREALAnchorSubsystem.SetAndCreateAnchorMappingDirectory`. L'import dans
+  l'autre package vérifie nom, taille, base64 et SHA-256, installe atomiquement les
+  fichiers dans son propre répertoire XREAL, puis supprime la copie base64 durable.
+  Aucune pose locale seule n'est acceptée comme preuve de relocalisation.
+- L'utilisateur peut garder `FreeGuy dynamique` seul, charger
+  `FreeGuy ancré` seul, ou composer les deux. Le premier garde les détections
+  éphémères existantes; le second ne rend que la carte Atelier importée. Les runs
+  Local/PRO, le transport Eye, BrainLive, Memory et CloseDay ne sont pas invoqués
+  par l'Atelier et n'ont pas été modifiés par son builder.
+- Bornes paquet : 2 048 contenus, 32 images PNG/JPEG de 512 Kio chacune et 3 Mio
+  cumulés, 2 Mio par mapping et 24 Mio cumulés, enveloppe de 32 Mio. Un mapping
+  absent, un digest faux, un fichier illisible ou une ancre non suivie bloque
+  l'élément au lieu de le faire flotter devant la tête.
+- Preuves de build : Atelier **222 394 517 octets**, SHA-256
+  `8BD43E314FD46C22AF54CC56529F77B758E4D0D199ED18799599909D89AFC4A1`;
+  XREAL produit **222 400 265 octets**, SHA-256
+  `AB7656AA091E39775DA69E831DF8D004700557CE7E376352038973C05200AA41`.
+  Les deux utilisent `ai.nreal.activitylife.NRXRActivity` et embarquent l'activité
+  SAF privée `WorldMapDocumentActivity`.
 
 **T1 — compréhension temporelle et monde sous-titré.**
 

@@ -113,6 +113,16 @@ def _match_augmented_feature_toggle(text: str) -> dict[str, Any] | None:
     )
     if off is None and on is None:
         return None
+    if (
+        "mode freeguy ancre" in folded
+        or "mode free guy ancre" in folded
+        or "monde ancre" in folded
+    ):
+        return {
+            "intent": "set_ui_mode",
+            "ui_mode": "freeguy_anchored",
+            "on": off is None,
+        }
     if "mode freeguy" in folded or "mode free guy" in folded:
         return {
             "intent": "set_ui_mode",
@@ -143,6 +153,22 @@ def _build_rules() -> list[tuple[re.Pattern[str], str, dict[str, Any]]]:
         rules.append((re.compile(pattern, I), intent, params))
 
     # --- device / cloud toggles ---
+    add(
+        r"\b(?:importe|charge|ouvre)\s+(?:mon|le|un)?\s*monde\s+(?:free\s*guy\s+)?ancr[ée]\b",
+        "import_world_map",
+    )
+    add(
+        r"\b(?:desactive|désactive|arrete|arrête|stoppe|coupe)\s+(?:le\s+)?mode\s+(?:free\s*guy|freeguy)\s+ancr[ée]\b",
+        "set_ui_mode",
+        ui_mode="freeguy_anchored",
+        on=False,
+    )
+    add(
+        r"\b(?:active|lance|affiche|mode)\s+(?:le\s+)?(?:mode\s+)?(?:free\s*guy|freeguy)\s+ancr[ée]\b",
+        "set_ui_mode",
+        ui_mode="freeguy_anchored",
+        on=True,
+    )
     add(
         r"\b(?:desactive|dÃ©sactive|arrete|arrÃªte|stoppe|coupe)\s+(?:le\s+)?mode\s+(?:free\s*guy|freeguy|libre)\b",
         "set_ui_mode",
@@ -846,6 +872,14 @@ class IntentRouter:
                     "action": "set_augmented_feature",
                     "feature": str(routed.get("feature") or ""),
                     "on": bool(routed.get("on", True)),
+                },
+                intent,
+            )
+        if intent == "import_world_map":
+            return self._do_device(
+                {
+                    "type": "device_command",
+                    "action": "import_world_map",
                 },
                 intent,
             )

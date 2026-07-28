@@ -187,6 +187,10 @@ namespace MLOmega.XR.UI
                                 ? cmd.Text
                                 : cmd.Destination);
                     break;
+                case "import_world_map":
+                    ok = SpatialProvider != null &&
+                        SpatialProvider.ImportAnchoredWorld();
+                    break;
                 case "open_menu":
                     MenuRequested?.Invoke();
                     ok = true;
@@ -246,11 +250,14 @@ namespace MLOmega.XR.UI
                 .ToLowerInvariant()
                 .Replace("_", string.Empty)
                 .Replace(" ", string.Empty);
-            bool freeGuy = normalised == "freeguy";
+            bool anchored = normalised == "freeguyanchored";
+            bool freeGuy = normalised == "freeguy" || anchored;
             bool enable = requested ?? true;
             UIDensityMode mode = freeGuy && !enable
                 ? UIDensityMode.Normal
-                : UIIntentBroker.ParseDensity(uiMode);
+                : freeGuy
+                    ? UIDensityMode.FreeGuy
+                    : UIIntentBroker.ParseDensity(uiMode);
             if (_broker != null) _broker.SetDensity(mode);
             if (_statusBar != null)
             {
@@ -260,7 +267,9 @@ namespace MLOmega.XR.UI
             }
             if (freeGuy)
                 return EnsureAugmentedReality() != null &&
-                    _augmentedReality.SetPreset("freeguy", enable);
+                    _augmentedReality.SetPreset(
+                        anchored ? "freeguyanchored" : "freeguy",
+                        enable);
             return true;
         }
 
@@ -322,6 +331,11 @@ namespace MLOmega.XR.UI
                     break;
                 case "privacy_pause":
                     text = ok ? "Mode privé mis à jour." : "Mode privé indisponible.";
+                    break;
+                case "import_world_map":
+                    text = ok
+                        ? "Choisis le monde ancré créé dans World Atelier."
+                        : "Import du monde ancré indisponible.";
                     break;
             }
             if (string.IsNullOrEmpty(text)) return;

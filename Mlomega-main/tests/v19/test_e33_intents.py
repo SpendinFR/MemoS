@@ -105,6 +105,17 @@ def _router(sink, *, llm=None, ask_memory=None, enrollment=None, **handlers):
             and r["device_command"]["on"] is False,
         ),
         (
+            "VIKI active le mode Free Guy ancré",
+            "set_ui_mode",
+            lambda r: r["device_command"]["ui_mode"] == "freeguy_anchored"
+            and r["device_command"]["on"] is True,
+        ),
+        (
+            "VIKI importe mon monde Free Guy ancré",
+            "import_world_map",
+            lambda r: r["device_command"]["action"] == "import_world_map",
+        ),
+        (
             "VIKI active les mouvements de foule",
             "set_augmented_feature",
             lambda r: r["device_command"]["feature"] == "trajectory_forecast"
