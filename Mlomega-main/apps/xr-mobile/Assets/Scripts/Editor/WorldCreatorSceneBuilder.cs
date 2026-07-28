@@ -56,6 +56,18 @@ namespace MLOmega.XR.Editor
             Assign(creator, "_spatialBehaviour", spatial);
             Assign(creator, "_camera", camera);
             Assign(creator, "_exchange", exchange);
+            Type pointerType = Type.GetType(
+                "MLOmega.XR.UI.XrealNativeHandPointer, " +
+                "MLOmega.XR.XrealSpatial",
+                false);
+            if (
+                pointerType == null ||
+                !typeof(MonoBehaviour).IsAssignableFrom(pointerType))
+                throw new InvalidOperationException(
+                    "XREAL native hand pointer assembly unavailable.");
+            Component pointer = root.AddComponent(pointerType);
+            Assign(pointer, "_camera", camera);
+            Assign(pointer, "_creator", creator);
 
             Directory.CreateDirectory(Path.GetDirectoryName(ScenePath));
             if (!EditorSceneManager.SaveScene(scene, ScenePath))

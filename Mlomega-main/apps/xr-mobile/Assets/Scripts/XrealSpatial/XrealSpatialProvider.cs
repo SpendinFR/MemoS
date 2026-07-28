@@ -76,6 +76,14 @@ namespace MLOmega.XR.UI
         private string _anchorMappingDirectory;
         private readonly HashSet<string> _emittedAnchorIds =
             new HashSet<string>(StringComparer.Ordinal);
+#if XREAL_SDK_PRESENT
+        private readonly Dictionary<string, LoadedWorldAnchor>
+            _loadedWorldAnchors =
+                new Dictionary<string, LoadedWorldAnchor>(
+                    StringComparer.Ordinal);
+        private int _worldAnchorBatchExpected;
+        private int _worldAnchorBatchCompleted;
+#endif
         private Vector3? _ballisticTarget;
         private Vector3 _lastHandPosition;
         private float _lastHandAt;
@@ -1232,18 +1240,34 @@ namespace MLOmega.XR.UI
                                 candidates[imported.ToString()] = imported;
                         }
                     }
+                    _worldAnchorBatchExpected = 0;
+                    foreach (KeyValuePair<string, SerializableGuid> pair in
+                        candidates)
+                        if (_worldMap?.FindByAnchor(pair.Key) != null)
+                            _worldAnchorBatchExpected++;
+                    _worldAnchorBatchCompleted = 0;
+                    _loadedWorldAnchors.Clear();
                     foreach (KeyValuePair<string, SerializableGuid> pair in
                         candidates)
                     {
                         SerializableGuid id = pair.Value;
+                        WorldMapStore.WorldContent worldContent =
+                            _worldMap?.FindByAnchor(id.ToString());
                         var load = await manager.TryLoadAnchorAsync(id);
                         if (load.status.IsSuccess() && load.value != null)
                             StartCoroutine(EmitAnchorWhenTracked(
                                 load.value,
                                 id.ToString(),
                                 "restored",
-                                _worldMap?.FindByAnchor(id.ToString())));
+                                worldContent));
+                        else if (worldContent != null)
+                        {
+                            _worldMap?.MarkUnresolved(id.ToString());
+                            CompleteWorldAnchorLoad();
+                        }
                     }
+                    if (_worldAnchorBatchExpected == 0)
+                        _loadedWorldAnchors.Clear();
                 }
                 finally
                 {
@@ -1438,6 +1462,18 @@ namespace MLOmega.XR.UI
                 error = "anchor_mapping_directory_unavailable";
                 return false;
             }
+            var distinctAnchors = new HashSet<string>(
+                StringComparer.Ordinal);
+            foreach (WorldMapStore.WorldContent content in _worldMap.Contents)
+                if (
+                    content != null &&
+                    !string.IsNullOrWhiteSpace(content.anchorGuid))
+                    distinctAnchors.Add(content.anchorGuid);
+            if (distinctAnchors.Count < 2)
+            {
+                error = "anchor_geometry_baseline_requires_two";
+                return false;
+            }
             return _worldMap.CaptureAnchorMappings(
                 _anchorMappingDirectory,
                 out error);
@@ -1504,6 +1540,11 @@ namespace MLOmega.XR.UI
             // second 24 MiB base64 copy in the production APK's durable map.
             _worldMap.ReleaseEmbeddedAnchorMappings();
             _emittedAnchorIds.Clear();
+#if XREAL_SDK_PRESENT
+            _loadedWorldAnchors.Clear();
+            _worldAnchorBatchExpected = 0;
+            _worldAnchorBatchCompleted = 0;
+#endif
             _anchorsLoadStarted = false;
             LastProviderError = string.Empty;
         }
@@ -1610,11 +1651,11 @@ namespace MLOmega.XR.UI
                 anchor.trackingState == TrackingState.Tracking)
             {
                 if (content != null)
-                    EmitPersistentWorldContent(
-                        anchor.transform.position,
-                        anchor.transform.rotation,
-                        persistentId,
-                        content);
+                {
+                    _loadedWorldAnchors[persistentId] =
+                        new LoadedWorldAnchor(anchor, content);
+                    CompleteWorldAnchorLoad();
+                }
                 else
                     EmitPersistentAnchor(
                         anchor.transform.position, persistentId, state);
@@ -1624,6 +1665,86 @@ namespace MLOmega.XR.UI
                 _worldMap?.MarkUnresolved(persistentId);
                 LastProviderError =
                     "xreal_anchor_restore:not_tracking:" + persistentId;
+                if (content != null) CompleteWorldAnchorLoad();
+            }
+        }
+
+        private void CompleteWorldAnchorLoad()
+        {
+            _worldAnchorBatchCompleted++;
+            if (
+                _worldAnchorBatchExpected <= 0 ||
+                _worldAnchorBatchCompleted < _worldAnchorBatchExpected)
+                return;
+            ValidateAndEmitWorldAnchorBatch();
+        }
+
+        private void ValidateAndEmitWorldAnchorBatch()
+        {
+            if (_loadedWorldAnchors.Count < 2)
+            {
+                RejectLoadedWorldAnchors(
+                    "xreal_anchor_geometry:insufficient_tracked_baseline");
+                return;
+            }
+            var anchors = new List<KeyValuePair<string, LoadedWorldAnchor>>(
+                _loadedWorldAnchors);
+            var samples =
+                new List<WorldAnchorGeometryGuard.Sample>(anchors.Count);
+            foreach (KeyValuePair<string, LoadedWorldAnchor> pair in anchors)
+            {
+                LoadedWorldAnchor loaded = pair.Value;
+                samples.Add(new WorldAnchorGeometryGuard.Sample(
+                    pair.Key,
+                    loaded.Content.localPosition.Value,
+                    Quaternion.Euler(loaded.Content.localEuler.Value),
+                    loaded.Anchor.transform.position,
+                    loaded.Anchor.transform.rotation));
+            }
+            if (!WorldAnchorGeometryGuard.TryValidate(
+                    samples,
+                    out string geometryError))
+            {
+                RejectLoadedWorldAnchors(
+                    "xreal_anchor_geometry:" + geometryError);
+                return;
+            }
+            foreach (KeyValuePair<string, LoadedWorldAnchor> pair in anchors)
+            {
+                LoadedWorldAnchor loaded = pair.Value;
+                if (
+                    loaded.Anchor == null ||
+                    loaded.Anchor.trackingState != TrackingState.Tracking)
+                    continue;
+                EmitPersistentWorldContent(
+                    loaded.Anchor.transform.position,
+                    loaded.Anchor.transform.rotation,
+                    pair.Key,
+                    loaded.Content);
+            }
+            LastProviderError = string.Empty;
+        }
+
+        private void RejectLoadedWorldAnchors(string error)
+        {
+            LastProviderError = error;
+            foreach (KeyValuePair<string, LoadedWorldAnchor> pair in
+                _loadedWorldAnchors)
+                _worldMap?.MarkUnresolved(pair.Key);
+            _loadedWorldAnchors.Clear();
+        }
+
+        private sealed class LoadedWorldAnchor
+        {
+            public readonly ARAnchor Anchor;
+            public readonly WorldMapStore.WorldContent Content;
+
+            public LoadedWorldAnchor(
+                ARAnchor anchor,
+                WorldMapStore.WorldContent content)
+            {
+                Anchor = anchor;
+                Content = content;
             }
         }
 #endif

@@ -576,6 +576,45 @@ namespace MLOmega.XR.UI
                 _status = "SAUVEGARDE DE L'ANCRE NATIVE…";
         }
 
+        /// <summary>
+        /// Intersect a native XR-hand ray with the actual world-space deck.
+        /// The caller still drives EventSystem pointer events, so touch remains
+        /// available as a parallel fallback without a second UI implementation.
+        /// </summary>
+        public bool TryProjectDeckPointer(
+            Ray ray,
+            out Vector2 screenPoint,
+            out Vector3 worldPoint)
+        {
+            screenPoint = default;
+            worldPoint = default;
+            if (
+                _spatialDeckRect == null ||
+                _camera == null ||
+                ray.direction.sqrMagnitude < .5f)
+                return false;
+            var plane = new Plane(
+                _spatialDeckRect.forward,
+                _spatialDeckRect.position);
+            if (
+                !plane.Raycast(ray, out float distance) ||
+                distance < .03f ||
+                distance > 4f)
+                return false;
+            worldPoint = ray.GetPoint(distance);
+            Vector3 local =
+                _spatialDeckRect.InverseTransformPoint(worldPoint);
+            if (!_spatialDeckRect.rect.Contains(new Vector2(local.x, local.y)))
+                return false;
+            screenPoint =
+                RectTransformUtility.WorldToScreenPoint(_camera, worldPoint);
+            return
+                screenPoint.x >= 0f &&
+                screenPoint.y >= 0f &&
+                screenPoint.x <= Screen.width &&
+                screenPoint.y <= Screen.height;
+        }
+
         private void ExportFromSpatialDeck()
         {
             if (Spatial?.CreatorMap == null) return;

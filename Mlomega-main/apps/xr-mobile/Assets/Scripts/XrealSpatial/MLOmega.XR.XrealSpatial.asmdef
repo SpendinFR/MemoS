@@ -6,6 +6,7 @@
         "MLOmega.XR.Core",
         "MLOmega.XR.Transport",
         "MLOmega.XR.UI",
+        "UnityEngine.UI",
         "Unity.Collections",
         "Unity.XR.ARFoundation",
         "Unity.XR.ARSubsystems",

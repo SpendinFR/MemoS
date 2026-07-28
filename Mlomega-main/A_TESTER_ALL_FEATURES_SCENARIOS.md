@@ -1047,6 +1047,9 @@ Suivre `FIRST_TRY_XREAL_WORLD_ATELIER.md`, puis vérifier :
 - [ ] l'Atelier démarre sans pairing PC, micro, capture Eye WebRTC ni Memory ;
 - [ ] le pupitre et les presets sont de vrais éléments world-space/stéréo, pas une
   fenêtre Android 2D ;
+- [ ] l'index affiche un rayon/curseur stable, le hover suit la cible et un seul
+  pinch produit exactement un clic; vérifier main droite puis gauche et plusieurs
+  angles, avec tactile S24 comme secours ;
 - [ ] hit Depth absent : `ANCRER` refuse, aucune pose n'est inventée ;
 - [ ] sol et mur : position, verticale, rotation et resize sont conservés ;
 - [ ] un logo PNG/JPEG valide apparaît dans son volume 3D, un asset trop gros est
@@ -1056,6 +1059,8 @@ Suivre `FIRST_TRY_XREAL_WORLD_ATELIER.md`, puis vérifier :
 - [ ] l'APK produit importe le paquet sans accès à la DB de l'Atelier ;
 - [ ] après redémarrage et retour au lieu, seules les ancres réellement
   `Tracking` réapparaissent ;
+- [ ] une carte témoin volontairement déformée est rejetée par le garde
+  distance/rotation et n'affiche aucun décor « presque au bon endroit » ;
 - [ ] `FreeGuy ancré` fonctionne seul ;
 - [ ] `FreeGuy dynamique` fonctionne seul ;
 - [ ] les deux modes se composent sans doublons, head-lock ni dépassement

@@ -2522,7 +2522,7 @@ Suivi T0 logiciel — 26 juillet 2026 :
   `WorldSemanticSurface`/`WorldNavigationRibbon` pour occlusion, surfaces, grandes
   flèches et portail. Aucun modèle 3D téléchargé ou licence tierce n'est nécessaire.
 - Tests PC ciblés : **16/16 verts** (`test_route_provider.py` +
-  `test_augmented_reality_foundation.py`). Le 28 juillet, les **5/5** tests Unity T0
+  `test_augmented_reality_foundation.py`). Le 28 juillet, les **6/6** tests Unity T0
   du catalogue/format/digest/import de mappings sont verts sous le vrai define
   XREAL. Les players IL2CPP Atelier et produit sont construits avec succès :
   `mlomega-xreal-world-atelier.apk` (`com.mlomega.xr.worldatelier`) et
@@ -2540,7 +2540,16 @@ Suivi T0 logiciel — 26 juillet 2026 :
   par `XREALAnchorSubsystem.SetAndCreateAnchorMappingDirectory`. L'import dans
   l'autre package vérifie nom, taille, base64 et SHA-256, installe atomiquement les
   fichiers dans son propre répertoire XREAL, puis supprime la copie base64 durable.
-  Aucune pose locale seule n'est acceptée comme preuve de relocalisation.
+  Aucune pose locale seule n'est acceptée comme preuve de relocalisation. L'export
+  exige désormais deux ancres espacées d'au moins 25 cm; après import, distances
+  et rotations relatives sont comparées avant tout rendu. Un drift supérieur à
+  max(12 cm, 5 %) ou 12° rend la carte entière `unresolved`.
+- Le player XREAL ajoute un rayon natif XR Hands indépendant du flux Eye/MediaPipe :
+  index pour viser, curseur/laser world-space, pinch pouce-index avec hystérésis
+  pour cliquer. Il pilote le deck Atelier et le MenuPanel produit; le tactile S24
+  reste un fallback simultané. Cela ferme le raccord logiciel du clic dans l'air,
+  mais le bug firmware documenté de perte de pinch sous certains angles reste dans
+  le gate physique T0.7.
 - L'utilisateur peut garder `FreeGuy dynamique` seul, charger
   `FreeGuy ancré` seul, ou composer les deux. Le premier garde les détections
   éphémères existantes; le second ne rend que la carte Atelier importée. Les runs
@@ -2550,10 +2559,11 @@ Suivi T0 logiciel — 26 juillet 2026 :
   cumulés, 2 Mio par mapping et 24 Mio cumulés, enveloppe de 32 Mio. Un mapping
   absent, un digest faux, un fichier illisible ou une ancre non suivie bloque
   l'élément au lieu de le faire flotter devant la tête.
-- Preuves de build : Atelier **222 394 517 octets**, SHA-256
-  `8BD43E314FD46C22AF54CC56529F77B758E4D0D199ED18799599909D89AFC4A1`;
-  XREAL produit **222 400 265 octets**, SHA-256
-  `AB7656AA091E39775DA69E831DF8D004700557CE7E376352038973C05200AA41`.
+- Preuves de build après pointeur mains/garde géométrique :
+  Atelier **222 439 489 octets**, SHA-256
+  `6F2F84D3F1C3063A174F9860B20814F5951E91243FA48C8EC9E58DCE0A6B4EDC`;
+  XREAL produit **222 445 237 octets**, SHA-256
+  `68B3D38C7579093A954940BE76013FD2F95E6137F02D57D28C61525E451B0502`.
   Les deux utilisent `ai.nreal.activitylife.NRXRActivity` et embarquent l'activité
   SAF privée `WorldMapDocumentActivity`.
 

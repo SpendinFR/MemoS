@@ -2563,12 +2563,13 @@ $p = Start-Process $u -ArgumentList `
 "test=$($p.ExitCode)"
 ```
 
-Verdict obtenu : **5/5 verts**, puis deux players IL2CPP exit 0. Artefacts :
+Verdict obtenu après garde géométrique : **6/6 verts**, puis deux players IL2CPP
+exit 0. Artefacts :
 
-- Atelier : 222 394 517 octets,
-  `8BD43E314FD46C22AF54CC56529F77B758E4D0D199ED18799599909D89AFC4A1`;
-- produit : 222 400 265 octets,
-  `AB7656AA091E39775DA69E831DF8D004700557CE7E376352038973C05200AA41`.
+- Atelier : 222 439 489 octets,
+  `6F2F84D3F1C3063A174F9860B20814F5951E91243FA48C8EC9E58DCE0A6B4EDC`;
+- produit : 222 445 237 octets,
+  `68B3D38C7579093A954940BE76013FD2F95E6137F02D57D28C61525E451B0502`.
 
 Les lignes de licence 500/token absentes au début des logs n'étaient pas le
 verdict : les deux logs finissent par `World Atelier APK OK` et

@@ -101,6 +101,7 @@ namespace MLOmega.XR.Editor
             var ttsPlayer = root.AddComponent<TtsAudioPlayer>();
             var augmentedReality = root.AddComponent<AugmentedRealityFeatureRegistry>();
             Component xrealSpatial = null;
+            Component xrealHandPointer = null;
             XrealSpatialGestureController xrealSpatialGestures = null;
             if (adapterKind == XrAdapterKind.Xreal)
             {
@@ -118,6 +119,16 @@ namespace MLOmega.XR.Editor
                         "AndroidBuildXreal.PrepareDefines first.");
                 }
                 xrealSpatial = root.AddComponent(spatialType);
+                Type pointerType = Type.GetType(
+                    "MLOmega.XR.UI.XrealNativeHandPointer, " +
+                    "MLOmega.XR.XrealSpatial",
+                    false);
+                if (
+                    pointerType == null ||
+                    !typeof(MonoBehaviour).IsAssignableFrom(pointerType))
+                    throw new Exception(
+                        "XREAL native hand pointer assembly is unavailable.");
+                xrealHandPointer = root.AddComponent(pointerType);
                 xrealSpatialGestures =
                     root.AddComponent<XrealSpatialGestureController>();
             }
@@ -228,6 +239,8 @@ namespace MLOmega.XR.Editor
                     "_freeGuyMeshShader",
                     LoadRequiredShader(XrealFreeGuyMeshShaderPath));
             }
+            if (xrealHandPointer != null)
+                Assign(xrealHandPointer, "_camera", camera);
             if (xrealSpatialGestures != null)
             {
                 Assign(xrealSpatialGestures, "_gestures", gestureBridge);

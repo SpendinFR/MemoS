@@ -26,14 +26,23 @@ pas dans DeX et pas comme une application 2D ordinaire.
 1. Lance **MLOmega World Atelier** depuis ControlGlasses.
 2. Attends `ANCRAGE PRÊT`. Tant que le mesh Depth ou le provider d'ancres XREAL
    manque, le bouton d'ancrage refuse proprement l'opération.
-3. Sur le pupitre 3D, choisis une catégorie puis un preset. Le catalogue combine
+3. Le pupitre apparaît automatiquement devant toi : aucun geste paume n'est
+   nécessaire dans l'Atelier. Pointe l'index; le rayon cyan et son curseur montrent
+   exactement la cible. Pince pouce/index puis relâche pour cliquer. Le tactile du
+   S24 reste disponible si la main sort du champ ou si le firmware perd le pinch.
+4. Sur le pupitre 3D, choisis une catégorie puis un preset. Le catalogue combine
    plus de 3 000 variations : enseignes, néons, vitrines, écrans, portails,
    totems, drones, hologrammes géants, flèches, particules et widgets maison.
-4. Saisis titre/sous-titre, ajuste taille et rotation. Pour un logo personnel,
-   utilise `IMPORTER LOGO` et choisis un PNG/JPEG de moins de 512 Kio.
-5. Regarde la surface réelle visée et touche `ANCRER DANS LE MONDE`. Le contenu
+5. Saisis titre/sous-titre, ajuste taille et rotation. Pour un logo personnel,
+   utilise `IMPORTER LOGO` et choisis un PNG/JPEG de moins de 512 Kio. Il est
+   intégré dans un volume holographique procédural 3D. Les `.fbx`/`.glb` ne sont
+   pas importés à l'exécution : ils exigeraient un chargeur et un audit de
+   géométrie/matériaux séparés.
+6. Regarde la surface réelle visée et touche `ANCRER DANS LE MONDE`. Le contenu
    n'est sauvegardé qu'après hit Depth, ancre suivie et sauvegarde XREAL réussie.
-6. Déplace-toi et recommence. `ANNULER DERNIER` efface aussi l'ancre native.
+7. Crée au moins deux ancres séparées de 25 cm ou plus. Cette baseline est
+   obligatoire pour vérifier que l'import n'a ni étiré ni tourné la carte.
+8. Déplace-toi et recommence. `ANNULER DERNIER` efface aussi l'ancre native.
    `RECENTRER PUPITRE` rapproche seulement le pupitre d'édition; il ne déplace
    jamais les contenus déjà ancrés.
 
@@ -50,8 +59,9 @@ conserve le `.json`. Le paquet contient :
 - GUID et fichiers de mapping natifs XREAL;
 - SHA-256 du paquet, des images et des mappings.
 
-Un mapping manquant, trop gros ou illisible bloque l'export : ne contourne pas
-ce refus, sinon l'autre APK ne pourrait pas relocaliser le décor.
+Un mapping manquant, trop gros ou illisible bloque l'export. Une carte avec
+moins de deux ancres distinctes est également refusée : l'autre APK ne pourrait
+pas vérifier sa géométrie après changement de sandbox/session.
 
 ## 4. Importer dans l'APK produit
 
@@ -63,7 +73,10 @@ ce refus, sinon l'autre APK ne pourrait pas relocaliser le décor.
    `VIKI, active le mode FreeGuy ancré`.
 
 L'APK installe les mappings dans son propre stockage, recharge les ancres, puis
-n'affiche que celles revenues en état `Tracking`. Pour cumuler les décors
+n'affiche que celles revenues en état `Tracking`. Avant le premier rendu, elle
+compare distances et rotations relatives avec la baseline Atelier. Un drift de
+plus de 12 cm/5 % ou 12° bloque la carte entière au lieu d'afficher un décor
+décalé. Pour cumuler les décors
 persistants avec les effets VisionRT éphémères, active aussi
 `FreeGuy dynamique`. Les deux modes sont indépendants.
 

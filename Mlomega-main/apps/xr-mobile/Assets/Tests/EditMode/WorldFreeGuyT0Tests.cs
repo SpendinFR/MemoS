@@ -96,6 +96,47 @@ namespace MLOmega.XR.Tests
         }
 
         [Test]
+        public void ImportedAnchorGeometryAllowsRigidOriginShiftButRejectsDrift()
+        {
+            Quaternion shift = Quaternion.Euler(0f, 37f, 0f);
+            Vector3 offset = new Vector3(12f, .4f, -8f);
+            var valid = new[]
+            {
+                new WorldAnchorGeometryGuard.Sample(
+                    "a",
+                    Vector3.zero,
+                    Quaternion.identity,
+                    offset,
+                    shift),
+                new WorldAnchorGeometryGuard.Sample(
+                    "b",
+                    new Vector3(2f, 0f, 1f),
+                    Quaternion.Euler(0f, 25f, 0f),
+                    offset + shift * new Vector3(2f, 0f, 1f),
+                    shift * Quaternion.Euler(0f, 25f, 0f)),
+            };
+            Assert.IsTrue(
+                WorldAnchorGeometryGuard.TryValidate(
+                    valid,
+                    out string error),
+                error);
+
+            var drifted = new[]
+            {
+                valid[0],
+                new WorldAnchorGeometryGuard.Sample(
+                    "b",
+                    valid[1].ExpectedPosition,
+                    valid[1].ExpectedRotation,
+                    valid[1].ObservedPosition + Vector3.right,
+                    valid[1].ObservedRotation),
+            };
+            Assert.IsFalse(
+                WorldAnchorGeometryGuard.TryValidate(drifted, out error));
+            Assert.AreEqual("distance_drift", error);
+        }
+
+        [Test]
         public void AtelierPackageRoundTripsWithDigestAndNoMemoryPayload()
         {
             string sourceDir = Path.Combine(

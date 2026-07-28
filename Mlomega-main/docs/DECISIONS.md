@@ -2217,3 +2217,17 @@ Local/PRO.
 Cette décision ferme le raccord logiciel inter-APK, pas le gate matériel :
 l'équivalence du fichier natif entre packages et la relocalisation après marche,
 redémarrage et changement de zone doivent être vérifiées sur S24 + One Pro/Eye.
+
+Le lecteur ne fait toutefois plus confiance à une seule pose. L'Atelier exige une
+baseline d'au moins deux ancres distinctes et l'import attend tous les résultats
+de tracking avant rendu. Il compare distances et rotations relatives, invariantes
+à un changement légitime d'origine XR. Une déformation supérieure à
+max(12 cm, 5 %) ou 12° bloque la carte entière. Cette règle détecte un mapping
+inter-package incompatible; elle ne transforme pas une simulation en
+certification du firmware.
+
+Le choix `InitialInputSource=Hands` ne suffisait pas à rendre un Canvas cliquable.
+Un pointeur XREAL natif lit donc `XRHandSubsystem`, calcule un rayon depuis l'index,
+affiche curseur/laser et convertit un pinch pouce-index à hystérésis en événements
+UI. Il sert au deck Atelier et au menu produit; le tactile S24 reste actif. Le
+pipeline RGB/MediaPipe historique n'est pas supprimé et les runs restent isolés.
