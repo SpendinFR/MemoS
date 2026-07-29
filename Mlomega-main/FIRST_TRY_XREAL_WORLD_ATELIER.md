@@ -41,6 +41,19 @@ pas dans DeX et pas comme une application 2D ordinaire.
    Une map peut cumuler 512 Mio d'assets : après import, le produit les extrait
    et les déduplique par SHA-256, donc un GLB commun à plusieurs maps n'est stocké
    qu'une fois.
+   Le shader de l'APK applique automatiquement texture émissive, transparence,
+   Fresnel, scanlines et halo XREAL : il ne faut ni modifier le GLB sur le S24,
+   ni reconstruire l'APK après chaque import. Pour préparer plusieurs fichiers
+   depuis le PC, copie-les simplement dans `Download\MLOmega\GLB` :
+
+   ```powershell
+   adb shell mkdir -p /sdcard/Download/MLOmega/GLB
+   adb push "C:\Users\wabad\Desktop\GLB\." /sdcard/Download/MLOmega/GLB/
+   ```
+
+   Puis `IMPORTER GLB` ouvre le sélecteur Android dans lequel ce dossier est
+   accessible. Les modèles avec armature s'affichent dans leur pose exportée;
+   l'Atelier anime pour l'instant l'objet entier, pas les os internes.
    `MOUV` choisit `STATIC`, `ORBIT`, `PATROL`, `FIGURE8` ou `VERTICAL`.
    La taille progresse jusqu'à 50x : une femme géante reste liée à son ancre,
    tandis qu'un drone peut tourner ou patrouiller autour de la sienne.

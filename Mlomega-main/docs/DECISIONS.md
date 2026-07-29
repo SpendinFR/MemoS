@@ -2263,3 +2263,19 @@ conservées comme paquets signés séparés puis composées dans un document de 
 Assets identiques dédupliqués par SHA-256; IDs préfixés; validation géométrique
 faite par `sourceMapId`. Aucune modification de prompt, DB, Live, CloseDay ou
 runner Local/PRO n'est autorisée par ce mécanisme.
+
+## 2026-07-29 — Le glow des GLB est un service runtime, pas une préparation par asset
+
+Le player XREAL actuel repose sur le pipeline Unity classique : ajouter un volume
+Bloom URP aurait été inactif ou aurait obligé à changer de pipeline au risque de
+casser le SDK lunettes. `XrealFreeGuyMesh` porte donc lui-même le rendu
+holographique compatible XREAL : émission importée, Fresnel, scanlines et seconde
+passe additive légèrement dilatée. Le coût reste proportionnel aux objets visibles,
+sans post-traitement plein écran permanent.
+
+`RuntimeGlbModel` respecte les textures et facteurs émissifs glTF, y compris
+`KHR_materials_emissive_strength`. Ce choix s'applique à tout GLB futur chargé par
+le sélecteur Android; les fichiers ne sont pas intégrés à l'APK et n'imposent
+aucun rebuild. Les skins/animations osseuses arbitraires ne sont toujours pas
+interprétés : leur pose statique est rendue, puis les mouvements bornés de
+l'Atelier peuvent animer l'ensemble.

@@ -2601,3 +2601,27 @@ Extension du 29 juillet :
   SHA-256 `0F80D49E5AA342006B2C3A3CE3E116E38B9EDA2AB5DB808C208DA0564B3FE0D0`;
   `mlomega-xreal.apk` 222 504 253 octets,
   SHA-256 `E4912F485C5DF7007BC9BC29AFC04E3D39796F7CFDAD97F92EDF1FE79B4E3239`.
+
+Rendu GLB final du 29 juillet :
+
+- le projet n'active pas de Render Pipeline URP dans Graphics/Quality Settings;
+  ne pas ajouter un `Volume/Bloom` URP en supposant qu'il fonctionnera sur XREAL;
+- `XrealFreeGuyMesh.shader` contient le chemin URP et le fallback classic/XREAL
+  avec halo additif. `RuntimeGlbModel` utilise une `emissiveTexture` comme texture
+  visible lorsque Blender a omis `baseColorTexture`, puis applique
+  `KHR_materials_emissive_strength`;
+- cette logique est embarquée une fois dans le player. Copier/importer un nouveau
+  GLB autonome via Android ne demande **aucun rebuild**;
+- un GLB skinné est affiché dans sa pose exportée, mais son animation squelettique
+  n'est pas rejouée. Utiliser `ORBIT/PATROL/FIGURE8/VERTICAL` pour animer le modèle
+  entier tant qu'un importeur d'animation borné n'a pas été audité;
+- validation `WorldMapLibraryTests;WorldFreeGuyT0Tests` : **11/11 verts**.
+
+Artefacts correspondants :
+
+- PhoneOnly : 113 789 210 octets,
+  `6C66719F95F947CBA9956644CA18CB62DDFFA039F9629A698100602EA933DB00`;
+- XREAL produit : 222 507 889 octets,
+  `2A38F6D1087C73DD8C39570A00682586EFC0B8DB64C0B465B6F7AAB09133E473`;
+- Atelier : 222 502 237 octets,
+  `4CF337771A22DB96A0CBA3FC1F4A5C7D897D563B537534A412AC23E2D27B4CCC`.

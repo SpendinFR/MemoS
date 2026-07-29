@@ -2577,6 +2577,17 @@ Suivi T0 logiciel — 26 juillet 2026 :
   une échelle ancrée jusqu'à 50x et les trajectoires bornées `orbit`, `patrol`,
   `figure8` et `vertical`; l'ancre reste le référentiel, donc le mouvement ne devient
   jamais head-locked. **30/30 tests ciblés verts** avant rebuild.
+- [x] **Rendu holographique automatique des GLB — 29 juillet 2026.** Le shader
+  `XrealFreeGuyMesh` possède maintenant un chemin XREAL/classic réellement
+  exécutable, en plus du chemin URP, avec transparence, balayage, Fresnel et halo
+  additif géométrique. Le chargeur reprend aussi `emissiveTexture`,
+  `emissiveFactor` et `KHR_materials_emissive_strength`; un export Blender dont la
+  texture a été déplacée dans l'émissif ne devient donc plus une silhouette cyan
+  plate. Cette conversion est globale au runtime : **aucun rebuild n'est requis
+  pour chaque nouveau GLB**. Les animations squelettiques arbitraires restent
+  volontairement non exécutées; les trajectoires Atelier animent le modèle entier.
+  Validation : **11/11 EditMode**, PhoneOnly, XREAL produit et Atelier construits
+  avec succès.
 - [x] Plusieurs drafts nommés peuvent coexister dans l'Atelier. L'APK produit
   conserve chaque paquet importé dans une bibliothèque privée; `Choisir mondes`
   permet d'en activer plusieurs. La composition déduplique les assets par SHA-256,
@@ -2591,6 +2602,13 @@ Suivi T0 logiciel — 26 juillet 2026 :
   `68B3D38C7579093A954940BE76013FD2F95E6137F02D57D28C61525E451B0502`.
   Les deux utilisent `ai.nreal.activitylife.NRXRActivity` et embarquent l'activité
   SAF privée `WorldMapDocumentActivity`.
+- Preuves de build après rendu GLB automatique :
+  PhoneOnly **113 789 210 octets**, SHA-256
+  `6C66719F95F947CBA9956644CA18CB62DDFFA039F9629A698100602EA933DB00`;
+  XREAL produit **222 507 889 octets**, SHA-256
+  `2A38F6D1087C73DD8C39570A00682586EFC0B8DB64C0B465B6F7AAB09133E473`;
+  Atelier **222 502 237 octets**, SHA-256
+  `4CF337771A22DB96A0CBA3FC1F4A5C7D897D563B537534A412AC23E2D27B4CCC`.
 
 **T1 — compréhension temporelle et monde sous-titré.**
 

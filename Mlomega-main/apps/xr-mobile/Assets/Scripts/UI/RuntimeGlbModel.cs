@@ -322,13 +322,29 @@ namespace MLOmega.XR.UI
                 Texture2D texture = null;
                 int textureIndex =
                     pbr?["baseColorTexture"]?.Value<int?>("index") ?? -1;
+                int emissionTextureIndex =
+                    source["emissiveTexture"]?.Value<int?>("index") ?? -1;
                 if (textureIndex >= 0)
                     texture = ReadTexture(parsed, textureIndex, textureCache);
+                // Blender hologram exports commonly move the authored colour
+                // texture to emissiveTexture and deliberately omit baseColorTexture.
+                // Reuse it as the visible texture; otherwise richly textured GLBs
+                // would become a flat cyan silhouette at runtime.
+                if (texture == null && emissionTextureIndex >= 0)
+                    texture = ReadTexture(
+                        parsed,
+                        emissionTextureIndex,
+                        textureCache);
+                float emissionStrength =
+                    source["extensions"]?
+                        ["KHR_materials_emissive_strength"]?
+                        .Value<float?>("emissiveStrength") ?? 1f;
                 result.Add(MakeMaterial(
                     hologramShader,
                     texture,
                     colour,
-                    emissive));
+                    emissive,
+                    emissionStrength));
             }
             return result;
         }
@@ -337,7 +353,8 @@ namespace MLOmega.XR.UI
             Shader shader,
             Texture texture,
             Color? colour = null,
-            Color? emission = null)
+            Color? emission = null,
+            float emissionStrength = 1f)
         {
             shader = shader ??
                 Shader.Find("MLOmega/XREAL FreeGuy Mesh") ??
@@ -365,6 +382,10 @@ namespace MLOmega.XR.UI
                     glow.r, glow.g, glow.b, .28f));
             if (material.HasProperty("_EmissionColor"))
                 material.SetColor("_EmissionColor", glow);
+            if (material.HasProperty("_EmissionStrength"))
+                material.SetFloat(
+                    "_EmissionStrength",
+                    Mathf.Clamp(emissionStrength, 0f, 8f));
             material.renderQueue = (int)RenderQueue.Transparent;
             return material;
         }
