@@ -2555,10 +2555,26 @@ Suivi T0 logiciel — 26 juillet 2026 :
   éphémères existantes; le second ne rend que la carte Atelier importée. Les runs
   Local/PRO, le transport Eye, BrainLive, Memory et CloseDay ne sont pas invoqués
   par l'Atelier et n'ont pas été modifiés par son builder.
-- Bornes paquet : 2 048 contenus, 32 images PNG/JPEG de 512 Kio chacune et 3 Mio
-  cumulés, 2 Mio par mapping et 24 Mio cumulés, enveloppe de 32 Mio. Un mapping
+- Bornes paquet : 2 048 contenus, 512 règles dynamiques, 64 assets PNG/JPEG/GLB,
+  32 Mio par asset et 64 Mio cumulés, 2 Mio par mapping et 24 Mio cumulés,
+  enveloppe de 128 Mio. Les GLB 2.0 doivent être autonomes : géométrie et textures
+  embarquées, aucune URI externe, 250 k sommets/350 k triangles maximum. Un mapping
   absent, un digest faux, un fichier illisible ou une ancre non suivie bloque
   l'élément au lieu de le faire flotter devant la tête.
+- [x] **Extension Atelier sans régression — 29 juillet 2026.** Le deck permet
+  maintenant de sélectionner puis supprimer n'importe quelle ancre/règle, et non
+  plus seulement la dernière. `IMPORTER GLB` valide et charge un GLB autonome dans
+  le même `WorldHologram`; les animations procédurales du preset s'appliquent au
+  modèle entier sans exécuter de code importé. Le mode `DYNAMIQUE` lie un
+  preset/asset à une cible VisionRT (`label`, `kind`, attache, confiance,
+  max-instances, TTL) sans ancre ni écriture Memory.
+- [x] Plusieurs drafts nommés peuvent coexister dans l'Atelier. L'APK produit
+  conserve chaque paquet importé dans une bibliothèque privée; `Choisir mondes`
+  permet d'en activer plusieurs. La composition déduplique les assets par SHA-256,
+  préfixe les IDs, installe les mappings et valide la géométrie séparément par map
+  afin que deux origines de création distinctes ne soient jamais comparées entre
+  elles. Les chemins PhoneOnly, Live, Local/PRO et CloseDay ne consultent pas cette
+  bibliothèque.
 - Preuves de build après pointeur mains/garde géométrique :
   Atelier **222 439 489 octets**, SHA-256
   `6F2F84D3F1C3063A174F9860B20814F5951E91243FA48C8EC9E58DCE0A6B4EDC`;

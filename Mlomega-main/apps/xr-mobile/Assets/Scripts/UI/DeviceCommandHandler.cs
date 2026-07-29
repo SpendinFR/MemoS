@@ -68,6 +68,9 @@ namespace MLOmega.XR.UI
 
         private IXrealSpatialProvider SpatialProvider =>
             _xrealSpatial as IXrealSpatialProvider;
+        public IReadOnlyList<WorldMapSelection> AvailableWorldMaps =>
+            SpatialProvider?.AvailableWorldMaps ??
+            Array.Empty<WorldMapSelection>();
 
         /// <summary>Raised when a "menu" command arrives (MenuPanel opens the panel).</summary>
         public event Action MenuRequested;
@@ -190,6 +193,28 @@ namespace MLOmega.XR.UI
                 case "import_world_map":
                     ok = SpatialProvider != null &&
                         SpatialProvider.ImportAnchoredWorld();
+                    break;
+                case "toggle_world_map":
+                {
+                    WorldMapSelection selected = null;
+                    foreach (WorldMapSelection map in AvailableWorldMaps)
+                        if (string.Equals(
+                                map.mapId,
+                                cmd.Feature,
+                                StringComparison.Ordinal))
+                        {
+                            selected = map;
+                            break;
+                        }
+                    ok = selected != null &&
+                        SpatialProvider.SetWorldMapActive(
+                            selected.mapId,
+                            cmd.On ?? !selected.active);
+                    break;
+                }
+                case "remove_world_map":
+                    ok = SpatialProvider != null &&
+                        SpatialProvider.RemoveInstalledWorldMap(cmd.Feature);
                     break;
                 case "open_menu":
                     MenuRequested?.Invoke();

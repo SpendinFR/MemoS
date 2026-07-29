@@ -40,6 +40,12 @@ namespace MLOmega.XR.UI
         private string _status = "INITIALISATION DU MESH…";
         private string _lastCreatedId;
         private string _pendingAssetId;
+        private bool _dynamicMode;
+        private string _dynamicTargetLabel = string.Empty;
+        private int _dynamicKindIndex;
+        private int _attachmentIndex;
+        private int _managedIndex;
+        private int _mapIndex;
         private int _page;
         private float _uniformScale = 1f;
         private float _yaw;
@@ -68,8 +74,23 @@ namespace MLOmega.XR.UI
         private TextMeshProUGUI _deckPage;
         private TextMeshProUGUI _deckScale;
         private TextMeshProUGUI _deckAsset;
+        private TextMeshProUGUI _deckCommitLabel;
+        private TextMeshProUGUI _deckModeLabel;
+        private TextMeshProUGUI _deckKindLabel;
+        private TextMeshProUGUI _deckAttachmentLabel;
+        private TextMeshProUGUI _deckManagedLabel;
+        private TextMeshProUGUI _deckMapLabel;
+        private TMP_InputField _deckTarget;
         private static Material _deckDepthMaterial;
         private static Material _deckPrimaryDepthMaterial;
+        private static readonly string[] DynamicKinds =
+        {
+            "object", "vehicle", "storefront", "sign", "building", "person",
+        };
+        private static readonly string[] Attachments =
+        {
+            "above", "center", "front", "rear", "left", "right", "below",
+        };
 
         private void Awake()
         {
@@ -98,6 +119,7 @@ namespace MLOmega.XR.UI
             _exchange.Exported += path =>
                 _status = "MONDE EXPORTÉ // " + path;
             _exchange.ImageImported += OnImageImported;
+            _exchange.GlbImported += OnGlbImported;
             _exchange.Failed += error =>
                 _status = "ERREUR DOCUMENT // " + error;
             SelectCategory(_category);
@@ -109,7 +131,10 @@ namespace MLOmega.XR.UI
             if (Spatial != null)
                 Spatial.CreatorOperationCompleted -= OnCreatorOperation;
             if (_exchange != null)
+            {
                 _exchange.ImageImported -= OnImageImported;
+                _exchange.GlbImported -= OnGlbImported;
+            }
             if (_spatialDeck != null)
                 Destroy(_spatialDeck.gameObject);
         }
@@ -337,14 +362,14 @@ namespace MLOmega.XR.UI
             _spatialDeck.sortingOrder = 80;
             deckGo.AddComponent<GraphicRaycaster>();
             _spatialDeckRect = deckGo.GetComponent<RectTransform>();
-            _spatialDeckRect.sizeDelta = new Vector2(920f, 1050f);
+            _spatialDeckRect.sizeDelta = new Vector2(920f, 1220f);
             _spatialDeckRect.localScale = Vector3.one * .00105f;
             SetDeckPose();
             MakeSpatialPlate(
                 _spatialDeckRect,
                 "Deck physical glass volume",
                 Vector2.zero,
-                new Vector2(920f, 1050f),
+                new Vector2(920f, 1220f),
                 22f,
                 false);
 
@@ -352,14 +377,14 @@ namespace MLOmega.XR.UI
                 _spatialDeckRect,
                 "Glass",
                 Vector2.zero,
-                new Vector2(920f, 1050f),
+                new Vector2(920f, 1220f),
                 new Color(.008f, .018f, .05f, .86f));
             glass.raycastTarget = false;
             MakeImage(
                 _spatialDeckRect,
                 "InnerGlow",
                 new Vector2(0f, 4f),
-                new Vector2(892f, 1022f),
+                new Vector2(892f, 1192f),
                 new Color(.02f, .2f, .26f, .18f)).raycastTarget = false;
             MakeNeonFrame(deckGo.transform);
 
@@ -513,13 +538,14 @@ namespace MLOmega.XR.UI
                     RefreshPreview();
                 });
 
-            MakeButton(
+            Button commit = MakeButton(
                 _spatialDeckRect,
                 "ANCRER DANS LE MONDE",
                 new Vector2(0f, -332f),
                 new Vector2(850f, 66f),
                 AnchorFromSpatialDeck,
                 true);
+            _deckCommitLabel = commit.GetComponentInChildren<TextMeshProUGUI>();
             MakeButton(
                 _spatialDeckRect,
                 "ANNULER DERNIER",
@@ -542,10 +568,97 @@ namespace MLOmega.XR.UI
                 new Vector2(285f, -408f),
                 new Vector2(250f, 48f),
                 SetDeckPose);
+            MakeButton(
+                _spatialDeckRect,
+                "IMPORTER GLB",
+                new Vector2(-350f, -474f),
+                new Vector2(170f, 44f),
+                () => _exchange.BeginGlbImport());
+            Button mode = MakeButton(
+                _spatialDeckRect,
+                "MODE ANCRÉ",
+                new Vector2(-165f, -474f),
+                new Vector2(170f, 44f),
+                () =>
+                {
+                    _dynamicMode = !_dynamicMode;
+                    RefreshSpatialDeck();
+                });
+            _deckModeLabel = mode.GetComponentInChildren<TextMeshProUGUI>();
+            _deckTarget = MakeInput(
+                _spatialDeckRect,
+                "Cible précise (optionnel)",
+                new Vector2(45f, -474f),
+                new Vector2(225f, 44f),
+                value => _dynamicTargetLabel = value);
+            Button kind = MakeButton(
+                _spatialDeckRect,
+                "CIBLE: OBJECT",
+                new Vector2(260f, -474f),
+                new Vector2(180f, 44f),
+                () =>
+                {
+                    _dynamicKindIndex =
+                        (_dynamicKindIndex + 1) % DynamicKinds.Length;
+                    RefreshSpatialDeck();
+                });
+            _deckKindLabel = kind.GetComponentInChildren<TextMeshProUGUI>();
+            Button attachment = MakeButton(
+                _spatialDeckRect,
+                "POS: ABOVE",
+                new Vector2(385f, -474f),
+                new Vector2(110f, 44f),
+                () =>
+                {
+                    _attachmentIndex =
+                        (_attachmentIndex + 1) % Attachments.Length;
+                    RefreshSpatialDeck();
+                });
+            _deckAttachmentLabel =
+                attachment.GetComponentInChildren<TextMeshProUGUI>();
+
+            MakeButton(
+                _spatialDeckRect,
+                "◀",
+                new Vector2(-405f, -528f),
+                new Vector2(65f, 44f),
+                () => MoveManaged(-1));
+            _deckManagedLabel = MakeText(
+                _spatialDeckRect,
+                "AUCUN ÉLÉMENT",
+                new Vector2(-270f, -528f),
+                new Vector2(190f, 44f),
+                13f,
+                new Color(.72f, .94f, 1f));
+            MakeButton(
+                _spatialDeckRect,
+                "▶",
+                new Vector2(-145f, -528f),
+                new Vector2(65f, 44f),
+                () => MoveManaged(1));
+            MakeButton(
+                _spatialDeckRect,
+                "SUPPRIMER",
+                new Vector2(-45f, -528f),
+                new Vector2(125f, 44f),
+                DeleteManaged);
+            MakeButton(
+                _spatialDeckRect,
+                "NOUVELLE MAP",
+                new Vector2(115f, -528f),
+                new Vector2(175f, 44f),
+                CreateMap);
+            Button map = MakeButton(
+                _spatialDeckRect,
+                "MAP ▶",
+                new Vector2(310f, -528f),
+                new Vector2(200f, 44f),
+                NextMap);
+            _deckMapLabel = map.GetComponentInChildren<TextMeshProUGUI>();
             _deckStatus = MakeText(
                 _spatialDeckRect,
                 _status,
-                new Vector2(0f, -472f),
+                new Vector2(0f, -586f),
                 new Vector2(850f, 62f),
                 17f,
                 new Color(.25f, 1f, .9f),
@@ -555,6 +668,26 @@ namespace MLOmega.XR.UI
 
         private void AnchorFromSpatialDeck()
         {
+            if (_dynamicMode)
+            {
+                if (Spatial == null || _selected == null)
+                {
+                    _status = "RÈGLE DYNAMIQUE INDISPONIBLE";
+                    return;
+                }
+                Vector3 dynamicScale = _selected.defaultScale * _uniformScale;
+                if (Spatial.SaveCreatorDynamicBinding(
+                        _selected,
+                        _dynamicTargetLabel,
+                        DynamicKinds[_dynamicKindIndex],
+                        Attachments[_attachmentIndex],
+                        _label,
+                        _subtitle,
+                        dynamicScale,
+                        _pendingAssetId))
+                    _status = "RÈGLE DYNAMIQUE SAUVEGARDÉE";
+                return;
+            }
             if (
                 Spatial == null ||
                 !Spatial.CreatorReady ||
@@ -574,6 +707,66 @@ namespace MLOmega.XR.UI
                     _yaw,
                     _pendingAssetId))
                 _status = "SAUVEGARDE DE L'ANCRE NATIVE…";
+        }
+
+        private int ManagedCount =>
+            (Spatial?.CreatorMap?.Contents.Count ?? 0) +
+            (Spatial?.CreatorMap?.DynamicBindings.Count ?? 0);
+
+        private void MoveManaged(int direction)
+        {
+            int count = ManagedCount;
+            if (count <= 0)
+            {
+                _managedIndex = 0;
+                return;
+            }
+            _managedIndex = (_managedIndex + direction + count) % count;
+            RefreshSpatialDeck();
+        }
+
+        private void DeleteManaged()
+        {
+            WorldMapStore map = Spatial?.CreatorMap;
+            if (map == null || ManagedCount == 0) return;
+            _managedIndex = Mathf.Clamp(_managedIndex, 0, ManagedCount - 1);
+            if (_managedIndex < map.Contents.Count)
+                Spatial.RemoveCreatorContent(
+                    map.Contents[_managedIndex].worldContentId);
+            else
+                Spatial.RemoveCreatorDynamicBinding(
+                    map.DynamicBindings[
+                        _managedIndex - map.Contents.Count].bindingId);
+            _managedIndex = Mathf.Max(0, _managedIndex - 1);
+        }
+
+        private void CreateMap()
+        {
+            if (Spatial == null) return;
+            string name = string.IsNullOrWhiteSpace(_label)
+                ? "Nouveau monde"
+                : _label;
+            if (Spatial.CreateCreatorMap(name))
+            {
+                _lastCreatedId = string.Empty;
+                _pendingAssetId = string.Empty;
+                _managedIndex = 0;
+                _status = "NOUVELLE MAP // " + name;
+            }
+        }
+
+        private void NextMap()
+        {
+            IReadOnlyList<WorldMapSelection> maps = Spatial?.CreatorMaps;
+            if (maps == null || maps.Count == 0) return;
+            _mapIndex = (_mapIndex + 1) % maps.Count;
+            if (Spatial.SwitchCreatorMap(maps[_mapIndex].mapId))
+            {
+                _lastCreatedId = string.Empty;
+                _pendingAssetId = string.Empty;
+                _managedIndex = 0;
+                _status = "MAP ACTIVE // " + maps[_mapIndex].displayName;
+            }
         }
 
         /// <summary>
@@ -648,8 +841,35 @@ namespace MLOmega.XR.UI
                 _deckPage.text = (_page + 1) + "/" + PageCount;
             if (_deckAsset != null)
                 _deckAsset.text = string.IsNullOrEmpty(_pendingAssetId)
-                    ? "AUCUN LOGO"
-                    : "LOGO 3D PRÊT ✓";
+                    ? "AUCUN ASSET"
+                    : (Spatial?.CreatorMap?.FindAsset(_pendingAssetId)?.kind ==
+                        "glb_model"
+                        ? "MODÈLE GLB PRÊT ✓"
+                        : "LOGO 3D PRÊT ✓");
+            if (_deckCommitLabel != null)
+                _deckCommitLabel.text = _dynamicMode
+                    ? "LIER AU FLUX DYNAMIQUE"
+                    : "ANCRER DANS LE MONDE";
+            if (_deckModeLabel != null)
+                _deckModeLabel.text = _dynamicMode
+                    ? "MODE DYNAMIQUE"
+                    : "MODE ANCRÉ";
+            if (_deckKindLabel != null)
+                _deckKindLabel.text =
+                    "CIBLE: " + DynamicKinds[_dynamicKindIndex].ToUpperInvariant();
+            if (_deckAttachmentLabel != null)
+                _deckAttachmentLabel.text =
+                    "POS: " + Attachments[_attachmentIndex].ToUpperInvariant();
+            if (_deckTarget != null && !_deckTarget.isFocused)
+                _deckTarget.SetTextWithoutNotify(_dynamicTargetLabel);
+            if (_deckManagedLabel != null)
+                _deckManagedLabel.text = ManagedLabel();
+            if (_deckMapLabel != null)
+            {
+                string mapName = Spatial?.CreatorMap?.Document.displayName ??
+                    "MAP";
+                _deckMapLabel.text = mapName.ToUpperInvariant() + " ▶";
+            }
             if (_deckLabel != null && !_deckLabel.isFocused)
                 _deckLabel.SetTextWithoutNotify(_label);
             if (_deckSubtitle != null && !_deckSubtitle.isFocused)
@@ -1009,10 +1229,20 @@ namespace MLOmega.XR.UI
         {
             if (success)
             {
-                _lastCreatedId = contentId;
-                _status = "ANCRE SAUVEGARDÉE // " +
-                    (Spatial?.CreatorMap?.Contents.Count ?? 0) +
-                    " ÉLÉMENT(S)";
+                if (detail == "saved")
+                {
+                    _lastCreatedId = contentId;
+                    _status = "ANCRE SAUVEGARDÉE // " +
+                        (Spatial?.CreatorMap?.Contents.Count ?? 0) +
+                        " ÉLÉMENT(S)";
+                }
+                else if (detail == "dynamic_saved")
+                    _status = "RÈGLE DYNAMIQUE SAUVEGARDÉE // " +
+                        (Spatial?.CreatorMap?.DynamicBindings.Count ?? 0);
+                else if (detail == "dynamic_removed" || detail == string.Empty)
+                    _status = "ÉLÉMENT SUPPRIMÉ";
+                else if (detail.StartsWith("map_", StringComparison.Ordinal))
+                    _status = "MAP // " + detail.Replace("_", " ").ToUpperInvariant();
             }
             else
             {
@@ -1037,6 +1267,48 @@ namespace MLOmega.XR.UI
             {
                 _status = "LOGO REFUSÉ // " + (error ?? "unknown");
             }
+        }
+
+        private void OnGlbImported(string path)
+        {
+            string error = string.Empty;
+            if (
+                Spatial?.CreatorMap != null &&
+                Spatial.CreatorMap.TryAddGlbAsset(
+                    path,
+                    out string assetId,
+                    out error))
+            {
+                _pendingAssetId = assetId;
+                _status = "MODÈLE GLB VALIDÉ // " + assetId;
+                RefreshPreview();
+            }
+            else
+            {
+                _status = "GLB REFUSÉ // " + (error ?? "unknown");
+            }
+        }
+
+        private string ManagedLabel()
+        {
+            WorldMapStore map = Spatial?.CreatorMap;
+            int count = ManagedCount;
+            if (map == null || count == 0) return "AUCUN ÉLÉMENT";
+            _managedIndex = Mathf.Clamp(_managedIndex, 0, count - 1);
+            if (_managedIndex < map.Contents.Count)
+            {
+                WorldMapStore.WorldContent item = map.Contents[_managedIndex];
+                return "A // " +
+                    (string.IsNullOrWhiteSpace(item.label)
+                        ? item.templateId
+                        : item.label);
+            }
+            WorldMapStore.WorldDynamicBinding binding =
+                map.DynamicBindings[_managedIndex - map.Contents.Count];
+            return "D // " +
+                (string.IsNullOrWhiteSpace(binding.targetLabel)
+                    ? binding.targetKind
+                    : binding.targetLabel);
         }
 
         private void EnsureStyles()

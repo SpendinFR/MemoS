@@ -2556,7 +2556,7 @@ Validation logicielle du lot :
 $u = "C:\Program Files\Unity\Hub\Editor\6000.0.23f1\Editor\Unity.exe"
 $p = Start-Process $u -ArgumentList `
   '-batchmode','-runTests','-testPlatform','EditMode','-projectPath','.', `
-  '-testFilter','MLOmega.XR.Tests.WorldFreeGuyT0Tests', `
+   '-testFilter','MLOmega.XR.Tests.WorldFreeGuyT0Tests;MLOmega.XR.Tests.WorldMapLibraryTests', `
   '-testResults',"$pwd\world-atelier-editmode.xml", `
   '-logFile',"$pwd\world-atelier-editmode.log" `
   -Wait -PassThru -NoNewWindow
@@ -2575,3 +2575,24 @@ Les lignes de licence 500/token absentes au début des logs n'étaient pas le
 verdict : les deux logs finissent par `World Atelier APK OK` et
 `Glasses PRODUCT APK OK`. Le gate encore ouvert est physique :
 relocalisation, occlusion, stéréo et tenue thermique sur S24 + One Pro/Eye.
+
+Extension du 29 juillet :
+
+- `WorldMapStore` accepte images et GLB autonomes bornés à 32 Mio par asset,
+  64 Mio par map et 128 Mio par paquet signé; ne jamais ajouter un
+  package runtime glTF ou une URL réseau au player sans nouvel audit Android/IL2CPP.
+- `WorldMapLibrary` garde les paquets importés, leurs activations et construit une
+  composition. Le menu `Choisir mondes` bascule chaque map; `Importer monde`
+  installe puis active la nouvelle.
+- dans l'Atelier, `MODE ANCRÉ` sauvegarde une ancre XREAL; `MODE DYNAMIQUE`
+  sauvegarde une règle VisionRT. Les flèches de gestion choisissent un élément
+  ancré ou dynamique et `SUPPRIMER` efface exactement celui-ci.
+- `NOUVELLE MAP` utilise le titre courant comme nom; `MAP ▶` change de draft.
+  Une map contenant encore des ancres ne peut pas être supprimée en bloc : effacer
+  d'abord ses éléments pour que les GUID natifs ne deviennent pas orphelins.
+- tests ciblés obtenus : **28/28 verts** (composition/toggle, seuil GLB >=30 Mio,
+  GLB réellement instancié et régression FreeGuy/menu/AR).
+- builds du 29 juillet : `mlomega-xreal-world-atelier.apk` 222 488 133 octets,
+  SHA-256 `C7B5297429943954751FDFA57E78BDE81E2BECBAF3E75014F3ECA389F0E8DF50`;
+  `mlomega-xreal.apk` 222 493 885 octets,
+  SHA-256 `C39548E9CF2F7BC9A393BB2F037C20EC5F0A9D0D88F5479D64C9C23C07467D64`.

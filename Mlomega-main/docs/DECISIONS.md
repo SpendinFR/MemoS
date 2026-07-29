@@ -2231,3 +2231,21 @@ Un pointeur XREAL natif lit donc `XRHandSubsystem`, calcule un rayon depuis l'in
 affiche curseur/laser et convertit un pinch pouce-index à hystérésis en événements
 UI. Il sert au deck Atelier et au menu produit; le tactile S24 reste actif. Le
 pipeline RGB/MediaPipe historique n'est pas supprimé et les runs restent isolés.
+
+## 2026-07-29 — GLB borné, règles dynamiques et composition multi-map restent présentation-only
+
+L'Atelier ne devient pas un second moteur cognitif. Son format historique
+`mlomega.world-map/v1` reçoit trois extensions optionnelles et rétrocompatibles :
+assets GLB 2.0 autonomes, règles de liaison à un track VisionRT et `sourceMapId`.
+Le GLB est parsé par un lecteur borné maison : aucune URI externe ni extension
+exécutable, plafonds de taille/géométrie, textures embarquées seulement. Les
+animations du preset déplacent le modèle importé comme un tout; le système ne
+prétend pas importer toutes les animations squelettiques arbitraires.
+
+Les règles dynamiques remplacent uniquement la table de choix visuel codée en dur
+lorsqu'une cible `label/kind` correspond. Elles restent `ephemeral`,
+`memory_write=false`, limitées en instances et TTL. Les maps installées sont
+conservées comme paquets signés séparés puis composées dans un document de lecture.
+Assets identiques dédupliqués par SHA-256; IDs préfixés; validation géométrique
+faite par `sourceMapId`. Aucune modification de prompt, DB, Live, CloseDay ou
+runner Local/PRO n'est autorisée par ce mécanisme.

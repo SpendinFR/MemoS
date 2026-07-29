@@ -1054,6 +1054,14 @@ Suivre `FIRST_TRY_XREAL_WORLD_ATELIER.md`, puis vérifier :
 - [ ] sol et mur : position, verticale, rotation et resize sont conservés ;
 - [ ] un logo PNG/JPEG valide apparaît dans son volume 3D, un asset trop gros est
   refusé ;
+- [ ] un GLB autonome valide est réellement rendu en world-space avec son shader
+  holographique; URI externe, GLB corrompu ou géométrie hors plafond sont refusés ;
+- [ ] créer au moins deux maps nommées; `MAP ▶` retrouve leurs contenus séparés ;
+- [ ] sélectionner une ancienne ancre avec les flèches puis `SUPPRIMER` : c'est
+  elle, et non la dernière créée, qui disparaît avec son ancre native ;
+- [ ] créer une règle dynamique `vehicle` et une règle label précis; elles suivent
+  uniquement les tracks correspondants, respectent TTL/max-instances et ne créent
+  aucune écriture Memory ;
 - [ ] l'export contient un mapping natif pour chaque GUID et refuse tout mapping
   absent ;
 - [ ] l'APK produit importe le paquet sans accès à la DB de l'Atelier ;
@@ -1066,6 +1074,8 @@ Suivre `FIRST_TRY_XREAL_WORLD_ATELIER.md`, puis vérifier :
 - [ ] les deux modes se composent sans doublons, head-lock ni dépassement
   thermique ;
 - [ ] `Importer monde` et `VIKI, importe mon monde ancré` ouvrent le même picker ;
+- [ ] `Choisir mondes` liste tous les paquets installés; activer A+B affiche les
+  deux, désactiver A retire A sans perdre B, puis un redémarrage conserve ce choix ;
 - [ ] Local/PRO, Memory, Eye et CloseDay gardent leurs résultats historiques.
 
 ## 28. Verdict final matériel

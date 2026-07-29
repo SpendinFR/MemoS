@@ -33,16 +33,18 @@ pas dans DeX et pas comme une application 2D ordinaire.
 4. Sur le pupitre 3D, choisis une catégorie puis un preset. Le catalogue combine
    plus de 3 000 variations : enseignes, néons, vitrines, écrans, portails,
    totems, drones, hologrammes géants, flèches, particules et widgets maison.
-5. Saisis titre/sous-titre, ajuste taille et rotation. Pour un logo personnel,
-   utilise `IMPORTER LOGO` et choisis un PNG/JPEG de moins de 512 Kio. Il est
-   intégré dans un volume holographique procédural 3D. Les `.fbx`/`.glb` ne sont
-   pas importés à l'exécution : ils exigeraient un chargeur et un audit de
-   géométrie/matériaux séparés.
+5. Saisis titre/sous-titre, ajuste taille et rotation. `IMPORTER LOGO` accepte un
+   PNG/JPEG; `IMPORTER GLB` accepte un GLB 2.0 autonome. Un GLB doit embarquer ses
+   meshes et textures (aucun fichier/URL externe), rester sous 32 Mio, 250 k
+   sommets et 350 k triangles. Les matériaux sont convertis vers le shader
+   holographique XREAL; l'animation choisie dans le preset anime l'objet entier.
 6. Regarde la surface réelle visée et touche `ANCRER DANS LE MONDE`. Le contenu
    n'est sauvegardé qu'après hit Depth, ancre suivie et sauvegarde XREAL réussie.
 7. Crée au moins deux ancres séparées de 25 cm ou plus. Cette baseline est
    obligatoire pour vérifier que l'import n'a ni étiré ni tourné la carte.
 8. Déplace-toi et recommence. `ANNULER DERNIER` efface aussi l'ancre native.
+   Les flèches de la ligne de gestion parcourent toutes les ancres et règles;
+   `SUPPRIMER` efface l'élément affiché, pas forcément le dernier.
    `RECENTRER PUPITRE` rapproche seulement le pupitre d'édition; il ne déplace
    jamais les contenus déjà ancrés.
 
@@ -79,6 +81,15 @@ plus de 12 cm/5 % ou 12° bloque la carte entière au lieu d'afficher un décor
 décalé. Pour cumuler les décors
 persistants avec les effets VisionRT éphémères, active aussi
 `FreeGuy dynamique`. Les deux modes sont indépendants.
+
+Pour créer une UI qui suit les détections plutôt qu'un point fixe, passe le bouton
+`MODE ANCRÉ` à `MODE DYNAMIQUE`, choisis la classe cible et l'attache, renseigne
+éventuellement un label précis puis touche `LIER AU FLUX DYNAMIQUE`. La règle
+reste bornée, disparaît avec le track et n'écrit jamais dans Memory.
+
+`NOUVELLE MAP` crée un draft nommé avec le titre courant; `MAP ▶` passe au draft
+suivant. Dans l'APK produit, ouvre `Choisir mondes` : chaque ligne coche/décoche
+une map, et plusieurs maps peuvent être affichées ensemble avec FreeGuy dynamique.
 
 ## 5. Preuve matérielle obligatoire
 

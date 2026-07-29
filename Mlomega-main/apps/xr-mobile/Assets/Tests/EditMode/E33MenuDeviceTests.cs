@@ -57,7 +57,8 @@ namespace MLOmega.XR.Tests
             // Contains the load-bearing entries.
             var labels = new HashSet<string>();
             foreach (var a in menu.Actions) labels.Add(a.Label);
-            Assert.Contains("FreeGuy", new List<string>(labels));
+            Assert.Contains("FreeGuy dynamique", new List<string>(labels));
+            Assert.Contains("FreeGuy ancré", new List<string>(labels));
             Assert.Contains("Cacher", new List<string>(labels));
             Assert.Contains("Maps", new List<string>(labels));
             Assert.Contains("Sherlock", new List<string>(labels));

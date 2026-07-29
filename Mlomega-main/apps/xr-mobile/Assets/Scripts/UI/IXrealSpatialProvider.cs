@@ -17,6 +17,10 @@ namespace MLOmega.XR.UI
         bool StartNavigation(string destination);
         bool NameCurrentIndoorPlace(string label);
         bool ImportAnchoredWorld();
+        System.Collections.Generic.IReadOnlyList<WorldMapSelection>
+            AvailableWorldMaps { get; }
+        bool SetWorldMapActive(string mapId, bool active);
+        bool RemoveInstalledWorldMap(string mapId);
     }
 
     /// <summary>Creator-only surface; production code never calls these methods.</summary>
@@ -24,7 +28,12 @@ namespace MLOmega.XR.UI
     {
         bool CreatorReady { get; }
         WorldMapStore CreatorMap { get; }
+        System.Collections.Generic.IReadOnlyList<WorldMapSelection>
+            CreatorMaps { get; }
         void EnableCreatorMode();
+        bool CreateCreatorMap(string displayName);
+        bool SwitchCreatorMap(string mapId);
+        bool DeleteCreatorMap(string mapId);
         bool TryCreatorPlacement(
             Vector2 viewport,
             out Vector3 position,
@@ -39,6 +48,16 @@ namespace MLOmega.XR.UI
             string assetId);
         bool PrepareCreatorExport(out string error);
         bool RemoveCreatorContent(string worldContentId);
+        bool SaveCreatorDynamicBinding(
+            WorldCreatorCatalog.Entry preset,
+            string targetLabel,
+            string targetKind,
+            string attachment,
+            string label,
+            string subtitle,
+            Vector3 scale,
+            string assetId);
+        bool RemoveCreatorDynamicBinding(string bindingId);
         event System.Action<string, bool, string> CreatorOperationCompleted;
     }
 }

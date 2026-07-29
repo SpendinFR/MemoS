@@ -71,6 +71,7 @@ namespace MLOmega.XR.UI.Components
         private Quaternion _restoreRotation;
         private Vector2 _restoreSize;
         private bool _augmentedSettingsPage;
+        private bool _worldMapsPage;
         private int _augmentedPageIndex;
         // Six features + previous/next/back keeps every physical page at <= 9 rows.
         private const int AugmentedItemsPerPage = 6;
@@ -149,6 +150,7 @@ namespace MLOmega.XR.UI.Components
         public void BuildDefaultActions()
         {
             _augmentedSettingsPage = false;
+            _worldMapsPage = false;
             _augmentedPageIndex = 0;
             BuildMainActions();
         }
@@ -166,6 +168,13 @@ namespace MLOmega.XR.UI.Components
                 {
                     Type = "device_command",
                     Action = "import_world_map",
+                }));
+            _actions.Add(new MenuAction(
+                "Choisir mondes",
+                new DeviceCommand
+                {
+                    Type = "device_command",
+                    Action = "open_world_maps",
                 }));
             _actions.Add(Mode("Minimal", "minimal"));
             _actions.Add(Mode("Cacher", "hide_all"));
@@ -223,6 +232,52 @@ namespace MLOmega.XR.UI.Components
             _actions.Add(new MenuAction(
                 "Retour",
                 new DeviceCommand { Type = "device_command", Action = "back_main_menu" }));
+            RefreshVisual();
+        }
+
+        public void BuildWorldMapActions()
+        {
+            _augmentedSettingsPage = false;
+            _worldMapsPage = true;
+            _actions.Clear();
+            IReadOnlyList<WorldMapSelection> maps =
+                _commandHandler?.AvailableWorldMaps ??
+                Array.Empty<WorldMapSelection>();
+            foreach (WorldMapSelection map in maps)
+            {
+                _actions.Add(new MenuAction(
+                    (map.active ? "✓ " : "○ ") + map.displayName +
+                    $" ({map.anchoredCount}A/{map.dynamicCount}D)",
+                    new DeviceCommand
+                    {
+                        Type = "device_command",
+                        Action = "toggle_world_map",
+                        Feature = map.mapId,
+                        On = !map.active,
+                    }));
+            }
+            if (maps.Count == 0)
+                _actions.Add(new MenuAction(
+                    "Aucune map importée",
+                    new DeviceCommand
+                    {
+                        Type = "device_command",
+                        Action = "open_world_maps",
+                    }));
+            _actions.Add(new MenuAction(
+                "Importer une map",
+                new DeviceCommand
+                {
+                    Type = "device_command",
+                    Action = "import_world_map",
+                }));
+            _actions.Add(new MenuAction(
+                "Retour",
+                new DeviceCommand
+                {
+                    Type = "device_command",
+                    Action = "back_main_menu",
+                }));
             RefreshVisual();
         }
 
@@ -378,6 +433,12 @@ namespace MLOmega.XR.UI.Components
                 SendReceipt(action);
                 return true;
             }
+            if (act == "open_world_maps")
+            {
+                BuildWorldMapActions();
+                SendReceipt(action);
+                return true;
+            }
             if (act == "back_main_menu")
             {
                 BuildDefaultActions();
@@ -407,6 +468,11 @@ namespace MLOmega.XR.UI.Components
             if (act == "set_augmented_feature")
             {
                 if (_augmentedSettingsPage) BuildAugmentedActions(); else BuildMainActions();
+                return ok;
+            }
+            if (act == "toggle_world_map")
+            {
+                BuildWorldMapActions();
                 return ok;
             }
             // Selecting a mode/app action closes the menu (single-shot), like a tap.

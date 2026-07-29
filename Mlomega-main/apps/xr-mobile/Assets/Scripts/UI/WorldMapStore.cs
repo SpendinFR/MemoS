@@ -18,10 +18,10 @@ namespace MLOmega.XR.UI
     public sealed class WorldMapStore
     {
         public const int CurrentSchemaVersion = 1;
-        public const int MaxAssetCount = 32;
-        public const int MaxAssetBytes = 512 * 1024;
+        public const int MaxAssetCount = 64;
+        public const int MaxAssetBytes = 32 * 1024 * 1024;
         public const int MaxAssetDimension = 2048;
-        public const int MaxTotalAssetBytes = 3 * 1024 * 1024;
+        public const int MaxTotalAssetBytes = 64 * 1024 * 1024;
         public const int MaxAnchorMappingBytes = 2 * 1024 * 1024;
         public const int MaxTotalAnchorMappingBytes = 24 * 1024 * 1024;
         private const double EarthRadiusM = 6378137.0;
@@ -31,6 +31,7 @@ namespace MLOmega.XR.UI
         {
             public int schemaVersion = CurrentSchemaVersion;
             public string worldMapId;
+            public string displayName;
             public string calibrationId;
             public long createdAtUnixMs;
             public long updatedAtUnixMs;
@@ -43,6 +44,8 @@ namespace MLOmega.XR.UI
             public StoredVector3 localOrigin;
             public List<WorldContent> contents = new List<WorldContent>();
             public List<WorldAsset> assets = new List<WorldAsset>();
+            public List<WorldDynamicBinding> dynamicBindings =
+                new List<WorldDynamicBinding>();
             public List<WorldAnchorMapping> anchorMappings =
                 new List<WorldAnchorMapping>();
         }
@@ -51,6 +54,7 @@ namespace MLOmega.XR.UI
         public sealed class WorldContent
         {
             public string worldContentId;
+            public string sourceMapId;
             public string anchorGuid;
             public string templateId;
             public string presetId;
@@ -90,6 +94,36 @@ namespace MLOmega.XR.UI
             public string author;
         }
 
+        /// <summary>
+        /// Presentation-only rule authored in Atelier and evaluated against the
+        /// live VisionRT tracks. It never creates a Memory write.
+        /// </summary>
+        [Serializable]
+        public sealed class WorldDynamicBinding
+        {
+            public string bindingId;
+            public string sourceMapId;
+            public string targetLabel;
+            public string targetKind;
+            public string templateId;
+            public string presetId;
+            public string archetypeId;
+            public string styleId;
+            public string animationId;
+            public string accentHex;
+            public string secondaryHex;
+            public string assetId;
+            public string label;
+            public string subtitle;
+            public string attachment = "above";
+            public StoredVector3 offset;
+            public StoredVector3 scale;
+            public float minConfidence = 0.70f;
+            public int maxInstances = 3;
+            public int ttlMs = 950;
+            public bool enabled = true;
+        }
+
         [Serializable]
         public sealed class WorldAnchorMapping
         {
@@ -119,12 +153,19 @@ namespace MLOmega.XR.UI
         private readonly string _path;
         private MapDocument _document;
 
-        public WorldMapStore(string directory, string calibrationId)
+        public WorldMapStore(
+            string directory,
+            string calibrationId,
+            string fileName = "world-map-v1.json")
         {
             if (string.IsNullOrWhiteSpace(directory))
                 throw new ArgumentException("world map directory is required", nameof(directory));
             Directory.CreateDirectory(directory);
-            _path = Path.Combine(directory, "world-map-v1.json");
+            string safeFile = Path.GetFileName(fileName ?? string.Empty);
+            if (string.IsNullOrWhiteSpace(safeFile) ||
+                !safeFile.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                safeFile = "world-map-v1.json";
+            _path = Path.Combine(directory, safeFile);
             _document = LoadDocument(calibrationId);
         }
 
@@ -133,9 +174,21 @@ namespace MLOmega.XR.UI
         public string WorldMapId => _document.worldMapId;
         public IReadOnlyList<WorldContent> Contents => _document.contents;
         public IReadOnlyList<WorldAsset> Assets => _document.assets;
+        public IReadOnlyList<WorldDynamicBinding> DynamicBindings =>
+            _document.dynamicBindings;
         public IReadOnlyList<WorldAnchorMapping> AnchorMappings =>
             _document.anchorMappings;
         public bool HasGeoOrigin => _document.geoOriginValid;
+
+        public bool SetDisplayName(string displayName)
+        {
+            string clean = CleanText(displayName, 80);
+            if (string.IsNullOrWhiteSpace(clean)) return false;
+            _document.displayName = clean;
+            Touch();
+            Save();
+            return true;
+        }
 
         /// <summary>
         /// Fix the Earth-to-XREAL transform. A noisy fix never replaces a materially
@@ -242,6 +295,7 @@ namespace MLOmega.XR.UI
                 _document.contents.Add(record);
             }
             record.anchorGuid = CleanId(anchorGuid);
+            record.sourceMapId = _document.worldMapId;
             record.templateId = CleanTemplate(templateId);
             record.label = CleanText(label, 120);
             record.subtitle = CleanText(subtitle, 240);
@@ -389,6 +443,144 @@ namespace MLOmega.XR.UI
             return true;
         }
 
+        public bool TryAddGlbAsset(
+            string sourcePath,
+            out string assetId,
+            out string error)
+        {
+            assetId = string.Empty;
+            error = string.Empty;
+            if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
+            {
+                error = "asset_file_missing";
+                return false;
+            }
+            byte[] bytes;
+            try
+            {
+                var info = new FileInfo(sourcePath);
+                if (info.Length <= 0 || info.Length > MaxAssetBytes)
+                {
+                    error = "asset_size_invalid";
+                    return false;
+                }
+                bytes = File.ReadAllBytes(sourcePath);
+            }
+            catch (Exception ex)
+            {
+                error = "asset_read:" + ex.GetType().Name;
+                return false;
+            }
+            if (!RuntimeGlbModel.TryValidate(bytes, out error))
+                return false;
+            string sha = Sha256(bytes);
+            WorldAsset existing = _document.assets.Find(item =>
+                item != null &&
+                string.Equals(item.sha256, sha, StringComparison.Ordinal));
+            if (existing != null)
+            {
+                assetId = existing.assetId;
+                return true;
+            }
+            if (_document.assets.Count >= MaxAssetCount)
+            {
+                error = "asset_count_exceeded";
+                return false;
+            }
+            int totalBytes = bytes.Length;
+            foreach (WorldAsset item in _document.assets)
+            {
+                if (item == null || string.IsNullOrEmpty(item.base64Data)) continue;
+                totalBytes += EstimatedDecodedBytes(item.base64Data);
+            }
+            if (totalBytes > MaxTotalAssetBytes)
+            {
+                error = "asset_total_size_exceeded";
+                return false;
+            }
+            assetId = "asset-" + sha.Substring(0, 20);
+            _document.assets.Add(new WorldAsset
+            {
+                assetId = assetId,
+                kind = "glb_model",
+                mimeType = "model/gltf-binary",
+                sha256 = sha,
+                base64Data = Convert.ToBase64String(bytes),
+                author = "manual",
+            });
+            Touch();
+            Save();
+            return true;
+        }
+
+        public WorldDynamicBinding UpsertDynamicBinding(
+            string bindingId,
+            WorldCreatorCatalog.Entry preset,
+            string targetLabel,
+            string targetKind,
+            string attachment,
+            string label,
+            string subtitle,
+            string assetId,
+            Vector3 offset,
+            Vector3 scale)
+        {
+            if (preset == null) return null;
+            string id = CleanId(bindingId);
+            if (string.IsNullOrEmpty(id))
+                id = "dynamic-" + Guid.NewGuid().ToString("N");
+            WorldDynamicBinding record = _document.dynamicBindings.Find(item =>
+                item != null &&
+                string.Equals(item.bindingId, id, StringComparison.Ordinal));
+            if (record == null)
+            {
+                record = new WorldDynamicBinding { bindingId = id };
+                _document.dynamicBindings.Add(record);
+            }
+            record.sourceMapId = _document.worldMapId;
+            record.targetLabel = CleanText(targetLabel, 80).ToLowerInvariant();
+            record.targetKind = CleanText(targetKind, 40).ToLowerInvariant();
+            record.templateId = CleanTemplate(preset.templateId);
+            record.presetId = CleanId(preset.presetId);
+            record.archetypeId = CleanId(preset.archetypeId);
+            record.styleId = CleanId(preset.styleId);
+            record.animationId = CleanId(preset.animationId);
+            record.accentHex = CleanHex(preset.accentHex);
+            record.secondaryHex = CleanHex(preset.secondaryHex);
+            record.assetId = FindAsset(assetId)?.assetId ?? string.Empty;
+            record.label = CleanText(
+                string.IsNullOrWhiteSpace(label) ? preset.label : label, 120);
+            record.subtitle = CleanText(
+                string.IsNullOrWhiteSpace(subtitle) ? preset.subtitle : subtitle,
+                240);
+            record.attachment = CleanAttachment(attachment);
+            record.offset = new StoredVector3(new Vector3(
+                Mathf.Clamp(offset.x, -4f, 4f),
+                Mathf.Clamp(offset.y, -4f, 4f),
+                Mathf.Clamp(offset.z, -4f, 4f)));
+            record.scale = new StoredVector3(new Vector3(
+                Mathf.Clamp(scale.x, .1f, 4f),
+                Mathf.Clamp(scale.y, .1f, 4f),
+                Mathf.Clamp(scale.z, .1f, 4f)));
+            record.enabled = true;
+            Touch();
+            Save();
+            return record;
+        }
+
+        public bool RemoveDynamicBinding(string bindingId)
+        {
+            string clean = CleanId(bindingId);
+            WorldDynamicBinding found = _document.dynamicBindings.Find(item =>
+                item != null &&
+                string.Equals(item.bindingId, clean, StringComparison.Ordinal));
+            if (found == null) return false;
+            _document.dynamicBindings.Remove(found);
+            Touch();
+            Save();
+            return true;
+        }
+
         public WorldAsset FindAsset(string assetId)
         {
             string clean = CleanId(assetId);
@@ -422,9 +614,28 @@ namespace MLOmega.XR.UI
                 return false;
             _document = imported;
             _document.calibrationId = CleanId(_document.calibrationId);
+            NormaliseDocument(_document);
             Touch();
             Save();
             return true;
+        }
+
+        public bool ReplaceDocument(MapDocument document)
+        {
+            if (document == null) return false;
+            try
+            {
+                _document = JsonUtility.FromJson<MapDocument>(
+                    JsonUtility.ToJson(document, false));
+                NormaliseDocument(_document);
+                Touch();
+                Save();
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         public bool ExportPackage(string packagePath, out string error) =>
@@ -435,6 +646,13 @@ namespace MLOmega.XR.UI
             out string error)
         {
             error = string.Empty;
+            if (_document.contents == null || _document.contents.Count == 0)
+            {
+                _document.anchorMappings = new List<WorldAnchorMapping>();
+                Touch();
+                Save();
+                return true;
+            }
             if (
                 string.IsNullOrWhiteSpace(mappingDirectory) ||
                 !Directory.Exists(mappingDirectory))
@@ -673,11 +891,37 @@ namespace MLOmega.XR.UI
                 loaded.contents = new List<WorldContent>();
             if (loaded.assets == null)
                 loaded.assets = new List<WorldAsset>();
+            if (loaded.dynamicBindings == null)
+                loaded.dynamicBindings = new List<WorldDynamicBinding>();
             if (loaded.anchorMappings == null)
                 loaded.anchorMappings = new List<WorldAnchorMapping>();
             loaded.contents.RemoveAll(item =>
                 item == null || string.IsNullOrWhiteSpace(item.worldContentId));
+            NormaliseDocument(loaded);
             return loaded;
+        }
+
+        private static void NormaliseDocument(MapDocument document)
+        {
+            if (document == null) return;
+            if (document.contents == null)
+                document.contents = new List<WorldContent>();
+            if (document.assets == null)
+                document.assets = new List<WorldAsset>();
+            if (document.dynamicBindings == null)
+                document.dynamicBindings = new List<WorldDynamicBinding>();
+            if (document.anchorMappings == null)
+                document.anchorMappings = new List<WorldAnchorMapping>();
+            if (string.IsNullOrWhiteSpace(document.displayName))
+                document.displayName = "Monde " +
+                    (document.worldMapId ?? "local").Substring(
+                        0, Mathf.Min(8, (document.worldMapId ?? "local").Length));
+            foreach (WorldContent content in document.contents)
+                if (content != null && string.IsNullOrWhiteSpace(content.sourceMapId))
+                    content.sourceMapId = document.worldMapId;
+            foreach (WorldDynamicBinding binding in document.dynamicBindings)
+                if (binding != null && string.IsNullOrWhiteSpace(binding.sourceMapId))
+                    binding.sourceMapId = document.worldMapId;
         }
 
         private void Touch() =>
@@ -725,6 +969,23 @@ namespace MLOmega.XR.UI
             if (bytes[0] == 0xFF && bytes[1] == 0xD8)
                 return "image/jpeg";
             return string.Empty;
+        }
+
+        private static string CleanAttachment(string value)
+        {
+            switch ((value ?? string.Empty).Trim().ToLowerInvariant())
+            {
+                case "center":
+                case "above":
+                case "below":
+                case "front":
+                case "rear":
+                case "left":
+                case "right":
+                    return value.Trim().ToLowerInvariant();
+                default:
+                    return "above";
+            }
         }
 
         private static string Sha256(byte[] bytes)

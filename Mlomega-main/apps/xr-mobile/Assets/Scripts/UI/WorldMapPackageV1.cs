@@ -15,8 +15,9 @@ namespace MLOmega.XR.UI
     public static class WorldMapPackageV1
     {
         public const string PackageType = "mlomega.world-map";
-        public const int MaxBytes = 32 * 1024 * 1024;
+        public const int MaxBytes = 128 * 1024 * 1024;
         public const int MaxContents = 2048;
+        public const int MaxDynamicBindings = 512;
 
         [Serializable]
         private sealed class Envelope
@@ -113,6 +114,9 @@ namespace MLOmega.XR.UI
             out string error)
         {
             error = null;
+            if (map != null && map.dynamicBindings == null)
+                map.dynamicBindings =
+                    new List<WorldMapStore.WorldDynamicBinding>();
             if (
                 map == null ||
                 map.schemaVersion != WorldMapStore.CurrentSchemaVersion ||
@@ -120,9 +124,11 @@ namespace MLOmega.XR.UI
                 map.worldMapId.Length > 160 ||
                 map.contents == null ||
                 map.contents.Count > MaxContents ||
-                map.assets == null ||
-                map.assets.Count > WorldMapStore.MaxAssetCount ||
-                map.anchorMappings == null ||
+                    map.assets == null ||
+                    map.assets.Count > WorldMapStore.MaxAssetCount ||
+                    map.dynamicBindings == null ||
+                    map.dynamicBindings.Count > MaxDynamicBindings ||
+                    map.anchorMappings == null ||
                 map.anchorMappings.Count > MaxContents)
             {
                 error = "world_map_document_invalid";
@@ -150,14 +156,29 @@ namespace MLOmega.XR.UI
                     string.IsNullOrWhiteSpace(asset.assetId) ||
                     asset.assetId.Length > 160 ||
                     !assetIds.Add(asset.assetId) ||
-                    asset.kind != "logo_image" ||
-                    (asset.mimeType != "image/png" &&
-                     asset.mimeType != "image/jpeg") ||
+                    (asset.kind != "logo_image" &&
+                     asset.kind != "glb_model") ||
+                    (
+                        asset.kind == "logo_image" &&
+                        asset.mimeType != "image/png" &&
+                        asset.mimeType != "image/jpeg"
+                    ) ||
+                    (
+                        asset.kind == "glb_model" &&
+                        asset.mimeType != "model/gltf-binary"
+                    ) ||
                     bytes.Length <= 0 ||
                     bytes.Length > WorldMapStore.MaxAssetBytes ||
                     !FixedEquals(asset.sha256, Sha256(bytes)))
                 {
                     error = "world_map_asset_invalid";
+                    return false;
+                }
+                if (
+                    asset.kind == "glb_model" &&
+                    !RuntimeGlbModel.TryValidate(bytes, out _))
+                {
+                    error = "world_map_glb_invalid";
                     return false;
                 }
                 totalAssetBytes += bytes.Length;
@@ -226,6 +247,34 @@ namespace MLOmega.XR.UI
                     !ValidScale(item.localScale))
                 {
                     error = "world_map_content_invalid";
+                    return false;
+                }
+            }
+            var bindingIds = new HashSet<string>(StringComparer.Ordinal);
+            foreach (WorldMapStore.WorldDynamicBinding binding in
+                map.dynamicBindings)
+            {
+                if (
+                    binding == null ||
+                    string.IsNullOrWhiteSpace(binding.bindingId) ||
+                    binding.bindingId.Length > 160 ||
+                    !bindingIds.Add(binding.bindingId) ||
+                    string.IsNullOrWhiteSpace(binding.templateId) ||
+                    binding.templateId.Length > 64 ||
+                    (binding.targetLabel ?? string.Empty).Length > 80 ||
+                    (binding.targetKind ?? string.Empty).Length > 40 ||
+                    (!string.IsNullOrWhiteSpace(binding.assetId) &&
+                     !assetIds.Contains(binding.assetId)) ||
+                    !Finite(binding.offset) ||
+                    !ValidScale(binding.scale) ||
+                    binding.minConfidence < 0.5f ||
+                    binding.minConfidence > 1f ||
+                    binding.maxInstances < 1 ||
+                    binding.maxInstances > 12 ||
+                    binding.ttlMs < 250 ||
+                    binding.ttlMs > 10000)
+                {
+                    error = "world_map_dynamic_binding_invalid";
                     return false;
                 }
             }

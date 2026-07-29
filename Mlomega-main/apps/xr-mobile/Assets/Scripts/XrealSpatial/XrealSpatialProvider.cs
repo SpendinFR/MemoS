@@ -94,6 +94,8 @@ namespace MLOmega.XR.UI
         private bool _routeRequestInFlight;
         private float _nextRouteRequestAt;
         private WorldMapStore _worldMap;
+        private WorldMapLibrary _worldMapLibrary;
+        private WorldMapDraftLibrary _worldMapDrafts;
         private WorldMapDocumentExchange _worldMapExchange;
         private IndoorLiveMapStore _indoorMap;
 #if UNITY_ANDROID && !UNITY_EDITOR
@@ -102,6 +104,8 @@ namespace MLOmega.XR.UI
         private float _nextIndoorSampleAt;
         private readonly HashSet<string> _automaticWorldIntentIds =
             new HashSet<string>(StringComparer.Ordinal);
+        private readonly Dictionary<string, float> _dynamicWorldExpiry =
+            new Dictionary<string, float>(StringComparer.Ordinal);
         private float _nextWorldTextLocationAt;
         private bool _worldTextLocationStarting;
 
@@ -111,6 +115,10 @@ namespace MLOmega.XR.UI
         public bool CreatorReady =>
             _creatorMode && DepthReady && AnchorProviderReady();
         public WorldMapStore CreatorMap => _worldMap;
+        public IReadOnlyList<WorldMapSelection> CreatorMaps =>
+            _worldMapDrafts?.List() ?? Array.Empty<WorldMapSelection>();
+        public IReadOnlyList<WorldMapSelection> AvailableWorldMaps =>
+            _worldMapLibrary?.Selections ?? Array.Empty<WorldMapSelection>();
         public event Action<string, bool, string> CreatorOperationCompleted;
 
         /// <summary>
@@ -152,10 +160,17 @@ namespace MLOmega.XR.UI
             if (_pose == null) _pose = FindAnyObjectByType<PosePublisher>();
             if (_pairing == null) _pairing = FindAnyObjectByType<SessionPairing>();
             if (_camera == null) _camera = Camera.main;
+            string worldMapDirectory = System.IO.Path.Combine(
+                Application.persistentDataPath, "xreal-world-maps");
             _worldMap = new WorldMapStore(
-                System.IO.Path.Combine(
-                    Application.persistentDataPath, "xreal-world-maps"),
+                worldMapDirectory,
                 CalibrationId);
+            if (_creatorMode)
+                _worldMapDrafts = new WorldMapDraftLibrary(
+                    worldMapDirectory, CalibrationId);
+            else
+                _worldMapLibrary = new WorldMapLibrary(
+                    System.IO.Path.Combine(worldMapDirectory, "library"));
             _worldMapExchange =
                 GetComponent<WorldMapDocumentExchange>() ??
                 gameObject.AddComponent<WorldMapDocumentExchange>();
@@ -489,12 +504,43 @@ namespace MLOmega.XR.UI
                 return;
             float distance = Vector3.Distance(_camera.transform.position, position);
             if (distance < 0.35f || distance > 24f) return;
-            if (!TryWorldTemplate(label, kind, distance, out string template))
+            WorldMapStore.WorldDynamicBinding binding =
+                ResolveDynamicBinding(label, kind, confidence);
+            string template = binding?.templateId;
+            if (string.IsNullOrWhiteSpace(template) &&
+                !TryWorldTemplate(label, kind, distance, out template))
                 return;
+            if (binding != null)
+            {
+                string prefix = "xreal-auto-world:" + binding.bindingId + ":";
+                var expired = new List<string>();
+                foreach (var pair in _dynamicWorldExpiry)
+                    if (pair.Value <= Time.unscaledTime) expired.Add(pair.Key);
+                foreach (string expiredId in expired)
+                    _dynamicWorldExpiry.Remove(expiredId);
+                int activeForRule = 0;
+                foreach (string activeId in _dynamicWorldExpiry.Keys)
+                    if (activeId.StartsWith(prefix, StringComparison.Ordinal))
+                        activeForRule++;
+                string candidateId = prefix + trackId;
+                if (activeForRule >= binding.maxInstances &&
+                    !_automaticWorldIntentIds.Contains(candidateId))
+                    return;
+                position = DynamicPosition(position, binding);
+            }
 
-            string id = "xreal-auto-world:" + trackId;
+            string id = binding == null
+                ? "xreal-auto-world:" + trackId
+                : "xreal-auto-world:" + binding.bindingId + ":" + trackId;
             float quality = Mathf.Clamp(confidence, 0.72f, 0.94f);
+            WorldMapStore.WorldAsset asset =
+                binding == null || string.IsNullOrWhiteSpace(binding.assetId)
+                    ? null
+                    : _worldMap?.FindAsset(binding.assetId);
             _automaticWorldIntentIds.Add(id);
+            if (binding != null)
+                _dynamicWorldExpiry[id] =
+                    Time.unscaledTime + binding.ttlMs / 1000f;
             _intents.Emit(new UIIntent
             {
                 Type = "ui_intent",
@@ -514,10 +560,24 @@ namespace MLOmega.XR.UI
                         { "anchor_quality", quality },
                         { "marker_id", "auto-" + trackId },
                         { "template_id", template },
-                        { "label", string.IsNullOrWhiteSpace(label)
-                            ? "MONDE AUGMENTÉ"
-                            : label },
-                        { "subtitle", AutoWorldSubtitle(template) },
+                        { "preset_id", binding?.presetId ?? string.Empty },
+                        { "archetype_id", binding?.archetypeId ?? template },
+                        { "style_id", binding?.styleId ?? "freeguy" },
+                        { "animation_id", binding?.animationId ?? "soft_pulse" },
+                        { "accent_hex", binding?.accentHex ?? string.Empty },
+                        { "secondary_hex", binding?.secondaryHex ?? string.Empty },
+                        { "asset_id", asset?.assetId ?? string.Empty },
+                        { "asset_mime", asset?.mimeType ?? string.Empty },
+                        { "asset_sha256", asset?.sha256 ?? string.Empty },
+                        { "asset_base64", asset?.base64Data ?? string.Empty },
+                        { "scale", Point(binding?.scale.Value ?? Vector3.one) },
+                        { "label", binding == null
+                            ? (string.IsNullOrWhiteSpace(label)
+                                ? "MONDE AUGMENTÉ"
+                                : label)
+                            : binding.label },
+                        { "subtitle", binding?.subtitle ??
+                            AutoWorldSubtitle(template) },
                         { "kind", NormaliseMarkerKind(kind) },
                         { "distance_m", distance },
                         { "persistence", "ephemeral" },
@@ -526,9 +586,70 @@ namespace MLOmega.XR.UI
                 TruthLevel = "observed",
                 Confidence = quality,
                 Priority = template == "poi_beacon" ? 0.48 : 0.38,
-                TtlMs = 950,
+                TtlMs = binding?.ttlMs ?? 950,
                 EvidenceRefs = Evidence(evidence),
             });
+        }
+
+        private WorldMapStore.WorldDynamicBinding ResolveDynamicBinding(
+            string label,
+            string kind,
+            float confidence)
+        {
+            if (_worldMap?.DynamicBindings == null) return null;
+            string cleanLabel = (label ?? string.Empty).Trim().ToLowerInvariant();
+            string cleanKind = (kind ?? string.Empty).Trim().ToLowerInvariant();
+            WorldMapStore.WorldDynamicBinding best = null;
+            int bestScore = -1;
+            foreach (WorldMapStore.WorldDynamicBinding binding in
+                _worldMap.DynamicBindings)
+            {
+                if (binding == null || !binding.enabled ||
+                    confidence < binding.minConfidence)
+                    continue;
+                string wantedLabel =
+                    (binding.targetLabel ?? string.Empty).Trim().ToLowerInvariant();
+                string wantedKind =
+                    (binding.targetKind ?? string.Empty).Trim().ToLowerInvariant();
+                bool labelMatch = string.IsNullOrEmpty(wantedLabel) ||
+                    cleanLabel.IndexOf(wantedLabel, StringComparison.Ordinal) >= 0;
+                bool kindMatch = string.IsNullOrEmpty(wantedKind) ||
+                    string.Equals(cleanKind, wantedKind, StringComparison.Ordinal) ||
+                    (
+                        wantedKind == "object" &&
+                        cleanKind != "person"
+                    ) ||
+                    cleanLabel.IndexOf(wantedKind, StringComparison.Ordinal) >= 0;
+                if (!labelMatch || !kindMatch) continue;
+                int score = wantedLabel.Length * 2 + wantedKind.Length;
+                if (score <= bestScore) continue;
+                best = binding;
+                bestScore = score;
+            }
+            return best;
+        }
+
+        private Vector3 DynamicPosition(
+            Vector3 position,
+            WorldMapStore.WorldDynamicBinding binding)
+        {
+            Vector3 offset = binding.offset.Value;
+            switch (binding.attachment)
+            {
+                case "above": offset.y += .35f; break;
+                case "below": offset.y -= .25f; break;
+                case "left": offset.x -= .25f; break;
+                case "right": offset.x += .25f; break;
+                case "front": offset.z += .2f; break;
+                case "rear": offset.z -= .2f; break;
+            }
+            if (_camera == null) return position + offset;
+            Vector3 forward = Vector3.ProjectOnPlane(
+                _camera.transform.forward, Vector3.up).normalized;
+            return position +
+                _camera.transform.right * offset.x +
+                Vector3.up * offset.y +
+                forward * offset.z;
         }
 
         private static bool TryWorldTemplate(
@@ -608,6 +729,7 @@ namespace MLOmega.XR.UI
                 foreach (string id in _automaticWorldIntentIds)
                     _broker.Withdraw(id);
             _automaticWorldIntentIds.Clear();
+            _dynamicWorldExpiry.Clear();
         }
 
         private static bool IsSurfaceCandidate(string label, string kind)
@@ -1289,6 +1411,82 @@ namespace MLOmega.XR.UI
             _nextManagerRetryAt = 0f;
         }
 
+        public bool CreateCreatorMap(string displayName)
+        {
+            if (!_creatorMode || _worldMapDrafts == null) return false;
+            _worldMap = _worldMapDrafts.Create(displayName);
+            CreatorOperationCompleted?.Invoke(
+                _worldMap.WorldMapId, true, "map_created");
+            return true;
+        }
+
+        public bool SwitchCreatorMap(string mapId)
+        {
+            if (!_creatorMode || _worldMapDrafts == null) return false;
+            WorldMapStore selected = _worldMapDrafts.Open(mapId);
+            if (selected == null) return false;
+            _worldMap = selected;
+            CreatorOperationCompleted?.Invoke(mapId, true, "map_selected");
+            return true;
+        }
+
+        public bool DeleteCreatorMap(string mapId)
+        {
+            if (!_creatorMode || _worldMapDrafts == null) return false;
+            bool deleted = _worldMapDrafts.Delete(mapId);
+            if (deleted && _worldMap?.WorldMapId == mapId)
+                _worldMap = new WorldMapStore(
+                    System.IO.Path.Combine(
+                        Application.persistentDataPath, "xreal-world-maps"),
+                    CalibrationId);
+            CreatorOperationCompleted?.Invoke(
+                mapId, deleted, deleted ? "map_deleted" : "map_not_empty");
+            return deleted;
+        }
+
+        public bool SaveCreatorDynamicBinding(
+            WorldCreatorCatalog.Entry preset,
+            string targetLabel,
+            string targetKind,
+            string attachment,
+            string label,
+            string subtitle,
+            Vector3 scale,
+            string assetId)
+        {
+            if (!_creatorMode || _worldMap == null || preset == null)
+                return false;
+            WorldMapStore.WorldDynamicBinding binding =
+                _worldMap.UpsertDynamicBinding(
+                    null,
+                    preset,
+                    targetLabel,
+                    targetKind,
+                    attachment,
+                    label,
+                    subtitle,
+                    assetId,
+                    Vector3.zero,
+                    scale);
+            bool saved = binding != null;
+            CreatorOperationCompleted?.Invoke(
+                binding?.bindingId ?? string.Empty,
+                saved,
+                saved ? "dynamic_saved" : "dynamic_invalid");
+            return saved;
+        }
+
+        public bool RemoveCreatorDynamicBinding(string bindingId)
+        {
+            if (!_creatorMode || _worldMap == null) return false;
+            bool removed = _worldMap.RemoveDynamicBinding(bindingId);
+            CreatorOperationCompleted?.Invoke(
+                bindingId,
+                removed,
+                removed ? "dynamic_removed" : "dynamic_missing");
+            return removed;
+        }
+
         public bool TryCreatorPlacement(
             Vector2 viewport,
             out Vector3 position,
@@ -1469,7 +1667,14 @@ namespace MLOmega.XR.UI
                     content != null &&
                     !string.IsNullOrWhiteSpace(content.anchorGuid))
                     distinctAnchors.Add(content.anchorGuid);
-            if (distinctAnchors.Count < 2)
+            if (
+                distinctAnchors.Count == 0 &&
+                (_worldMap.DynamicBindings?.Count ?? 0) == 0)
+            {
+                error = "world_map_empty";
+                return false;
+            }
+            if (distinctAnchors.Count == 1)
             {
                 error = "anchor_geometry_baseline_requires_two";
                 return false;
@@ -1516,25 +1721,66 @@ namespace MLOmega.XR.UI
             _worldMapExchange != null &&
             _worldMapExchange.BeginImport();
 
+        public bool SetWorldMapActive(string mapId, bool active)
+        {
+            if (_creatorMode || _worldMapLibrary == null ||
+                !_worldMapLibrary.SetActive(mapId, active))
+                return false;
+            return RebuildActiveWorldMaps();
+        }
+
+        public bool RemoveInstalledWorldMap(string mapId)
+        {
+            if (_creatorMode || _worldMapLibrary == null ||
+                !_worldMapLibrary.Remove(mapId))
+                return false;
+            return RebuildActiveWorldMaps();
+        }
+
         private void OnWorldMapImported(string packagePath)
         {
             string error = string.Empty;
             if (
-                _worldMap == null ||
-                !_worldMap.ReplaceFromPackage(packagePath, out error))
+                _worldMapLibrary == null ||
+                !_worldMapLibrary.InstallPackage(
+                    packagePath,
+                    true,
+                    out _,
+                    out error))
             {
                 LastProviderError = "world_map_import:" + error;
                 return;
             }
+            if (!RebuildActiveWorldMaps()) return;
+            LastProviderError = string.Empty;
+        }
+
+        private bool RebuildActiveWorldMaps()
+        {
+            string error = string.Empty;
             if (
+                _worldMapLibrary == null ||
+                !_worldMapLibrary.TryComposeActive(
+                    out WorldMapStore.MapDocument composition,
+                    out error) ||
+                _worldMap == null ||
+                !_worldMap.ReplaceDocument(composition))
+            {
+                LastProviderError =
+                    "world_map_compose:" +
+                    (string.IsNullOrWhiteSpace(error) ? "replace_failed" : error);
+                return false;
+            }
+            if (
+                composition.anchorMappings.Count > 0 &&
                 string.IsNullOrWhiteSpace(_anchorMappingDirectory) ||
+                composition.anchorMappings.Count > 0 &&
                 !_worldMap.InstallAnchorMappings(
-                    _anchorMappingDirectory,
-                    out error))
+                    _anchorMappingDirectory, out error))
             {
                 LastProviderError =
                     "world_map_anchor_install:" + error;
-                return;
+                return false;
             }
             // The native files are now in the SDK directory. Do not keep a
             // second 24 MiB base64 copy in the production APK's durable map.
@@ -1547,6 +1793,7 @@ namespace MLOmega.XR.UI
 #endif
             _anchorsLoadStarted = false;
             LastProviderError = string.Empty;
+            return true;
         }
 
 #if XREAL_SDK_PRESENT
@@ -1681,48 +1928,79 @@ namespace MLOmega.XR.UI
 
         private void ValidateAndEmitWorldAnchorBatch()
         {
-            if (_loadedWorldAnchors.Count < 2)
+            var byMap =
+                new Dictionary<string, List<KeyValuePair<string, LoadedWorldAnchor>>>(
+                    StringComparer.Ordinal);
+            foreach (KeyValuePair<string, LoadedWorldAnchor> pair in
+                _loadedWorldAnchors)
             {
-                RejectLoadedWorldAnchors(
-                    "xreal_anchor_geometry:insufficient_tracked_baseline");
-                return;
+                string mapId = string.IsNullOrWhiteSpace(
+                    pair.Value.Content.sourceMapId)
+                        ? _worldMap?.WorldMapId ?? "legacy"
+                        : pair.Value.Content.sourceMapId;
+                if (!byMap.TryGetValue(mapId, out var group))
+                {
+                    group = new List<KeyValuePair<string, LoadedWorldAnchor>>();
+                    byMap[mapId] = group;
+                }
+                group.Add(pair);
             }
-            var anchors = new List<KeyValuePair<string, LoadedWorldAnchor>>(
-                _loadedWorldAnchors);
-            var samples =
-                new List<WorldAnchorGeometryGuard.Sample>(anchors.Count);
-            foreach (KeyValuePair<string, LoadedWorldAnchor> pair in anchors)
+            bool emittedAny = false;
+            var errors = new List<string>();
+            foreach (KeyValuePair<
+                string,
+                List<KeyValuePair<string, LoadedWorldAnchor>>> mapGroup in byMap)
             {
-                LoadedWorldAnchor loaded = pair.Value;
-                samples.Add(new WorldAnchorGeometryGuard.Sample(
-                    pair.Key,
-                    loaded.Content.localPosition.Value,
-                    Quaternion.Euler(loaded.Content.localEuler.Value),
-                    loaded.Anchor.transform.position,
-                    loaded.Anchor.transform.rotation));
-            }
-            if (!WorldAnchorGeometryGuard.TryValidate(
-                    samples,
-                    out string geometryError))
-            {
-                RejectLoadedWorldAnchors(
-                    "xreal_anchor_geometry:" + geometryError);
-                return;
-            }
-            foreach (KeyValuePair<string, LoadedWorldAnchor> pair in anchors)
-            {
-                LoadedWorldAnchor loaded = pair.Value;
-                if (
-                    loaded.Anchor == null ||
-                    loaded.Anchor.trackingState != TrackingState.Tracking)
+                List<KeyValuePair<string, LoadedWorldAnchor>> anchors =
+                    mapGroup.Value;
+                if (anchors.Count < 2)
+                {
+                    errors.Add(mapGroup.Key + ":insufficient_tracked_baseline");
+                    foreach (var pair in anchors)
+                        _worldMap?.MarkUnresolved(pair.Key);
                     continue;
-                EmitPersistentWorldContent(
-                    loaded.Anchor.transform.position,
-                    loaded.Anchor.transform.rotation,
-                    pair.Key,
-                    loaded.Content);
+                }
+                var samples =
+                    new List<WorldAnchorGeometryGuard.Sample>(anchors.Count);
+                foreach (var pair in anchors)
+                {
+                    LoadedWorldAnchor loaded = pair.Value;
+                    samples.Add(new WorldAnchorGeometryGuard.Sample(
+                        pair.Key,
+                        loaded.Content.localPosition.Value,
+                        Quaternion.Euler(loaded.Content.localEuler.Value),
+                        loaded.Anchor.transform.position,
+                        loaded.Anchor.transform.rotation));
+                }
+                if (!WorldAnchorGeometryGuard.TryValidate(
+                        samples,
+                        out string geometryError))
+                {
+                    errors.Add(mapGroup.Key + ":" + geometryError);
+                    foreach (var pair in anchors)
+                        _worldMap?.MarkUnresolved(pair.Key);
+                    continue;
+                }
+                foreach (var pair in anchors)
+                {
+                    LoadedWorldAnchor loaded = pair.Value;
+                    if (
+                        loaded.Anchor == null ||
+                        loaded.Anchor.trackingState != TrackingState.Tracking)
+                        continue;
+                    EmitPersistentWorldContent(
+                        loaded.Anchor.transform.position,
+                        loaded.Anchor.transform.rotation,
+                        pair.Key,
+                        loaded.Content);
+                    emittedAny = true;
+                }
             }
-            LastProviderError = string.Empty;
+            LastProviderError = errors.Count == 0
+                ? string.Empty
+                : "xreal_anchor_geometry:" + string.Join("|", errors);
+            if (!emittedAny && errors.Count > 0)
+                Debug.LogWarning("[XREAL] " + LastProviderError);
         }
 
         private void RejectLoadedWorldAnchors(string error)

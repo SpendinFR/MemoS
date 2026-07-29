@@ -13,6 +13,7 @@ namespace MLOmega.XR.UI
         public event Action<string> Imported;
         public event Action<string> Exported;
         public event Action<string> ImageImported;
+        public event Action<string> GlbImported;
         public event Action<string> Failed;
 
         public string LastStatus { get; private set; } = "idle";
@@ -93,6 +94,27 @@ namespace MLOmega.XR.UI
             return true;
         }
 
+        public bool BeginGlbImport()
+        {
+            string destination = Path.Combine(
+                Application.temporaryCachePath,
+                "world-model.import.glb");
+#if UNITY_ANDROID && !UNITY_EDITOR
+            using (var bridge = new AndroidJavaClass(
+                "com.mlomega.xr.documents.WorldMapDocumentActivity"))
+            {
+                bridge.CallStatic(
+                    "beginGlbImport",
+                    destination,
+                    gameObject.name);
+            }
+#else
+            return Fail("glb_picker_android_only");
+#endif
+            LastStatus = "glb_import_pending";
+            return true;
+        }
+
         public void OnWorldMapDocumentResult(string result)
         {
             string[] parts = (result ?? string.Empty).Split(
@@ -111,6 +133,8 @@ namespace MLOmega.XR.UI
                 Imported?.Invoke(detail);
             else if (status == "image_imported" && operation == "image")
                 ImageImported?.Invoke(detail);
+            else if (status == "glb_imported" && operation == "glb")
+                GlbImported?.Invoke(detail);
             else if (status == "exported" && operation == "export")
                 Exported?.Invoke(detail);
             else if (status != "cancelled")

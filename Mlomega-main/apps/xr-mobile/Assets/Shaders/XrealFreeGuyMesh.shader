@@ -3,6 +3,7 @@ Shader "MLOmega/XREAL FreeGuy Mesh"
     Properties
     {
         _BaseColor ("Base", Color) = (0.05, 0.82, 1.0, 0.055)
+        _BaseMap ("Imported GLB texture", 2D) = "white" {}
         _GridColor ("Grid", Color) = (0.35, 1.0, 0.8, 0.22)
         _GridScale ("Grid scale", Float) = 2.4
         _ScanSpeed ("Scan speed", Float) = 0.55
@@ -34,6 +35,7 @@ Shader "MLOmega/XREAL FreeGuy Mesh"
             {
                 float3 positionOS : POSITION;
                 float3 normalOS : NORMAL;
+                float2 uv : TEXCOORD0;
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
             struct Varyings
@@ -41,6 +43,7 @@ Shader "MLOmega/XREAL FreeGuy Mesh"
                 float4 positionCS : SV_POSITION;
                 float3 positionWS : TEXCOORD0;
                 float3 normalWS : TEXCOORD1;
+                float2 uv : TEXCOORD2;
                 UNITY_VERTEX_OUTPUT_STEREO
             };
 
@@ -48,6 +51,8 @@ Shader "MLOmega/XREAL FreeGuy Mesh"
             half4 _GridColor;
             float _GridScale;
             float _ScanSpeed;
+            TEXTURE2D(_BaseMap);
+            SAMPLER(sampler_BaseMap);
 
             Varyings Vert(Attributes input)
             {
@@ -58,6 +63,7 @@ Shader "MLOmega/XREAL FreeGuy Mesh"
                 output.positionCS = pos.positionCS;
                 output.positionWS = pos.positionWS;
                 output.normalWS = TransformObjectToWorldNormal(input.normalOS);
+                output.uv = input.uv;
                 return output;
             }
 
@@ -71,8 +77,13 @@ Shader "MLOmega/XREAL FreeGuy Mesh"
                 float fresnel = pow(1.0 - saturate(dot(
                     normalize(input.normalWS),
                     normalize(_WorldSpaceCameraPos - input.positionWS))), 2.0);
-                half4 color = lerp(_BaseColor, _GridColor, saturate(grid * 0.35 + scan + fresnel * 0.45));
-                color.a = saturate(_BaseColor.a + grid * 0.05 + scan * 0.16 + fresnel * 0.08);
+                half4 imported = SAMPLE_TEXTURE2D(
+                    _BaseMap, sampler_BaseMap, input.uv);
+                half4 baseColor = _BaseColor * imported;
+                half4 color = lerp(baseColor, _GridColor, saturate(
+                    grid * 0.35 + scan + fresnel * 0.45));
+                color.a = saturate(
+                    baseColor.a + grid * 0.05 + scan * 0.16 + fresnel * 0.08);
                 return color;
             }
             ENDHLSL

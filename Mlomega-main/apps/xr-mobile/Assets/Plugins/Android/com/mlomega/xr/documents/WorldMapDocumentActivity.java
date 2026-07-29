@@ -19,7 +19,7 @@ import java.io.OutputStream;
  */
 public final class WorldMapDocumentActivity extends Activity {
     private static final int REQUEST = 4731;
-    private static final long MAX_BYTES = 32L * 1024L * 1024L;
+    private static final long MAX_BYTES = 128L * 1024L * 1024L;
 
     public static void beginExport(
             String sourcePath,
@@ -59,6 +59,18 @@ public final class WorldMapDocumentActivity extends Activity {
         UnityPlayer.currentActivity.startActivity(proxy);
     }
 
+    public static void beginGlbImport(
+            String destinationPath,
+            String callbackObject) {
+        Intent proxy = new Intent(
+                UnityPlayer.currentActivity,
+                WorldMapDocumentActivity.class);
+        proxy.putExtra("mode", "glb");
+        proxy.putExtra("path", destinationPath);
+        proxy.putExtra("callback", callbackObject);
+        UnityPlayer.currentActivity.startActivity(proxy);
+    }
+
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -76,6 +88,16 @@ public final class WorldMapDocumentActivity extends Activity {
             intent.putExtra(
                     Intent.EXTRA_MIME_TYPES,
                     new String[] { "image/png", "image/jpeg" });
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+        } else if ("glb".equals(mode)) {
+            intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.setType("model/gltf-binary");
+            intent.putExtra(
+                    Intent.EXTRA_MIME_TYPES,
+                    new String[] {
+                        "model/gltf-binary",
+                        "application/octet-stream"
+                    });
             intent.addCategory(Intent.CATEGORY_OPENABLE);
         } else {
             intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -124,7 +146,11 @@ public final class WorldMapDocumentActivity extends Activity {
                     copyBounded(input, output);
                 }
                 reply(
-                        "image".equals(mode) ? "image_imported" : "imported",
+                        "image".equals(mode)
+                            ? "image_imported"
+                            : "glb".equals(mode)
+                                ? "glb_imported"
+                                : "imported",
                         destination.getAbsolutePath());
             }
         } catch (Exception error) {

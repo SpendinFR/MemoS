@@ -46,7 +46,9 @@ namespace MLOmega.XR.UI.Components
         private Color _accent;
         private Color _secondary;
         private Texture2D _assetTexture;
+        private GameObject _assetModel;
         private string _assetSha256 = string.Empty;
+        private bool _assetIsModel;
 
         public override string ComponentKey => "world_hologram";
         public bool IsQualified => _qualified;
@@ -92,6 +94,12 @@ namespace MLOmega.XR.UI.Components
             _accent = _hologram.Accent;
             _secondary = _hologram.Secondary;
             BindAsset();
+            if (_assetModel != null)
+            {
+                _assetModel.transform.position = _hologram.Position;
+                _assetModel.transform.rotation = _hologram.AnchorRotation;
+                _assetModel.transform.localScale = _hologram.Scale;
+            }
             _label.text =
                 $"<color=#{ColorUtility.ToHtmlStringRGB(_accent)}>" +
                 CleanLabel(_hologram.Label).ToUpperInvariant() +
@@ -149,6 +157,27 @@ namespace MLOmega.XR.UI.Components
             Vector3 right =
                 Vector3.Cross(anchoredUp, flatForward).normalized;
             float pulse = AnimatedPulse(now);
+            if (_assetModel != null)
+            {
+                string animation = (_hologram.AnimationId ?? string.Empty)
+                    .Trim().ToLowerInvariant();
+                float hover = animation == "scan" || animation == "data_rain"
+                    ? Mathf.Sin(now * 1.8f) * .025f
+                    : 0f;
+                float yaw = animation == "orbit"
+                    ? Mathf.Repeat(now * 22f, 360f)
+                    : 0f;
+                float scalePulse = animation == "soft_pulse"
+                    ? 1f + Mathf.Sin(now * 2.2f) * .025f
+                    : 1f;
+                _assetModel.transform.position =
+                    origin + anchoredUp * hover;
+                _assetModel.transform.rotation =
+                    _hologram.AnchorRotation *
+                    Quaternion.AngleAxis(yaw, Vector3.up);
+                _assetModel.transform.localScale =
+                    _hologram.Scale * scalePulse;
+            }
 
             switch (_hologram.TemplateId)
             {
@@ -745,8 +774,9 @@ namespace MLOmega.XR.UI.Components
         private void SetEnabled(bool enabled)
         {
             foreach (LineRenderer line in _lines) line.enabled = enabled;
-            if (_panel != null) _panel.enabled = enabled;
+            if (_panel != null) _panel.enabled = enabled && !_assetIsModel;
             if (_label != null) _label.enabled = enabled;
+            if (_assetModel != null) _assetModel.SetActive(enabled);
         }
 
         private void OnDestroy()
@@ -754,6 +784,7 @@ namespace MLOmega.XR.UI.Components
             if (_lineMaterial != null) Destroy(_lineMaterial);
             if (_panelMaterial != null) Destroy(_panelMaterial);
             if (_assetTexture != null) Destroy(_assetTexture);
+            if (_assetModel != null) Destroy(_assetModel);
         }
 
         public static bool TryReadHologram(
@@ -895,7 +926,39 @@ namespace MLOmega.XR.UI.Components
                 return;
             if (_assetTexture != null) Destroy(_assetTexture);
             _assetTexture = null;
+            if (_assetModel != null) Destroy(_assetModel);
+            _assetModel = null;
+            _assetIsModel = false;
             _assetSha256 = string.Empty;
+            if (
+                !string.IsNullOrWhiteSpace(sha) &&
+                _hologram.AssetMime == "model/gltf-binary" &&
+                !string.IsNullOrWhiteSpace(_hologram.AssetBase64))
+            {
+                try
+                {
+                    byte[] modelBytes =
+                        Convert.FromBase64String(_hologram.AssetBase64);
+                    Shader shader = Shader.Find("MLOmega/XREAL FreeGuy Mesh");
+                    if (RuntimeGlbModel.TryInstantiate(
+                            modelBytes,
+                            transform,
+                            shader,
+                            out _assetModel,
+                            out _))
+                    {
+                        _assetSha256 = sha;
+                        _assetIsModel = true;
+                        SetPanelTexture(null);
+                        return;
+                    }
+                }
+                catch (FormatException)
+                {
+                    SetPanelTexture(null);
+                    return;
+                }
+            }
             if (
                 string.IsNullOrWhiteSpace(sha) ||
                 string.IsNullOrWhiteSpace(_hologram.AssetBase64) ||
