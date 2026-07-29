@@ -570,6 +570,10 @@ namespace MLOmega.XR.UI
                         { "asset_mime", asset?.mimeType ?? string.Empty },
                         { "asset_sha256", asset?.sha256 ?? string.Empty },
                         { "asset_base64", asset?.base64Data ?? string.Empty },
+                        {
+                            "asset_file_path",
+                            asset?.localFilePath ?? string.Empty
+                        },
                         { "scale", Point(binding?.scale.Value ?? Vector3.one) },
                         { "label", binding == null
                             ? (string.IsNullOrWhiteSpace(label)
@@ -1511,7 +1515,11 @@ namespace MLOmega.XR.UI
             string subtitle,
             Vector3 scale,
             float yawDegrees,
-            string assetId)
+            string assetId,
+            string motionPath,
+            float motionRadiusM,
+            float motionSpeed,
+            float motionHeightM)
         {
             if (
                 !_creatorMode ||
@@ -1529,10 +1537,17 @@ namespace MLOmega.XR.UI
                 label,
                 subtitle,
                 new Vector3(
-                    Mathf.Clamp(scale.x, 0.1f, 4f),
-                    Mathf.Clamp(scale.y, 0.1f, 4f),
-                    Mathf.Clamp(scale.z, 0.1f, 4f)),
-                assetId);
+                    Mathf.Clamp(
+                        scale.x, 0.1f, WorldMapStore.MaxWorldScale),
+                    Mathf.Clamp(
+                        scale.y, 0.1f, WorldMapStore.MaxWorldScale),
+                    Mathf.Clamp(
+                        scale.z, 0.1f, WorldMapStore.MaxWorldScale)),
+                assetId,
+                motionPath,
+                motionRadiusM,
+                motionSpeed,
+                motionHeightM);
             return true;
         }
 
@@ -1581,7 +1596,11 @@ namespace MLOmega.XR.UI
             string label,
             string subtitle,
             Vector3 scale,
-            string assetId)
+            string assetId,
+            string motionPath,
+            float motionRadiusM,
+            float motionSpeed,
+            float motionHeightM)
         {
 #if XREAL_SDK_PRESENT
             if (!(_anchorManager is ARAnchorManager manager)) return;
@@ -1620,7 +1639,11 @@ namespace MLOmega.XR.UI
                     position,
                     rotation,
                     scale,
-                    0.94f);
+                    0.94f,
+                    motionPath: motionPath,
+                    motionRadiusM: motionRadiusM,
+                    motionSpeed: motionSpeed,
+                    motionHeightM: motionHeightM);
                 _worldMap.ApplyVisualPreset(content.worldContentId, preset);
                 if (!string.IsNullOrWhiteSpace(assetId))
                     _worldMap.AssignAsset(content.worldContentId, assetId);
@@ -2081,6 +2104,29 @@ namespace MLOmega.XR.UI
                          { "asset_mime", asset?.mimeType ?? string.Empty },
                          { "asset_sha256", asset?.sha256 ?? string.Empty },
                          { "asset_base64", asset?.base64Data ?? string.Empty },
+                         {
+                             "asset_file_path",
+                             asset?.localFilePath ?? string.Empty
+                         },
+                         {
+                             "motion_path",
+                             string.IsNullOrWhiteSpace(content.motionPath)
+                                 ? "static"
+                                 : content.motionPath
+                         },
+                         {
+                             "motion_radius_m",
+                             content.motionRadiusM <= 0f
+                                 ? 1.5f
+                                 : content.motionRadiusM
+                         },
+                         {
+                             "motion_speed",
+                             content.motionSpeed <= 0f
+                                 ? .8f
+                                 : content.motionSpeed
+                         },
+                         { "motion_height_m", content.motionHeightM },
                          { "label", content.label },
                         { "subtitle", content.subtitle },
                         { "kind", "place" },

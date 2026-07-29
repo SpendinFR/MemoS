@@ -44,6 +44,7 @@ namespace MLOmega.XR.UI
         private string _dynamicTargetLabel = string.Empty;
         private int _dynamicKindIndex;
         private int _attachmentIndex;
+        private int _motionIndex;
         private int _managedIndex;
         private int _mapIndex;
         private int _page;
@@ -80,6 +81,7 @@ namespace MLOmega.XR.UI
         private TextMeshProUGUI _deckAttachmentLabel;
         private TextMeshProUGUI _deckManagedLabel;
         private TextMeshProUGUI _deckMapLabel;
+        private TextMeshProUGUI _deckMotionLabel;
         private TMP_InputField _deckTarget;
         private static Material _deckDepthMaterial;
         private static Material _deckPrimaryDepthMaterial;
@@ -90,6 +92,10 @@ namespace MLOmega.XR.UI
         private static readonly string[] Attachments =
         {
             "above", "center", "front", "rear", "left", "right", "below",
+        };
+        private static readonly string[] MotionPaths =
+        {
+            "static", "orbit", "patrol", "figure8", "vertical",
         };
 
         private void Awake()
@@ -226,10 +232,12 @@ namespace MLOmega.XR.UI
 
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("TAILLE −", _button))
-                _uniformScale = Mathf.Max(.25f, _uniformScale - .1f);
+                _uniformScale = Mathf.Max(.1f, _uniformScale / 1.25f);
             GUILayout.Label(_uniformScale.ToString("0.0×"), _labelStyle);
             if (GUILayout.Button("TAILLE +", _button))
-                _uniformScale = Mathf.Min(2.5f, _uniformScale + .1f);
+                _uniformScale = Mathf.Min(
+                    WorldMapStore.MaxWorldScale,
+                    _uniformScale * 1.25f);
             if (GUILayout.Button("↺ 15°", _button)) _yaw -= 15f;
             if (GUILayout.Button("↻ 15°", _button)) _yaw += 15f;
             GUILayout.EndHorizontal();
@@ -253,7 +261,11 @@ namespace MLOmega.XR.UI
                         _subtitle,
                         scale3,
                         _yaw,
-                        _pendingAssetId))
+                        _pendingAssetId,
+                        MotionPaths[_motionIndex],
+                        MotionRadius(),
+                        .8f,
+                        MotionHeight()))
                     _status = "SAUVEGARDE ANCRE NATIVE…";
             }
             GUI.enabled = true;
@@ -478,41 +490,56 @@ namespace MLOmega.XR.UI
             MakeButton(
                 _spatialDeckRect,
                 "TAILLE −",
-                new Vector2(-310f, -198f),
-                new Vector2(170f, 46f),
+                new Vector2(-380f, -198f),
+                new Vector2(110f, 46f),
                 () =>
                 {
-                    _uniformScale = Mathf.Max(.25f, _uniformScale - .1f);
+                    _uniformScale = Mathf.Max(.1f, _uniformScale / 1.25f);
                     RefreshPreview();
                 });
             _deckScale = MakeText(
                 _spatialDeckRect,
                 "1.0×",
-                new Vector2(-105f, -198f),
-                new Vector2(110f, 46f),
+                new Vector2(-260f, -198f),
+                new Vector2(100f, 46f),
                 18f,
                 new Color(.32f, 1f, .88f),
                 FontStyles.Bold);
             MakeButton(
                 _spatialDeckRect,
                 "TAILLE +",
-                new Vector2(105f, -198f),
-                new Vector2(170f, 46f),
+                new Vector2(-145f, -198f),
+                new Vector2(110f, 46f),
                 () =>
                 {
-                    _uniformScale = Mathf.Min(2.5f, _uniformScale + .1f);
+                    _uniformScale = Mathf.Min(
+                        WorldMapStore.MaxWorldScale,
+                        _uniformScale * 1.25f);
                     RefreshPreview();
                 });
             MakeButton(
                 _spatialDeckRect,
                 "ROTATION ↻",
-                new Vector2(310f, -198f),
-                new Vector2(170f, 46f),
+                new Vector2(-10f, -198f),
+                new Vector2(130f, 46f),
                 () =>
                 {
                     _yaw += 15f;
                     RefreshPreview();
                 });
+            Button motion = MakeButton(
+                _spatialDeckRect,
+                "MOUV: STATIC",
+                new Vector2(245f, -198f),
+                new Vector2(340f, 46f),
+                () =>
+                {
+                    _motionIndex = (_motionIndex + 1) % MotionPaths.Length;
+                    RefreshSpatialDeck();
+                    RefreshPreview();
+                });
+            _deckMotionLabel =
+                motion.GetComponentInChildren<TextMeshProUGUI>();
 
             MakeButton(
                 _spatialDeckRect,
@@ -705,7 +732,11 @@ namespace MLOmega.XR.UI
                     _subtitle,
                     scale,
                     _yaw,
-                    _pendingAssetId))
+                    _pendingAssetId,
+                    MotionPaths[_motionIndex],
+                    MotionRadius(),
+                    .8f,
+                    MotionHeight()))
                 _status = "SAUVEGARDE DE L'ANCRE NATIVE…";
         }
 
@@ -837,6 +868,9 @@ namespace MLOmega.XR.UI
             if (_deckStatus != null) _deckStatus.text = _status;
             if (_deckScale != null)
                 _deckScale.text = _uniformScale.ToString("0.0×");
+            if (_deckMotionLabel != null)
+                _deckMotionLabel.text =
+                    "MOUV: " + MotionPaths[_motionIndex].ToUpperInvariant();
             if (_deckPage != null)
                 _deckPage.text = (_page + 1) + "/" + PageCount;
             if (_deckAsset != null)
@@ -1181,6 +1215,11 @@ namespace MLOmega.XR.UI
                 { "asset_mime", asset?.mimeType ?? string.Empty },
                 { "asset_sha256", asset?.sha256 ?? string.Empty },
                 { "asset_base64", asset?.base64Data ?? string.Empty },
+                { "asset_file_path", asset?.localFilePath ?? string.Empty },
+                { "motion_path", MotionPaths[_motionIndex] },
+                { "motion_radius_m", MotionRadius() },
+                { "motion_speed", .8f },
+                { "motion_height_m", MotionHeight() },
                 {
                     "local_euler",
                     new Dictionary<string, object>
@@ -1249,6 +1288,17 @@ namespace MLOmega.XR.UI
                 _status = "ÉCHEC ANCRE // " + detail;
             }
         }
+
+        private float MotionRadius() =>
+            Mathf.Clamp(
+                Mathf.Max(1.5f, _uniformScale * 1.2f),
+                .1f,
+                40f);
+
+        private float MotionHeight() =>
+            MotionPaths[_motionIndex] == "static"
+                ? 0f
+                : Mathf.Clamp(_uniformScale * .35f, 0f, 20f);
 
         private void OnImageImported(string path)
         {

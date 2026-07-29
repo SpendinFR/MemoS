@@ -38,6 +38,12 @@ pas dans DeX et pas comme une application 2D ordinaire.
    meshes et textures (aucun fichier/URL externe), rester sous 32 Mio, 250 k
    sommets et 350 k triangles. Les matériaux sont convertis vers le shader
    holographique XREAL; l'animation choisie dans le preset anime l'objet entier.
+   Une map peut cumuler 512 Mio d'assets : après import, le produit les extrait
+   et les déduplique par SHA-256, donc un GLB commun à plusieurs maps n'est stocké
+   qu'une fois.
+   `MOUV` choisit `STATIC`, `ORBIT`, `PATROL`, `FIGURE8` ou `VERTICAL`.
+   La taille progresse jusqu'à 50x : une femme géante reste liée à son ancre,
+   tandis qu'un drone peut tourner ou patrouiller autour de la sienne.
 6. Regarde la surface réelle visée et touche `ANCRER DANS LE MONDE`. Le contenu
    n'est sauvegardé qu'après hit Depth, ancre suivie et sauvegarde XREAL réussie.
 7. Crée au moins deux ancres séparées de 25 cm ou plus. Cette baseline est

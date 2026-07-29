@@ -2579,20 +2579,25 @@ relocalisation, occlusion, stéréo et tenue thermique sur S24 + One Pro/Eye.
 Extension du 29 juillet :
 
 - `WorldMapStore` accepte images et GLB autonomes bornés à 32 Mio par asset,
-  64 Mio par map et 128 Mio par paquet signé; ne jamais ajouter un
+  512 Mio par map et 768 Mio par paquet contrôlé; ne jamais ajouter un
   package runtime glTF ou une URL réseau au player sans nouvel audit Android/IL2CPP.
 - `WorldMapLibrary` garde les paquets importés, leurs activations et construit une
   composition. Le menu `Choisir mondes` bascule chaque map; `Importer monde`
   installe puis active la nouvelle.
+- à l'installation, les blobs sont extraits sous SHA-256 dans `assets/`, la map
+  installée ne conserve pas leur Base64, et deux maps réutilisent le même fichier.
+  Ne jamais réintroduire un chemin extérieur au sandbox applicatif.
 - dans l'Atelier, `MODE ANCRÉ` sauvegarde une ancre XREAL; `MODE DYNAMIQUE`
   sauvegarde une règle VisionRT. Les flèches de gestion choisissent un élément
   ancré ou dynamique et `SUPPRIMER` efface exactement celui-ci.
 - `NOUVELLE MAP` utilise le titre courant comme nom; `MAP ▶` change de draft.
   Une map contenant encore des ancres ne peut pas être supprimée en bloc : effacer
   d'abord ses éléments pour que les GUID natifs ne deviennent pas orphelins.
-- tests ciblés obtenus : **28/28 verts** (composition/toggle, seuil GLB >=30 Mio,
-  GLB réellement instancié et régression FreeGuy/menu/AR).
-- builds du 29 juillet : `mlomega-xreal-world-atelier.apk` 222 488 133 octets,
-  SHA-256 `C7B5297429943954751FDFA57E78BDE81E2BECBAF3E75014F3ECA389F0E8DF50`;
-  `mlomega-xreal.apk` 222 493 885 octets,
-  SHA-256 `C39548E9CF2F7BC9A393BB2F037C20EC5F0A9D0D88F5479D64C9C23C07467D64`.
+- tests ciblés obtenus : **30/30 verts** (composition/toggle, seuil GLB >=30 Mio,
+  déduplication disque, échelle/mouvement bornés, GLB réellement instancié et
+  régression FreeGuy/menu/AR).
+- builds finaux du 29 juillet : `mlomega-xreal-world-atelier.apk`
+  222 498 493 octets,
+  SHA-256 `0F80D49E5AA342006B2C3A3CE3E116E38B9EDA2AB5DB808C208DA0564B3FE0D0`;
+  `mlomega-xreal.apk` 222 504 253 octets,
+  SHA-256 `E4912F485C5DF7007BC9BC29AFC04E3D39796F7CFDAD97F92EDF1FE79B4E3239`.

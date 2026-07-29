@@ -95,10 +95,82 @@ namespace MLOmega.XR.Tests
             }
         }
 
+        [Test]
+        public void ProductLibraryExtractsAndDeduplicatesAssetsByDigest()
+        {
+            string root = Path.Combine(
+                Path.GetTempPath(), "mlomega-asset-library-" + Guid.NewGuid());
+            try
+            {
+                byte[] glb = TinyTriangleGlb();
+                string packageA = CreateDynamicPackage(
+                    root, "Map A", "vehicle", glb);
+                string packageB = CreateDynamicPackage(
+                    root, "Map B", "object", glb);
+                string libraryRoot = Path.Combine(root, "library");
+                var library = new WorldMapLibrary(libraryRoot);
+                Assert.IsTrue(library.InstallPackage(
+                    packageA, true, out _, out string error), error);
+                Assert.IsTrue(library.InstallPackage(
+                    packageB, true, out _, out error), error);
+                Assert.AreEqual(
+                    1,
+                    Directory.GetFiles(Path.Combine(libraryRoot, "assets"))
+                        .Length);
+                Assert.IsTrue(library.TryComposeActive(
+                    out WorldMapStore.MapDocument composed, out error), error);
+                Assert.AreEqual(1, composed.assets.Count);
+                Assert.IsEmpty(composed.assets[0].base64Data);
+                Assert.IsTrue(File.Exists(composed.assets[0].localFilePath));
+            }
+            finally
+            {
+                if (Directory.Exists(root)) Directory.Delete(root, true);
+            }
+        }
+
+        [Test]
+        public void AnchoredContentSupportsGiantScaleAndBoundedMotion()
+        {
+            string root = Path.Combine(
+                Path.GetTempPath(), "mlomega-motion-" + Guid.NewGuid());
+            try
+            {
+                var store = new WorldMapStore(root, "xreal-test");
+                WorldMapStore.WorldContent content = store.Upsert(
+                    null,
+                    "anchor-test",
+                    "holo_billboard",
+                    "Giant",
+                    "Patrol",
+                    string.Empty,
+                    "manual",
+                    "test",
+                    Vector3.zero,
+                    Quaternion.identity,
+                    Vector3.one * 80f,
+                    .9f,
+                    motionPath: "figure8",
+                    motionRadiusM: 100f,
+                    motionSpeed: 20f,
+                    motionHeightM: 100f);
+                Assert.AreEqual(50f, content.localScale.x);
+                Assert.AreEqual("figure8", content.motionPath);
+                Assert.AreEqual(40f, content.motionRadiusM);
+                Assert.AreEqual(5f, content.motionSpeed);
+                Assert.AreEqual(20f, content.motionHeightM);
+            }
+            finally
+            {
+                if (Directory.Exists(root)) Directory.Delete(root, true);
+            }
+        }
+
         private static string CreateDynamicPackage(
             string root,
             string name,
-            string kind)
+            string kind,
+            byte[] glb = null)
         {
             string directory = Path.Combine(root, name);
             Directory.CreateDirectory(directory);
@@ -106,10 +178,18 @@ namespace MLOmega.XR.Tests
             Assert.IsTrue(store.SetDisplayName(name));
             WorldCreatorCatalog.Entry preset =
                 WorldCreatorCatalog.ForCategory("urban")[0];
+            string assetId = string.Empty;
+            if (glb != null)
+            {
+                string glbPath = Path.Combine(directory, "shared.glb");
+                File.WriteAllBytes(glbPath, glb);
+                Assert.IsTrue(store.TryAddGlbAsset(
+                    glbPath, out assetId, out string assetError), assetError);
+            }
             Assert.NotNull(store.UpsertDynamicBinding(
                 null,
                 preset,
-                string.Empty,
+                assetId,
                 kind,
                 "above",
                 name,

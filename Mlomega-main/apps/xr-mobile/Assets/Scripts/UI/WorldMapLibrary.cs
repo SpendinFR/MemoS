@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 using UnityEngine;
 
 namespace MLOmega.XR.UI
@@ -43,6 +45,7 @@ namespace MLOmega.XR.UI
 
         private readonly string _directory;
         private readonly string _packagesDirectory;
+        private readonly string _assetsDirectory;
         private readonly string _indexPath;
         private Index _index;
 
@@ -50,8 +53,10 @@ namespace MLOmega.XR.UI
         {
             _directory = directory ?? throw new ArgumentNullException(nameof(directory));
             _packagesDirectory = Path.Combine(_directory, "packages");
+            _assetsDirectory = Path.Combine(_directory, "assets");
             _indexPath = Path.Combine(_directory, "world-map-library-v1.json");
             Directory.CreateDirectory(_packagesDirectory);
+            Directory.CreateDirectory(_assetsDirectory);
             _index = LoadIndex();
             PruneMissing();
         }
@@ -87,7 +92,33 @@ namespace MLOmega.XR.UI
             string destination = Path.Combine(_packagesDirectory, fileName);
             try
             {
-                File.Copy(sourcePath, destination + ".tmp", true);
+                foreach (WorldMapStore.WorldAsset asset in map.assets)
+                {
+                    byte[] bytes = Convert.FromBase64String(asset.base64Data);
+                    string extension = asset.kind == "glb_model"
+                        ? ".glb"
+                        : asset.mimeType == "image/png" ? ".png" : ".jpg";
+                    string assetFile = asset.sha256 + extension;
+                    string assetPath = Path.Combine(_assetsDirectory, assetFile);
+                    if (!File.Exists(assetPath))
+                    {
+                        File.WriteAllBytes(assetPath + ".tmp", bytes);
+                        File.Move(assetPath + ".tmp", assetPath);
+                    }
+                    else if (!string.Equals(
+                                 Sha256File(assetPath),
+                                 asset.sha256,
+                                 StringComparison.Ordinal))
+                    {
+                        throw new InvalidDataException("asset_digest_collision");
+                    }
+                    asset.localFilePath = assetPath;
+                    asset.base64Data = string.Empty;
+                }
+                File.WriteAllText(
+                    destination + ".tmp",
+                    JsonUtility.ToJson(map, false),
+                    Encoding.UTF8);
                 if (File.Exists(destination)) File.Delete(destination);
                 File.Move(destination + ".tmp", destination);
             }
@@ -111,6 +142,7 @@ namespace MLOmega.XR.UI
             entry.anchoredCount = map.contents?.Count ?? 0;
             entry.dynamicCount = map.dynamicBindings?.Count ?? 0;
             SaveIndex();
+            GarbageCollectAssets();
             error = string.Empty;
             return true;
         }
@@ -122,6 +154,7 @@ namespace MLOmega.XR.UI
             if (entry == null) return false;
             entry.active = active;
             SaveIndex();
+            GarbageCollectAssets();
             return true;
         }
 
@@ -159,7 +192,7 @@ namespace MLOmega.XR.UI
             foreach (Entry entry in _index.entries.Where(item => item.active))
             {
                 string path = Path.Combine(_packagesDirectory, entry.fileName);
-                if (!WorldMapPackageV1.TryRead(
+                if (!TryReadInstalledMap(
                         path,
                         out WorldMapStore.MapDocument map,
                         out error))
@@ -271,6 +304,111 @@ namespace MLOmega.XR.UI
             File.WriteAllText(temp, JsonUtility.ToJson(_index, true));
             if (File.Exists(_indexPath)) File.Delete(_indexPath);
             File.Move(temp, _indexPath);
+        }
+
+        private bool TryReadInstalledMap(
+            string path,
+            out WorldMapStore.MapDocument map,
+            out string error)
+        {
+            map = null;
+            error = string.Empty;
+            try
+            {
+                map = JsonUtility.FromJson<WorldMapStore.MapDocument>(
+                    File.ReadAllText(path, Encoding.UTF8));
+                if (
+                    map == null ||
+                    map.schemaVersion != WorldMapStore.CurrentSchemaVersion ||
+                    map.assets == null ||
+                    map.contents == null ||
+                    map.dynamicBindings == null ||
+                    map.anchorMappings == null)
+                {
+                    error = "world_map_library_document_invalid";
+                    return false;
+                }
+                foreach (WorldMapStore.WorldAsset asset in map.assets)
+                {
+                    if (
+                        asset == null ||
+                        string.IsNullOrWhiteSpace(asset.sha256) ||
+                        string.IsNullOrWhiteSpace(asset.localFilePath) ||
+                        !InsideAssetsDirectory(asset.localFilePath) ||
+                        !File.Exists(asset.localFilePath) ||
+                        new FileInfo(asset.localFilePath).Length <= 0 ||
+                        new FileInfo(asset.localFilePath).Length >
+                            WorldMapStore.MaxAssetBytes ||
+                        !string.Equals(
+                            Sha256File(asset.localFilePath),
+                            asset.sha256,
+                            StringComparison.Ordinal))
+                    {
+                        error = "world_map_library_asset_invalid";
+                        return false;
+                    }
+                    asset.base64Data = string.Empty;
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = "world_map_library_read:" + ex.GetType().Name;
+                return false;
+            }
+        }
+
+        private bool InsideAssetsDirectory(string path)
+        {
+            string root = Path.GetFullPath(_assetsDirectory)
+                .TrimEnd(Path.DirectorySeparatorChar) +
+                Path.DirectorySeparatorChar;
+            string candidate = Path.GetFullPath(path);
+            return candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void GarbageCollectAssets()
+        {
+            var referenced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (Entry entry in _index.entries)
+            {
+                string path = Path.Combine(_packagesDirectory, entry.fileName);
+                try
+                {
+                    WorldMapStore.MapDocument map =
+                        JsonUtility.FromJson<WorldMapStore.MapDocument>(
+                            File.ReadAllText(path, Encoding.UTF8));
+                    foreach (WorldMapStore.WorldAsset asset in
+                        map?.assets ?? new List<WorldMapStore.WorldAsset>())
+                    {
+                        if (InsideAssetsDirectory(asset.localFilePath))
+                            referenced.Add(Path.GetFullPath(asset.localFilePath));
+                    }
+                }
+                catch
+                {
+                    // Corrupt maps are handled by composition; never delete on
+                    // the basis of an unreadable entry.
+                    return;
+                }
+            }
+            foreach (string path in Directory.GetFiles(_assetsDirectory))
+            {
+                if (!referenced.Contains(Path.GetFullPath(path)))
+                    File.Delete(path);
+            }
+        }
+
+        private static string Sha256File(string path)
+        {
+            using (FileStream stream = File.OpenRead(path))
+            using (SHA256 hash = SHA256.Create())
+            {
+                byte[] digest = hash.ComputeHash(stream);
+                var result = new StringBuilder(digest.Length * 2);
+                foreach (byte item in digest) result.Append(item.ToString("x2"));
+                return result.ToString();
+            }
         }
 
         private static WorldMapStore.MapDocument NewComposition()

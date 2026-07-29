@@ -2555,9 +2555,9 @@ Suivi T0 logiciel — 26 juillet 2026 :
   éphémères existantes; le second ne rend que la carte Atelier importée. Les runs
   Local/PRO, le transport Eye, BrainLive, Memory et CloseDay ne sont pas invoqués
   par l'Atelier et n'ont pas été modifiés par son builder.
-- Bornes paquet : 2 048 contenus, 512 règles dynamiques, 64 assets PNG/JPEG/GLB,
-  32 Mio par asset et 64 Mio cumulés, 2 Mio par mapping et 24 Mio cumulés,
-  enveloppe de 128 Mio. Les GLB 2.0 doivent être autonomes : géométrie et textures
+- Bornes paquet : 2 048 contenus, 512 règles dynamiques, 512 assets PNG/JPEG/GLB,
+  32 Mio par asset et 512 Mio cumulés, 2 Mio par mapping et 24 Mio cumulés,
+  enveloppe de 768 Mio. Les GLB 2.0 doivent être autonomes : géométrie et textures
   embarquées, aucune URI externe, 250 k sommets/350 k triangles maximum. Un mapping
   absent, un digest faux, un fichier illisible ou une ancre non suivie bloque
   l'élément au lieu de le faire flotter devant la tête.
@@ -2568,6 +2568,15 @@ Suivi T0 logiciel — 26 juillet 2026 :
   modèle entier sans exécuter de code importé. Le mode `DYNAMIQUE` lie un
   preset/asset à une cible VisionRT (`label`, `kind`, attache, confiance,
   max-instances, TTL) sans ancre ni écriture Memory.
+- [x] **Maps lourdes, déduplication et mouvement spatial — 29 juillet 2026.**
+  Après validation complète du paquet, le produit extrait chaque asset dans sa
+  bibliothèque privée sous son SHA-256, efface sa copie Base64 du catalogue actif
+  et fait référencer ce fichier par toutes les maps. Un asset commun n'occupe donc
+  le disque qu'une fois et le rendu ne transporte plus son Base64 dans chaque intent.
+  Le ramasse-miettes ne supprime que les blobs sans aucune map. L'Atelier autorise
+  une échelle ancrée jusqu'à 50x et les trajectoires bornées `orbit`, `patrol`,
+  `figure8` et `vertical`; l'ancre reste le référentiel, donc le mouvement ne devient
+  jamais head-locked. **30/30 tests ciblés verts** avant rebuild.
 - [x] Plusieurs drafts nommés peuvent coexister dans l'Atelier. L'APK produit
   conserve chaque paquet importé dans une bibliothèque privée; `Choisir mondes`
   permet d'en activer plusieurs. La composition déduplique les assets par SHA-256,

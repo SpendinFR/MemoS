@@ -19,7 +19,7 @@ import java.io.OutputStream;
  */
 public final class WorldMapDocumentActivity extends Activity {
     private static final int REQUEST = 4731;
-    private static final long MAX_BYTES = 128L * 1024L * 1024L;
+    private static final long MAX_BYTES = 768L * 1024L * 1024L;
 
     public static void beginExport(
             String sourcePath,

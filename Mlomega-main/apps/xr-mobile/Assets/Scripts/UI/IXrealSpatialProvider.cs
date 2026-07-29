@@ -45,7 +45,11 @@ namespace MLOmega.XR.UI
             string subtitle,
             Vector3 scale,
             float yawDegrees,
-            string assetId);
+            string assetId,
+            string motionPath,
+            float motionRadiusM,
+            float motionSpeed,
+            float motionHeightM);
         bool PrepareCreatorExport(out string error);
         bool RemoveCreatorContent(string worldContentId);
         bool SaveCreatorDynamicBinding(

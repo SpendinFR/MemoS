@@ -18,10 +18,11 @@ namespace MLOmega.XR.UI
     public sealed class WorldMapStore
     {
         public const int CurrentSchemaVersion = 1;
-        public const int MaxAssetCount = 64;
+        public const int MaxAssetCount = 512;
         public const int MaxAssetBytes = 32 * 1024 * 1024;
         public const int MaxAssetDimension = 2048;
-        public const int MaxTotalAssetBytes = 64 * 1024 * 1024;
+        public const int MaxTotalAssetBytes = 512 * 1024 * 1024;
+        public const float MaxWorldScale = 50f;
         public const int MaxAnchorMappingBytes = 2 * 1024 * 1024;
         public const int MaxTotalAnchorMappingBytes = 24 * 1024 * 1024;
         private const double EarthRadiusM = 6378137.0;
@@ -62,6 +63,10 @@ namespace MLOmega.XR.UI
             public string archetypeId;
             public string styleId;
             public string animationId;
+            public string motionPath = "static";
+            public float motionRadiusM = 1.5f;
+            public float motionSpeed = 0.8f;
+            public float motionHeightM;
             public string accentHex;
             public string secondaryHex;
             public string assetId;
@@ -91,6 +96,9 @@ namespace MLOmega.XR.UI
             public string mimeType;
             public string sha256;
             public string base64Data;
+            // Product-library reference set only after a signed package has been
+            // validated and extracted inside the APK private storage.
+            public string localFilePath;
             public string author;
         }
 
@@ -278,7 +286,11 @@ namespace MLOmega.XR.UI
             bool geoPoseValid = false,
             double latitude = 0d,
             double longitude = 0d,
-            double altitudeM = 0d)
+            double altitudeM = 0d,
+            string motionPath = "static",
+            float motionRadiusM = 1.5f,
+            float motionSpeed = 0.8f,
+            float motionHeightM = 0f)
         {
             string id = CleanId(worldContentId);
             if (string.IsNullOrEmpty(id))
@@ -318,9 +330,13 @@ namespace MLOmega.XR.UI
             record.localPosition = new StoredVector3(position);
             record.localEuler = new StoredVector3(rotation.eulerAngles);
             record.localScale = new StoredVector3(new Vector3(
-                Mathf.Clamp(scale.x, 0.1f, 4f),
-                Mathf.Clamp(scale.y, 0.1f, 4f),
-                Mathf.Clamp(scale.z, 0.1f, 4f)));
+                Mathf.Clamp(scale.x, 0.1f, MaxWorldScale),
+                Mathf.Clamp(scale.y, 0.1f, MaxWorldScale),
+                Mathf.Clamp(scale.z, 0.1f, MaxWorldScale)));
+            record.motionPath = CleanMotionPath(motionPath);
+            record.motionRadiusM = Mathf.Clamp(motionRadiusM, .1f, 40f);
+            record.motionSpeed = Mathf.Clamp(motionSpeed, .05f, 5f);
+            record.motionHeightM = Mathf.Clamp(motionHeightM, -20f, 20f);
             Touch();
             Save();
             return record;
@@ -559,9 +575,9 @@ namespace MLOmega.XR.UI
                 Mathf.Clamp(offset.y, -4f, 4f),
                 Mathf.Clamp(offset.z, -4f, 4f)));
             record.scale = new StoredVector3(new Vector3(
-                Mathf.Clamp(scale.x, .1f, 4f),
-                Mathf.Clamp(scale.y, .1f, 4f),
-                Mathf.Clamp(scale.z, .1f, 4f)));
+                Mathf.Clamp(scale.x, .1f, MaxWorldScale),
+                Mathf.Clamp(scale.y, .1f, MaxWorldScale),
+                Mathf.Clamp(scale.z, .1f, MaxWorldScale)));
             record.enabled = true;
             Touch();
             Save();
@@ -588,6 +604,20 @@ namespace MLOmega.XR.UI
             return _document.assets.Find(item =>
                 item != null &&
                 string.Equals(item.assetId, clean, StringComparison.Ordinal));
+        }
+
+        public static string CleanMotionPath(string value)
+        {
+            switch ((value ?? string.Empty).Trim().ToLowerInvariant())
+            {
+                case "orbit":
+                case "patrol":
+                case "figure8":
+                case "vertical":
+                    return value.Trim().ToLowerInvariant();
+                default:
+                    return "static";
+            }
         }
 
         public bool AssignAsset(string worldContentId, string assetId)

@@ -1056,6 +1056,11 @@ Suivre `FIRST_TRY_XREAL_WORLD_ATELIER.md`, puis vérifier :
   refusé ;
 - [ ] un GLB autonome valide est réellement rendu en world-space avec son shader
   holographique; URI externe, GLB corrompu ou géométrie hors plafond sont refusés ;
+- [ ] le même GLB utilisé dans deux maps n'existe qu'une fois dans la bibliothèque
+  d'assets du produit et les deux maps peuvent néanmoins être activées ensemble ;
+- [ ] une hologramme redimensionnée jusqu'à 50x reste attachée à son ancre ;
+- [ ] un drone en `ORBIT`, `PATROL`, `FIGURE8` puis `VERTICAL` reste centré sur
+  son ancre et ne suit pas les mouvements de tête ;
 - [ ] créer au moins deux maps nommées; `MAP ▶` retrouve leurs contenus séparés ;
 - [ ] sélectionner une ancienne ancre avec les flèches puis `SUPPRIMER` : c'est
   elle, et non la dernière créée, qui disparaît avec son ancre native ;

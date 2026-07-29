@@ -2242,6 +2242,20 @@ exécutable, plafonds de taille/géométrie, textures embarquées seulement. Les
 animations du preset déplacent le modèle importé comme un tout; le système ne
 prétend pas importer toutes les animations squelettiques arbitraires.
 
+**Maps lourdes.** Le paquet d'échange peut contenir jusqu'à 512 Mio d'assets,
+mais ce n'est pas la représentation d'exécution. Après validation du digest et
+du GLB, `WorldMapLibrary` extrait le blob dans le stockage privé sous SHA-256,
+vide le Base64 de la map installée et déduplique ce blob entre toutes les maps.
+Le renderer relit ce chemin privé et revérifie taille + SHA avant instanciation.
+Ainsi l'augmentation de capacité n'impose ni duplication par map ni changement
+des runs Memory/Local/PRO.
+
+**Mouvement d'Atelier.** `static`, `orbit`, `patrol`, `figure8` et `vertical`
+sont des mouvements de présentation bornés autour d'une vraie ancre XREAL. Ils
+ne modifient ni l'ancre native ni WorldBrain. L'échelle 50x est réservée aux
+éléments ancrés explicitement; le plafond de surfaces simultanées du produit
+continue de protéger le S24.
+
 Les règles dynamiques remplacent uniquement la table de choix visuel codée en dur
 lorsqu'une cible `label/kind` correspond. Elles restent `ephemeral`,
 `memory_write=false`, limitées en instances et TTL. Les maps installées sont

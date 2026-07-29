@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Security.Cryptography;
 using MLOmega.Contracts.V19;
 using TMPro;
 using UnityEngine;
@@ -33,6 +35,11 @@ namespace MLOmega.XR.UI.Components
             public string AssetMime;
             public string AssetSha256;
             public string AssetBase64;
+            public string AssetFilePath;
+            public string MotionPath;
+            public float MotionRadiusM;
+            public float MotionSpeed;
+            public float MotionHeightM;
             public float MaxRenderDistanceM;
         }
 
@@ -131,7 +138,7 @@ namespace MLOmega.XR.UI.Components
         {
             now = AnimatedTime(now);
             Camera cam = Context != null ? Context.Camera : Camera.main;
-            Vector3 origin = _hologram.Position;
+            Vector3 origin = MotionPosition(now);
             if (
                 cam != null &&
                 Vector3.Distance(cam.transform.position, origin) >
@@ -832,6 +839,25 @@ namespace MLOmega.XR.UI.Components
                     IntentRead.Content(intent, "asset_sha256", ""),
                 AssetBase64 =
                     IntentRead.Content(intent, "asset_base64", ""),
+                AssetFilePath =
+                    IntentRead.Content(intent, "asset_file_path", ""),
+                MotionPath = WorldMapStore.CleanMotionPath(
+                    IntentRead.Content(intent, "motion_path", "static")),
+                MotionRadiusM = Mathf.Clamp(
+                    (float)IntentRead.Num(
+                        intent.Content, "motion_radius_m", 1.5d),
+                    .1f,
+                    40f),
+                MotionSpeed = Mathf.Clamp(
+                    (float)IntentRead.Num(
+                        intent.Content, "motion_speed", .8d),
+                    .05f,
+                    5f),
+                MotionHeightM = Mathf.Clamp(
+                    (float)IntentRead.Num(
+                        intent.Content, "motion_height_m", 0d),
+                    -20f,
+                    20f),
                 MaxRenderDistanceM = Mathf.Clamp(
                     (float)IntentRead.Num(
                         intent.Content,
@@ -890,9 +916,12 @@ namespace MLOmega.XR.UI.Components
             }
         }
 
-        private float Sx => Mathf.Clamp(_hologram?.Scale.x ?? 1f, .1f, 4f);
-        private float Sy => Mathf.Clamp(_hologram?.Scale.y ?? 1f, .1f, 4f);
-        private float Sz => Mathf.Clamp(_hologram?.Scale.z ?? 1f, .1f, 4f);
+        private float Sx => Mathf.Clamp(
+            _hologram?.Scale.x ?? 1f, .1f, WorldMapStore.MaxWorldScale);
+        private float Sy => Mathf.Clamp(
+            _hologram?.Scale.y ?? 1f, .1f, WorldMapStore.MaxWorldScale);
+        private float Sz => Mathf.Clamp(
+            _hologram?.Scale.z ?? 1f, .1f, WorldMapStore.MaxWorldScale);
 
         private static Vector3 ReadScale(UIIntent intent)
         {
@@ -900,11 +929,53 @@ namespace MLOmega.XR.UI.Components
                 intent?.Content != null &&
                 intent.Content.TryGetValue("scale", out object raw) &&
                 WorldContractRead.TryVector(raw, out Vector3 scale) &&
-                scale.x >= .1f && scale.x <= 4f &&
-                scale.y >= .1f && scale.y <= 4f &&
-                scale.z >= .1f && scale.z <= 4f)
+                scale.x >= .1f &&
+                scale.x <= WorldMapStore.MaxWorldScale &&
+                scale.y >= .1f &&
+                scale.y <= WorldMapStore.MaxWorldScale &&
+                scale.z >= .1f &&
+                scale.z <= WorldMapStore.MaxWorldScale)
                 return scale;
             return Vector3.one;
+        }
+
+        private Vector3 MotionPosition(float now)
+        {
+            Vector3 basePosition = _hologram.Position;
+            string path = WorldMapStore.CleanMotionPath(_hologram.MotionPath);
+            if (path == "static") return basePosition;
+            float phase =
+                (Mathf.Abs((_hologram.Id ?? string.Empty).GetHashCode()) % 1000) *
+                .006283185f;
+            float t = now * _hologram.MotionSpeed + phase;
+            float radius = _hologram.MotionRadiusM;
+            Vector3 right = _hologram.AnchorRotation * Vector3.right;
+            Vector3 forward = _hologram.AnchorRotation * Vector3.forward;
+            Vector3 up = _hologram.AnchorRotation * Vector3.up;
+            switch (path)
+            {
+                case "orbit":
+                    return basePosition +
+                        right * (Mathf.Cos(t) * radius) +
+                        forward * (Mathf.Sin(t) * radius) +
+                        up * _hologram.MotionHeightM;
+                case "patrol":
+                    return basePosition +
+                        right * (Mathf.Sin(t) * radius) +
+                        up * _hologram.MotionHeightM;
+                case "figure8":
+                    return basePosition +
+                        right * (Mathf.Sin(t) * radius) +
+                        forward * (Mathf.Sin(t * 2f) * radius * .5f) +
+                        up * _hologram.MotionHeightM;
+                case "vertical":
+                    return basePosition +
+                        up * (
+                            _hologram.MotionHeightM +
+                            Mathf.Sin(t) * radius);
+                default:
+                    return basePosition;
+            }
         }
 
         private static Vector3 ReadEuler(UIIntent intent)
@@ -933,12 +1004,10 @@ namespace MLOmega.XR.UI.Components
             if (
                 !string.IsNullOrWhiteSpace(sha) &&
                 _hologram.AssetMime == "model/gltf-binary" &&
-                !string.IsNullOrWhiteSpace(_hologram.AssetBase64))
+                TryReadAssetBytes(out byte[] modelBytes))
             {
                 try
                 {
-                    byte[] modelBytes =
-                        Convert.FromBase64String(_hologram.AssetBase64);
                     Shader shader = Shader.Find("MLOmega/XREAL FreeGuy Mesh");
                     if (RuntimeGlbModel.TryInstantiate(
                             modelBytes,
@@ -953,7 +1022,7 @@ namespace MLOmega.XR.UI.Components
                         return;
                     }
                 }
-                catch (FormatException)
+                catch (Exception)
                 {
                     SetPanelTexture(null);
                     return;
@@ -961,7 +1030,7 @@ namespace MLOmega.XR.UI.Components
             }
             if (
                 string.IsNullOrWhiteSpace(sha) ||
-                string.IsNullOrWhiteSpace(_hologram.AssetBase64) ||
+                !TryReadAssetBytes(out byte[] bytes) ||
                 (_hologram.AssetMime != "image/png" &&
                  _hologram.AssetMime != "image/jpeg"))
             {
@@ -970,8 +1039,6 @@ namespace MLOmega.XR.UI.Components
             }
             try
             {
-                byte[] bytes =
-                    Convert.FromBase64String(_hologram.AssetBase64);
                 if (
                     bytes.Length <= 0 ||
                     bytes.Length > WorldMapStore.MaxAssetBytes)
@@ -992,9 +1059,43 @@ namespace MLOmega.XR.UI.Components
                 _assetSha256 = sha;
                 SetPanelTexture(texture);
             }
-            catch (FormatException)
+            catch (Exception)
             {
                 SetPanelTexture(null);
+            }
+        }
+
+        private bool TryReadAssetBytes(out byte[] bytes)
+        {
+            bytes = null;
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(_hologram.AssetBase64))
+                    bytes = Convert.FromBase64String(_hologram.AssetBase64);
+                else if (
+                    !string.IsNullOrWhiteSpace(_hologram.AssetFilePath) &&
+                    File.Exists(_hologram.AssetFilePath))
+                    bytes = File.ReadAllBytes(_hologram.AssetFilePath);
+                if (
+                    bytes == null ||
+                    bytes.Length <= 0 ||
+                    bytes.Length > WorldMapStore.MaxAssetBytes)
+                    return false;
+                using (SHA256 hash = SHA256.Create())
+                {
+                    string digest = BitConverter.ToString(
+                        hash.ComputeHash(bytes)).Replace("-", string.Empty)
+                        .ToLowerInvariant();
+                    return string.Equals(
+                        digest,
+                        _hologram.AssetSha256,
+                        StringComparison.Ordinal);
+                }
+            }
+            catch
+            {
+                bytes = null;
+                return false;
             }
         }
 

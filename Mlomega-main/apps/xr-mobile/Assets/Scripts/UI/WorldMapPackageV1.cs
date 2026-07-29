@@ -15,7 +15,7 @@ namespace MLOmega.XR.UI
     public static class WorldMapPackageV1
     {
         public const string PackageType = "mlomega.world-map";
-        public const int MaxBytes = 128 * 1024 * 1024;
+        public const int MaxBytes = 768 * 1024 * 1024;
         public const int MaxContents = 2048;
         public const int MaxDynamicBindings = 512;
 
@@ -169,6 +169,7 @@ namespace MLOmega.XR.UI
                     ) ||
                     bytes.Length <= 0 ||
                     bytes.Length > WorldMapStore.MaxAssetBytes ||
+                    !string.IsNullOrWhiteSpace(asset.localFilePath) ||
                     !FixedEquals(asset.sha256, Sha256(bytes)))
                 {
                     error = "world_map_asset_invalid";
@@ -242,6 +243,7 @@ namespace MLOmega.XR.UI
                     (item.subtitle ?? string.Empty).Length > 240 ||
                     (!string.IsNullOrWhiteSpace(item.assetId) &&
                      !assetIds.Contains(item.assetId)) ||
+                    !ValidMotion(item) ||
                     !Finite(item.localPosition) ||
                     !Finite(item.localEuler) ||
                     !ValidScale(item.localScale))
@@ -286,9 +288,33 @@ namespace MLOmega.XR.UI
 
         private static bool ValidScale(WorldMapStore.StoredVector3 value) =>
             Finite(value) &&
-            value.x >= 0.1f && value.x <= 4f &&
-            value.y >= 0.1f && value.y <= 4f &&
-            value.z >= 0.1f && value.z <= 4f;
+            value.x >= 0.1f && value.x <= WorldMapStore.MaxWorldScale &&
+            value.y >= 0.1f && value.y <= WorldMapStore.MaxWorldScale &&
+            value.z >= 0.1f && value.z <= WorldMapStore.MaxWorldScale;
+
+        private static bool ValidMotion(WorldMapStore.WorldContent item)
+        {
+            bool legacy =
+                string.IsNullOrWhiteSpace(item.motionPath) &&
+                item.motionRadiusM == 0f &&
+                item.motionSpeed == 0f &&
+                item.motionHeightM == 0f;
+            if (legacy) return true;
+            string requested = string.IsNullOrWhiteSpace(item.motionPath)
+                ? "static"
+                : item.motionPath.Trim().ToLowerInvariant();
+            return
+                WorldMapStore.CleanMotionPath(requested) == requested &&
+                IsFinite(item.motionRadiusM) &&
+                item.motionRadiusM >= .1f &&
+                item.motionRadiusM <= 40f &&
+                IsFinite(item.motionSpeed) &&
+                item.motionSpeed >= .05f &&
+                item.motionSpeed <= 5f &&
+                IsFinite(item.motionHeightM) &&
+                item.motionHeightM >= -20f &&
+                item.motionHeightM <= 20f;
+        }
 
         private static bool IsFinite(float value) =>
             !float.IsNaN(value) && !float.IsInfinity(value);
