@@ -41,7 +41,7 @@ namespace MLOmega.XR.UI.Components.TaskAtoms
             _trace.positionCount = Points;
             _trace.widthMultiplier = 0.007f;
             _trace.numCornerVertices = 3;
-            _trace.material = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+            _trace.material = new Material(Shader.Find("MLOmega/XREAL Runtime Unlit"));
             _trace.textureMode = LineTextureMode.Stretch;
         }
 

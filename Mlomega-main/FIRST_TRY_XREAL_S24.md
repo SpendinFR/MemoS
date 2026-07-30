@@ -1,5 +1,11 @@
 # Première utilisation — Galaxy S24 + XREAL One Pro + Eye
 
+> **Gate matériel en pause au 31 juillet 2026.** Le 6DoF, l'Eye et l'ancrage
+> du menu ont été observés, mais le composite Atelier reste violet et le clic
+> ne fonctionne pas encore. L'APK produit n'a pas encore reçu ce correctif.
+> Ne pas utiliser ce guide comme certification « prêt production ». Reprendre
+> par [`docs/BUILD_GUIDE_XREAL.md`](docs/BUILD_GUIDE_XREAL.md).
+
 Ce guide est le chemin opérateur courant pour utiliser MLOmega avec :
 
 - un PC Windows qui exécute le Live, BrainLive et CloseDay ;

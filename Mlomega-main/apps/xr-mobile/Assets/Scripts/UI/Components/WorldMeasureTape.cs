@@ -32,7 +32,7 @@ namespace MLOmega.XR.UI.Components
 
         protected override void OnConfigured()
         {
-            Shader shader = Shader.Find("Universal Render Pipeline/Unlit") ??
+            Shader shader = Shader.Find("MLOmega/XREAL Runtime Unlit") ??
                 Shader.Find("Sprites/Default") ??
                 Shader.Find("Unlit/Color");
             if (shader != null) _material = new Material(shader);

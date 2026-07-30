@@ -358,7 +358,7 @@ namespace MLOmega.XR.UI
         {
             shader = shader ??
                 Shader.Find("MLOmega/XREAL FreeGuy Mesh") ??
-                Shader.Find("Universal Render Pipeline/Unlit") ??
+                Shader.Find("MLOmega/XREAL Runtime Unlit") ??
                 Shader.Find("Unlit/Texture");
             var material = new Material(shader);
             Color tint = colour ?? new Color(.2f, .9f, 1f, .72f);

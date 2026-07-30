@@ -63,6 +63,7 @@ namespace MLOmega.XR.UI
         private GUIStyle _field;
         private Canvas _spatialDeck;
         private RectTransform _spatialDeckRect;
+        private bool _deckPoseInitialized;
         private TextMeshProUGUI _deckStatus;
         private TMP_InputField _deckLabel;
         private TMP_InputField _deckSubtitle;
@@ -375,29 +376,17 @@ namespace MLOmega.XR.UI
             deckGo.AddComponent<GraphicRaycaster>();
             _spatialDeckRect = deckGo.GetComponent<RectTransform>();
             _spatialDeckRect.sizeDelta = new Vector2(920f, 1220f);
-            _spatialDeckRect.localScale = Vector3.one * .00105f;
+            // Optical see-through glasses must never receive a screen-sized
+            // opaque slab.  Keep the editor within a comfortable ~28 degree
+            // field of view and let the real world remain visible around and
+            // through the controls.
+            _spatialDeckRect.localScale = Vector3.one * .00062f;
             SetDeckPose();
-            MakeSpatialPlate(
-                _spatialDeckRect,
-                "Deck physical glass volume",
-                Vector2.zero,
-                new Vector2(920f, 1220f),
-                22f,
-                false);
 
-            Image glass = MakeImage(
-                _spatialDeckRect,
-                "Glass",
-                Vector2.zero,
-                new Vector2(920f, 1220f),
-                new Color(.008f, .018f, .05f, .86f));
-            glass.raycastTarget = false;
-            MakeImage(
-                _spatialDeckRect,
-                "InnerGlow",
-                new Vector2(0f, 4f),
-                new Vector2(892f, 1192f),
-                new Color(.02f, .2f, .26f, .18f)).raycastTarget = false;
+            // Optical see-through means the real world is the background.
+            // A screen-sized "glass" image still becomes a coloured veil once
+            // emitted by the micro-OLED panels, even at low alpha. Keep only
+            // the floating controls and their neon contour.
             MakeNeonFrame(deckGo.transform);
 
             MakeText(
@@ -721,6 +710,7 @@ namespace MLOmega.XR.UI
                 _selected == null ||
                 !_hasPreviewPose)
             {
+                Spatial?.BeginCreatorSpatialMapping();
                 _status = "ANCRAGE INDISPONIBLE // VISE UNE SURFACE MAPPÉE";
                 return;
             }
@@ -931,19 +921,52 @@ namespace MLOmega.XR.UI
 
         private void SetDeckPose()
         {
+            FollowSpatialDeck(true);
+        }
+
+        private void FollowSpatialDeck(bool snap)
+        {
             if (_spatialDeckRect == null || _camera == null) return;
-            Vector3 forward = Vector3.ProjectOnPlane(
-                _camera.transform.forward,
-                Vector3.up);
-            if (forward.sqrMagnitude < .001f)
-                forward = _camera.transform.forward;
-            forward.Normalize();
-            _spatialDeckRect.position =
+            Vector3 forward = _camera.transform.forward.normalized;
+            Vector3 up = Mathf.Abs(Vector3.Dot(forward, Vector3.up)) > .96f
+                ? _camera.transform.up
+                : Vector3.up;
+            Vector3 targetPosition =
                 _camera.transform.position +
-                forward * 1.25f -
-                Vector3.up * .05f;
-            _spatialDeckRect.rotation =
-                Quaternion.LookRotation(forward, Vector3.up);
+                forward * 1.12f -
+                _camera.transform.up * .035f;
+            Quaternion targetRotation = Quaternion.LookRotation(forward, up);
+
+            if (snap || !_deckPoseInitialized)
+            {
+                _spatialDeckRect.SetPositionAndRotation(
+                    targetPosition,
+                    targetRotation);
+                _deckPoseInitialized = true;
+                return;
+            }
+
+            // Keep the editor deck world-stable inside a comfort dead-zone.
+            // Following every sub-millimetre head-pose update made the dense UI
+            // visibly swim even though the official XREAL rig itself was stable.
+            float positionError = Vector3.Distance(
+                _spatialDeckRect.position,
+                targetPosition);
+            float rotationError = Quaternion.Angle(
+                _spatialDeckRect.rotation,
+                targetRotation);
+            if (positionError < .065f && rotationError < 4.5f)
+                return;
+
+            float blend = 1f - Mathf.Exp(-7f * Time.unscaledDeltaTime);
+            _spatialDeckRect.position = Vector3.Lerp(
+                _spatialDeckRect.position,
+                targetPosition,
+                blend);
+            _spatialDeckRect.rotation = Quaternion.Slerp(
+                _spatialDeckRect.rotation,
+                targetRotation,
+                blend);
         }
 
         private static Image MakeImage(
@@ -1011,8 +1034,8 @@ namespace MLOmega.XR.UI
                 position,
                 size,
                 primary
-                    ? new Color(.02f, .45f, .42f, .92f)
-                    : new Color(.025f, .11f, .2f, .9f));
+                    ? new Color(.02f, .45f, .42f, .42f)
+                    : new Color(.025f, .11f, .2f, .30f));
             Button button = image.gameObject.AddComponent<Button>();
             ColorBlock colors = button.colors;
             colors.normalColor = Color.white;
@@ -1061,17 +1084,18 @@ namespace MLOmega.XR.UI
                 primary ? _deckPrimaryDepthMaterial : _deckDepthMaterial;
             if (cached != null) return cached;
             Shader shader =
-                Shader.Find("Universal Render Pipeline/Unlit") ??
-                Shader.Find("Unlit/Color") ??
-                Shader.Find("Sprites/Default");
+                Shader.Find("Sprites/Default") ??
+                Shader.Find("Unlit/Transparent") ??
+                Shader.Find("MLOmega/XREAL Runtime Unlit");
             var material = new Material(shader);
             Color color = primary
-                ? new Color(.04f, .38f, .42f, .9f)
-                : new Color(.01f, .045f, .1f, .94f);
+                ? new Color(.04f, .38f, .42f, .16f)
+                : new Color(.01f, .045f, .1f, .08f);
             if (material.HasProperty("_BaseColor"))
                 material.SetColor("_BaseColor", color);
             if (material.HasProperty("_Color"))
                 material.SetColor("_Color", color);
+            material.renderQueue = 3000;
             if (primary)
                 _deckPrimaryDepthMaterial = material;
             else
@@ -1091,7 +1115,7 @@ namespace MLOmega.XR.UI
                 "Input " + placeholder,
                 position,
                 size,
-                new Color(.02f, .07f, .14f, .94f));
+                new Color(.02f, .07f, .14f, .34f));
             TMP_InputField input =
                 image.gameObject.AddComponent<TMP_InputField>();
             TextMeshProUGUI text = MakeText(
@@ -1112,6 +1136,8 @@ namespace MLOmega.XR.UI
             hint.alignment = TextAlignmentOptions.MidlineLeft;
             input.textComponent = text;
             input.placeholder = hint;
+            input.textViewport = image.rectTransform;
+            input.targetGraphic = image;
             input.lineType = TMP_InputField.LineType.SingleLine;
             input.characterLimit =
                 placeholder.StartsWith("Titre", StringComparison.Ordinal)
@@ -1127,8 +1153,8 @@ namespace MLOmega.XR.UI
             Image image = button.GetComponent<Image>();
             if (image != null)
                 image.color = selected
-                    ? new Color(.05f, .55f, .48f, .96f)
-                    : new Color(.025f, .11f, .2f, .9f);
+                    ? new Color(.05f, .55f, .48f, .48f)
+                    : new Color(.025f, .11f, .2f, .30f);
         }
 
         private static void MakeNeonFrame(Transform parent)

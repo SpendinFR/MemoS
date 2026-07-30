@@ -20,14 +20,18 @@
 // the SDK before the compile that exercises the real adapter path.
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Text.RegularExpressions;
 using UnityEditor;
 using UnityEditor.Android;
 using UnityEditor.Build.Reporting;
+using UnityEditor.PackageManager.UI;
+using UnityEditor.Rendering;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 
 namespace MLOmega.XR.Editor
 {
@@ -43,12 +47,44 @@ namespace MLOmega.XR.Editor
             "\"com.unity.xr.hands\": \"1.5.0\"";
         private const string XrInteractionDep =
             "\"com.unity.xr.interaction.toolkit\": \"3.0.9\"";
+        private const string XrInteractionVersion = "3.0.9";
+        private const string XriSamplesRoot =
+            "Assets/Samples/XR Interaction Toolkit/" +
+            XrInteractionVersion;
         private const string XrealLoader = "Unity.XR.XREAL.XREALXRLoader";
         private const string XrealSettingsType = "Unity.XR.XREAL.XREALSettings";
         private const string XrealSettingsKey = "com.unity.xr.management.xrealsettings";
         private const string XrealSettingsAssetPath = "Assets/XR/Settings/XREALSettings.asset";
+        private const string TmpSettingsAssetPath =
+            "Assets/TextMesh Pro/Resources/TMP Settings.asset";
+        private const string TmpEssentialPackagePath =
+            "Library/PackageCache/com.unity.ugui/Package Resources/" +
+            "TMP Essential Resources.unitypackage";
         private const string NdkVersion = "23.1.7779620";
         private const string AndroidManifestPath = "Assets/Plugins/Android/AndroidManifest.xml";
+        internal const string XrealUrpAssetPath =
+            "Assets/Settings/XREAL/MLOmegaXrealURP.asset";
+        internal const string XrealVolumeProfilePath =
+            "Assets/Settings/XREAL/MLOmegaXrealVolume.asset";
+        private const string GraphicsSettingsAssetPath =
+            "ProjectSettings/GraphicsSettings.asset";
+        private static readonly string[] XrealRuntimeShaderAssetPaths =
+        {
+            "Packages/com.unity.render-pipelines.universal/Shaders/Unlit.shader",
+            "Assets/Shaders/XrealRuntimeUnlit.shader",
+            "Assets/Shaders/LiquidGlass.shader",
+            "Assets/Shaders/GlassKawaseBlur.shader",
+            "Assets/Shaders/XrealDepthOcclusion.shader",
+            "Assets/Shaders/XrealFreeGuyMesh.shader",
+            "Assets/Shaders/YUV420ToRGB.shader",
+        };
+        private static readonly string[] XrealRuntimeBuiltinShaderNames =
+        {
+            "Sprites/Default",
+            "Unlit/Color",
+            "Unlit/Texture",
+            "Unlit/Transparent",
+        };
 
         // Pass 1: ensure the SDK is referenced + the define is on, so the next compile
         // exercises the real XrealDeviceAdapter path. Safe to run repeatedly.
@@ -79,6 +115,9 @@ namespace MLOmega.XR.Editor
                 XrInteractionDep, "com.unity.xr.interaction.toolkit");
             SetDefine();
             ConfigureExternalTools();
+            EnsureS24DisplayCompatibility();
+            EnsureTmpEssentialResources();
+            EnsureXrealRenderPipelineAssets();
             using (var xrealSettings = new XrealBuildSettingsScope())
             {
                 ConfigurePlayerSettings();
@@ -137,7 +176,11 @@ namespace MLOmega.XR.Editor
                 XrInteractionDep, "com.unity.xr.interaction.toolkit");
             SetDefine();
             ConfigureExternalTools();
-            using (var xrealSettings = new XrealBuildSettingsScope())
+            EnsureS24DisplayCompatibility();
+            EnsureTmpEssentialResources();
+            EnsureXrealRenderPipelineAssets();
+            using (var xrealSettings = new XrealBuildSettingsScope(
+                       useTemplateBuiltInPipeline: true))
             {
                 ConfigurePlayerSettings();
                 PlayerSettings.productName = "MLOmega World Atelier";
@@ -147,8 +190,9 @@ namespace MLOmega.XR.Editor
                 ConfigureXrealSdkSettings();
                 EnableXrealLoader();
                 ValidateArFoundationLoaded();
+                EnsureOfficialXriRigAssets();
                 WorldCreatorSceneBuilder.BuildScene();
-                ValidateXrealBuildSettings();
+                ValidateXrealBuildSettings(expectTemplateBuiltInPipeline: true);
                 if (!File.Exists(WorldCreatorSceneBuilder.ScenePath))
                     throw new Exception(
                         "[AndroidBuildXreal] World Atelier scene missing.");
@@ -179,6 +223,187 @@ namespace MLOmega.XR.Editor
                     "[AndroidBuildXreal] World Atelier APK OK: " +
                     outPath + " (" + summary.totalSize + " bytes)");
             }
+        }
+
+        /// <summary>
+        /// Hardware diagnostic built from XREAL SDK 3.1's unmodified HelloMR
+        /// sample. It contains no MLOmega scene, renderer or interaction code,
+        /// so it separates a host/SDK problem from a product regression.
+        /// </summary>
+        public static void BuildOfficialHelloMrDiagnosticApk()
+        {
+            const string scene =
+                "Assets/Diagnostics/XREALOfficialHelloMR/HelloMR.unity";
+            EnsureXrealPackage();
+            EnsureArFoundationPackage();
+            EnsurePackageDependency(XrHandsDep, "com.unity.xr.hands");
+            EnsurePackageDependency(
+                XrInteractionDep, "com.unity.xr.interaction.toolkit");
+            SetDefine();
+            ConfigureExternalTools();
+            EnsureS24DisplayCompatibility();
+            EnsureTmpEssentialResources();
+            EnsureXrealRenderPipelineAssets();
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            using (var xrealSettings = new XrealBuildSettingsScope())
+            {
+                ConfigurePlayerSettings();
+                PlayerSettings.productName = "XREAL Official HelloMR Diagnostic";
+                PlayerSettings.SetApplicationIdentifier(
+                    BuildTargetGroup.Android,
+                    "com.mlomega.xr.officialdiagnostic");
+                ConfigureXrealSdkSettings();
+                EnableXrealLoader();
+                ValidateArFoundationLoaded();
+                ValidateXrealBuildSettings();
+                if (!File.Exists(scene))
+                    throw new Exception(
+                        "[AndroidBuildXreal] Official HelloMR scene missing.");
+
+                string outPath = Path.GetFullPath(Path.Combine(
+                    "build",
+                    "android",
+                    "xreal-official-hellomr-diagnostic.apk"));
+                Directory.CreateDirectory(Path.GetDirectoryName(outPath));
+                BuildReport report = BuildPipeline.BuildPlayer(
+                    new BuildPlayerOptions
+                    {
+                        scenes = new[] { scene },
+                        locationPathName = outPath,
+                        target = BuildTarget.Android,
+                        targetGroup = BuildTargetGroup.Android,
+                        options = BuildOptions.None,
+                    });
+                BuildSummary summary = report.summary;
+                if (summary.result != BuildResult.Succeeded)
+                    throw new Exception(
+                        "[AndroidBuildXreal] Official HelloMR diagnostic failed: " +
+                        summary.result + " (" + summary.totalErrors +
+                        " errors) -> " + outPath);
+                Debug.Log(
+                    "[AndroidBuildXreal] Official HelloMR diagnostic APK OK: " +
+                    outPath + " (" + summary.totalSize + " bytes)");
+            }
+        }
+
+        /// <summary>
+        /// Runtime-created XREAL canvases use TextMeshPro directly. Unity does
+        /// not import TMP Essential Resources into a fresh project merely
+        /// because com.unity.ugui is installed; without TMP Settings, the first
+        /// label throws during Awake after the Atelier glass plate has already
+        /// been created, leaving only a large purple/empty slab in the glasses.
+        /// Keep this repair inside the XREAL build path so PhoneOnly remains
+        /// unchanged.
+        /// </summary>
+        private static void EnsureTmpEssentialResources()
+        {
+            if (AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(
+                    TmpSettingsAssetPath) != null)
+                return;
+            string packagePath = Path.GetFullPath(TmpEssentialPackagePath);
+            if (!File.Exists(packagePath))
+                throw new FileNotFoundException(
+                    "[AndroidBuildXreal] TMP Essential Resources package missing.",
+                    packagePath);
+            AssetDatabase.ImportPackage(packagePath, false);
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            AssetDatabase.SaveAssets();
+            if (AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(
+                    TmpSettingsAssetPath) == null)
+            {
+                throw new Exception(
+                    "[AndroidBuildXreal] TMP Essential Resources import did not " +
+                    "produce TMP Settings; refusing an empty/purple XREAL UI.");
+            }
+            Debug.Log(
+                "[AndroidBuildXreal] TMP Essential Resources imported and validated.");
+        }
+
+        /// <summary>
+        /// The XREAL UI and hologram shaders are URP shaders. Merely installing
+        /// the URP package does not activate the pipeline: Unity otherwise
+        /// resolves those shaders but renders them magenta under Built-in.
+        /// Create one mobile/XR URP profile and assign it only inside
+        /// <see cref="XrealBuildSettingsScope"/>. PhoneOnly's pipeline remains
+        /// exactly as it was after the build.
+        /// </summary>
+        private static void EnsureXrealRenderPipelineAssets()
+        {
+            Directory.CreateDirectory("Assets/Settings/XREAL");
+            UniversalRenderPipelineAsset pipeline =
+                AssetDatabase.LoadAssetAtPath<UniversalRenderPipelineAsset>(
+                    XrealUrpAssetPath);
+            if (pipeline == null)
+            {
+                pipeline = UniversalRenderPipelineAsset.Create();
+                pipeline.name = "MLOmega XREAL URP";
+                AssetDatabase.CreateAsset(pipeline, XrealUrpAssetPath);
+                if (
+                    pipeline.rendererDataList.Length > 0 &&
+                    pipeline.rendererDataList[0] != null &&
+                    !AssetDatabase.Contains(pipeline.rendererDataList[0]))
+                {
+                    pipeline.rendererDataList[0].name =
+                        "MLOmega XREAL Universal Renderer";
+                    AssetDatabase.AddObjectToAsset(
+                        pipeline.rendererDataList[0],
+                        pipeline);
+                }
+            }
+
+            pipeline.supportsHDR = true;
+            // XREAL's optical eye surface is not multisampled. Requesting MSAA
+            // makes URP resolve a non-AA render surface every frame.
+            pipeline.msaaSampleCount = 1;
+            pipeline.renderScale = 1f;
+            pipeline.supportsCameraDepthTexture = true;
+            pipeline.supportsCameraOpaqueTexture = false;
+            pipeline.shadowDistance = 12f;
+            var serializedPipeline = new SerializedObject(pipeline);
+            SerializedProperty alpha =
+                serializedPipeline.FindProperty(
+                    "m_AllowPostProcessAlphaOutput");
+            if (alpha == null)
+                throw new MissingFieldException(
+                    nameof(UniversalRenderPipelineAsset),
+                    "m_AllowPostProcessAlphaOutput");
+            alpha.boolValue = true;
+            serializedPipeline.ApplyModifiedPropertiesWithoutUndo();
+
+            VolumeProfile profile =
+                AssetDatabase.LoadAssetAtPath<VolumeProfile>(
+                    XrealVolumeProfilePath);
+            if (profile == null)
+            {
+                profile = ScriptableObject.CreateInstance<VolumeProfile>();
+                profile.name = "MLOmega XREAL Hologram Volume";
+                AssetDatabase.CreateAsset(profile, XrealVolumeProfilePath);
+            }
+            if (!profile.TryGet(out Bloom bloom))
+                bloom = profile.Add<Bloom>(true);
+            bloom.active = true;
+            bloom.threshold.Override(.72f);
+            bloom.intensity.Override(.55f);
+            bloom.scatter.Override(.62f);
+            bloom.clamp.Override(12f);
+
+            EditorUtility.SetDirty(pipeline);
+            EditorUtility.SetDirty(profile);
+            AssetDatabase.SaveAssets();
+            Debug.Log(
+                "[AndroidBuildXreal] XREAL-only URP + alpha-preserving bloom ready.");
+        }
+
+        internal static VolumeProfile LoadXrealVolumeProfile()
+        {
+            VolumeProfile profile =
+                AssetDatabase.LoadAssetAtPath<VolumeProfile>(
+                    XrealVolumeProfilePath);
+            if (profile == null)
+                throw new FileNotFoundException(
+                    "XREAL volume profile missing.",
+                    XrealVolumeProfilePath);
+            return profile;
         }
 
         // --- SDK package injection (keeps the committed manifest XREAL-free) -------
@@ -217,6 +442,65 @@ namespace MLOmega.XR.Editor
 
         private static void EnsureArFoundationPackage()
             => EnsurePackageDependency(ArFoundationDep, "com.unity.xr.arfoundation");
+
+        /// <summary>
+        /// XREAL SDK 3.1's GlassesDisplayPlugEvent 2.4.2 only accepts an
+        /// external display when Display.getName() contains "HDMI". Current
+        /// Samsung firmware exposes the EDID name ("One Pro"), despite the
+        /// native SDK and MCU initializing successfully. Patch only the local
+        /// proprietary package cache so PhoneOnly remains untouched.
+        /// </summary>
+        private static void EnsureS24DisplayCompatibility()
+        {
+            string script = Path.GetFullPath(Path.Combine(
+                "..", "..", "scripts", "PATCH_XREAL_S24_DISPLAY.ps1"));
+            if (!File.Exists(script))
+                throw new Exception(
+                    "[AndroidBuildXreal] S24 display compatibility script missing: " +
+                    script);
+
+            string project = Path.GetFullPath(".");
+            string sdk = EditorPrefs.GetString(
+                "AndroidSdkRoot",
+                Environment.GetEnvironmentVariable("MLOMEGA_ANDROID_SDK") ??
+                string.Empty);
+            string jdk = EditorPrefs.GetString(
+                "JdkPath",
+                Environment.GetEnvironmentVariable("MLOMEGA_ANDROID_JDK") ??
+                string.Empty);
+            string Quote(string value) =>
+                "\"" + value.Replace("\"", "\\\"") + "\"";
+            string arguments =
+                "-NoProfile -ExecutionPolicy Bypass -File " + Quote(script) +
+                " -ProjectPath " + Quote(project) +
+                " -AndroidSdk " + Quote(sdk) +
+                " -JavaHome " + Quote(jdk);
+
+            var info = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.System),
+                    "WindowsPowerShell",
+                    "v1.0",
+                    "powershell.exe"),
+                Arguments = arguments,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+            using (var process = System.Diagnostics.Process.Start(info))
+            {
+                string stdout = process.StandardOutput.ReadToEnd();
+                string stderr = process.StandardError.ReadToEnd();
+                process.WaitForExit();
+                if (process.ExitCode != 0)
+                    throw new Exception(
+                        "[AndroidBuildXreal] S24 display compatibility patch failed " +
+                        $"(exit={process.ExitCode}).\n{stdout}\n{stderr}");
+                Debug.Log(stdout.Trim());
+            }
+        }
 
         private static void EnsurePackageDependency(
             string dependency,
@@ -277,6 +561,68 @@ namespace MLOmega.XR.Editor
                     $"not loaded (ARFoundation={arFoundation}, XRHands={xrHands}). " +
                     "Run PrepareDefines as a separate first pass.");
             }
+        }
+
+        /// <summary>
+        /// XREAL's hardware-proven "XR Interaction Hands Setup" prefab is a
+        /// thin wrapper around the Starter Assets and Hands Interaction Demo
+        /// prefabs shipped in XRI's hidden Samples~ directory. Unity does not
+        /// resolve those nested prefab references until the samples are
+        /// imported into Assets. Import the two official samples exactly as
+        /// XREAL's public SDK template does; never rebuild that rig manually.
+        /// </summary>
+        private static void EnsureOfficialXriRigAssets()
+        {
+            string starter = Path.Combine(
+                XriSamplesRoot,
+                "Starter Assets").Replace('\\', '/');
+            string hands = Path.Combine(
+                XriSamplesRoot,
+                "Hands Interaction Demo").Replace('\\', '/');
+            if (AssetDatabase.IsValidFolder(starter) &&
+                AssetDatabase.IsValidFolder(hands))
+                return;
+
+            var samples = Sample.FindByPackage(
+                "com.unity.xr.interaction.toolkit",
+                XrInteractionVersion);
+            bool importedStarter = AssetDatabase.IsValidFolder(starter);
+            bool importedHands = AssetDatabase.IsValidFolder(hands);
+            foreach (Sample sample in samples)
+            {
+                if (!importedStarter &&
+                    string.Equals(
+                        sample.displayName,
+                        "Starter Assets",
+                        StringComparison.Ordinal))
+                {
+                    importedStarter = sample.Import(
+                        Sample.ImportOptions.OverridePreviousImports |
+                        Sample.ImportOptions.HideImportWindow);
+                }
+                if (!importedHands &&
+                    string.Equals(
+                        sample.displayName,
+                        "Hands Interaction Demo",
+                        StringComparison.Ordinal))
+                {
+                    importedHands = sample.Import(
+                        Sample.ImportOptions.OverridePreviousImports |
+                        Sample.ImportOptions.HideImportWindow);
+                }
+            }
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            if (!importedStarter || !importedHands ||
+                !AssetDatabase.IsValidFolder(starter) ||
+                !AssetDatabase.IsValidFolder(hands))
+            {
+                throw new Exception(
+                    "[AndroidBuildXreal] Official XRI Starter/Hands samples " +
+                    "could not be imported; refusing to synthesize a partial rig.");
+            }
+            Debug.Log(
+                "[AndroidBuildXreal] Imported official XRI Starter Assets and " +
+                "Hands Interaction Demo for the XREAL rig.");
         }
 
         private static bool IsProviderGate() =>
@@ -357,19 +703,34 @@ namespace MLOmega.XR.Editor
                 AssetDatabase.CreateAsset(settings, XrealSettingsAssetPath);
             }
 
-            SetEnumField(settings, "StereoRendering", "SinglePassInstanced");
-            SetEnumField(settings, "InitialTrackingType", "MODE_6DOF");
-            // Product spatial tools (ballistic guide and direct manipulation)
-            // consume XREAL's real XR Hands joints. Eye/MediaPipe remains the
-            // fallback gesture path used by PhoneOnly and legacy commands.
-            SetEnumField(settings, "InitialInputSource", "Hands");
+            string stereoRendering = Env(
+                "MLOMEGA_XREAL_STEREO_RENDERING",
+                "SinglePassInstanced");
+            SetEnumField(settings, "StereoRendering", stereoRendering);
+            string trackingType = Env("MLOMEGA_XREAL_TRACKING_TYPE", "MODE_6DOF");
+            // XREAL's official HelloMR sample on One Pro + Eye/S24 initializes
+            // the handset controller path.  The native Hands source currently
+            // reports invalid hand payloads on this hardware and must not be
+            // the production default.  Eye RGB/MediaPipe can still provide a
+            // later hand-gesture path without changing the XR input source.
+            string inputSource = Env("MLOMEGA_XREAL_INPUT_SOURCE", "Controller");
+            SetEnumField(settings, "InitialTrackingType", trackingType);
+            // Product spatial tools retain the phone controller/touch surface
+            // fallback.  If XR Hands becomes available on a future supported
+            // host it can still be explicitly selected by build environment.
+            SetEnumField(settings, "InitialInputSource", inputSource);
+            // The official XREAL template keeps this build capability enabled so
+            // nractivitylife_6-release.aar contributes NRXRActivity. The temporary
+            // XREAL manifest below also sets com.xreal.debug.noMultiResume=true:
+            // this keeps the official bootstrap while deterministically avoiding
+            // Samsung Android 16's rejected secondary-activity path.
             SetBoolField(settings, "SupportMultiResume", true);
             SetBoolField(settings, "EnableNativeSessionManager", false);
             SetBoolField(
                 settings,
                 "EnableAutoLogcat",
                 !string.Equals(
-                    Env("MLOMEGA_XREAL_AUTO_LOGCAT", "1"),
+                    Env("MLOMEGA_XREAL_AUTO_LOGCAT", "0"),
                     "0",
                     StringComparison.OrdinalIgnoreCase));
             SetEnumListField(
@@ -391,7 +752,8 @@ namespace MLOmega.XR.Editor
             }
             Debug.Log(
                 "[AndroidBuildXreal] XREAL SDK settings registered: " +
-                "SinglePassInstanced, MODE_6DOF, Hands, MultiResume, " +
+                $"{stereoRendering}, {trackingType}, {inputSource}, " +
+                "SupportMultiResume=true (official NRXRActivity bootstrap), " +
                 $"AutoLogcat={GetFieldValue(settings, "EnableAutoLogcat")}.");
         }
 
@@ -532,13 +894,18 @@ namespace MLOmega.XR.Editor
             PlayerSettings.SetScriptingBackend(BuildTargetGroup.Android, ScriptingImplementation.IL2CPP);
             PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
             PlayerSettings.Android.minSdkVersion = AndroidSdkVersions.AndroidApiLevel29;
-            PlayerSettings.Android.targetSdkVersion = AndroidSdkVersions.AndroidApiLevel34;
+            // Match the official XREAL SDK 3.1 template. On the S24/Android 16
+            // test device this resolves to API 36; pinning API 34 leaves the
+            // XREAL activity on the handset compatibility path.
+            PlayerSettings.Android.targetSdkVersion =
+                AndroidSdkVersions.AndroidApiLevelAuto;
             PlayerSettings.runInBackground = true;
             PlayerSettings.productName = "MLOmega XREAL";
             PlayerSettings.SetApplicationIdentifier(BuildTargetGroup.Android, "com.mlomega.xr.glasses");
         }
 
-        private static void ValidateXrealBuildSettings()
+        private static void ValidateXrealBuildSettings(
+            bool expectTemplateBuiltInPipeline = false)
         {
             GraphicsDeviceType[] graphics =
                 PlayerSettings.GetGraphicsAPIs(BuildTarget.Android);
@@ -550,19 +917,51 @@ namespace MLOmega.XR.Editor
                 throw new Exception(
                     "[AndroidBuildXreal] XREAL build requires OpenGLES3 only.");
             }
-            if (PlayerSettings.defaultInterfaceOrientation != UIOrientation.Portrait)
+            if (PlayerSettings.defaultInterfaceOrientation != UIOrientation.AutoRotation)
                 throw new Exception(
-                    "[AndroidBuildXreal] XREAL build requires Portrait orientation.");
+                    "[AndroidBuildXreal] XREAL build requires the official " +
+                    "AutoRotation orientation.");
             if (QualitySettings.vSyncCount != 0)
                 throw new Exception(
                     "[AndroidBuildXreal] XREAL build requires VSync Don't Sync.");
-            if (!File.ReadAllText(AndroidManifestPath)
-                    .Contains("android:screenOrientation=\"portrait\""))
+            if (QualitySettings.antiAliasing != 0)
+                throw new Exception(
+                    "[AndroidBuildXreal] XREAL optical surface requires MSAA disabled.");
+            UniversalRenderPipelineAsset expectedPipeline =
+                AssetDatabase.LoadAssetAtPath<UniversalRenderPipelineAsset>(
+                    XrealUrpAssetPath);
+            bool pipelineValid = expectTemplateBuiltInPipeline
+                ? GraphicsSettings.defaultRenderPipeline == null &&
+                  QualitySettings.renderPipeline == null
+                : expectedPipeline != null &&
+                  GraphicsSettings.defaultRenderPipeline == expectedPipeline &&
+                  QualitySettings.renderPipeline == expectedPipeline &&
+                  expectedPipeline.allowPostProcessAlphaOutput;
+            if (!pipelineValid)
             {
                 throw new Exception(
-                    "[AndroidBuildXreal] XREAL manifest orientation was not isolated to portrait.");
+                    expectTemplateBuiltInPipeline
+                        ? "[AndroidBuildXreal] World Atelier must match the " +
+                          "official XREAL template's Built-in render pipeline."
+                        : "[AndroidBuildXreal] XREAL build requires the dedicated " +
+                          "alpha-preserving URP asset in Graphics and Quality.");
             }
-            if (File.ReadAllText(AndroidManifestPath)
+            if (!File.ReadAllText(AndroidManifestPath)
+                    .Contains("android:screenOrientation=\"fullSensor\""))
+            {
+                throw new Exception(
+                    "[AndroidBuildXreal] XREAL manifest orientation was not " +
+                    "isolated to the official full-sensor policy.");
+            }
+            string xrealManifest = File.ReadAllText(AndroidManifestPath);
+            if (!xrealManifest.Contains(
+                    "com.xreal.debug.noMultiResume",
+                    StringComparison.Ordinal))
+            {
+                throw new Exception(
+                    "[AndroidBuildXreal] Deterministic XREAL noMultiResume metadata missing.");
+            }
+            if (xrealManifest
                     .Contains("com.mlomega.xrg1gate.EyeCaptureService"))
             {
                 throw new Exception(
@@ -582,6 +981,7 @@ namespace MLOmega.XR.Editor
                     "[AndroidBuildXreal] XREAL depth occlusion/FreeGuy shader " +
                     "assets are missing.");
             }
+            ValidateXrealRuntimeShadersIncluded();
             if (!EditorBuildSettings.TryGetConfigObject(
                     XrealSettingsKey, out ScriptableObject xrealSettings) ||
                 xrealSettings == null)
@@ -592,22 +992,134 @@ namespace MLOmega.XR.Editor
             }
             if (!string.Equals(
                     GetFieldValue(xrealSettings, "StereoRendering").ToString(),
-                    "SinglePassInstanced",
+                    Env(
+                        "MLOMEGA_XREAL_STEREO_RENDERING",
+                        "SinglePassInstanced"),
                     StringComparison.Ordinal) ||
                 !string.Equals(
                     GetFieldValue(xrealSettings, "InitialTrackingType").ToString(),
-                    "MODE_6DOF",
+                    Env("MLOMEGA_XREAL_TRACKING_TYPE", "MODE_6DOF"),
                     StringComparison.Ordinal) ||
                 !string.Equals(
                     GetFieldValue(xrealSettings, "InitialInputSource").ToString(),
-                    "Hands",
+                    Env("MLOMEGA_XREAL_INPUT_SOURCE", "Controller"),
                     StringComparison.Ordinal) ||
                 !Equals(GetFieldValue(xrealSettings, "SupportMultiResume"), true))
             {
                 throw new Exception(
-                    "[AndroidBuildXreal] XREAL settings are not " +
-                    "SinglePassInstanced + MODE_6DOF + Hands + MultiResume.");
+                    "[AndroidBuildXreal] XREAL settings do not match the requested " +
+                    "official stereo + tracking + input profile " +
+                    "(SupportMultiResume=true for the official NRXRActivity bootstrap).");
             }
+        }
+
+        private static Shader[] ResolveXrealRuntimeShaders()
+        {
+            var shaders = new List<Shader>();
+            foreach (string path in XrealRuntimeShaderAssetPaths)
+            {
+                Shader shader = AssetDatabase.LoadAssetAtPath<Shader>(path);
+                if (shader == null)
+                    throw new FileNotFoundException(
+                        $"[AndroidBuildXreal] Required runtime shader asset missing: {path}",
+                        path);
+                if (!shaders.Contains(shader))
+                    shaders.Add(shader);
+            }
+            foreach (string name in XrealRuntimeBuiltinShaderNames)
+            {
+                Shader shader = Shader.Find(name);
+                if (shader == null)
+                    throw new Exception(
+                        $"[AndroidBuildXreal] Required built-in runtime shader missing: {name}");
+                if (!shaders.Contains(shader))
+                    shaders.Add(shader);
+            }
+            return shaders.ToArray();
+        }
+
+        private static void InstallXrealRuntimeShaders()
+        {
+            var merged = new List<Shader>();
+            Shader[] current = GetAlwaysIncludedShaders();
+            if (current != null)
+            {
+                foreach (Shader shader in current)
+                {
+                    if (shader != null && !merged.Contains(shader))
+                        merged.Add(shader);
+                }
+            }
+            foreach (Shader shader in ResolveXrealRuntimeShaders())
+            {
+                if (!merged.Contains(shader))
+                    merged.Add(shader);
+            }
+            SetAlwaysIncludedShaders(merged.ToArray());
+            Debug.Log(
+                $"[AndroidBuildXreal] Forced {ResolveXrealRuntimeShaders().Length} " +
+                "runtime shaders into the XREAL player.");
+        }
+
+        private static void ValidateXrealRuntimeShadersIncluded()
+        {
+            Shader[] included = GetAlwaysIncludedShaders();
+            foreach (Shader required in ResolveXrealRuntimeShaders())
+            {
+                if (Array.IndexOf(included, required) < 0)
+                    throw new Exception(
+                        $"[AndroidBuildXreal] Runtime shader was not forced into " +
+                        $"the XREAL player: {required.name}");
+            }
+        }
+
+        private static Shader[] GetAlwaysIncludedShaders()
+        {
+            UnityEngine.Object[] settingsAssets =
+                AssetDatabase.LoadAllAssetsAtPath(GraphicsSettingsAssetPath);
+            if (settingsAssets == null || settingsAssets.Length == 0)
+                throw new FileNotFoundException(
+                    "[AndroidBuildXreal] GraphicsSettings asset is unavailable.",
+                    GraphicsSettingsAssetPath);
+            var serialized = new SerializedObject(settingsAssets[0]);
+            SerializedProperty included =
+                serialized.FindProperty("m_AlwaysIncludedShaders");
+            if (included == null || !included.isArray)
+                throw new MissingFieldException(
+                    "GraphicsSettings", "m_AlwaysIncludedShaders");
+            var shaders = new List<Shader>(included.arraySize);
+            for (int i = 0; i < included.arraySize; i++)
+            {
+                Shader shader = included.GetArrayElementAtIndex(i)
+                    .objectReferenceValue as Shader;
+                if (shader != null)
+                    shaders.Add(shader);
+            }
+            return shaders.ToArray();
+        }
+
+        private static void SetAlwaysIncludedShaders(Shader[] shaders)
+        {
+            UnityEngine.Object[] settingsAssets =
+                AssetDatabase.LoadAllAssetsAtPath(GraphicsSettingsAssetPath);
+            if (settingsAssets == null || settingsAssets.Length == 0)
+                throw new FileNotFoundException(
+                    "[AndroidBuildXreal] GraphicsSettings asset is unavailable.",
+                    GraphicsSettingsAssetPath);
+            var serialized = new SerializedObject(settingsAssets[0]);
+            SerializedProperty included =
+                serialized.FindProperty("m_AlwaysIncludedShaders");
+            if (included == null || !included.isArray)
+                throw new MissingFieldException(
+                    "GraphicsSettings", "m_AlwaysIncludedShaders");
+            Shader[] safe = shaders ?? Array.Empty<Shader>();
+            included.arraySize = safe.Length;
+            for (int i = 0; i < safe.Length; i++)
+            {
+                included.GetArrayElementAtIndex(i).objectReferenceValue =
+                    safe[i];
+            }
+            serialized.ApplyModifiedPropertiesWithoutUndo();
         }
 
         private static void EnsureScene()
@@ -627,6 +1139,10 @@ namespace MLOmega.XR.Editor
             private readonly bool _automaticGraphics;
             private readonly GraphicsDeviceType[] _graphics;
             private readonly UIOrientation _orientation;
+            private readonly bool _autorotatePortrait;
+            private readonly bool _autorotatePortraitUpsideDown;
+            private readonly bool _autorotateLandscapeLeft;
+            private readonly bool _autorotateLandscapeRight;
             private readonly string _productName;
             private readonly string _applicationIdentifier;
             private readonly ScriptingImplementation _scriptingBackend;
@@ -636,17 +1152,31 @@ namespace MLOmega.XR.Editor
             private readonly bool _runInBackground;
             private readonly int _activeQuality;
             private readonly int[] _vSync;
+            private readonly int[] _antiAliasing;
+            private readonly RenderPipelineAsset _graphicsPipeline;
+            private readonly RenderPipelineAsset[] _qualityPipelines;
+            private readonly RenderPipelineGlobalSettings _urpGlobalSettings;
+            private readonly Shader[] _alwaysIncludedShaders;
             private readonly string _manifest;
             private readonly bool _hadXrealSettingsConfig;
             private readonly ScriptableObject _previousXrealSettingsConfig;
             private bool _disposed;
 
-            public XrealBuildSettingsScope()
+            public XrealBuildSettingsScope(
+                bool useTemplateBuiltInPipeline = false)
             {
                 _automaticGraphics =
                     PlayerSettings.GetUseDefaultGraphicsAPIs(BuildTarget.Android);
                 _graphics = PlayerSettings.GetGraphicsAPIs(BuildTarget.Android);
                 _orientation = PlayerSettings.defaultInterfaceOrientation;
+                _autorotatePortrait =
+                    PlayerSettings.allowedAutorotateToPortrait;
+                _autorotatePortraitUpsideDown =
+                    PlayerSettings.allowedAutorotateToPortraitUpsideDown;
+                _autorotateLandscapeLeft =
+                    PlayerSettings.allowedAutorotateToLandscapeLeft;
+                _autorotateLandscapeRight =
+                    PlayerSettings.allowedAutorotateToLandscapeRight;
                 _productName = PlayerSettings.productName;
                 _applicationIdentifier =
                     PlayerSettings.GetApplicationIdentifier(BuildTargetGroup.Android);
@@ -662,21 +1192,79 @@ namespace MLOmega.XR.Editor
                         out _previousXrealSettingsConfig);
                 _activeQuality = QualitySettings.GetQualityLevel();
                 _vSync = new int[QualitySettings.names.Length];
+                _antiAliasing = new int[QualitySettings.names.Length];
+                _qualityPipelines =
+                    new RenderPipelineAsset[QualitySettings.names.Length];
+                _graphicsPipeline = GraphicsSettings.defaultRenderPipeline;
+                _urpGlobalSettings =
+                    EditorGraphicsSettings
+                        .GetRenderPipelineGlobalSettingsAsset<
+                            UniversalRenderPipeline>();
+                _alwaysIncludedShaders = GetAlwaysIncludedShaders();
+                UniversalRenderPipelineAsset xrealPipeline = null;
+                if (!useTemplateBuiltInPipeline)
+                {
+                    xrealPipeline =
+                        AssetDatabase.LoadAssetAtPath<UniversalRenderPipelineAsset>(
+                            XrealUrpAssetPath);
+                    if (xrealPipeline == null)
+                        throw new FileNotFoundException(
+                            "XREAL URP asset missing.",
+                            XrealUrpAssetPath);
+                }
+                // The official XREAL 3.1 template which is proven on the One
+                // Pro uses Unity's Built-in renderer. Keep that exact contract
+                // for the isolated Atelier; the main glasses build remains URP.
+                GraphicsSettings.defaultRenderPipeline = xrealPipeline;
+                if (useTemplateBuiltInPipeline)
+                {
+                    // The official XREAL template has no URP global-settings
+                    // registration. Leaving ours registered made Unity enumerate
+                    // billions of Lit/SimpleLit variants even though Built-in
+                    // stripped every one of them.
+                    EditorGraphicsSettings
+                        .SetRenderPipelineGlobalSettingsAsset<
+                            UniversalRenderPipeline>(null);
+                }
+                InstallXrealRuntimeShaders();
                 for (int i = 0; i < _vSync.Length; i++)
                 {
                     QualitySettings.SetQualityLevel(i, false);
                     _vSync[i] = QualitySettings.vSyncCount;
+                    _antiAliasing[i] = QualitySettings.antiAliasing;
+                    _qualityPipelines[i] = QualitySettings.renderPipeline;
                     QualitySettings.vSyncCount = 0;
+                    QualitySettings.antiAliasing = 0;
+                    QualitySettings.renderPipeline = xrealPipeline;
                 }
                 QualitySettings.SetQualityLevel(_activeQuality, false);
 
                 _manifest = File.ReadAllText(AndroidManifestPath);
                 string xrealManifest = _manifest.Replace(
                     "android:screenOrientation=\"landscape\"",
-                    "android:screenOrientation=\"portrait\"");
-                if (xrealManifest == _manifest)
+                    "android:screenOrientation=\"fullSensor\"");
+                if (xrealManifest == _manifest &&
+                    !_manifest.Contains(
+                        "android:screenOrientation=\"fullSensor\"",
+                        StringComparison.Ordinal))
                     throw new Exception(
                         "[AndroidBuildXreal] Expected landscape orientation marker missing.");
+                const string applicationOpen =
+                    "<application android:allowBackup=\"false\" android:usesCleartextTraffic=\"true\">";
+                const string noMultiResumeMeta =
+                    "        <meta-data android:name=\"com.xreal.debug.noMultiResume\" " +
+                    "android:value=\"true\" />";
+                if (!xrealManifest.Contains(applicationOpen, StringComparison.Ordinal))
+                    throw new Exception(
+                        "[AndroidBuildXreal] Expected application marker missing.");
+                if (!xrealManifest.Contains(
+                        "com.xreal.debug.noMultiResume",
+                        StringComparison.Ordinal))
+                {
+                    xrealManifest = xrealManifest.Replace(
+                        applicationOpen,
+                        applicationOpen + Environment.NewLine + noMultiResumeMeta);
+                }
                 xrealManifest = Regex.Replace(
                     xrealManifest,
                     @"\s*<!-- Foreground service used by the Eye capture path \(media projection class\)\. -->\s*" +
@@ -705,7 +1293,16 @@ namespace MLOmega.XR.Editor
                 PlayerSettings.SetGraphicsAPIs(
                     BuildTarget.Android,
                     new[] { GraphicsDeviceType.OpenGLES3 });
-                PlayerSettings.defaultInterfaceOrientation = UIOrientation.Portrait;
+                // XREAL's SDK 3.1 reference project uses AutoRotation with all
+                // four autorotation directions enabled. Forcing Portrait made
+                // Unity allocate a 1080x2340 surface while the XREAL
+                // presentation was 1600x900, squeezing the stereo texture into
+                // the lower-left of Samsung's external display.
+                PlayerSettings.defaultInterfaceOrientation = UIOrientation.AutoRotation;
+                PlayerSettings.allowedAutorotateToPortrait = true;
+                PlayerSettings.allowedAutorotateToPortraitUpsideDown = true;
+                PlayerSettings.allowedAutorotateToLandscapeLeft = true;
+                PlayerSettings.allowedAutorotateToLandscapeRight = true;
                 AssetDatabase.SaveAssets();
             }
 
@@ -720,6 +1317,14 @@ namespace MLOmega.XR.Editor
                     if (_graphics != null && _graphics.Length > 0)
                         PlayerSettings.SetGraphicsAPIs(BuildTarget.Android, _graphics);
                     PlayerSettings.defaultInterfaceOrientation = _orientation;
+                    PlayerSettings.allowedAutorotateToPortrait =
+                        _autorotatePortrait;
+                    PlayerSettings.allowedAutorotateToPortraitUpsideDown =
+                        _autorotatePortraitUpsideDown;
+                    PlayerSettings.allowedAutorotateToLandscapeLeft =
+                        _autorotateLandscapeLeft;
+                    PlayerSettings.allowedAutorotateToLandscapeRight =
+                        _autorotateLandscapeRight;
                     PlayerSettings.productName = _productName;
                     PlayerSettings.SetApplicationIdentifier(
                         BuildTargetGroup.Android, _applicationIdentifier);
@@ -729,6 +1334,12 @@ namespace MLOmega.XR.Editor
                     PlayerSettings.Android.minSdkVersion = _minSdkVersion;
                     PlayerSettings.Android.targetSdkVersion = _targetSdkVersion;
                     PlayerSettings.runInBackground = _runInBackground;
+                    GraphicsSettings.defaultRenderPipeline =
+                        _graphicsPipeline;
+                    EditorGraphicsSettings
+                        .SetRenderPipelineGlobalSettingsAsset<
+                            UniversalRenderPipeline>(_urpGlobalSettings);
+                    SetAlwaysIncludedShaders(_alwaysIncludedShaders);
                     if (_hadXrealSettingsConfig && _previousXrealSettingsConfig != null)
                     {
                         EditorBuildSettings.AddConfigObject(
@@ -742,6 +1353,9 @@ namespace MLOmega.XR.Editor
                     {
                         QualitySettings.SetQualityLevel(i, false);
                         QualitySettings.vSyncCount = _vSync[i];
+                        QualitySettings.antiAliasing = _antiAliasing[i];
+                        QualitySettings.renderPipeline =
+                            _qualityPipelines[i];
                     }
                     QualitySettings.SetQualityLevel(_activeQuality, false);
                     File.WriteAllText(AndroidManifestPath, _manifest);

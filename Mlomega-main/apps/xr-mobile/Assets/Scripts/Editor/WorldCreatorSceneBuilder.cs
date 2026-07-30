@@ -4,15 +4,17 @@ using MLOmega.XR.UI;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
-using UnityEngine.InputSystem;
-using UnityEngine.InputSystem.XR;
-using Unity.XR.CoreUtils;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 
 namespace MLOmega.XR.Editor
 {
     public static class WorldCreatorSceneBuilder
     {
         public const string ScenePath = "Assets/Scenes/XrealWorldCreator.unity";
+        private const string OfficialRigPrefabPath =
+            "Packages/com.xreal.xr/Runtime/Prefabs/" +
+            "XR Interaction Hands Setup.prefab";
 
         [MenuItem("MLOmega/XREAL/Build World Atelier Scene")]
         public static void BuildScene()
@@ -20,15 +22,58 @@ namespace MLOmega.XR.Editor
             var scene = EditorSceneManager.NewScene(
                 NewSceneSetup.EmptyScene,
                 NewSceneMode.Single);
-            var cameraGo = new GameObject("Atelier Camera");
-            cameraGo.tag = "MainCamera";
-            Camera camera = cameraGo.AddComponent<Camera>();
-            camera.clearFlags = CameraClearFlags.SolidColor;
-            camera.backgroundColor = Color.black;
-            camera.nearClipPlane = .1f;
+
+            // HelloMR is the hardware-proven reference for One Pro + Eye on
+            // the S24. Reuse its exact XREAL/XRI rig instead of rebuilding a
+            // partial XR Origin by hand. This also brings the official input
+            // actions, EventSystem and controller/hand interactors with it.
+            GameObject rigPrefab =
+                AssetDatabase.LoadAssetAtPath<GameObject>(
+                    OfficialRigPrefabPath);
+            if (rigPrefab == null)
+                throw new FileNotFoundException(
+                    "Official XREAL interaction rig missing.",
+                    OfficialRigPrefabPath);
+            GameObject rig = PrefabUtility.InstantiatePrefab(
+                rigPrefab,
+                scene) as GameObject;
+            if (rig == null)
+                throw new InvalidOperationException(
+                    "Unable to instantiate the official XREAL interaction rig.");
+            rig.name = "XR Interaction Hands Setup (Official)";
+
+            Camera camera = rig.GetComponentInChildren<Camera>(true);
+            if (camera == null)
+                throw new InvalidOperationException(
+                    "Official XREAL interaction rig has no camera.");
+            // Match the hardware-proven XREAL template exactly. Its camera uses
+            // the Built-in Skybox clear path with no skybox material; black
+            // pixels are therefore unlit on the optical display. SolidColor is
+            // not equivalent in the XREAL compositor and produced its violet
+            // diagnostic clear on the One Pro.
+            RenderSettings.skybox = null;
+            camera.clearFlags = CameraClearFlags.Skybox;
+            camera.backgroundColor = new Color(0f, 0f, 0f, 0f);
+            camera.allowHDR = true;
+            camera.nearClipPlane = .01f;
             camera.fieldOfView = 25f;
-            cameraGo.AddComponent<AudioListener>();
-            BuildXrealRig(cameraGo, camera);
+            UniversalAdditionalCameraData cameraData =
+                camera.GetComponent<UniversalAdditionalCameraData>();
+            if (GraphicsSettings.defaultRenderPipeline != null)
+            {
+                cameraData ??=
+                    camera.gameObject.AddComponent<UniversalAdditionalCameraData>();
+                // UniversalRenderPipelineAsset.Create() does not populate
+                // postProcessData. Enabling UberPost with that null resource
+                // paints the whole optical surface magenta.
+                cameraData.renderPostProcessing = false;
+            }
+            else if (cameraData != null)
+            {
+                // The hardware-proven XREAL template is Built-in and has no
+                // URP camera extension. Mirror it exactly for the Atelier.
+                UnityEngine.Object.DestroyImmediate(cameraData);
+            }
 
             var root = new GameObject("MLOmega World Atelier");
             var exchange = root.AddComponent<WorldMapDocumentExchange>();
@@ -77,40 +122,6 @@ namespace MLOmega.XR.Editor
             Debug.Log(
                 "[WorldCreatorSceneBuilder] isolated XREAL Atelier ready: " +
                 ScenePath);
-        }
-
-        private static void BuildXrealRig(GameObject cameraGo, Camera camera)
-        {
-            var originGo = new GameObject("XR Origin (XREAL Atelier)");
-            var offset = new GameObject("Camera Offset");
-            offset.transform.SetParent(originGo.transform, false);
-            cameraGo.transform.SetParent(offset.transform, false);
-            var origin = originGo.AddComponent<XROrigin>();
-            origin.Origin = originGo;
-            origin.Camera = camera;
-            origin.CameraFloorOffsetObject = offset;
-            origin.RequestedTrackingOriginMode =
-                XROrigin.TrackingOriginMode.Device;
-            var pose = cameraGo.AddComponent<TrackedPoseDriver>();
-            pose.trackingType =
-                TrackedPoseDriver.TrackingType.RotationAndPosition;
-            pose.updateType =
-                TrackedPoseDriver.UpdateType.UpdateAndBeforeRender;
-            pose.positionInput = new InputActionProperty(new InputAction(
-                "Atelier Head Position",
-                InputActionType.Value,
-                "<XRHMD>/centerEyePosition",
-                expectedControlType: "Vector3"));
-            pose.rotationInput = new InputActionProperty(new InputAction(
-                "Atelier Head Rotation",
-                InputActionType.Value,
-                "<XRHMD>/centerEyeRotation",
-                expectedControlType: "Quaternion"));
-            pose.trackingStateInput = new InputActionProperty(new InputAction(
-                "Atelier Tracking State",
-                InputActionType.Value,
-                "<XRHMD>/trackingState",
-                expectedControlType: "Integer"));
         }
 
         private static Shader RequiredShader(string path)

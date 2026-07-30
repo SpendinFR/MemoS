@@ -35,7 +35,7 @@ namespace MLOmega.XR.UI.Components
             _arrow.positionCount = 3; // simple chevron
             _arrow.widthMultiplier = 0.006f;
             _arrow.numCornerVertices = 2;
-            _arrow.material = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+            _arrow.material = new Material(Shader.Find("MLOmega/XREAL Runtime Unlit"));
 
             var lblGo = new GameObject("ArrowLabel", typeof(RectTransform));
             lblGo.transform.SetParent(transform, false);

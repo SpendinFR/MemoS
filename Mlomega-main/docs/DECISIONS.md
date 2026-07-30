@@ -2279,3 +2279,35 @@ le sélecteur Android; les fichiers ne sont pas intégrés à l'APK et n'imposen
 aucun rebuild. Les skins/animations osseuses arbitraires ne sont toujours pas
 interprétés : leur pose statique est rendue, puis les mouvements bornés de
 l'Atelier peuvent animer l'ensemble.
+
+## 2026-07-31 — Le template XREAL officiel devient la baseline matérielle, MRTK reste un spike isolé
+
+Le test S24 + One Pro/Eye a prouvé que la plateforme sait présenter une vraie
+surface XR quand Samsung DeX est réellement désactivé. Le template officiel
+tourne, et l'Atelier reçoit pose 6DoF, frames Eye, IMU contrôleur et cadence
+d'affichage. Le diagnostic ne doit donc plus repartir d'une incompatibilité
+globale Android 16 ou d'un faux modèle HDMI.
+
+La baseline de comparaison est désormais le template ayant fonctionné :
+OpenGLES3, Built-in, XR initialisé au démarrage, activité `NRXRActivity`,
+caméra Skybox sans matériau et canvas world-space. L'Atelier est reconstruit
+par ajout progressif à cette scène jusqu'à identifier précisément la couche qui
+rend toute la surface violette. Les réglages partagés restent scopés et
+restaurés par le builder ; PhoneOnly et le pipeline PC sont hors chantier.
+
+Le clic est une capacité distincte du tracking. Aucun résultat terminal n'a été
+observé depuis le contrôleur, les mains ou le fallback téléphone. Le tactile du
+display principal ne sera plus présenté comme un fallback automatique vers
+l'UI XR : un pont explicite est requis.
+
+Le fork XREAL de MRTK3 est pertinent pour l'UX, l'input 2D/3D et la manipulation
+spatiale, mais il ne sera pas importé en bloc. Un spike séparé doit d'abord
+prouver bouton, déplacement et resize sur le matériel, puis seules les briques
+nécessaires pourront être intégrées derrière la portée XREAL. Le hand tracking
+One Pro/Eye reste indépendant : si `XRHandSubsystem` ne livre rien, la voie
+prévue est Eye CPU image → MediaPipe → rayon index/pinch.
+
+Enfin, la correction Atelier ne vaut pas correction produit. L'APK
+`com.mlomega.xr.glasses` recevra uniquement les réglages matériellement prouvés,
+puis traversera son propre gate live/mémoire. Le guide de reprise autoritaire
+est `docs/BUILD_GUIDE_XREAL.md`.

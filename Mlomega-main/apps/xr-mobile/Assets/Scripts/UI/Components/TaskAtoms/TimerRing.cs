@@ -38,7 +38,7 @@ namespace MLOmega.XR.UI.Components.TaskAtoms
             _ring.positionCount = Segments;
             _ring.widthMultiplier = 0.006f;
             _ring.numCornerVertices = 2;
-            _ring.material = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+            _ring.material = new Material(Shader.Find("MLOmega/XREAL Runtime Unlit"));
 
             var go = new GameObject("TimerText", typeof(RectTransform));
             go.transform.SetParent(transform, false);

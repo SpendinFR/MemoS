@@ -34,7 +34,7 @@ namespace MLOmega.XR.UI.Components.TaskAtoms
             _ring.positionCount = Segments;
             _ring.widthMultiplier = 0.005f;
             _ring.numCornerVertices = 2;
-            _ring.material = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+            _ring.material = new Material(Shader.Find("MLOmega/XREAL Runtime Unlit"));
             _ring.textureMode = LineTextureMode.Stretch;
         }
 

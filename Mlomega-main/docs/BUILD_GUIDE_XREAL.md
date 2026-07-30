@@ -1,0 +1,434 @@
+# Build guide XREAL — S24 + One Pro + Eye
+
+Dernière mise à jour : 31 juillet 2026.
+
+Ce document est le point de reprise technique autoritaire pour les deux APK
+XREAL de MLOmega :
+
+- produit : `apps/xr-mobile/build/android/mlomega-xreal.apk`,
+  package `com.mlomega.xr.glasses` ;
+- Atelier : `apps/xr-mobile/build/android/mlomega-xreal-world-atelier.apk`,
+  package `com.mlomega.xr.worldatelier`.
+
+Il ne certifie pas encore ces APK. Il consigne ce qui a réellement été observé
+sur Galaxy S24 + XREAL One Pro + Eye, ce qui reste rouge, les commandes fiables
+et les pistes déjà éliminées. Le chemin PhoneOnly, les runners Local/PRO,
+Memory, BrainLive et CloseDay ne doivent pas être modifiés pendant ce chantier.
+
+## 1. Verdict matériel au point de pause
+
+### 1.1 Prouvé sur le matériel
+
+- Le template XREAL officiel peut obtenir une vraie surface XR sur ce S24
+  lorsque Samsung DeX est désactivé.
+- Le SDK XREAL démarre et présente à environ 60 Hz.
+- La pose 6DoF remonte réellement.
+- l'XREAL Eye transmet des frames grayscale.
+- l'IMU du contrôleur remonte.
+- le menu Atelier peut rester world-locked/ancré pendant la session.
+- l'APK Atelier compile, s'installe et entre dans sa scène XREAL via
+  `ai.nreal.activitylife.NRXRActivity`.
+
+Ces résultats invalident l'hypothèse « Android 16/S24 rend toute application
+XREAL impossible ». Ils ne valident ni le rendu final ni l'interaction.
+
+### 1.2 Encore rouge
+
+- Le fond de la surface Atelier reste violet/magenta sur le matériel.
+- Aucun clic n'a produit d'action : ni sélection du menu, ni fallback tactile
+  essayé sur le S24.
+- Le pointeur mains n'est pas fonctionnel.
+- déplacement et redimensionnement du menu ne sont pas validés.
+- persistance/relocalisation des ancres après redémarrage non validée.
+- l'APK produit `mlomega-xreal.apk` n'a pas encore reçu puis traversé le même
+  gate matériel corrigé. Ne pas lui appliquer en bloc les expérimentations de
+  l'Atelier.
+
+Le violet ne doit donc pas être présenté comme « seulement esthétique » : il
+empêche de certifier le composite optique et peut masquer un mauvais matériau,
+une mauvaise surface ou un objet plein écran. Le clic absent est un blocker
+produit distinct.
+
+## 2. Garde-fous : ne pas casser les autres produits
+
+1. Toute modification de PlayerSettings, pipeline, XR loader, packages ou
+   manifeste doit rester dans la portée temporaire
+   `AndroidBuildXreal` et être restaurée en `finally`.
+2. Le `Packages/manifest.json` commité reste sans SDK XREAL. Le SDK propriétaire
+   est injecté uniquement pendant la passe XREAL.
+3. Ne jamais committer les scènes, settings XR, samples, TextMesh Pro ou
+   fichiers `ProjectSettings` générés par une passe Unity.
+4. Ne pas toucher à `PhoneOnly.unity`, à son manifeste ou à son APK pour
+   corriger XREAL.
+5. Ne pas modifier les prompts, le pipeline PC, Local/PRO, Memory ou CloseDay.
+6. Toute nouvelle dépendance d'interaction, notamment MRTK3, se teste d'abord
+   dans un projet/spike isolé. Elle ne rentre pas directement dans l'APK
+   produit.
+
+## 3. Préparation du S24 : DeX doit réellement lâcher l'écran
+
+Samsung DeX a été le premier faux chemin de la journée. Quand DeX détient
+l'écran des lunettes, Android crée un bureau/fenêtre externe avec barre des
+tâches. Ce n'est pas une surface XR valide, même si l'APK paraît ouverte.
+
+### 3.1 Méthode opérateur
+
+Avant de lancer une APK XREAL :
+
+1. désactiver Samsung DeX dans les réglages rapides ou
+   `Paramètres > Appareils connectés > Samsung DeX` ;
+2. débrancher puis rebrancher les lunettes ;
+3. ne pas accepter le bureau DeX, sa barre des tâches ou une simple recopie
+   d'écran comme résultat ;
+4. lancer l'activité XREAL/ControlGlasses, pas `UnityPlayerActivity`.
+
+Le bouton physique X des lunettes n'est pas le bouton d'ancrage de l'Atelier :
+pendant le test il a quitté le rendu 3D. Utiliser le bouton logiciel prévu dans
+la scène.
+
+### 3.2 Vérification ADB
+
+Depuis PowerShell :
+
+```powershell
+$adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
+
+& $adb shell settings put system dex_on_external_display 0
+& $adb shell settings put global dex_on_external_display 0
+& $adb shell settings put secure dex_on_external_display 0
+
+& $adb shell dumpsys activity activities |
+  Select-String "SecondaryLauncher|dexservice|mode=freeform|name=Desk"
+```
+
+Une tâche `com.honeyspace.dexservice.SecondaryLauncher`, `name=Desk` ou
+`mode=freeform` signifie que DeX contrôle encore l'écran. Les trois clés ADB ne
+remplacent pas toujours la désactivation manuelle One UI ; vérifier le résultat
+plutôt que supposer que la commande a été honorée.
+
+Sous DeX, les observations historiques étaient incohérentes :
+
+- écran XREAL annoncé nativement en 640×480 ;
+- override DeX 1600×900 ;
+- SDK cherchant une surface 1920×1080 ou 3840×1080 ;
+- `FLAG_EXTERNAL_DEX_HOSTING` et bureau secondaire présents.
+
+Ne pas corriger ces symptômes en falsifiant la résolution du SDK.
+
+## 4. ADB fiable après une passe Unity
+
+Unity peut arrêter son propre serveur ADB. Après chaque build, relancer ADB
+avant de conclure que l'installation est bloquée :
+
+```powershell
+$adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
+Stop-Process -Name adb -Force -ErrorAction SilentlyContinue
+& $adb start-server
+& $adb devices
+```
+
+Pour ADB Wi-Fi, l'adresse observée pendant cette session était
+`192.168.1.134:5555`, mais elle n'est pas une constante produit :
+
+```powershell
+& $adb connect 192.168.1.134:5555
+& $adb devices
+```
+
+Installer puis vérifier l'horodatage du package :
+
+```powershell
+& $adb install -r `
+  ".\apps\xr-mobile\build\android\mlomega-xreal-world-atelier.apk"
+
+& $adb shell dumpsys package com.mlomega.xr.worldatelier |
+  Select-String "lastUpdateTime|versionName|versionCode"
+```
+
+Lancer par la bonne porte d'entrée :
+
+```powershell
+& $adb shell am force-stop com.mlomega.xr.worldatelier
+& $adb shell am start -n `
+  com.mlomega.xr.worldatelier/ai.nreal.activitylife.NRXRActivity
+```
+
+Pour le produit, remplacer le package par `com.mlomega.xr.glasses`. Ne jamais
+lancer directement `com.unity3d.player.UnityPlayerActivity`.
+
+## 5. Build reproductible
+
+Fermer l'éditeur Unity avant la passe batch. Version utilisée :
+Unity `6000.0.23f1`.
+
+```powershell
+$root = "C:\Users\wabad\Downloads\ProjetMemobyFABLE\Mlomega-main"
+$project = Join-Path $root "apps\xr-mobile"
+$unity = "C:\Program Files\Unity\Hub\Editor\6000.0.23f1\Editor\Unity.exe"
+
+& $unity -batchmode -quit `
+  -projectPath $project `
+  -executeMethod MLOmega.XR.Editor.AndroidBuildXreal.PrepareDefines `
+  -logFile (Join-Path $root "xreal-prepare.log")
+
+if ($LASTEXITCODE -ne 0) { throw "PrepareDefines failed" }
+```
+
+Atelier :
+
+```powershell
+& $unity -batchmode -quit `
+  -projectPath $project `
+  -executeMethod MLOmega.XR.Editor.AndroidBuildXreal.BuildCreatorApk `
+  -logFile (Join-Path $root "xreal-atelier-build.log")
+
+if ($LASTEXITCODE -ne 0) { throw "BuildCreatorApk failed" }
+```
+
+Produit :
+
+```powershell
+& $unity -batchmode -quit `
+  -projectPath $project `
+  -executeMethod MLOmega.XR.Editor.AndroidBuildXreal.BuildApk `
+  -logFile (Join-Path $root "xreal-product-build.log")
+
+if ($LASTEXITCODE -ne 0) { throw "BuildApk failed" }
+```
+
+Un APK fraîchement écrit et `Build succeeded` sont nécessaires. Un exit 0
+accompagné d'une exception XREAL/JSON reste rouge.
+
+### 5.1 Réglages de référence réellement utiles
+
+Le template officiel ayant fonctionné sur le matériel est la référence, pas
+une mémoire approximative des essais :
+
+- Graphics API : OpenGLES3, pas Vulkan ;
+- pipeline Built-in dans le template ;
+- `Initialize XR on Startup = true` (`m_InitManagerOnStart: 1`) ;
+- orientation Android : AutoRotation dans le template ;
+- caméra : `Skybox`, aucun matériau de skybox, alpha de fond à zéro ;
+- résolution de référence : 1920×1080 ;
+- scène simple, canvas world-space ;
+- activité `NRXRActivity`.
+
+Important : le template officiel avait le multithreaded rendering actif et
+fonctionnait. Ne le basculer ni à `true` ni à `false` sur la base d'une
+recommandation générique ; faire un test A/B borné seulement si les autres
+différences sont neutralisées.
+
+La tentative `XRDisplaySubsystem.EnableRenderBackColor(false)` est désormais
+appelée réellement et n'a pas supprimé le violet. C'est une condition possible
+du see-through, pas la cause racine démontrée.
+
+## 6. Patch « XREAL Pro HDMI » : historique et statut
+
+Le début du diagnostic a essayé de faire reconnaître le nom EDID
+`XREAL One Pro` par `GlassesDisplayPlugEvent` et de neutraliser le fond de
+l'activité proxy. Le script actuel est
+`scripts/PATCH_XREAL_S24_DISPLAY.ps1`.
+
+Ce script :
+
+- restaure d'abord les AAR officiels depuis le tarball XREAL ;
+- remplace `DisplayModel.class` par un matcher EDID élargi ;
+- remplace le layout de l'activité proxy par un fond optique noir ;
+- vérifie le bytecode réinjecté.
+
+Il est conservé comme compatibilité explicite et reproductible, mais son effet
+n'est pas certifié comme solution du violet. Ne plus modifier ou repackager
+ControlGlasses à la main : cela a multiplié les variables sans prouver le
+composite. Utiliser l'application officielle sur le S24.
+
+Le résultat déterminant a été obtenu sans faux appareil : une fois DeX
+réellement désactivé, le template officiel a affiché son menu XR. Le prochain
+diagnostic doit donc comparer notre scène/runtime au template, pas réécrire
+encore le modèle HDMI.
+
+## 7. Violet : faits, causes éliminées et prochain diagnostic
+
+### 7.1 Faits observés
+
+- capture matérielle : toute la surface stéréo est violet vif, le menu étant
+  rendu par-dessus ;
+- le menu peut être world-locked ;
+- le framerate reste proche de 60 Hz ;
+- la caméra Eye et la pose 6DoF continuent de remonter ;
+- le template officiel, avec DeX désactivé, affiche un fond noir/transparent
+  stable sur le même téléphone et les mêmes lunettes.
+
+### 7.2 Causes testées sans succès
+
+- désactivation DeX seule ;
+- `EnableRenderBackColor(false)` ;
+- alpha caméra à zéro ;
+- passage Atelier en Built-in ;
+- remplacement des `Shader.Find("Universal Render Pipeline/Unlit")` par un
+  shader runtime Built-in/URP inclus dans le build ;
+- ajout d'un SubShader Built-in à `LiquidGlass` ;
+- suppression du post-processing Atelier ;
+- OpenGLES3 et MSAA désactivé ;
+- différentes orientations/résolutions ;
+- patch du layout proxy XREAL.
+
+Ne pas refaire ces permutations une par une sans nouvelle mesure.
+
+### 7.3 Logs encore significatifs
+
+Au démarrage, conserver et corréler :
+
+```text
+Invalid perception runtime config
+load external alg so failed
+Failed to find display resolution for dp resolution 3840x1080
+Faield to get display roi
+```
+
+Les premiers `FrameWait` peuvent échouer brièvement avant que le flux tourne.
+Le verdict ne vient pas d'une ligne isolée : il faut corréler affichage,
+render-pass, dimensions et objets visibles.
+
+### 7.4 Reprise recommandée — binary search, pas nouveau grand refactor
+
+1. Lancer le template officiel et l'Atelier dos à dos avec DeX confirmé absent.
+2. Ajouter à un build diagnostic minimal les mesures suivantes :
+   `Screen.width/height`, caméra(s) active(s), clear flags/couleur, pipeline
+   courant, nombre de render passes XREAL, texture/viewport de chaque
+   `XRRenderPass`, displayId et activité courante.
+3. Partir de la scène du template qui fonctionne et ajouter uniquement le
+   pupitre Atelier, sans shaders produit.
+4. Si ce minimal reste noir/transparent, réintroduire par couches :
+   panneau opaque, texte, LiquidGlass, halo, catalogue, puis providers.
+5. La première couche qui rend toute la cible violette donne la cause. La
+   supprimer/corriger avant de reconstruire la scène complète.
+6. Seulement après un Atelier transparent, reporter le profil prouvé vers
+   `mlomega-xreal.apk` et refaire le même smoke matériel.
+
+Ce protocole doit produire un verdict en quelques builds bornés. Il interdit
+les changements simultanés de DeX, pipeline, résolution, shader et activité qui
+ont rendu les essais précédents difficiles à interpréter.
+
+## 8. Clic, pointeur, déplacement et redimensionnement
+
+### 8.1 Statut honnête
+
+Le rayon/curseur ou la présence d'un `EventSystem` ne prouve pas un clic.
+Pendant le test :
+
+- aucune sélection du menu n'a changé ;
+- le fallback tactile S24 essayé n'a pas déclenché d'action ;
+- aucune main n'a piloté le menu ;
+- déplacement/redimensionnement non testables tant que le clic est absent.
+
+Le tactile du téléphone vise le display Android principal ; une UI rendue dans
+une surface XR externe ne reçoit donc pas automatiquement les mêmes
+coordonnées. Le fallback doit être un pont explicite, pas une promesse de
+Unity Input System.
+
+### 8.2 Ordre du prochain chantier interaction
+
+1. Dans une scène dérivée du template, créer un unique bouton compteur et
+   prouver un clic par la source contrôleur officielle XREAL.
+2. Journaliser source, rayon, `pointerDown`, `pointerUp`, objet ciblé et action
+   terminale. Un « accepted » sans changement de compteur est rouge.
+3. Ajouter un fallback téléphone explicite : surface/touchpad sur le S24 qui
+   envoie rayon normalisé + press/release à l'UI XR.
+4. Tester l'accès à l'image CPU de l'Eye via
+   `ARCameraManager.TryAcquireLatestCpuImage`. Si des frames arrivent, brancher
+   MediaPipe Hand Landmarker sur un débit borné, puis convertir index + pinch
+   en `TryGetHandRay(out Ray, out bool pinching)`.
+5. Une fois le clic prouvé, ajouter déplacement et resize du pupitre avec
+   poignées visibles et limites de taille/distance.
+6. Gate matériel : 30 clics, sélection de catégories, drag, resize, recenter,
+   suppression d'une ancre et 10 minutes sans dérive thermique bloquante.
+
+### 8.3 Usage possible de MRTK3 XREAL
+
+Le dépôt
+`https://github.com/dengxian-xreal/MixedRealityToolkit-Unity-XREALSDK`
+intègre XREAL à MRTK3/XRI et contient des briques d'UX, d'input 2D/3D et de
+spatial manipulation. Il est pertinent pour :
+
+- boutons et états de focus/press robustes ;
+- `ObjectManipulator`/`BoundsControl` ou équivalents pour déplacer/resizer ;
+- rayon contrôleur et modèle d'interaction unifié ;
+- menus/slates world-space.
+
+Il ne prouve pas que One Pro + Eye fournit du hand tracking natif. La stratégie
+est donc :
+
+1. cloner/ouvrir le sample séparément ;
+2. tester contrôleur + bouton + manipulateur sur le matériel ;
+3. inventorier seulement les packages/prefabs indispensables ;
+4. intégrer une verticale minimale dans l'Atelier sous un define XREAL ;
+5. conserver notre futur provider MediaPipe Eye comme source de mains si le
+   `XRHandSubsystem` natif reste vide.
+
+Ne jamais importer tout MRTK3 directement dans le projet principal avant ce
+spike : il modifierait packages, Input System, EventSystem et shaders en même
+temps, et rendrait PhoneOnly/runs impossibles à isoler.
+
+## 9. APK produit : travail explicitement restant
+
+Après correction et preuve de l'Atelier :
+
+1. appliquer uniquement les réglages prouvés au scope `BuildApk` ;
+2. vérifier que le profil réseau LAN/Tailscale reste présent ;
+3. vérifier Eye, 6DoF, UI transparente et clic ;
+4. vérifier que FreeGuy dynamique/ancré, Viki, Memory, capture et fin de session
+   continuent de fonctionner ;
+5. refaire un build PhoneOnly de non-régression seulement si le scope XREAL a
+   touché un fichier partagé ;
+6. ne cocher le matériel qu'après receipts/effets visibles.
+
+Le fait que l'Atelier soit une APK séparée ne dispense pas ce second gate :
+elles partagent des composants UI et un builder, mais pas la même scène ni la
+même charge runtime.
+
+## 10. Fichiers de build à ne pas committer
+
+Après une passe Unity, contrôler au minimum :
+
+```powershell
+git status --short
+git diff -- apps/xr-mobile/Packages
+git diff -- apps/xr-mobile/ProjectSettings
+git diff -- apps/xr-mobile/Assets/Plugins/Android/AndroidManifest.xml
+git diff -- apps/xr-mobile/Assets/Scenes/PhoneOnly.unity
+```
+
+Résidus habituels à restaurer s'ils viennent bien de la passe courante :
+
+- `Packages/manifest.json`, `Packages/packages-lock.json` ;
+- `ProjectSettings/GraphicsSettings.asset`,
+  `ProjectSettings/QualitySettings.asset`,
+  `ProjectSettings/ProjectSettings.asset`,
+  `ProjectSettings/EditorBuildSettings.asset`,
+  `ProjectSettings/ShaderGraphSettings.asset` ;
+- `Assets/XR/*`, `Assets/Settings/XREAL/*`, samples importés ;
+- manifeste Android injecté ;
+- scènes générées ;
+- XML de tests, screenshots, APKs temporaires et dossiers `tmp_*`.
+
+Ne pas restaurer un fichier simplement parce qu'il est sale : vérifier qu'il
+s'agit d'un résidu de cette passe et pas d'une modification utilisateur.
+
+## 11. Définition de fini
+
+Le chantier XREAL n'est fini que lorsque :
+
+- DeX est absent sans manipulation fragile ;
+- Atelier et produit ont un fond optique transparent/noir, jamais violet ;
+- le menu est stable en 6DoF ;
+- contrôleur ou main réalise réellement focus/clic ;
+- le fallback téléphone déclenche réellement la même action ;
+- menu déplaçable/resizable ;
+- création, suppression, export et recharge d'une map sont prouvés ;
+- l'APK produit conserve ses ponts live/mémoire ;
+- PhoneOnly et runners PC restent inchangés ;
+- APKs, logs, versions et hashes du gate matériel sont conservés.
+
+Au 31 juillet 2026, seuls DeX/template, 6DoF, Eye, contrôleur IMU, framerate et
+world-lock du menu sont verts. Le violet, le clic et la parité produit restent
+le prochain chantier.

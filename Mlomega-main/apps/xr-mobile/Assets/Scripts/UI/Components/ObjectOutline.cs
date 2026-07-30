@@ -37,7 +37,7 @@ namespace MLOmega.XR.UI.Components
             _line.positionCount = 4;
             _line.widthMultiplier = _lineWidth;
             _line.numCornerVertices = 4;
-            _line.material = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+            _line.material = new Material(Shader.Find("MLOmega/XREAL Runtime Unlit"));
             _line.textureMode = LineTextureMode.Stretch;
 
             var chipGo = new GameObject("OutlineChip", typeof(RectTransform));

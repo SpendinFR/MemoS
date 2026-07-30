@@ -54,7 +54,7 @@ namespace MLOmega.XR.Editor
             var preview = quad.AddComponent<EyeCapturePreview>();
             AssignPrivate(preview, "_session", session);
             quad.GetComponent<Renderer>().sharedMaterial =
-                new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+                new Material(Shader.Find("MLOmega/XREAL Runtime Unlit"));
 
             // --- Pose readout --------------------------------------------------
             var poseGo = new GameObject("Pose Readout");

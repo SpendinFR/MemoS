@@ -2948,6 +2948,45 @@ et [appareils ARCore](https://developers.google.com/ar/devices).
   `EFA4AEC207CA2BFB1602FDDB39D348447F75B560DE475A8CE1D4160405C891C9`.
   Le guide opérateur S24 complet est `FIRST_TRY_XREAL_S24.md`.
 
+- [ ] **4.1d Gate matériel Atelier/XREAL repris proprement — PAUSE DOCUMENTÉE
+  2026-07-31.** Le test sur Galaxy S24 + One Pro/Eye a séparé plateforme,
+  tracking, rendu et interaction. Après désactivation réelle de Samsung DeX,
+  le template XREAL officiel affiche une surface XR stable : Android 16/S24
+  n'est donc pas un blocker absolu. Dans l'Atelier, le SDK présente à environ
+  60 Hz, la pose 6DoF, les frames Eye et l'IMU contrôleur remontent, et le menu
+  peut rester ancré pendant la session. En revanche, le composite reste
+  violet/magenta et aucun clic n'a produit d'action, y compris le fallback
+  tactile essayé sur le téléphone. Déplacement, resize, hand tracking et
+  relocalisation après redémarrage ne sont donc pas validés.
+
+  La reprise ne doit plus permuter DeX, pipeline, shaders, résolution et
+  activité à chaque build. Suivre `docs/BUILD_GUIDE_XREAL.md` :
+
+  1. [ ] partir de la scène/template officiel qui fonctionne, ajouter un seul
+     bouton compteur puis le pupitre Atelier couche par couche ;
+  2. [ ] mesurer render passes, viewports/textures, caméras actives, pipeline,
+     displayId et dimensions au runtime afin d'identifier la première couche
+     qui rend toute la cible violette ;
+  3. [ ] prouver un clic terminal par le contrôleur XREAL, puis créer le pont
+     touchpad S24 explicite — un tactile sur display 0 ne pilote pas
+     automatiquement l'UI XR externe ;
+  4. [ ] tester `ARCameraManager.TryAcquireLatestCpuImage` sur l'Eye puis, si
+     vert, ajouter MediaPipe index/pinch comme source de `TryGetHandRay` ;
+  5. [ ] évaluer dans un spike séparé
+     `dengxian-xreal/MixedRealityToolkit-Unity-XREALSDK` pour boutons,
+     déplacement et resize ; ne pas importer MRTK3 en bloc dans le produit ;
+  6. [ ] gate matériel Atelier : fond optique transparent/noir, 30 clics,
+     drag/resize, recenter, création/suppression/export/recharge et 10 minutes
+     stables ;
+  7. [ ] reporter ensuite uniquement les réglages prouvés vers
+     `mlomega-xreal.apk`, encore non corrigée/non validée, puis rejouer le gate
+     produit sans toucher PhoneOnly ni les runners PC.
+
+  Le script « XREAL Pro HDMI » et les correctifs DeX/EDID sont conservés comme
+  historique reproductible, pas comme solution certifiée du violet. Le bouton
+  physique X des lunettes a quitté la 3D pendant ce test : il ne remplace pas
+  l'action logicielle `ANCRER`.
+
 - [ ] **4.2 PC réellement prêt avant ouverture de l'app.** Depuis la racine, même Wi-Fi,
   port 8710 privé autorisé :
 

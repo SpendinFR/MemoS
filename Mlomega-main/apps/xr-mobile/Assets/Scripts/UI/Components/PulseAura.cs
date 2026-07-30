@@ -34,7 +34,7 @@ namespace MLOmega.XR.UI.Components
                 line.positionCount = Segments;
                 line.widthMultiplier = 0.0035f - i * 0.0006f;
                 line.material = new Material(
-                    Shader.Find("Universal Render Pipeline/Unlit"));
+                    Shader.Find("MLOmega/XREAL Runtime Unlit"));
                 _rings.Add(line);
             }
             var chipGo = new GameObject("PulseQuality");

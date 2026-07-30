@@ -33,7 +33,7 @@ namespace MLOmega.XR.UI.Components.TaskAtoms
             _chevron.positionCount = 3;
             _chevron.widthMultiplier = 0.006f;
             _chevron.numCornerVertices = 2;
-            _chevron.material = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+            _chevron.material = new Material(Shader.Find("MLOmega/XREAL Runtime Unlit"));
 
             var go = new GameObject("SearchLabel", typeof(RectTransform));
             go.transform.SetParent(transform, false);

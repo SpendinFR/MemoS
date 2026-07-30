@@ -68,6 +68,11 @@ namespace MLOmega.XR.UI
         private float _nextRadioAt;
         private float _nextManagerRetryAt;
         private bool _managersRequested;
+        private bool _creatorSpatialRequested;
+        private bool _managerStateKnown;
+        private bool _managerStateEnabled;
+        private Component _managerStateMesh;
+        private GameObject _managerStateSession;
         private Vector3? _measureStart;
         private KeyboardPlacement _keyboard;
         private Material _depthOcclusionMaterial;
@@ -93,6 +98,8 @@ namespace MLOmega.XR.UI
         private bool _navigationStarting;
         private bool _routeRequestInFlight;
         private float _nextRouteRequestAt;
+        private bool _opticalClearConfigured;
+        private float _nextOpticalClearAttemptAt;
         private WorldMapStore _worldMap;
         private WorldMapLibrary _worldMapLibrary;
         private WorldMapDraftLibrary _worldMapDrafts;
@@ -213,8 +220,19 @@ namespace MLOmega.XR.UI
         private void Update()
         {
             if (!CompiledForXreal) return;
+#if XREAL_SDK_PRESENT
+            // The XREAL compositor owns a separate opaque back colour. Camera
+            // alpha/clear flags cannot disable it. Retry until the real display
+            // subsystem is running, then switch that layer off once.
+            EnsureOpticalSeeThrough();
+#endif
             if (_creatorMode)
             {
+                if (!_creatorSpatialRequested)
+                {
+                    DepthReady = false;
+                    return;
+                }
                 const bool wantedByCreator = true;
                 if (!_managersRequested &&
                     Time.unscaledTime >= _nextManagerRetryAt)
@@ -294,6 +312,36 @@ namespace MLOmega.XR.UI
                 PublishWorldTextLocation();
             }
         }
+
+#if XREAL_SDK_PRESENT
+        private void EnsureOpticalSeeThrough()
+        {
+            if (
+                _opticalClearConfigured ||
+                Time.unscaledTime < _nextOpticalClearAttemptAt)
+                return;
+            _nextOpticalClearAttemptAt = Time.unscaledTime + 0.5f;
+
+            var displays = new List<XRDisplaySubsystem>();
+            SubsystemManager.GetSubsystems(displays);
+            foreach (XRDisplaySubsystem display in displays)
+            {
+                if (display == null || !display.running) continue;
+
+                // XREAL's compositor can render its own opaque back colour
+                // independently of Unity's Camera.backgroundColor. Disable it:
+                // on optical glasses, unlit black pixels then reveal the real
+                // world instead of the SDK's violet diagnostic clear.
+                bool disabled = display.EnableRenderBackColor(false);
+                if (!disabled) continue;
+                _opticalClearConfigured = true;
+                Debug.Log(
+                    "[XrealSpatialProvider] Optical see-through active: " +
+                    "XREAL compositor back colour disabled.");
+                break;
+            }
+        }
+#endif
 
         private bool AnySpatialFeatureSelected()
         {
@@ -1204,12 +1252,12 @@ namespace MLOmega.XR.UI
             if (!CompiledForXreal) return;
             try
             {
-                Type arSessionType = FindType("UnityEngine.XR.ARFoundation.ARSession");
-                Type meshManagerType =
-                    FindType("UnityEngine.XR.ARFoundation.ARMeshManager");
-                Type anchorManagerType =
-                    FindType("UnityEngine.XR.ARFoundation.ARAnchorManager");
-                Type originType = FindType("Unity.XR.CoreUtils.XROrigin");
+                // Direct type roots are intentional: reflection-only lookup let
+                // IL2CPP strip AR Foundation managers from the XREAL APK.
+                Type arSessionType = typeof(ARSession);
+                Type meshManagerType = typeof(ARMeshManager);
+                Type anchorManagerType = typeof(ARAnchorManager);
+                Type originType = typeof(XROrigin);
                 if (arSessionType == null || meshManagerType == null ||
                     anchorManagerType == null || originType == null)
                     throw new InvalidOperationException(
@@ -1223,12 +1271,33 @@ namespace MLOmega.XR.UI
                 Component origin = FindBehaviour(originType);
                 if (origin == null)
                     throw new InvalidOperationException("XREAL XR Origin missing");
-                _meshManager = origin.GetComponent(meshManagerType) ??
-                    origin.gameObject.AddComponent(meshManagerType);
-                _anchorManager = origin.GetComponent(anchorManagerType) ??
-                    origin.gameObject.AddComponent(anchorManagerType);
+                // AR Foundation 6 requires ARMeshManager to be on a descendant
+                // of XROrigin, not on the XROrigin GameObject itself. Parenting
+                // the host before AddComponent also prevents OnEnable from
+                // throwing during construction on device.
+                const string managerRootName =
+                    "MLOmega XREAL Spatial Managers";
+                Transform managerRoot =
+                    origin.transform.Find(managerRootName);
+                if (managerRoot == null)
+                {
+                    var host = new GameObject(managerRootName);
+                    managerRoot = host.transform;
+                    managerRoot.SetParent(origin.transform, false);
+                }
+                _meshManager = managerRoot.GetComponent(meshManagerType) ??
+                    managerRoot.gameObject.AddComponent(meshManagerType);
+                _anchorManager = managerRoot.GetComponent(anchorManagerType) ??
+                    managerRoot.gameObject.AddComponent(anchorManagerType);
                 _meshPrefab = BuildDepthMeshPrefab();
-                SetMember(_meshManager, "meshPrefab", _meshPrefab);
+                // AR Foundation 6 changed ARMeshManager.meshPrefab from a
+                // GameObject slot to a MeshFilter slot. Passing the host object
+                // through reflection caused a retry/error loop on the real
+                // One Pro even after the hierarchy itself was corrected.
+                SetMember(
+                    _meshManager,
+                    "meshPrefab",
+                    _meshPrefab.GetComponent<MeshFilter>());
                 SetMember(_meshManager, "density", 0.35f);
                 SetMember(_meshManager, "normals", true);
                 LastProviderError = string.Empty;
@@ -1259,8 +1328,30 @@ namespace MLOmega.XR.UI
 
         private void SetManagersEnabled(bool enabled)
         {
-            if (_meshManager is Behaviour mesh) mesh.enabled = enabled;
-            if (_arSession != null) _arSession.SetActive(enabled);
+            bool sameManagers =
+                ReferenceEquals(_managerStateMesh, _meshManager) &&
+                ReferenceEquals(_managerStateSession, _arSession);
+            if (
+                _managerStateKnown &&
+                sameManagers &&
+                _managerStateEnabled == enabled)
+                return;
+
+            // ARMeshManager disables itself when the active XREAL loader exposes
+            // no mesh subsystem. Re-enabling it every Update caused a warning
+            // and subsystem lookup on every eye frame. Apply a requested state
+            // once per manager instance/state transition, like the official
+            // template does, and let AR Foundation keep an unsupported manager
+            // disabled.
+            if (_meshManager is Behaviour mesh && mesh != null)
+                mesh.enabled = enabled;
+            if (_arSession != null && _arSession.activeSelf != enabled)
+                _arSession.SetActive(enabled);
+
+            _managerStateKnown = true;
+            _managerStateEnabled = enabled;
+            _managerStateMesh = _meshManager;
+            _managerStateSession = _arSession;
         }
 
         private void UpdateMeshRendering()
@@ -1412,6 +1503,13 @@ namespace MLOmega.XR.UI
         public void EnableCreatorMode()
         {
             _creatorMode = true;
+            _nextManagerRetryAt = 0f;
+        }
+
+        public void BeginCreatorSpatialMapping()
+        {
+            if (!_creatorMode) return;
+            _creatorSpatialRequested = true;
             _nextManagerRetryAt = 0f;
         }
 

@@ -1144,3 +1144,25 @@ SceneDelta/OCR/actions T1/ChangeAttention/Replay, route média authentifiée et
 suppression DB+fichiers. `take` reste une action probable et n'est jamais converti
 en `eat`; aucune identité ou causalité n'est fabriquée. Tests ciblés PC et menu
 Unity verts; seule la preuve matérielle S24 + Eye reste ouverte.
+
+## OBS-79 — Le gate matériel XREAL confondait démarrage XR, rendu et interaction (OUVERT — 2026-07-31)
+
+Sur Galaxy S24 + XREAL One Pro/Eye, l'Atelier démarre réellement : environ
+60 Hz, pose 6DoF, frames Eye, IMU contrôleur et menu world-locked sont observés.
+Pourtant toute la surface reste violette/magenta et aucun clic ne produit
+d'action, y compris le fallback tactile essayé sur le téléphone. Le build et
+le tracking étaient donc de faux critères de complétude pour les capacités
+« composite optique » et « interaction ».
+
+Le diagnostic a également montré que Samsung DeX peut prendre l'écran externe
+et ouvrir l'APK dans un bureau/fenêtre secondaire. Après désactivation réelle de
+DeX, le template XREAL officiel fonctionne sur le même matériel : la plateforme
+n'est pas le blocker global, et les nouveaux rebuilds ne doivent plus modifier
+simultanément EDID, DeX, résolution, pipeline et shaders.
+
+Reprise bornée : scène du template fonctionnel → bouton compteur contrôleur →
+pupitre Atelier ajouté couche par couche avec mesures de render passes. Le
+tactile S24 nécessite un pont explicite vers l'UI XR. Les mains nécessitent un
+probe Eye CPU puis MediaPipe si `XRHandSubsystem` reste vide. Le produit
+`com.mlomega.xr.glasses` reste non corrigé/non validé. Détails et commandes :
+`docs/BUILD_GUIDE_XREAL.md`.

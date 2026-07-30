@@ -159,5 +159,117 @@ Shader "MLOmega/LiquidGlass"
         }
     }
 
-    Fallback "Universal Render Pipeline/Unlit"
+    // Official XREAL 3.1 template profile: Unity Built-in pipeline. This pass
+    // deliberately keeps the optical panel translucent and self-contained;
+    // background blur is disabled because the glasses compositor already shows
+    // the real world behind the alpha surface.
+    SubShader
+    {
+        Tags
+        {
+            "RenderType" = "Transparent"
+            "Queue" = "Transparent"
+            "IgnoreProjector" = "True"
+        }
+
+        Pass
+        {
+            Name "LiquidGlassBuiltin"
+            Blend SrcAlpha OneMinusSrcAlpha
+            ZWrite Off
+            Cull Off
+
+            CGPROGRAM
+            #pragma vertex vert
+            #pragma fragment frag
+            #include "UnityCG.cginc"
+
+            fixed4 _PanelTint;
+            fixed4 _RimColor;
+            fixed4 _AccentColor;
+            float _Grain;
+            float _RimWidth;
+            float _CornerRadius;
+            float _AccentMix;
+
+            struct appdata
+            {
+                float4 vertex : POSITION;
+                float2 uv : TEXCOORD0;
+                fixed4 color : COLOR;
+                UNITY_VERTEX_INPUT_INSTANCE_ID
+            };
+
+            struct v2f
+            {
+                float4 position : SV_POSITION;
+                float2 uv : TEXCOORD0;
+                fixed4 color : COLOR;
+                UNITY_VERTEX_OUTPUT_STEREO
+            };
+
+            v2f vert(appdata input)
+            {
+                v2f output;
+                UNITY_SETUP_INSTANCE_ID(input);
+                UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
+                output.position = UnityObjectToClipPos(input.vertex);
+                output.uv = input.uv;
+                output.color = input.color;
+                return output;
+            }
+
+            float RoundedBoxSDF(float2 uv, float radius)
+            {
+                float2 p = abs(uv - 0.5) - (0.5 - radius);
+                float2 q = max(p, 0.0);
+                return length(q) +
+                    min(max(p.x, p.y), 0.0) - radius;
+            }
+
+            float GrainNoise(float2 uv)
+            {
+                float2 seed =
+                    uv * float2(443.897, 397.297) + _Time.y * 13.0;
+                return frac(
+                    sin(dot(seed, float2(12.9898, 78.233))) *
+                    43758.5453) - 0.5;
+            }
+
+            fixed4 frag(v2f input) : SV_Target
+            {
+                float radius = max(_CornerRadius, 1e-4);
+                float sdf = RoundedBoxSDF(input.uv, radius);
+                float aa = fwidth(sdf) + 1e-5;
+                float insideMask =
+                    1.0 - smoothstep(-aa, aa, sdf);
+                clip(insideMask - 1e-4);
+
+                float rimBand = 1.0 - smoothstep(
+                    0.0,
+                    _RimWidth * 0.03 + 1e-4,
+                    -sdf);
+                float rimInner = smoothstep(
+                    -_RimWidth * 0.045 - 1e-4,
+                    0.0,
+                    -sdf);
+                float rim = saturate(rimBand * rimInner);
+                fixed3 rimColor = lerp(
+                    _RimColor.rgb,
+                    _AccentColor.rgb,
+                    _AccentMix);
+                fixed3 color =
+                    _PanelTint.rgb +
+                    rimColor * rim * _RimColor.a +
+                    GrainNoise(input.uv) * _Grain;
+                fixed alpha = saturate(
+                    _PanelTint.a + rim * _RimColor.a) *
+                    insideMask * input.color.a;
+                return fixed4(color * input.color.rgb, alpha);
+            }
+            ENDCG
+        }
+    }
+
+    Fallback Off
 }

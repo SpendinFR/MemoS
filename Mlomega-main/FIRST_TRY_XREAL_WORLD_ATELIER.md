@@ -1,5 +1,11 @@
 # Première utilisation — XREAL World Atelier
 
+> **Gate matériel en pause au 31 juillet 2026.** L'Atelier démarre en 6DoF et
+> son menu peut rester ancré, mais le fond est encore violet et aucune action
+> de clic n'a été prouvée, y compris avec le fallback téléphone. Les étapes
+> ci-dessous décrivent la cible, pas encore un résultat certifié. Reprendre par
+> [`docs/BUILD_GUIDE_XREAL.md`](docs/BUILD_GUIDE_XREAL.md).
+
 Ce guide crée un décor FreeGuy/Blade Runner dans l'APK Atelier, l'exporte, puis
 le charge dans l'APK XREAL principale. Les deux applications restent séparées :
 l'Atelier n'ouvre ni micro, ni Eye WebRTC, ni Memory, ni session PC.

@@ -66,7 +66,7 @@ namespace MLOmega.XR.UI.Components.TaskAtoms
                 lr.loop = true;
                 lr.positionCount = Segments;
                 lr.numCornerVertices = 2;
-                lr.material = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+                lr.material = new Material(Shader.Find("MLOmega/XREAL Runtime Unlit"));
                 _candidates.Add(new Candidate
                 {
                     TrackId = id,

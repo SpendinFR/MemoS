@@ -31,6 +31,7 @@ namespace MLOmega.XR.UI
         System.Collections.Generic.IReadOnlyList<WorldMapSelection>
             CreatorMaps { get; }
         void EnableCreatorMode();
+        void BeginCreatorSpatialMapping();
         bool CreateCreatorMap(string displayName);
         bool SwitchCreatorMap(string mapId);
         bool DeleteCreatorMap(string mapId);

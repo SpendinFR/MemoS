@@ -25,7 +25,6 @@ Shader "MLOmega/GlassKawaseBlur"
         #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
         #include "Packages/com.unity.render-pipelines.core/Runtime/Utilities/Blit.hlsl"
 
-        float4 _BlitTexture_TexelSize; // set by URP for the bound blit source
         float  _Offset;
 
         // Kawase downsample: centre + 4 diagonal taps at _Offset spread.

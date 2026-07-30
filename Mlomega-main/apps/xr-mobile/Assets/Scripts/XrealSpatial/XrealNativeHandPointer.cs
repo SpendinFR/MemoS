@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using MLOmega.XR.UI.Components;
+using Unity.XR.XREAL;
 using Unity.XR.CoreUtils;
 using UnityEngine;
 using UnityEngine.EventSystems;
@@ -35,6 +36,13 @@ namespace MLOmega.XR.UI
         private Transform _cursor;
         private bool _pinching;
         private bool _hasSmoothedRay;
+        private bool _loggedRunningSubsystem;
+        private bool _loggedTrackedHand;
+        private bool _phoneControllerSubscribed;
+        private bool _phoneTouchActive;
+        private bool _phoneTriggerPressed;
+        private Vector2 _phonePointerViewport = new Vector2(.5f, .5f);
+        private XREALVirtualController _phoneController;
         private Vector3 _smoothedOrigin;
         private Vector3 _smoothedDirection;
         private float _nextSubsystemLookupAt;
@@ -52,6 +60,7 @@ namespace MLOmega.XR.UI
 
         private void OnDisable()
         {
+            UnsubscribePhoneController();
             ReleasePointer(false);
             SetCursorVisible(false);
         }
@@ -71,12 +80,16 @@ namespace MLOmega.XR.UI
         private void Update()
         {
             EnsurePointerInfrastructure();
+            EnsurePhoneController();
+            bool hasPointer = TryGetHandRay(
+                out Ray handRay,
+                out bool pinching);
+            if (!hasPointer)
+                hasPointer = TryGetPhonePointer(out handRay, out pinching);
             if (
                 _camera == null ||
                 _events == null ||
-                !TryGetHandRay(
-                    out Ray handRay,
-                    out bool pinching))
+                !hasPointer)
             {
                 ReleasePointer(false);
                 SetCursorVisible(false);
@@ -160,12 +173,149 @@ namespace MLOmega.XR.UI
             foreach (XRHandSubsystem subsystem in _subsystems)
             {
                 if (subsystem == null || !subsystem.running) continue;
+                if (!_loggedRunningSubsystem)
+                {
+                    Debug.Log(
+                        "[XrealNativeHandPointer] XR Hands subsystem running; " +
+                        "point with an index and pinch to select.");
+                    _loggedRunningSubsystem = true;
+                }
                 if (TryGetHandRay(subsystem.rightHand, out ray, out pinching))
+                {
+                    LogTrackedHandOnce("right");
                     return true;
+                }
                 if (TryGetHandRay(subsystem.leftHand, out ray, out pinching))
+                {
+                    LogTrackedHandOnce("left");
                     return true;
+                }
             }
             return false;
+        }
+
+        private void EnsurePhoneController()
+        {
+            if (
+                _phoneControllerSubscribed &&
+                _phoneController == XREALVirtualController.Singleton)
+                return;
+            UnsubscribePhoneController();
+            _phoneController = XREALVirtualController.Singleton;
+            if (_phoneController == null) return;
+            _phoneController.pointerDown += OnPhonePointerDown;
+            _phoneController.pointerUp += OnPhonePointerUp;
+            _phoneController.pointerDrag += OnPhonePointerDrag;
+            _phoneController.pointerEndDrag += OnPhonePointerEndDrag;
+            _phoneControllerSubscribed = true;
+            Debug.Log(
+                "[XrealNativeHandPointer] S24 touchpad fallback ready; " +
+                "drag to aim and tap to select.");
+        }
+
+        private void UnsubscribePhoneController()
+        {
+            if (_phoneController != null && _phoneControllerSubscribed)
+            {
+                _phoneController.pointerDown -= OnPhonePointerDown;
+                _phoneController.pointerUp -= OnPhonePointerUp;
+                _phoneController.pointerDrag -= OnPhonePointerDrag;
+                _phoneController.pointerEndDrag -= OnPhonePointerEndDrag;
+            }
+            _phoneControllerSubscribed = false;
+            _phoneController = null;
+            _phoneTouchActive = false;
+            _phoneTriggerPressed = false;
+        }
+
+        private void OnPhonePointerDown(
+            XREALButtonType type,
+            GameObject target,
+            PointerEventData eventData)
+        {
+            if (type == XREALButtonType.TriggerButton)
+                _phoneTriggerPressed = true;
+            if (type == XREALButtonType.Primary2DAxis)
+            {
+                _phoneTouchActive = true;
+                UpdatePhoneViewport(target, eventData);
+            }
+        }
+
+        private void OnPhonePointerUp(
+            XREALButtonType type,
+            GameObject target,
+            PointerEventData eventData)
+        {
+            if (type == XREALButtonType.TriggerButton)
+                _phoneTriggerPressed = false;
+        }
+
+        private void OnPhonePointerDrag(
+            XREALButtonType type,
+            GameObject target,
+            PointerEventData eventData)
+        {
+            if (type != XREALButtonType.Primary2DAxis) return;
+            _phoneTouchActive = true;
+            UpdatePhoneViewport(target, eventData);
+        }
+
+        private void OnPhonePointerEndDrag(
+            XREALButtonType type,
+            GameObject target,
+            PointerEventData eventData)
+        {
+            if (type == XREALButtonType.Primary2DAxis)
+                _phoneTouchActive = false;
+        }
+
+        private void UpdatePhoneViewport(
+            GameObject target,
+            PointerEventData eventData)
+        {
+            if (
+                target == null ||
+                eventData == null ||
+                !(target.transform is RectTransform rect) ||
+                !RectTransformUtility.ScreenPointToLocalPointInRectangle(
+                    rect,
+                    eventData.position,
+                    eventData.pressEventCamera,
+                    out Vector2 local))
+                return;
+            Rect bounds = rect.rect;
+            float x = Mathf.InverseLerp(bounds.xMin, bounds.xMax, local.x);
+            float y = Mathf.InverseLerp(bounds.yMin, bounds.yMax, local.y);
+            // Leave a small comfort margin so the cursor cannot disappear
+            // behind the optical display's edge.
+            _phonePointerViewport = new Vector2(
+                Mathf.Lerp(.06f, .94f, x),
+                Mathf.Lerp(.06f, .94f, y));
+        }
+
+        private bool TryGetPhonePointer(out Ray ray, out bool pressing)
+        {
+            ray = default;
+            pressing = false;
+            if (_camera == null || !_phoneControllerSubscribed) return false;
+            ray = _camera.ViewportPointToRay(new Vector3(
+                _phonePointerViewport.x,
+                _phonePointerViewport.y,
+                0f));
+            pressing = _phoneTriggerPressed;
+            // Keep the cursor visible at its last position so the user always
+            // knows what a tap will select, even between touch movements.
+            return true;
+        }
+
+        private void LogTrackedHandOnce(string handedness)
+        {
+            if (_loggedTrackedHand) return;
+            Debug.Log(
+                "[XrealNativeHandPointer] Native " + handedness +
+                " hand tracked; pinch interaction is active.");
+            _loggedTrackedHand = true;
         }
 
         private bool TryGetHandRay(
@@ -340,7 +490,7 @@ namespace MLOmega.XR.UI
             Collider collider = cursor.GetComponent<Collider>();
             if (collider != null) Destroy(collider);
             Renderer renderer = cursor.GetComponent<Renderer>();
-            Shader unlit = Shader.Find("Universal Render Pipeline/Unlit") ??
+            Shader unlit = Shader.Find("MLOmega/XREAL Runtime Unlit") ??
                 Shader.Find("Unlit/Color");
             if (renderer != null && unlit != null)
             {
