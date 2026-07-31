@@ -6,6 +6,7 @@ using Unity.XR.XREAL;
 using Unity.XR.CoreUtils;
 using UnityEngine;
 using UnityEngine.EventSystems;
+using UnityEngine.XR.ARSubsystems;
 using UnityEngine.XR.Hands;
 
 namespace MLOmega.XR.UI
@@ -33,6 +34,8 @@ namespace MLOmega.XR.UI
 
         private readonly List<XRHandSubsystem> _subsystems =
             new List<XRHandSubsystem>();
+        private readonly List<XREALSessionSubsystem> _sessionSubsystems =
+            new List<XREALSessionSubsystem>();
         private readonly List<RaycastResult> _uiHits =
             new List<RaycastResult>(16);
         private readonly RaycastHit[] _physicalUiHits = new RaycastHit[64];
@@ -60,13 +63,18 @@ namespace MLOmega.XR.UI
         private Vector3 _smoothedOrigin;
         private Vector3 _smoothedDirection;
         private float _nextSubsystemLookupAt;
+        private float _nextDeviceStatusAt;
         private bool _rayVisible;
+        private string _trackingStatus = "TRACKING // INITIALISATION";
+        private string _glassesTemperatureStatus = "XREAL // TEMP NORMALE";
         private const string RayVisiblePreference =
             "mlomega.atelier.eye_ray_visible.v1";
 
         public bool IsRayVisible => _rayVisible;
         public bool IsGestureStandby =>
             _eyeGestures != null && _eyeGestures.IsInteractionStandby;
+        public string TrackingStatus => _trackingStatus;
+        public string GlassesTemperatureStatus => _glassesTemperatureStatus;
 
         private void Awake()
         {
@@ -112,6 +120,10 @@ namespace MLOmega.XR.UI
 
         private void OnEnable()
         {
+            XREALCallbackHandler.OnXREALGlassesTemperatureLevel -=
+                OnGlassesTemperatureLevel;
+            XREALCallbackHandler.OnXREALGlassesTemperatureLevel +=
+                OnGlassesTemperatureLevel;
             if (_eyeGestures == null)
                 _eyeGestures = FindAnyObjectByType<GestureBridge>();
             if (_eyeGestures != null)
@@ -127,6 +139,8 @@ namespace MLOmega.XR.UI
 
         private void OnDisable()
         {
+            XREALCallbackHandler.OnXREALGlassesTemperatureLevel -=
+                OnGlassesTemperatureLevel;
             if (_modelInstaller != null)
                 _modelInstaller.Completed -= ActivateEyeGestures;
             if (_eyeGestures != null)
@@ -158,6 +172,7 @@ namespace MLOmega.XR.UI
 
         private void Update()
         {
+            UpdateDeviceStatus();
             EnsurePointerInfrastructure();
             if (_allowPhoneController)
                 EnsurePhoneController();
@@ -310,6 +325,52 @@ namespace MLOmega.XR.UI
                 _deckPinchClaimed = false;
             }
             _pinching = pinching;
+        }
+
+        private void UpdateDeviceStatus()
+        {
+            if (Time.unscaledTime < _nextDeviceStatusAt) return;
+            _nextDeviceStatusAt = Time.unscaledTime + .75f;
+            _sessionSubsystems.Clear();
+            SubsystemManager.GetSubsystems(_sessionSubsystems);
+            XREALSessionSubsystem session = null;
+            for (int i = 0; i < _sessionSubsystems.Count; i++)
+            {
+                if (_sessionSubsystems[i] == null) continue;
+                session = _sessionSubsystems[i];
+                if (session.running) break;
+            }
+            if (session == null)
+            {
+                _trackingStatus = "TRACKING // INDISPONIBLE";
+                return;
+            }
+            if (session.trackingState == TrackingState.Tracking)
+            {
+                _trackingStatus = "TRACKING // OK";
+                return;
+            }
+            string reason = session.notTrackingReason switch
+            {
+                NotTrackingReason.InsufficientLight => "LUMIÈRE INSUFFISANTE",
+                NotTrackingReason.InsufficientFeatures => "PEU DE REPÈRES",
+                NotTrackingReason.ExcessiveMotion => "MOUVEMENT EXCESSIF",
+                NotTrackingReason.Relocalizing => "RELOCALISATION",
+                NotTrackingReason.Initializing => "INITIALISATION",
+                NotTrackingReason.CameraUnavailable => "CAMÉRA INDISPONIBLE",
+                _ => session.trackingState.ToString().ToUpperInvariant(),
+            };
+            _trackingStatus = "TRACKING // " + reason;
+        }
+
+        private void OnGlassesTemperatureLevel(XREALTemperatureLevel level)
+        {
+            _glassesTemperatureStatus = level switch
+            {
+                XREALTemperatureLevel.LEVEL_HOT => "XREAL // TEMP ÉLEVÉE",
+                XREALTemperatureLevel.LEVEL_WARM => "XREAL // TEMP TIÈDE",
+                _ => "XREAL // TEMP NORMALE",
+            };
         }
 
         private void ActivateEyeGestures()

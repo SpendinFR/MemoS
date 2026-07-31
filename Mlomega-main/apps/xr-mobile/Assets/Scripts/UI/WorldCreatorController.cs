@@ -99,6 +99,10 @@ namespace MLOmega.XR.UI
         private RectTransform _settingsDeckRect;
         private TextMeshProUGUI _settingsGestureLabel;
         private TextMeshProUGUI _settingsRayLabel;
+        private TextMeshProUGUI _settingsWindowModeLabel;
+        private TextMeshProUGUI _settingsAudioLabel;
+        private TextMeshProUGUI _settingsDeviceLabel;
+        private TextMeshProUGUI _settingsTrackingLabel;
         private Image _settingsMoveHandle;
         private Image _settingsResizeHandle;
         private TextMeshProUGUI _settingsCloseHandle;
@@ -122,6 +126,8 @@ namespace MLOmega.XR.UI
         private Quaternion _deckManipulationTargetRotation;
         private float _deckManipulationTargetScale;
         private bool _deckManipulationSmoothing;
+        private bool _headFollowWindows;
+        private float _nextSettingsTelemetryAt;
         private RectTransform _activeManipulationRect;
         private DeckWindowKind _hoverWindow;
         private DeckWindowKind _activeWindow;
@@ -132,6 +138,8 @@ namespace MLOmega.XR.UI
             "mlomega.atelier.deck_layout.v1.";
         private const string SettingsLayoutPrefix =
             "mlomega.atelier.settings_layout.v1.";
+        private const string WindowModePreference =
+            "mlomega.atelier.window_mode.v1";
         private static readonly string[] DynamicKinds =
         {
             "object", "vehicle", "storefront", "sign", "building", "person",
@@ -178,6 +186,8 @@ namespace MLOmega.XR.UI
                     GetComponent<WorldMapDocumentExchange>() ??
                     gameObject.AddComponent<WorldMapDocumentExchange>();
             ResolveInteractionSettings();
+            _headFollowWindows =
+                PlayerPrefs.GetInt(WindowModePreference, 0) == 1;
             if (_spatialBehaviour == null)
             {
                 foreach (MonoBehaviour behaviour in FindObjectsByType<MonoBehaviour>(
@@ -228,6 +238,8 @@ namespace MLOmega.XR.UI
         {
             UpdateGestureToast();
             SmoothDeckManipulation();
+            UpdateWindowFollowMode();
+            UpdateSettingsTelemetry();
             if (
                 Spatial == null ||
                 Time.unscaledTime < _nextPreviewAt)
@@ -1574,6 +1586,48 @@ namespace MLOmega.XR.UI
             _deckPoseInitialized = true;
         }
 
+        private void UpdateWindowFollowMode()
+        {
+            if (
+                !_headFollowWindows ||
+                _camera == null ||
+                _deckManipulationMode != DeckManipulationMode.None)
+                return;
+            if (!_deckMinimized)
+                FollowWindowFromSavedLayout(
+                    _spatialDeckRect,
+                    DeckLayoutPrefix,
+                    new Vector3(-.18f, .11f, 1.12f));
+            if (_settingsDeck != null && _settingsDeck.gameObject.activeSelf)
+                FollowWindowFromSavedLayout(
+                    _settingsDeckRect,
+                    SettingsLayoutPrefix,
+                    new Vector3(-.32f, .20f, .92f));
+        }
+
+        private void FollowWindowFromSavedLayout(
+            RectTransform window,
+            string prefix,
+            Vector3 fallbackLocal)
+        {
+            if (window == null || _camera == null) return;
+            Vector3 local = PlayerPrefs.HasKey(prefix + "x")
+                ? new Vector3(
+                    PlayerPrefs.GetFloat(prefix + "x"),
+                    PlayerPrefs.GetFloat(prefix + "y"),
+                    PlayerPrefs.GetFloat(prefix + "z", fallbackLocal.z))
+                : fallbackLocal;
+            Vector3 target = _camera.transform.TransformPoint(local);
+            Vector3 forward = (target - _camera.transform.position).normalized;
+            Vector3 up = Mathf.Abs(Vector3.Dot(forward, Vector3.up)) > .96f
+                ? _camera.transform.up
+                : Vector3.up;
+            Quaternion rotation = Quaternion.LookRotation(forward, up);
+            float blend = 1f - Mathf.Exp(-14f * Time.unscaledDeltaTime);
+            window.position = Vector3.Lerp(window.position, target, blend);
+            window.rotation = Quaternion.Slerp(window.rotation, rotation, blend);
+        }
+
         private void SaveWindowLayout(
             DeckWindowKind window,
             Vector3 worldPosition,
@@ -1605,44 +1659,107 @@ namespace MLOmega.XR.UI
             _settingsDeck.sortingOrder = 110;
             go.AddComponent<GraphicRaycaster>();
             _settingsDeckRect = go.GetComponent<RectTransform>();
-            _settingsDeckRect.sizeDelta = new Vector2(430f, 300f);
+            _settingsDeckRect.sizeDelta = new Vector2(560f, 690f);
             _settingsDeckRect.localScale = Vector3.one * .00062f;
 
             MakeText(
                 _settingsDeckRect,
-                "PARAMÈTRES // INTERACTION",
-                new Vector2(0f, 105f),
-                new Vector2(390f, 48f),
+                "PARAMÈTRES // XREAL",
+                new Vector2(0f, 305f),
+                new Vector2(510f, 48f),
                 25f,
                 new Color(.35f, 1f, .94f),
                 FontStyles.Bold);
+            _settingsDeviceLabel = MakeText(
+                _settingsDeckRect,
+                "--:-- • TEL --% • XREAL // TEMP NORMALE",
+                new Vector2(0f, 260f),
+                new Vector2(520f, 34f),
+                14f,
+                new Color(.72f, .94f, 1f));
+            Button windowMode = MakeButton(
+                _settingsDeckRect,
+                "FENÊTRES",
+                new Vector2(0f, 202f),
+                new Vector2(470f, 52f),
+                ToggleWindowMode);
+            _settingsWindowModeLabel =
+                windowMode.GetComponentInChildren<TextMeshProUGUI>();
             Button gestures = MakeButton(
                 _settingsDeckRect,
                 "GESTES",
-                new Vector2(0f, 32f),
-                new Vector2(360f, 58f),
+                new Vector2(0f, 139f),
+                new Vector2(470f, 52f),
                 ToggleGesturePower);
             _settingsGestureLabel =
                 gestures.GetComponentInChildren<TextMeshProUGUI>();
             Button ray = MakeButton(
                 _settingsDeckRect,
                 "RAYON EYE",
-                new Vector2(0f, -48f),
-                new Vector2(360f, 58f),
+                new Vector2(0f, 76f),
+                new Vector2(470f, 52f),
                 ToggleEyeRay);
             _settingsRayLabel =
                 ray.GetComponentInChildren<TextMeshProUGUI>();
+            MakeButton(
+                _settingsDeckRect,
+                "−",
+                new Vector2(-190f, 13f),
+                new Vector2(90f, 52f),
+                () => AdjustMediaVolume(-1));
+            _settingsAudioLabel = MakeText(
+                _settingsDeckRect,
+                "AUDIO SYSTÈME // --%",
+                new Vector2(0f, 13f),
+                new Vector2(260f, 46f),
+                16f,
+                new Color(.84f, .96f, 1f),
+                FontStyles.Bold);
+            MakeButton(
+                _settingsDeckRect,
+                "+",
+                new Vector2(190f, 13f),
+                new Vector2(90f, 52f),
+                () => AdjustMediaVolume(1));
+            MakeButton(
+                _settingsDeckRect,
+                "RECENTRER UI",
+                new Vector2(-120f, -57f),
+                new Vector2(225f, 52f),
+                RecenterAllWindows);
+            MakeButton(
+                _settingsDeckRect,
+                "FERMER TOUT",
+                new Vector2(120f, -57f),
+                new Vector2(225f, 52f),
+                CloseAllWindows);
+            _settingsTrackingLabel = MakeText(
+                _settingsDeckRect,
+                "TRACKING // INITIALISATION",
+                new Vector2(0f, -118f),
+                new Vector2(510f, 38f),
+                15f,
+                new Color(.35f, 1f, .72f),
+                FontStyles.Bold);
             MakeText(
                 _settingsDeckRect,
-                "LE CURSEUR RESTE ACTIF QUAND LE RAYON EST COUPÉ",
-                new Vector2(0f, -112f),
-                new Vector2(390f, 34f),
+                "BRILLANCE / ASSOMBRISSEMENT : BOUTONS XREAL\n" +
+                "AUCUN FAUX FILTRE SOMBRE",
+                new Vector2(0f, -175f),
+                new Vector2(510f, 58f),
                 13f,
+                new Color(.62f, .82f, 1f));
+            MakeText(
+                _settingsDeckRect,
+                "SUIVI TÊTE = CHOIX MANUEL • PAS DE BASCULE AUTO",
+                new Vector2(0f, -225f),
+                new Vector2(510f, 30f),
+                12f,
                 new Color(.62f, .82f, 1f));
             _settingsMoveHandle = MakeImage(
                 _settingsDeckRect,
                 "Settings gaze move handle",
-                new Vector2(0f, -145f),
+                new Vector2(0f, -337f),
                 new Vector2(120f, 9f),
                 new Color(.25f, 1f, .92f, .92f));
             _settingsMoveHandle.raycastTarget = false;
@@ -1650,7 +1767,7 @@ namespace MLOmega.XR.UI
             _settingsResizeHandle = MakeImage(
                 _settingsDeckRect,
                 "Settings gaze resize handle",
-                new Vector2(-205f, -138f),
+                new Vector2(-267f, -330f),
                 new Vector2(20f, 20f),
                 new Color(.72f, .36f, 1f, .94f));
             _settingsResizeHandle.rectTransform.localRotation =
@@ -1660,7 +1777,7 @@ namespace MLOmega.XR.UI
             _settingsCloseHandle = MakeText(
                 _settingsDeckRect,
                 "×",
-                new Vector2(205f, 138f),
+                new Vector2(267f, 330f),
                 new Vector2(34f, 34f),
                 28f,
                 new Color(.35f, 1f, .94f, .98f),
@@ -1768,6 +1885,205 @@ namespace MLOmega.XR.UI
             RefreshSpatialDeck();
         }
 
+        private void ToggleWindowMode()
+        {
+            if (_camera == null) return;
+            SaveVisibleWindowLayouts();
+            _headFollowWindows = !_headFollowWindows;
+            PlayerPrefs.SetInt(
+                WindowModePreference,
+                _headFollowWindows ? 1 : 0);
+            PlayerPrefs.Save();
+            _status = _headFollowWindows
+                ? "FENÊTRES // SUIVI TÊTE MANUEL"
+                : "FENÊTRES // ANCRAGE 6DOF";
+            RefreshSettingsDeck();
+            ShowGestureToast(
+                _headFollowWindows
+                    ? "SUIVI TÊTE ACTIF"
+                    : "ANCRAGE 6DOF ACTIF",
+                new Color(.35f, 1f, .94f));
+        }
+
+        private void SaveVisibleWindowLayouts()
+        {
+            if (!_deckMinimized && _spatialDeckRect != null)
+                SaveWindowLayout(
+                    DeckWindowKind.Workspace,
+                    _spatialDeckRect.position,
+                    _spatialDeckRect.localScale.x);
+            if (_settingsDeck != null && _settingsDeck.gameObject.activeSelf)
+                SaveWindowLayout(
+                    DeckWindowKind.Settings,
+                    _settingsDeckRect.position,
+                    _settingsDeckRect.localScale.x);
+        }
+
+        private void RecenterAllWindows()
+        {
+            if (_camera == null) return;
+            bool workspaceVisible = !_deckMinimized && _spatialDeckRect != null;
+            bool settingsVisible =
+                _settingsDeck != null && _settingsDeck.gameObject.activeSelf;
+            if (workspaceVisible)
+                PlaceWindowAtCameraLocal(
+                    _spatialDeckRect,
+                    settingsVisible
+                        ? new Vector3(-.24f, .04f, 1.12f)
+                        : new Vector3(0f, .04f, 1.12f));
+            if (settingsVisible)
+                PlaceWindowAtCameraLocal(
+                    _settingsDeckRect,
+                    workspaceVisible
+                        ? new Vector3(.34f, .09f, 1.02f)
+                        : new Vector3(0f, .06f, .96f));
+            if (_windowDock != null && _windowDock.gameObject.activeSelf)
+                PlaceWindowAtCameraLocal(
+                    _windowDockRect,
+                    new Vector3(0f, 0f, .82f));
+            SaveVisibleWindowLayouts();
+            ShowGestureToast(
+                "FENÊTRES RECENTRÉES",
+                new Color(.35f, 1f, .94f));
+        }
+
+        private void PlaceWindowAtCameraLocal(
+            RectTransform window,
+            Vector3 local)
+        {
+            if (window == null || _camera == null) return;
+            Vector3 position = _camera.transform.TransformPoint(local);
+            Vector3 forward = (position - _camera.transform.position).normalized;
+            Vector3 up = Mathf.Abs(Vector3.Dot(forward, Vector3.up)) > .96f
+                ? _camera.transform.up
+                : Vector3.up;
+            window.SetPositionAndRotation(
+                position,
+                Quaternion.LookRotation(forward, up));
+            _deckManipulationSmoothing = false;
+        }
+
+        private void CloseAllWindows()
+        {
+            if (_deckManipulationMode != DeckManipulationMode.None)
+                EndDeckManipulation();
+            SetDeckMinimized(true);
+            if (_settingsDeck != null)
+                _settingsDeck.gameObject.SetActive(false);
+            if (_windowDock != null)
+                _windowDock.gameObject.SetActive(false);
+            SetDeckHandleVisuals(
+                DeckManipulationMode.None,
+                DeckWindowKind.None);
+            ShowGestureToast(
+                "UI FERMÉE // PAUME POUR RAPPELER",
+                new Color(.35f, 1f, .94f));
+        }
+
+        private void AdjustMediaVolume(int direction)
+        {
+            TryAdjustAndroidMediaVolume(direction);
+            _nextSettingsTelemetryAt = 0f;
+            UpdateSettingsTelemetry();
+        }
+
+        private static void TryAdjustAndroidMediaVolume(int direction)
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                using var unity = new AndroidJavaClass(
+                    "com.unity3d.player.UnityPlayer");
+                using AndroidJavaObject activity =
+                    unity.GetStatic<AndroidJavaObject>("currentActivity");
+                using AndroidJavaObject audio =
+                    activity.Call<AndroidJavaObject>(
+                        "getSystemService",
+                        "audio");
+                const int streamMusic = 3;
+                const int flags = 0;
+                audio.Call(
+                    "adjustStreamVolume",
+                    streamMusic,
+                    direction > 0 ? 1 : -1,
+                    flags);
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning(
+                    "[WorldCreator] Android media volume unavailable: " +
+                    exception.Message);
+            }
+#else
+            AudioListener.volume = Mathf.Clamp01(
+                AudioListener.volume + direction * .1f);
+#endif
+        }
+
+        private static int ReadMediaVolumePercent()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                using var unity = new AndroidJavaClass(
+                    "com.unity3d.player.UnityPlayer");
+                using AndroidJavaObject activity =
+                    unity.GetStatic<AndroidJavaObject>("currentActivity");
+                using AndroidJavaObject audio =
+                    activity.Call<AndroidJavaObject>(
+                        "getSystemService",
+                        "audio");
+                const int streamMusic = 3;
+                int current = audio.Call<int>("getStreamVolume", streamMusic);
+                int maximum = audio.Call<int>("getStreamMaxVolume", streamMusic);
+                return maximum <= 0
+                    ? 0
+                    : Mathf.RoundToInt(current * 100f / maximum);
+            }
+            catch
+            {
+                return -1;
+            }
+#else
+            return Mathf.RoundToInt(AudioListener.volume * 100f);
+#endif
+        }
+
+        private void UpdateSettingsTelemetry()
+        {
+            if (
+                _settingsDeck == null ||
+                !_settingsDeck.gameObject.activeSelf ||
+                Time.unscaledTime < _nextSettingsTelemetryAt)
+                return;
+            _nextSettingsTelemetryAt = Time.unscaledTime + 1f;
+            ResolveInteractionSettings();
+            float batteryLevel = SystemInfo.batteryLevel;
+            string battery = batteryLevel < 0f
+                ? "--"
+                : Mathf.RoundToInt(batteryLevel * 100f).ToString();
+            string temperature = _interactionSettings?.GlassesTemperatureStatus ??
+                "XREAL // TEMP --";
+            if (_settingsDeviceLabel != null)
+                _settingsDeviceLabel.text =
+                    DateTime.Now.ToString("HH:mm") +
+                    " • TEL " + battery + "% • " + temperature;
+            int volume = ReadMediaVolumePercent();
+            if (_settingsAudioLabel != null)
+                _settingsAudioLabel.text = volume < 0
+                    ? "AUDIO SYSTÈME // --%"
+                    : "AUDIO SYSTÈME // " + volume + "%";
+            if (_settingsTrackingLabel != null)
+            {
+                string tracking = _interactionSettings?.TrackingStatus ??
+                    "TRACKING // INDISPONIBLE";
+                _settingsTrackingLabel.text = tracking;
+                _settingsTrackingLabel.color = tracking.EndsWith("OK")
+                    ? new Color(.35f, 1f, .72f)
+                    : new Color(1f, .72f, .24f);
+            }
+        }
+
         private void RefreshSettingsDeck()
         {
             ResolveInteractionSettings();
@@ -1783,6 +2099,12 @@ namespace MLOmega.XR.UI
                     _interactionSettings.IsRayVisible
                         ? "RAYON EYE // ACTIF"
                         : "RAYON EYE // COUPÉ";
+            if (_settingsWindowModeLabel != null)
+                _settingsWindowModeLabel.text = _headFollowWindows
+                    ? "FENÊTRES // SUIVI TÊTE"
+                    : "FENÊTRES // ANCRAGE 6DOF";
+            _nextSettingsTelemetryAt = 0f;
+            UpdateSettingsTelemetry();
         }
 
         private void ResolveInteractionSettings()

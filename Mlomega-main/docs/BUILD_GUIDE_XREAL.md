@@ -1,6 +1,6 @@
 # Build guide XREAL — S24 + One Pro + Eye
 
-Dernière mise à jour : 31 juillet 2026.
+Dernière mise à jour : 1er août 2026.
 
 Ce document est le point de reprise technique autoritaire pour les deux APK
 XREAL de MLOmega :
@@ -631,6 +631,35 @@ Le slot nul observé lors de la réinjection du prefab XRI officiel est normal
 pour certains scripts optionnels absents du player : le builder doit ignorer ces
 slots avant d'inspecter leur type. Le plugin Android doit être reconstruit avec
 `scripts/BUILD_ANDROID_PLUGINS.ps1` après toute modification des gestes Kotlin.
+
+### 8.10 Jalon matériel controls-v8 : réglages système sûrs
+
+Gate réel One Pro + Eye/S24 validé le 1er août 2026 :
+
+- le panneau Réglages affiche l'heure, la batterie du S24, l'état de tracking
+  XREAL et le niveau thermique publié par le SDK ;
+- le volume `STREAM_MUSIC` Android est réellement réglable par `−/+` ;
+- `ANCRAGE 6DOF` conserve le comportement world-locked validé et
+  `SUIVI TÊTE` est un choix manuel persistant, jamais une bascule automatique ;
+- `RECENTRER UI` replace les fenêtres ouvertes dans des poses confortables et
+  sauvegarde leurs nouvelles dispositions ;
+- `FERMER TOUT` supprime réellement Pupitre, Réglages et dock ; une paume les
+  rappelle par le chemin v7 ;
+- pinch, déplacement, resize, dock deux-paumes, transparence et fermeture v7
+  restent verts.
+
+Luminosité et électrochromie ne sont volontairement pas simulées par un voile
+sombre. Le SDK public 3.1 ne fournit qu'une télémétrie de changement ; toute
+commande privée doit rester un spike matériel séparé avant d'entrer dans cette
+version de référence.
+
+Artefact matériel validé, à conserver comme rollback :
+
+```text
+apps/xr-mobile/build/android/mlomega-xreal-world-atelier-controls-v8.apk
+taille = 223743852 octets
+sha256 = 1854371B54B412AFAF8BD4AE249CFC21B50065932B9D4A10B9E868FEF3B05568
+```
 
 ## 9. APK produit : travail explicitement restant
 

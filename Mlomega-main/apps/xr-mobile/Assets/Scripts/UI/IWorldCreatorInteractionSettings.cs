@@ -9,6 +9,8 @@ namespace MLOmega.XR.UI
     {
         bool IsGestureStandby { get; }
         bool IsRayVisible { get; }
+        string TrackingStatus { get; }
+        string GlassesTemperatureStatus { get; }
         void SetGestureStandby(bool standby);
         void ToggleRayVisible();
     }
