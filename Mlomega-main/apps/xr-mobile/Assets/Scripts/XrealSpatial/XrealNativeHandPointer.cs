@@ -274,6 +274,10 @@ namespace MLOmega.XR.UI
                 case GestureKind.PinchEnd:
                     _eyePinching = false;
                     break;
+                case GestureKind.OpenPalmMenu:
+                    if (_creator != null)
+                        _creator.OpenDeckFromPalm();
+                    break;
             }
         }
 

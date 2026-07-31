@@ -20,8 +20,10 @@ import kotlin.math.sqrt
  * remains unchanged, while the Atelier uses the lighter HandLandmarker path
  * proven on this exact glasses/camera family by Xreal-tools. Detection follows
  * the same robust geometry: 3D distance(thumb tip,index tip) divided by
- * distance(wrist,index MCP), EMA 0.5, hysteresis 0.28/0.38 and 3/2-frame
- * asymmetric debounce. Apache-2.0 reference:
+ * distance(wrist,index MCP), EMA 0.5, hysteresis 0.28/0.38 and 2/2-frame
+ * asymmetric debounce. A held, fully-open palm also emits the existing
+ * OPEN_PALM_MENU contract without loading the heavier GestureRecognizer.
+ * Apache-2.0 reference:
  * https://github.com/nudou350/Xreal-tools
  */
 class EyePinchPipeline(
@@ -41,6 +43,8 @@ class EyePinchPipeline(
     private var missingFrames = 0
     private var resultCount = 0L
     private var lastDiagnosticMs = Long.MIN_VALUE
+    private var palmSinceMs = -1L
+    private var palmFired = false
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
@@ -102,6 +106,7 @@ class EyePinchPipeline(
             val hands = result.landmarks()
             if (hands.isEmpty() || hands[0].size <= INDEX_TIP) {
                 missingFrames++
+                resetPalm()
                 if (pinched && missingFrames >= RELEASE_FRAMES) {
                     callbacks.onGesture(GestureKind.PINCH_END, 1f, -1f, -1f, ts)
                     resetPinch()
@@ -122,9 +127,62 @@ class EyePinchPipeline(
             val x = (thumb.x() + index.x()) * .5f
             val y = (thumb.y() + index.y()) * .5f
             evaluatePinch(ema, x, y, ts)
+            evaluatePalm(isOpenPalm(hand), x, y, ts)
             logDiagnostic(ts, true, ema, x, y)
         } finally {
             image.close()
+        }
+    }
+
+    /**
+     * Rotation-independent open-palm check. Each of the four long fingers must
+     * be straight at its PIP joint and extend away from the wrist. Requiring all
+     * four fingers, a non-pinched hand and a timed hold avoids opening the deck
+     * during an ordinary point or click.
+     */
+    private fun isOpenPalm(hand: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>): Boolean {
+        if (pinched || candidate == true || hand.size <= PINKY_TIP) return false
+        val wrist = hand[WRIST]
+
+        fun extended(mcpIndex: Int, pipIndex: Int, tipIndex: Int): Boolean {
+            val mcp = hand[mcpIndex]
+            val pip = hand[pipIndex]
+            val tip = hand[tipIndex]
+            val aX = mcp.x() - pip.x()
+            val aY = mcp.y() - pip.y()
+            val aZ = mcp.z() - pip.z()
+            val bX = tip.x() - pip.x()
+            val bY = tip.y() - pip.y()
+            val bZ = tip.z() - pip.z()
+            val aLen = sqrt(aX * aX + aY * aY + aZ * aZ)
+            val bLen = sqrt(bX * bX + bY * bY + bZ * bZ)
+            if (aLen < 1e-4f || bLen < 1e-4f) return false
+            val straightness = (aX * bX + aY * bY + aZ * bZ) / (aLen * bLen)
+            val tipRadius = dist3(
+                tip.x(), tip.y(), tip.z(), wrist.x(), wrist.y(), wrist.z(),
+            )
+            val pipRadius = dist3(
+                pip.x(), pip.y(), pip.z(), wrist.x(), wrist.y(), wrist.z(),
+            )
+            return straightness <= PALM_STRAIGHT_DOT &&
+                tipRadius >= pipRadius * PALM_EXTENSION_RATIO
+        }
+
+        return extended(INDEX_MCP, INDEX_PIP, INDEX_TIP) &&
+            extended(MIDDLE_MCP, MIDDLE_PIP, MIDDLE_TIP) &&
+            extended(RING_MCP, RING_PIP, RING_TIP) &&
+            extended(PINKY_MCP, PINKY_PIP, PINKY_TIP)
+    }
+
+    private fun evaluatePalm(open: Boolean, x: Float, y: Float, ts: Long) {
+        if (!open) {
+            resetPalm()
+            return
+        }
+        if (palmSinceMs < 0L) palmSinceMs = ts
+        if (!palmFired && ts - palmSinceMs >= config.palm.minHoldMs) {
+            palmFired = true
+            callbacks.onGesture(GestureKind.OPEN_PALM_MENU, 0f, x, y, ts)
         }
     }
 
@@ -172,6 +230,12 @@ class EyePinchPipeline(
         candidate = null
         candidateFrames = 0
         missingFrames = 0
+        resetPalm()
+    }
+
+    private fun resetPalm() {
+        palmSinceMs = -1L
+        palmFired = false
     }
 
     private fun logDiagnostic(ts: Long, hand: Boolean, ratio: Float, x: Float, y: Float) {
@@ -193,11 +257,23 @@ class EyePinchPipeline(
         private const val WRIST = 0
         private const val THUMB_TIP = 4
         private const val INDEX_MCP = 5
+        private const val INDEX_PIP = 6
         private const val INDEX_TIP = 8
+        private const val MIDDLE_MCP = 9
+        private const val MIDDLE_PIP = 10
+        private const val MIDDLE_TIP = 12
+        private const val RING_MCP = 13
+        private const val RING_PIP = 14
+        private const val RING_TIP = 16
+        private const val PINKY_MCP = 17
+        private const val PINKY_PIP = 18
+        private const val PINKY_TIP = 20
         private const val ENTER_THRESHOLD = .28f
         private const val EXIT_THRESHOLD = .38f
         private const val EMA_ALPHA = .5f
-        private const val ENGAGE_FRAMES = 3
+        private const val ENGAGE_FRAMES = 2
         private const val RELEASE_FRAMES = 2
+        private const val PALM_STRAIGHT_DOT = -.62f
+        private const val PALM_EXTENSION_RATIO = 1.08f
     }
 }

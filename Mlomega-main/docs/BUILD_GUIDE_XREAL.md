@@ -471,6 +471,32 @@ Prochain lot borné, après ce jalon : réduire la latence d'engagement sans fau
 clics, lisser la manipulation world-space, ajouter une poignée haute-droite de
 réduction/fermeture, puis évaluer le geste paume ouverte pour rappeler le menu.
 
+### 8.5 Jalon matériel controls-v2 : paume, réduction et manipulation
+
+Gate réel One Pro + Eye/S24 validé le 31 juillet 2026 :
+
+- la paume ouverte tenue rappelle réellement le pupitre ;
+- la poignée haute-droite réduit réellement le pupitre ;
+- le pinch engage en deux résultats MediaPipe au lieu de trois ;
+- déplacement et resize sont interpolés à la cadence Unity plutôt qu'aux seuls
+  retours du HandLandmarker ;
+- la base caméra et les axes sont figés au début de la prise, ce qui supprime une
+  partie des sauts observés pendant la manipulation ;
+- clics et ancrage world-space du jalon `17e31dc` restent verts.
+
+Les deux APK doivent rester disponibles pendant les réglages suivants :
+
+- baseline : `mlomega-xreal-world-atelier-17e31dc.apk` ;
+- candidate validée : `mlomega-xreal-world-atelier-controls-v2.apk`.
+
+Limites mesurées, et non faux-verts : le chip réduit reste visible, le pinch
+profond peut encore attendre deux inférences et un déplacement tenu ne suit pas
+encore une grande rotation de tête. La v3 doit donc être une variante séparée :
+réduction totalement invisible restaurée par paume, engagement immédiat seulement
+pour un pinch très nettement fermé, et transport 360° de la pose initiale par le
+delta de rotation de la tête. Le relâchement doit toujours laisser le pupitre
+ancré dans le monde.
+
 ## 9. APK produit : travail explicitement restant
 
 Après correction et preuve de l'Atelier :

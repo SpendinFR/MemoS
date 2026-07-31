@@ -75,6 +75,8 @@ namespace MLOmega.XR.UI
             new List<Button>();
         private readonly List<Graphic> _deckHitGraphics =
             new List<Graphic>();
+        private readonly List<GameObject> _deckExpandedRoots =
+            new List<GameObject>();
         private TextMeshProUGUI _deckPage;
         private TextMeshProUGUI _deckScale;
         private TextMeshProUGUI _deckAsset;
@@ -88,14 +90,23 @@ namespace MLOmega.XR.UI
         private TMP_InputField _deckTarget;
         private Image _deckMoveHandle;
         private Image _deckResizeHandle;
+        private Image _deckMinimizeHandle;
+        private Button _deckRestoreChip;
+        private bool _deckMinimized;
         private DeckManipulationMode _deckHoverMode;
         private DeckManipulationMode _deckManipulationMode;
         private Vector2 _deckManipulationStartHand;
         private Vector3 _deckManipulationStartPosition;
+        private Vector3 _deckManipulationStartCameraPosition;
         private Vector3 _deckManipulationStartDirection;
+        private Vector3 _deckManipulationStartRight;
+        private Vector3 _deckManipulationStartUp;
         private float _deckManipulationStartDistance;
         private float _deckManipulationStartScale;
         private float _deckManipulationStartZoom;
+        private Vector3 _deckManipulationTargetPosition;
+        private float _deckManipulationTargetScale;
+        private bool _deckManipulationSmoothing;
         private static Material _deckDepthMaterial;
         private static Material _deckPrimaryDepthMaterial;
         private static readonly string[] DynamicKinds =
@@ -116,6 +127,7 @@ namespace MLOmega.XR.UI
             None = 0,
             Move = 1,
             Resize = 2,
+            Minimize = 3,
         }
 
         public bool IsDeckManipulating =>
@@ -170,6 +182,7 @@ namespace MLOmega.XR.UI
 
         private void Update()
         {
+            SmoothDeckManipulation();
             if (
                 Spatial == null ||
                 Time.unscaledTime < _nextPreviewAt)
@@ -734,6 +747,45 @@ namespace MLOmega.XR.UI
                 Quaternion.Euler(0f, 0f, 45f);
             _deckResizeHandle.raycastTarget = false;
             _deckResizeHandle.gameObject.SetActive(false);
+
+            // The top-right affordance is intentionally gaze-revealed like the
+            // move/resize handles. A pinch minimizes the dense deck; the compact
+            // restore chip and the open-palm gesture can bring it back.
+            _deckMinimizeHandle = MakeImage(
+                _spatialDeckRect,
+                "Gaze minimize handle",
+                new Vector2(438f, 592f),
+                new Vector2(34f, 8f),
+                new Color(.35f, 1f, .94f, .94f));
+            _deckMinimizeHandle.raycastTarget = false;
+            _deckMinimizeHandle.gameObject.SetActive(false);
+
+            _deckExpandedRoots.Clear();
+            for (int i = 0; i < _spatialDeckRect.childCount; i++)
+                _deckExpandedRoots.Add(
+                    _spatialDeckRect.GetChild(i).gameObject);
+
+            Image restore = MakeImage(
+                _spatialDeckRect,
+                "Atelier minimized restore chip",
+                Vector2.zero,
+                new Vector2(270f, 58f),
+                new Color(.02f, .22f, .25f, .46f));
+            _deckRestoreChip = restore.gameObject.AddComponent<Button>();
+            var restoreCollider = restore.gameObject.AddComponent<BoxCollider>();
+            restoreCollider.center = Vector3.zero;
+            restoreCollider.size = new Vector3(270f, 58f, 14f);
+            _deckRestoreChip.onClick.AddListener(() => SetDeckMinimized(false));
+            MakeText(
+                restore.transform,
+                "ATELIER  â–´",
+                Vector2.zero,
+                new Vector2(250f, 48f),
+                19f,
+                new Color(.62f, 1f, .96f),
+                FontStyles.Bold);
+            _deckRestoreChip.gameObject.SetActive(false);
+
             _deckHitGraphics.Clear();
             _spatialDeckRect.GetComponentsInChildren(
                 true,
@@ -936,7 +988,10 @@ namespace MLOmega.XR.UI
             Vector3 worldPoint,
             bool deckHit)
         {
-            if (_deckManipulationMode != DeckManipulationMode.None) return;
+            if (
+                _deckManipulationMode != DeckManipulationMode.None ||
+                _deckMinimized)
+                return;
             _deckHoverMode = deckHit
                 ? ClassifyDeckManipulationHandle(worldPoint)
                 : DeckManipulationMode.None;
@@ -961,9 +1016,16 @@ namespace MLOmega.XR.UI
             DeckManipulationMode mode =
                 ClassifyDeckManipulationHandle(gazeWorldPoint);
             if (mode == DeckManipulationMode.None) return false;
+            if (mode == DeckManipulationMode.Minimize)
+            {
+                SetDeckMinimized(true);
+                return true;
+            }
             _deckManipulationMode = mode;
             _deckManipulationStartHand = handAnchor;
             _deckManipulationStartPosition = _spatialDeckRect.position;
+            _deckManipulationStartCameraPosition =
+                _camera.transform.position;
             _deckManipulationStartDistance = Mathf.Clamp(
                 Vector3.Distance(
                     _camera.transform.position,
@@ -971,10 +1033,19 @@ namespace MLOmega.XR.UI
                 .45f,
                 2.8f);
             _deckManipulationStartDirection =
-                (_deckManipulationStartPosition - _camera.transform.position)
+                (_deckManipulationStartPosition -
+                 _deckManipulationStartCameraPosition)
                 .normalized;
+            // Freeze the viewing plane at grab time. Head-pose changes must not
+            // rotate or drag an already world-anchored panel while the user is
+            // moving their hand.
+            _deckManipulationStartRight = _camera.transform.right.normalized;
+            _deckManipulationStartUp = _camera.transform.up.normalized;
             _deckManipulationStartScale = _spatialDeckRect.localScale.x;
             _deckManipulationStartZoom = Mathf.Max(.1f, zoomFactor);
+            _deckManipulationTargetPosition = _deckManipulationStartPosition;
+            _deckManipulationTargetScale = _deckManipulationStartScale;
+            _deckManipulationSmoothing = true;
             SetDeckHandleVisuals(mode);
             return true;
         }
@@ -996,19 +1067,21 @@ namespace MLOmega.XR.UI
                 handAnchor.y < 0f)
                 return;
             Vector2 delta = handAnchor - _deckManipulationStartHand;
+            delta.x = Mathf.Clamp(delta.x, -.75f, .75f);
+            delta.y = Mathf.Clamp(delta.y, -.65f, .65f);
             if (_deckManipulationMode == DeckManipulationMode.Move)
             {
                 float span = _deckManipulationStartDistance * 1.15f;
                 Vector3 planar =
-                    _camera.transform.right * (delta.x * span) +
-                    _camera.transform.up * (-delta.y * span * .8f);
+                    _deckManipulationStartRight * (delta.x * span) +
+                    _deckManipulationStartUp * (-delta.y * span * .8f);
                 float depth = Mathf.Clamp(
                     _deckManipulationStartDistance -
                     (zoomFactor - _deckManipulationStartZoom) * .16f,
                     .45f,
                     2.8f);
-                _spatialDeckRect.position =
-                    _camera.transform.position +
+                _deckManipulationTargetPosition =
+                    _deckManipulationStartCameraPosition +
                     _deckManipulationStartDirection * depth +
                     planar;
             }
@@ -1022,8 +1095,9 @@ namespace MLOmega.XR.UI
                     _deckManipulationStartScale * factor,
                     .00038f,
                     .00108f);
-                _spatialDeckRect.localScale = Vector3.one * scale;
+                _deckManipulationTargetScale = scale;
             }
+            _deckManipulationSmoothing = true;
         }
 
         public void EndDeckManipulation()
@@ -1046,6 +1120,10 @@ namespace MLOmega.XR.UI
                 local.y <= rect.yMin + 85f)
                 return DeckManipulationMode.Resize;
             if (
+                local.x >= rect.xMax - 95f &&
+                local.y >= rect.yMax - 85f)
+                return DeckManipulationMode.Minimize;
+            if (
                 Mathf.Abs(local.x) <= 175f &&
                 local.y <= rect.yMin + 58f)
                 return DeckManipulationMode.Move;
@@ -1060,6 +1138,75 @@ namespace MLOmega.XR.UI
             if (_deckResizeHandle != null)
                 _deckResizeHandle.gameObject.SetActive(
                     mode == DeckManipulationMode.Resize);
+            if (_deckMinimizeHandle != null)
+                _deckMinimizeHandle.gameObject.SetActive(
+                    mode == DeckManipulationMode.Minimize);
+        }
+
+        /// <summary>
+        /// Restore the deck from a held open palm. This is intentionally open-
+        /// only rather than a toggle so a repeated/late palm classification can
+        /// never make the controls disappear again.
+        /// </summary>
+        public void OpenDeckFromPalm()
+        {
+            if (!_deckMinimized) return;
+            SetDeckMinimized(false);
+            SetDeckPose();
+            _status = "PUPITRE OUVERT // PAUME";
+            RefreshSpatialDeck();
+        }
+
+        private void SetDeckMinimized(bool minimized)
+        {
+            if (_deckMinimized == minimized) return;
+            if (minimized) EndDeckManipulation();
+            _deckMinimized = minimized;
+            for (int i = 0; i < _deckExpandedRoots.Count; i++)
+            {
+                GameObject root = _deckExpandedRoots[i];
+                if (root != null) root.SetActive(!minimized);
+            }
+            if (_deckRestoreChip != null)
+                _deckRestoreChip.gameObject.SetActive(minimized);
+            if (!minimized)
+            {
+                SetDeckHandleVisuals(DeckManipulationMode.None);
+                SetDeckPose();
+            }
+        }
+
+        /// <summary>
+        /// MediaPipe produces hand anchors slower than the 60 Hz display. Keep
+        /// the latest hand-derived target, then interpolate the world-space deck
+        /// every rendered frame so sparse inference never becomes visible steps.
+        /// </summary>
+        private void SmoothDeckManipulation()
+        {
+            if (!_deckManipulationSmoothing || _spatialDeckRect == null) return;
+            float blend = 1f - Mathf.Exp(-18f * Time.unscaledDeltaTime);
+            _spatialDeckRect.position = Vector3.Lerp(
+                _spatialDeckRect.position,
+                _deckManipulationTargetPosition,
+                blend);
+            float scale = Mathf.Lerp(
+                _spatialDeckRect.localScale.x,
+                _deckManipulationTargetScale,
+                blend);
+            _spatialDeckRect.localScale = Vector3.one * scale;
+
+            if (
+                _deckManipulationMode == DeckManipulationMode.None &&
+                Vector3.Distance(
+                    _spatialDeckRect.position,
+                    _deckManipulationTargetPosition) < .001f &&
+                Mathf.Abs(scale - _deckManipulationTargetScale) < .000002f)
+            {
+                _spatialDeckRect.position = _deckManipulationTargetPosition;
+                _spatialDeckRect.localScale =
+                    Vector3.one * _deckManipulationTargetScale;
+                _deckManipulationSmoothing = false;
+            }
         }
 
         private void ExportFromSpatialDeck()
@@ -1154,7 +1301,13 @@ namespace MLOmega.XR.UI
 
         private void SetDeckPose()
         {
+            _deckManipulationSmoothing = false;
             FollowSpatialDeck(true);
+            if (_spatialDeckRect != null)
+            {
+                _deckManipulationTargetPosition = _spatialDeckRect.position;
+                _deckManipulationTargetScale = _spatialDeckRect.localScale.x;
+            }
         }
 
         private void FollowSpatialDeck(bool snap)
