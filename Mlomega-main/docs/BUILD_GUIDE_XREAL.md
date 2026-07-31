@@ -246,7 +246,7 @@ réellement désactivé, le template officiel a affiché son menu XR. Le prochai
 diagnostic doit donc comparer notre scène/runtime au template, pas réécrire
 encore le modèle HDMI.
 
-## 7. Violet : faits, causes éliminées et prochain diagnostic
+## 7. Violet : cause racine fermée sur matériel
 
 ### 7.1 Faits observés
 
@@ -257,6 +257,23 @@ encore le modèle HDMI.
 - la caméra Eye et la pose 6DoF continuent de remonter ;
 - le template officiel, avec DeX désactivé, affiche un fond noir/transparent
   stable sur le même téléphone et les mêmes lunettes.
+
+### 7.1.1 Verdict matériel du 31 juillet 2026
+
+Le fond violet est **corrigé et vérifié dans les lunettes**. Il ne venait ni de
+DeX, ni de la caméra, ni d'URP : `WorldCreatorController.MakeNeonFrame` créait
+un `LineRenderer` fermé sous le Canvas XR world-space. En single-pass stéréo,
+la bande générée traversait/remplissait les surfaces des yeux.
+
+La preuve n'était pas seulement visuelle : le fond de la capture valait environ
+`RGB(139, 51, 253)`, soit la couleur terminale exacte du cadre
+`new Color(.55f, .2f, 1f, .95f)`. Le grand triangle cyan provenait de la même
+géométrie. La suppression **totale** du cadre — sans bandes de remplacement —
+a rendu le monde réel transparent tout en conservant le menu.
+
+À ne pas régresser : ne jamais placer de `LineRenderer` décoratif sous le
+Canvas du pupitre. Pour un contour futur, utiliser uniquement de petits
+éléments UGUI séparés, après gate matériel.
 
 ### 7.2 Causes testées sans succès
 
@@ -289,7 +306,7 @@ Les premiers `FrameWait` peuvent échouer brièvement avant que le flux tourne.
 Le verdict ne vient pas d'une ligne isolée : il faut corréler affichage,
 render-pass, dimensions et objets visibles.
 
-### 7.4 Reprise recommandée — binary search, pas nouveau grand refactor
+### 7.4 Protocole historique ayant permis le verdict
 
 1. Lancer le template officiel et l'Atelier dos à dos avec DeX confirmé absent.
 2. Ajouter à un build diagnostic minimal les mesures suivantes :
@@ -311,15 +328,21 @@ ont rendu les essais précédents difficiles à interpréter.
 
 ## 8. Clic, pointeur, déplacement et redimensionnement
 
-### 8.1 Statut honnête
+### 8.1 Statut matériel au 31 juillet 2026
 
-Le rayon/curseur ou la présence d'un `EventSystem` ne prouve pas un clic.
-Pendant le test :
+Le clic contrôleur est désormais **réellement vert** dans l'Atelier. La cause
+était une comparaison invalide dans `TryProjectDeckPointer` :
+`WorldToScreenPoint` renvoyait les coordonnées de la cible XR paysage, puis le
+code les bornait avec `Screen.width/height` du S24 portrait. La moitié du
+pupitre pouvait donc être rejetée alors que le curseur restait visible.
 
-- aucune sélection du menu n'a changé ;
-- le fallback tactile S24 essayé n'a pas déclenché d'action ;
-- aucune main n'a piloté le menu ;
-- déplacement/redimensionnement non testables tant que le clic est absent.
+Le hit `RectTransform` valide déjà les limites du pupitre : la seconde
+comparaison a été supprimée. Test matériel réussi : menu transparent,
+world-lock 6DoF et clic fonctionnel.
+
+Restent ouverts : pinch main, déplacement/redimensionnement par pinch et
+fallback tactile explicite. La présence d'un curseur ne suffira toujours pas à
+les valider.
 
 Le tactile du téléphone vise le display Android principal ; une UI rendue dans
 une surface XR externe ne reçoit donc pas automatiquement les mêmes
@@ -328,18 +351,19 @@ Unity Input System.
 
 ### 8.2 Ordre du prochain chantier interaction
 
-1. Dans une scène dérivée du template, créer un unique bouton compteur et
-   prouver un clic par la source contrôleur officielle XREAL.
-2. Journaliser source, rayon, `pointerDown`, `pointerUp`, objet ciblé et action
-   terminale. Un « accepted » sans changement de compteur est rouge.
-3. Ajouter un fallback téléphone explicite : surface/touchpad sur le S24 qui
-   envoie rayon normalisé + press/release à l'UI XR.
-4. Tester l'accès à l'image CPU de l'Eye via
+1. Conserver le clic contrôleur vert comme référence et journaliser source,
+   rayon, `pointerDown`, `pointerUp`, objet ciblé et action terminale.
+2. Tester l'accès à l'image CPU de l'Eye via
    `ARCameraManager.TryAcquireLatestCpuImage`. Si des frames arrivent, brancher
-   MediaPipe Hand Landmarker sur un débit borné, puis convertir index + pinch
-   en `TryGetHandRay(out Ray, out bool pinching)`.
-5. Une fois le clic prouvé, ajouter déplacement et resize du pupitre avec
-   poignées visibles et limites de taille/distance.
+   MediaPipe Hand Landmarker à cadence/résolution bornées.
+3. Utiliser le regard/head-gaze pour viser et le **pinch de la main** pour
+   press/release. Ne pas appeler ce geste « pinch Eye » : l'Eye est la caméra
+   qui observe la main.
+4. Ajouter sous le menu une poignée contextuelle regardée : pinch maintenu =
+   déplacer/avancer/reculer ; poignée bas-gauche = resize borné. Le menu reste
+   world-space et ne redevient pas head-locked pendant la manipulation.
+5. Ajouter un fallback téléphone explicite : surface/touchpad sur le S24 qui
+   envoie rayon normalisé + press/release à l'UI XR.
 6. Gate matériel : 30 clics, sélection de catégories, drag, resize, recenter,
    suppression d'une ancre et 10 minutes sans dérive thermique bloquante.
 
@@ -429,6 +453,7 @@ Le chantier XREAL n'est fini que lorsque :
 - PhoneOnly et runners PC restent inchangés ;
 - APKs, logs, versions et hashes du gate matériel sont conservés.
 
-Au 31 juillet 2026, seuls DeX/template, 6DoF, Eye, contrôleur IMU, framerate et
-world-lock du menu sont verts. Le violet, le clic et la parité produit restent
-le prochain chantier.
+Au 31 juillet 2026, DeX/template, 6DoF, Eye, contrôleur IMU, framerate,
+world-lock, transparence optique et clic Atelier sont verts sur S24 + One Pro +
+Eye. Le prochain chantier est le pinch main/manipulation, puis la parité de
+l'APK produit.

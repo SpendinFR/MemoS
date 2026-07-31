@@ -4,8 +4,6 @@ using MLOmega.XR.UI;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
-using UnityEngine.Rendering;
-using UnityEngine.Rendering.Universal;
 
 namespace MLOmega.XR.Editor
 {
@@ -46,37 +44,17 @@ namespace MLOmega.XR.Editor
             if (camera == null)
                 throw new InvalidOperationException(
                     "Official XREAL interaction rig has no camera.");
-            // Match the hardware-proven XREAL template exactly. Its camera uses
-            // the Built-in Skybox clear path with no skybox material; black
-            // pixels are therefore unlit on the optical display. SolidColor is
-            // not equivalent in the XREAL compositor and produced its violet
-            // diagnostic clear on the One Pro.
-            RenderSettings.skybox = null;
-            camera.clearFlags = CameraClearFlags.Skybox;
-            camera.backgroundColor = new Color(0f, 0f, 0f, 0f);
-            camera.allowHDR = true;
-            camera.nearClipPlane = .01f;
-            camera.fieldOfView = 25f;
-            UniversalAdditionalCameraData cameraData =
-                camera.GetComponent<UniversalAdditionalCameraData>();
-            if (GraphicsSettings.defaultRenderPipeline != null)
-            {
-                cameraData ??=
-                    camera.gameObject.AddComponent<UniversalAdditionalCameraData>();
-                // UniversalRenderPipelineAsset.Create() does not populate
-                // postProcessData. Enabling UberPost with that null resource
-                // paints the whole optical surface magenta.
-                cameraData.renderPostProcessing = false;
-            }
-            else if (cameraData != null)
-            {
-                // The hardware-proven XREAL template is Built-in and has no
-                // URP camera extension. Mirror it exactly for the Atelier.
-                UnityEngine.Object.DestroyImmediate(cameraData);
-            }
+            // Do not override the nested camera. HelloMR instantiates this
+            // exact prefab without changing its clear path, render pipeline or
+            // controller actions; that configuration is hardware-proven on the
+            // S24 + One Pro + Eye. Atelier content is only added world-space.
 
             var root = new GameObject("MLOmega World Atelier");
             var exchange = root.AddComponent<WorldMapDocumentExchange>();
+            var creator = root.AddComponent<WorldCreatorController>();
+            Assign(creator, "_camera", camera);
+            Assign(creator, "_exchange", exchange);
+
             Type spatialType = Type.GetType(
                 "MLOmega.XR.UI.XrealSpatialProvider, MLOmega.XR.XrealSpatial",
                 false);
@@ -96,11 +74,8 @@ namespace MLOmega.XR.Editor
                 spatial,
                 "_freeGuyMeshShader",
                 RequiredShader(PhoneOnlySceneBuilder.XrealFreeGuyMeshShaderPath));
-
-            var creator = root.AddComponent<WorldCreatorController>();
             Assign(creator, "_spatialBehaviour", spatial);
-            Assign(creator, "_camera", camera);
-            Assign(creator, "_exchange", exchange);
+
             Type pointerType = Type.GetType(
                 "MLOmega.XR.UI.XrealNativeHandPointer, " +
                 "MLOmega.XR.XrealSpatial",

@@ -43,11 +43,14 @@ namespace MLOmega.XR.Editor
         private const string XrealDep = "\"com.xreal.xr\": \"file:xreal-sdk/com.xreal.xr.tar.gz\"";
         private const string ArFoundationDep =
             "\"com.unity.xr.arfoundation\": \"6.0.6\"";
+        // Keep these aligned byte-for-byte with XREAL's hardware-proven
+        // SDKTemplate. The SDK 3.1 prefabs reference the 2.6.5/1.4.3 sample
+        // GUIDs; importing XRI 3.0.9 leaves the nested camera rig unresolved.
         private const string XrHandsDep =
-            "\"com.unity.xr.hands\": \"1.5.0\"";
+            "\"com.unity.xr.hands\": \"1.4.3\"";
         private const string XrInteractionDep =
-            "\"com.unity.xr.interaction.toolkit\": \"3.0.9\"";
-        private const string XrInteractionVersion = "3.0.9";
+            "\"com.unity.xr.interaction.toolkit\": \"2.6.5\"";
+        private const string XrInteractionVersion = "2.6.5";
         private const string XriSamplesRoot =
             "Assets/Samples/XR Interaction Toolkit/" +
             XrInteractionVersion;
@@ -508,7 +511,24 @@ namespace MLOmega.XR.Editor
         {
             string manifest = File.ReadAllText(ManifestPath);
             if (manifest.Contains("\"" + packageName + "\""))
+            {
+                string exactPattern =
+                    "\"" + Regex.Escape(packageName) +
+                    "\"\\s*:\\s*\"[^\"]+\"";
+                string updated = Regex.Replace(
+                    manifest,
+                    exactPattern,
+                    dependency,
+                    RegexOptions.CultureInvariant);
+                if (!string.Equals(updated, manifest, StringComparison.Ordinal))
+                {
+                    File.WriteAllText(ManifestPath, updated);
+                    Debug.Log(
+                        "[AndroidBuildXreal] Aligned package dependency: " +
+                        dependency);
+                }
                 return;
+            }
             int deps = manifest.IndexOf("\"dependencies\"", StringComparison.Ordinal);
             int brace = manifest.IndexOf('{', deps);
             int depth = 0, close = -1;
@@ -565,11 +585,9 @@ namespace MLOmega.XR.Editor
 
         /// <summary>
         /// XREAL's hardware-proven "XR Interaction Hands Setup" prefab is a
-        /// thin wrapper around the Starter Assets and Hands Interaction Demo
-        /// prefabs shipped in XRI's hidden Samples~ directory. Unity does not
-        /// resolve those nested prefab references until the samples are
-        /// imported into Assets. Import the two official samples exactly as
-        /// XREAL's public SDK template does; never rebuild that rig manually.
+        /// wrapper around the XRI Starter Assets and Hands Interaction Demo.
+        /// Import both official samples so every nested prefab reference is
+        /// resolved exactly as in XREAL's HelloMR scene.
         /// </summary>
         private static void EnsureOfficialXriRigAssets()
         {
@@ -618,11 +636,11 @@ namespace MLOmega.XR.Editor
             {
                 throw new Exception(
                     "[AndroidBuildXreal] Official XRI Starter/Hands samples " +
-                    "could not be imported; refusing to synthesize a partial rig.");
+                    "could not be imported.");
             }
             Debug.Log(
                 "[AndroidBuildXreal] Imported official XRI Starter Assets and " +
-                "Hands Interaction Demo for the XREAL rig.");
+                "Hands Interaction Demo for the XREAL HelloMR rig.");
         }
 
         private static bool IsProviderGate() =>

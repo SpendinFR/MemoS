@@ -139,13 +139,26 @@ namespace MLOmega.XR.UI.Components
             now = AnimatedTime(now);
             Camera cam = Context != null ? Context.Camera : Camera.main;
             Vector3 origin = MotionPosition(now);
-            if (
-                cam != null &&
-                Vector3.Distance(cam.transform.position, origin) >
-                _hologram.MaxRenderDistanceM)
+            if (cam != null)
             {
-                SetEnabled(false);
-                return;
+                float distance = Vector3.Distance(
+                    cam.transform.position,
+                    origin);
+                // A LineRenderer whose segment reaches the stereo eye/near
+                // plane expands into a screen-filling wedge. Apart from being
+                // unreadable, the alternating cyan/violet preview then looks
+                // like an opaque background on optical glasses. Fail closed
+                // for any hologram too close to the user's eyes.
+                float minimumSafeDistance = Mathf.Max(
+                    0.55f,
+                    cam.nearClipPlane + 0.25f);
+                if (
+                    distance < minimumSafeDistance ||
+                    distance > _hologram.MaxRenderDistanceM)
+                {
+                    SetEnabled(false);
+                    return;
+                }
             }
             SetEnabled(true);
             Vector3 toCamera = cam == null
@@ -445,9 +458,9 @@ namespace MLOmega.XR.UI.Components
                 center + right * .5f * Sx);
             SetLine(
                 _lines[1],
-                center - forward * .38f * Sz,
+                center - Vector3.up * .30f * Sy,
                 center,
-                center + forward * .38f * Sz);
+                center + Vector3.up * .30f * Sy);
             Ring(_lines[2], center - right * .5f * Sx, right, forward, .17f * Sx, 24);
             Ring(_lines[3], center + right * .5f * Sx, right, forward, .17f * Sx, 24);
             SetLine(

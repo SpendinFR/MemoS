@@ -224,7 +224,12 @@ namespace MLOmega.XR.UI
             // The XREAL compositor owns a separate opaque back colour. Camera
             // alpha/clear flags cannot disable it. Retry until the real display
             // subsystem is running, then switch that layer off once.
-            EnsureOpticalSeeThrough();
+            // HelloMR leaves the compositor back-colour policy untouched. The
+            // isolated Atelier must preserve that hardware-proven baseline;
+            // forcing EnableRenderBackColor(false) was an Atelier-only
+            // divergence correlated with the persistent violet eye surface.
+            if (!_creatorMode)
+                EnsureOpticalSeeThrough();
 #endif
             if (_creatorMode)
             {

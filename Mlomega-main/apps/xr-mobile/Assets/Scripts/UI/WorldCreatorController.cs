@@ -157,6 +157,19 @@ namespace MLOmega.XR.UI
                 new Vector2(0.5f, 0.5f),
                 out _previewPosition,
                 out _previewRotation);
+            if (
+                _hasPreviewPose &&
+                _camera != null &&
+                Vector3.Distance(
+                    _camera.transform.position,
+                    _previewPosition) < 0.55f)
+            {
+                // XREAL depth meshes can briefly expose a triangle at the XR
+                // origin while they settle. Rendering the selected preset on
+                // that hit makes its LineRenderers cross the stereo near plane
+                // and cover both eyes. Never preview an unsafe placement.
+                _hasPreviewPose = false;
+            }
             if (_hasPreviewPose)
             {
                 EnsurePreview();
@@ -387,8 +400,6 @@ namespace MLOmega.XR.UI
             // A screen-sized "glass" image still becomes a coloured veil once
             // emitted by the micro-OLED panels, even at low alpha. Keep only
             // the floating controls and their neon contour.
-            MakeNeonFrame(deckGo.transform);
-
             MakeText(
                 _spatialDeckRect,
                 "MLOMEGA // WORLD ATELIER",
@@ -822,11 +833,12 @@ namespace MLOmega.XR.UI
                 return false;
             screenPoint =
                 RectTransformUtility.WorldToScreenPoint(_camera, worldPoint);
-            return
-                screenPoint.x >= 0f &&
-                screenPoint.y >= 0f &&
-                screenPoint.x <= Screen.width &&
-                screenPoint.y <= Screen.height;
+            // WorldToScreenPoint uses the active XR eye target, whereas
+            // Screen.width/height can still describe the S24 portrait display.
+            // The RectTransform hit above already validates the deck bounds;
+            // comparing these unrelated coordinate spaces rejected valid XR
+            // hits while leaving the visual cursor alive.
+            return true;
         }
 
         private void ExportFromSpatialDeck()
@@ -1155,27 +1167,6 @@ namespace MLOmega.XR.UI
                 image.color = selected
                     ? new Color(.05f, .55f, .48f, .48f)
                     : new Color(.025f, .11f, .2f, .30f);
-        }
-
-        private static void MakeNeonFrame(Transform parent)
-        {
-            var go = new GameObject("Volumetric Neon Frame");
-            go.transform.SetParent(parent, false);
-            var line = go.AddComponent<LineRenderer>();
-            line.useWorldSpace = false;
-            line.loop = true;
-            line.positionCount = 4;
-            line.SetPosition(0, new Vector3(-458f, -523f, -5f));
-            line.SetPosition(1, new Vector3(-458f, 523f, -5f));
-            line.SetPosition(2, new Vector3(458f, 523f, -5f));
-            line.SetPosition(3, new Vector3(458f, -523f, -5f));
-            line.widthMultiplier = 5f;
-            line.numCornerVertices = 6;
-            line.startColor = new Color(.1f, 1f, .9f, .95f);
-            line.endColor = new Color(.55f, .2f, 1f, .95f);
-            Shader shader = Shader.Find("Sprites/Default");
-            if (shader != null)
-                line.material = new Material(shader);
         }
 
         private void EnsurePreview()
