@@ -77,9 +77,9 @@ namespace MLOmega.XR.Editor
             Assign(eyeGestures, "_useDedicatedEyePinchPipeline", true);
             Assign(eyeGestures, "_modelRelativePath", "models/hand_landmarker.task");
             // Keep the hardware-proven 768 px Eye geometry. The Atelier is
-            // short-lived and may use 20 fps; product remains 12/15.
+            // short-lived and may use 25 fps; product remains 12/15.
             Assign(eyeGestures, "_maxDimension", 768);
-            Assign(eyeGestures, "_targetFps", 20f);
+            Assign(eyeGestures, "_targetFps", 25f);
             Assign(creator, "_camera", camera);
             Assign(creator, "_exchange", exchange);
 

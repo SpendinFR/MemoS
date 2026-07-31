@@ -96,6 +96,10 @@ class FrameThrottleTest {
         val atelier = FrameThrottle.forTargetFps(20f, 20f)
         assertTrue(atelier.accept(0L))
         assertTrue(atelier.accept(50L))
+
+        val fasterAtelier = FrameThrottle.forTargetFps(25f, 25f)
+        assertTrue(fasterAtelier.accept(0L))
+        assertTrue(fasterAtelier.accept(40L))
     }
 
     @Test

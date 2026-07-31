@@ -17,6 +17,9 @@ enum class GestureKind {
     /** Open palm held long enough to request the menu. */
     OPEN_PALM_MENU,
 
+    /** Closed fist held long enough to toggle full-rate gesture interaction. */
+    FIST_TOGGLE,
+
     /** Lateral swipe detected — request to hide the UI. */
     SWIPE_HIDE,
 }

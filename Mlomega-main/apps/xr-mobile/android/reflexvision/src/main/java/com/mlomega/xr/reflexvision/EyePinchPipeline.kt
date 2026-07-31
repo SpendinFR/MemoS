@@ -48,11 +48,14 @@ class EyePinchPipeline(
     private var lastDiagnosticMs = Long.MIN_VALUE
     private var palmSinceMs = -1L
     private var palmFired = false
+    private var fistSinceMs = -1L
+    private var fistFired = false
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
         throttle.reset()
         resetPinch()
+        resetFist()
         try {
             val base = BaseOptions.builder()
                 .setModelAssetPath(config.modelAssetPath)
@@ -85,6 +88,7 @@ class EyePinchPipeline(
         } finally {
             landmarker = null
             resetPinch()
+            resetFist()
         }
     }
 
@@ -110,6 +114,7 @@ class EyePinchPipeline(
             if (hands.isEmpty() || hands[0].size <= INDEX_TIP) {
                 missingFrames++
                 resetPalm()
+                resetFist()
                 if (pinched && missingFrames >= RELEASE_FRAMES) {
                     callbacks.onGesture(GestureKind.PINCH_END, 1f, -1f, -1f, ts)
                     resetPinch()
@@ -129,7 +134,28 @@ class EyePinchPipeline(
             ema = if (ema.isNaN()) ratio else EMA_ALPHA * ratio + (1f - EMA_ALPHA) * ema
             val x = (thumb.x() + index.x()) * .5f
             val y = (thumb.y() + index.y()) * .5f
-            evaluatePinch(ema, x, y, ts)
+            val closedFist = isClosedFist(hand)
+            evaluateFist(closedFist, x, y, ts)
+            if (closedFist) {
+                resetPalm()
+                if (pinched) {
+                    callbacks.onGesture(GestureKind.PINCH_END, 1f, x, y, ts)
+                    pinched = false
+                    candidate = null
+                    candidateFrames = 0
+                }
+                logDiagnostic(ts, true, ema, x, y)
+                return
+            }
+            // The EMA keeps ordinary/noisy pinches stable, but a physically very
+            // deep raw pinch is already unambiguous and must not wait for the EMA
+            // to decay over several inference results.
+            val decisionRatio = if (!pinched && ratio <= DEEP_RAW_ENTER_THRESHOLD) {
+                ratio
+            } else {
+                ema
+            }
+            evaluatePinch(decisionRatio, x, y, ts)
             evaluatePalm(isOpenPalm(hand), x, y, ts)
             logDiagnostic(ts, true, ema, x, y)
         } finally {
@@ -186,6 +212,52 @@ class EyePinchPipeline(
         if (!palmFired && ts - palmSinceMs >= config.palm.minHoldMs) {
             palmFired = true
             callbacks.onGesture(GestureKind.OPEN_PALM_MENU, 0f, x, y, ts)
+        }
+    }
+
+    /**
+     * Orientation-independent fist: every long fingertip folds back to at
+     * least its PIP radius from the wrist. Requiring all four fingers and a
+     * timed latch keeps an ordinary pinch from toggling interaction power.
+     */
+    private fun isClosedFist(
+        hand: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>,
+    ): Boolean {
+        if (hand.size <= PINKY_TIP) return false
+        val wrist = hand[WRIST]
+
+        fun folded(mcpIndex: Int, pipIndex: Int, tipIndex: Int): Boolean {
+            val mcp = hand[mcpIndex]
+            val pip = hand[pipIndex]
+            val tip = hand[tipIndex]
+            val tipRadius = dist3(
+                tip.x(), tip.y(), tip.z(), wrist.x(), wrist.y(), wrist.z(),
+            )
+            val pipRadius = dist3(
+                pip.x(), pip.y(), pip.z(), wrist.x(), wrist.y(), wrist.z(),
+            )
+            val mcpRadius = dist3(
+                mcp.x(), mcp.y(), mcp.z(), wrist.x(), wrist.y(), wrist.z(),
+            )
+            return tipRadius <= pipRadius * FIST_TIP_TO_PIP_RATIO &&
+                tipRadius <= mcpRadius * FIST_TIP_TO_MCP_RATIO
+        }
+
+        return folded(INDEX_MCP, INDEX_PIP, INDEX_TIP) &&
+            folded(MIDDLE_MCP, MIDDLE_PIP, MIDDLE_TIP) &&
+            folded(RING_MCP, RING_PIP, RING_TIP) &&
+            folded(PINKY_MCP, PINKY_PIP, PINKY_TIP)
+    }
+
+    private fun evaluateFist(closed: Boolean, x: Float, y: Float, ts: Long) {
+        if (!closed) {
+            resetFist()
+            return
+        }
+        if (fistSinceMs < 0L) fistSinceMs = ts
+        if (!fistFired && ts - fistSinceMs >= FIST_HOLD_MS) {
+            fistFired = true
+            callbacks.onGesture(GestureKind.FIST_TOGGLE, 0f, x, y, ts)
         }
     }
 
@@ -246,6 +318,11 @@ class EyePinchPipeline(
         palmFired = false
     }
 
+    private fun resetFist() {
+        fistSinceMs = -1L
+        fistFired = false
+    }
+
     private fun logDiagnostic(ts: Long, hand: Boolean, ratio: Float, x: Float, y: Float) {
         if (lastDiagnosticMs == Long.MIN_VALUE || ts - lastDiagnosticMs >= 1000L) {
             lastDiagnosticMs = ts
@@ -278,12 +355,16 @@ class EyePinchPipeline(
         private const val PINKY_TIP = 20
         private const val ENTER_THRESHOLD = .28f
         private const val DEEP_ENTER_THRESHOLD = .20f
+        private const val DEEP_RAW_ENTER_THRESHOLD = .18f
         private const val EXIT_THRESHOLD = .38f
         private const val EMA_ALPHA = .5f
         private const val ENGAGE_FRAMES = 2
         private const val RELEASE_FRAMES = 2
         private const val PALM_STRAIGHT_DOT = -.62f
         private const val PALM_EXTENSION_RATIO = 1.08f
-        private const val MAX_ATELIER_FPS = 20f
+        private const val FIST_TIP_TO_PIP_RATIO = 1.08f
+        private const val FIST_TIP_TO_MCP_RATIO = 1.22f
+        private const val FIST_HOLD_MS = 400L
+        private const val MAX_ATELIER_FPS = 25f
     }
 }

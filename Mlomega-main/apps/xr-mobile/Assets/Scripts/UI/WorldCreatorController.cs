@@ -443,6 +443,23 @@ namespace MLOmega.XR.UI
                 34f,
                 new Color(.35f, 1f, .94f),
                 FontStyles.Bold);
+            MakeButton(
+                _spatialDeckRect,
+                "↻",
+                new Vector2(350f, 535f),
+                new Vector2(56f, 40f),
+                () =>
+                {
+                    SetDeckPose();
+                    _status = "PUPITRE RECENTRÉ // FACE UTILISATEUR";
+                    RefreshSpatialDeck();
+                });
+            MakeButton(
+                _spatialDeckRect,
+                "—",
+                new Vector2(425f, 535f),
+                new Vector2(56f, 40f),
+                () => SetDeckMinimized(true));
             MakeText(
                 _spatialDeckRect,
                 "VOLUMES 3D • ANCRES XREAL • AUCUNE CAPTURE MÉMOIRE",
@@ -1111,8 +1128,8 @@ namespace MLOmega.XR.UI
                 local.y <= rect.yMin + 85f)
                 return DeckManipulationMode.Resize;
             if (
-                local.x >= rect.xMax - 95f &&
-                local.y >= rect.yMax - 85f)
+                local.x >= rect.xMax - 55f &&
+                local.y >= rect.yMax - 45f)
                 return DeckManipulationMode.Minimize;
             if (
                 Mathf.Abs(local.x) <= 175f &&
@@ -1145,6 +1162,15 @@ namespace MLOmega.XR.UI
             SetDeckMinimized(false);
             SetDeckPose();
             _status = "PUPITRE OUVERT // PAUME";
+            RefreshSpatialDeck();
+        }
+
+        /// <summary>Visible feedback for the physical fist power toggle.</summary>
+        public void SetGestureStandby(bool standby)
+        {
+            _status = standby
+                ? "GESTES EN VEILLE // FERME LE POING POUR RÉACTIVER"
+                : "GESTES ACTIFS // 25 FPS";
             RefreshSpatialDeck();
         }
 

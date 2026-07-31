@@ -529,6 +529,47 @@ qui remet le pupitre droit face à l'utilisateur et un poing fermé de bascule d
 gestes. Pour que le même poing puisse les réactiver, l'état désactivé doit garder
 une veille HandLandmarker lente et bornée ; il ne doit jamais modifier la v3.
 
+### 8.7 Jalon matériel controls-v4 : 25 fps, poing et recentrage
+
+Gate réel One Pro + Eye/S24 validé le 31 juillet 2026. Le gain est matériellement
+visible et toutes les fonctions de controls-v3 restent vertes :
+
+- l'Atelier tourne à 25 fps de reconnaissance, toujours en 768 px ;
+- le reliquat temporel du gate C# est conservé : 25 fps demandés ne retombent
+  plus artificiellement à 15 fps sur une source Eye à 30 fps ;
+- un pinch brut très profond peut engager avant la convergence de l'EMA, tandis
+  que les pinchs ambigus gardent le filtrage anti-faux-clic ;
+- déplacement et resize sont sensiblement plus rapides et fluides ;
+- un poing fermé tenu bascule réellement gestes actifs/veille ;
+- la veille conserve actuellement un sentinel HandLandmarker à 3 fps afin que
+  le même poing puisse réactiver les gestes ;
+- le bouton visible de recentrage remet réellement le pupitre face à
+  l'utilisateur, et Réduire/paume restent fonctionnels.
+
+Artefact matériel validé, à ne jamais écraser :
+
+```text
+apps/xr-mobile/build/android/mlomega-xreal-world-atelier-controls-v4.apk
+taille = 223803706 octets
+sha256 = 6B3F106E06197219141BC7EAD77D14E6C4FBB01B0C9D07DDED9DDDC479313F36
+```
+
+Raffinements à faire seulement dans une variante ultérieure, jamais directement
+sur ce jalon :
+
+1. sur l'APK produit plus chargée, conserver 25 fps uniquement lorsque les
+   gestes sont actifs et mesurer température/batterie avant validation ;
+2. réduire le sentinel de veille de 3 à 1 fps, masquer aussi rayon/curseur Eye,
+   mais laisser le repli téléphone disponible lorsqu'il est réellement touché ;
+3. afficher un toast world-space court `GESTES EN VEILLE` / `GESTES ACTIFS`, car
+   le texte de statut dans le pupitre seul n'est pas suffisamment visible ;
+4. pendant un transport 360°, appliquer le lacet de tête mais reconstruire la
+   rotation du pupitre avec `Vector3.up`. Ne jamais persister le roll/pitch qui
+   peut laisser le panneau incliné comme `/` après relâchement ;
+5. la paume recentre déjà le pupitre dans la direction actuellement regardée,
+   y compris vers le haut. Retirer le bouton `↻` visible devenu redondant, ou le
+   remplacer par une affordance discrète révélée seulement par le regard.
+
 ## 9. APK produit : travail explicitement restant
 
 Après correction et preuve de l'Atelier :

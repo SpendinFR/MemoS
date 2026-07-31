@@ -50,6 +50,7 @@ namespace MLOmega.XR.Reflex
         PinchUpdate = 1,
         PinchEnd = 2,
         OpenPalmMenu = 3,
-        SwipeHide = 4
+        SwipeHide = 4,
+        FistToggle = 5
     }
 }

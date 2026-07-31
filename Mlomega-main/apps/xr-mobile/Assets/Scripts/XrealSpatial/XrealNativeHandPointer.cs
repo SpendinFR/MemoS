@@ -278,6 +278,16 @@ namespace MLOmega.XR.UI
                     if (_creator != null)
                         _creator.OpenDeckFromPalm();
                     break;
+                case GestureKind.FistToggle:
+                    _eyePinching = false;
+                    if (_deckPinchClaimed && _creator != null)
+                        _creator.EndDeckManipulation();
+                    _deckPinchClaimed = false;
+                    ReleasePointer(false);
+                    if (_creator != null && _eyeGestures != null)
+                        _creator.SetGestureStandby(
+                            _eyeGestures.IsInteractionStandby);
+                    break;
             }
         }
 
@@ -448,7 +458,8 @@ namespace MLOmega.XR.UI
             if (
                 _camera == null ||
                 _eyeGestures == null ||
-                !_eyeGestures.IsRunning)
+                !_eyeGestures.IsRunning ||
+                _eyeGestures.IsInteractionStandby)
                 return false;
             ray = _camera.ViewportPointToRay(new Vector3(.5f, .5f, 0f));
             pressing = _eyePinching;

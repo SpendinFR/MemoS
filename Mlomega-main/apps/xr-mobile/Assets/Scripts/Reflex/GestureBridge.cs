@@ -55,11 +55,11 @@ namespace MLOmega.XR.Reflex
         [SerializeField] private int _maxDimension = 256;
 
         [Tooltip("Target gesture cadence (fps). Product recognition remains capped at " +
-                 "15; the dedicated Atelier Eye pipeline permits 20. The " +
+                 "15; the dedicated Atelier Eye pipeline permits 25. The " +
                  "capture texture arrives at up to 30 fps; we only sample this often " +
                  "(battery, §9.4). The native FrameThrottle is authoritative; this gates " +
                  "the GPU readback so we do not even pay for dropped frames.")]
-        [Range(10f, 20f)]
+        [Range(10f, 25f)]
         [SerializeField] private float _targetFps = 12f;
 
         [Tooltip("Atelier hardware gate only: log the Eye->MediaPipe cadence and " +
@@ -76,6 +76,12 @@ namespace MLOmega.XR.Reflex
         /// <summary>Whether the native/simulated pipeline is currently running.</summary>
         public bool IsRunning { get; private set; }
 
+        /// <summary>
+        /// Full gesture interaction is suspended, but a 3 fps fist sentinel stays
+        /// alive so the same physical gesture can restore it without a controller.
+        /// </summary>
+        public bool IsInteractionStandby { get; private set; }
+
         private readonly Queue<Action> _mainThreadQueue = new Queue<Action>();
         private readonly object _queueLock = new object();
 
@@ -83,6 +89,7 @@ namespace MLOmega.XR.Reflex
         // throttle would drop anyway, so downscale + Bitmap copy only run 10-15x/s.
         private float _readbackAccum;
         private float _readbackPeriod;
+        private const float StandbyFps = 3f;
 
 #if UNITY_ANDROID && !UNITY_EDITOR
         private AndroidJavaObject _pipeline;
@@ -98,7 +105,7 @@ namespace MLOmega.XR.Reflex
         private void Awake()
         {
             if (_capture == null) _capture = FindAnyObjectByType<EyeCaptureSource>();
-            _readbackPeriod = _targetFps > 0f ? 1f / _targetFps : 0f;
+            UpdateReadbackPeriod();
         }
 
         private void OnEnable()
@@ -134,7 +141,11 @@ namespace MLOmega.XR.Reflex
             // FrameThrottle would drop. period == 0 means feed every frame.
             _readbackAccum += Time.unscaledDeltaTime;
             if (_readbackPeriod > 0f && _readbackAccum < _readbackPeriod) return;
-            _readbackAccum = 0f;
+            // Preserve the fractional time budget. Resetting to zero turns a
+            // requested 20 fps cadence into 15 fps on a 30 fps Eye source.
+            _readbackAccum = _readbackPeriod > 0f
+                ? Mathf.Max(0f, _readbackAccum - _readbackPeriod)
+                : 0f;
 
 #if UNITY_ANDROID && !UNITY_EDITOR
             long tsMs = envelope != null ? envelope.CaptureMonotonicNs / 1_000_000L : 0L;
@@ -179,6 +190,24 @@ namespace MLOmega.XR.Reflex
             _pipeline?.Call("stop");
             ReleaseBitmap();
 #endif
+        }
+
+        private void UpdateReadbackPeriod()
+        {
+            float fps = IsInteractionStandby ? StandbyFps : _targetFps;
+            _readbackPeriod = fps > 0f ? 1f / fps : 0f;
+            _readbackAccum = _readbackPeriod;
+        }
+
+        private void ToggleInteractionStandby()
+        {
+            IsInteractionStandby = !IsInteractionStandby;
+            UpdateReadbackPeriod();
+            Debug.Log(
+                "[GestureBridge] physical gestures " +
+                (IsInteractionStandby
+                    ? "standby (3 fps fist sentinel)"
+                    : $"active ({_targetFps:F0} fps)"));
         }
 
         // --- native plumbing ------------------------------------------------------
@@ -317,8 +346,27 @@ namespace MLOmega.XR.Reflex
                     $"[GestureBridge] native {kindName}: zoom={zoom:F2}, " +
                     $"anchor=({x:F3},{y:F3}), ts={tsMs}");
             GestureKind kind = MapKind(kindName);
-            Enqueue(() => GestureRecognized?.Invoke(
-                new GestureEvent(kind, zoom, new Vector2(x, y), tsMs)));
+            Enqueue(() =>
+            {
+                if (kind == GestureKind.FistToggle)
+                {
+                    ToggleInteractionStandby();
+                    GestureRecognized?.Invoke(
+                        new GestureEvent(
+                            kind,
+                            zoom,
+                            new Vector2(x, y),
+                            tsMs));
+                    return;
+                }
+                if (IsInteractionStandby) return;
+                GestureRecognized?.Invoke(
+                    new GestureEvent(
+                        kind,
+                        zoom,
+                        new Vector2(x, y),
+                        tsMs));
+            });
         }
 
         internal void OnNativeError(string message) =>
@@ -331,6 +379,7 @@ namespace MLOmega.XR.Reflex
             "PINCH_END" => GestureKind.PinchEnd,
             "OPEN_PALM_MENU" => GestureKind.OpenPalmMenu,
             "SWIPE_HIDE" => GestureKind.SwipeHide,
+            "FIST_TOGGLE" => GestureKind.FistToggle,
             _ => GestureKind.PinchUpdate
         };
 
@@ -381,6 +430,11 @@ namespace MLOmega.XR.Reflex
             }
             if (Input.GetKeyDown(KeyCode.M)) RaiseSim(GestureKind.OpenPalmMenu, 0f, pt, now);
             if (Input.GetKeyDown(KeyCode.H)) RaiseSim(GestureKind.SwipeHide, 0f, pt, now);
+            if (Input.GetKeyDown(KeyCode.F))
+            {
+                ToggleInteractionStandby();
+                RaiseSim(GestureKind.FistToggle, 0f, pt, now);
+            }
         }
 
         private void RaiseSim(GestureKind kind, float zoom, Vector2 pt, long tsMs) =>
