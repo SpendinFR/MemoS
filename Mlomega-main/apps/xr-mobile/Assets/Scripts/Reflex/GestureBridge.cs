@@ -54,11 +54,12 @@ namespace MLOmega.XR.Reflex
         [Min(64)]
         [SerializeField] private int _maxDimension = 256;
 
-        [Tooltip("Target gesture cadence (fps), clamped 10-15 on the native side. The " +
+        [Tooltip("Target gesture cadence (fps). Product recognition remains capped at " +
+                 "15; the dedicated Atelier Eye pipeline permits 20. The " +
                  "capture texture arrives at up to 30 fps; we only sample this often " +
                  "(battery, §9.4). The native FrameThrottle is authoritative; this gates " +
                  "the GPU readback so we do not even pay for dropped frames.")]
-        [Range(10f, 15f)]
+        [Range(10f, 20f)]
         [SerializeField] private float _targetFps = 12f;
 
         [Tooltip("Atelier hardware gate only: log the Eye->MediaPipe cadence and " +

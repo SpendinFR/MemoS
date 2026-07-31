@@ -32,7 +32,10 @@ class EyePinchPipeline(
     private val callbacks: GestureCallbacks,
 ) {
     private val running = AtomicBoolean(false)
-    private val throttle = FrameThrottle.forTargetFps(config.targetFps)
+    private val throttle = FrameThrottle.forTargetFps(
+        config.targetFps,
+        MAX_ATELIER_FPS,
+    )
 
     @Volatile
     private var landmarker: HandLandmarker? = null
@@ -205,7 +208,12 @@ class EyePinchPipeline(
             candidateFrames = 0
         }
         candidateFrames++
-        val required = if (want) ENGAGE_FRAMES else RELEASE_FRAMES
+        // A clearly closed pinch is unambiguous enough to engage on the first
+        // inference result. Near the boundary we keep the proven two-frame
+        // debounce, so lowering perceived latency does not invite false clicks.
+        val required = if (want) {
+            if (ratio <= DEEP_ENTER_THRESHOLD) 1 else ENGAGE_FRAMES
+        } else RELEASE_FRAMES
         if (candidateFrames < required) return
         pinched = want
         candidate = null
@@ -269,11 +277,13 @@ class EyePinchPipeline(
         private const val PINKY_PIP = 18
         private const val PINKY_TIP = 20
         private const val ENTER_THRESHOLD = .28f
+        private const val DEEP_ENTER_THRESHOLD = .20f
         private const val EXIT_THRESHOLD = .38f
         private const val EMA_ALPHA = .5f
         private const val ENGAGE_FRAMES = 2
         private const val RELEASE_FRAMES = 2
         private const val PALM_STRAIGHT_DOT = -.62f
         private const val PALM_EXTENSION_RATIO = 1.08f
+        private const val MAX_ATELIER_FPS = 20f
     }
 }

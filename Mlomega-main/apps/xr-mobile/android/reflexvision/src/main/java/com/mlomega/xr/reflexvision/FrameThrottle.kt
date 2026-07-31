@@ -62,8 +62,19 @@ class FrameThrottle(private val minIntervalMs: Long = DEFAULT_MIN_INTERVAL_MS) {
          */
         @JvmStatic
         fun forTargetFps(fps: Float): FrameThrottle {
+            return forTargetFps(fps, 15f)
+        }
+
+        /**
+         * Scoped higher ceiling for short-lived, device-proven tools such as the
+         * World Atelier. Product callers keep using [forTargetFps] and therefore
+         * remain capped at 15 fps.
+         */
+        @JvmStatic
+        fun forTargetFps(fps: Float, maxFps: Float): FrameThrottle {
             if (fps <= 0f) return FrameThrottle()
-            val clamped = fps.coerceIn(10f, 15f)
+            val ceiling = maxFps.coerceIn(10f, 30f)
+            val clamped = fps.coerceIn(10f, ceiling)
             return FrameThrottle((1000f / clamped).toLong())
         }
     }

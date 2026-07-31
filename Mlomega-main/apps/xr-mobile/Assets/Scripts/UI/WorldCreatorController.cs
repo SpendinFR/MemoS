@@ -91,20 +91,20 @@ namespace MLOmega.XR.UI
         private Image _deckMoveHandle;
         private Image _deckResizeHandle;
         private Image _deckMinimizeHandle;
-        private Button _deckRestoreChip;
         private bool _deckMinimized;
         private DeckManipulationMode _deckHoverMode;
         private DeckManipulationMode _deckManipulationMode;
         private Vector2 _deckManipulationStartHand;
         private Vector3 _deckManipulationStartPosition;
         private Vector3 _deckManipulationStartCameraPosition;
+        private Quaternion _deckManipulationStartCameraRotation;
+        private Quaternion _deckManipulationStartRotation;
         private Vector3 _deckManipulationStartDirection;
-        private Vector3 _deckManipulationStartRight;
-        private Vector3 _deckManipulationStartUp;
         private float _deckManipulationStartDistance;
         private float _deckManipulationStartScale;
         private float _deckManipulationStartZoom;
         private Vector3 _deckManipulationTargetPosition;
+        private Quaternion _deckManipulationTargetRotation;
         private float _deckManipulationTargetScale;
         private bool _deckManipulationSmoothing;
         private static Material _deckDepthMaterial;
@@ -765,27 +765,6 @@ namespace MLOmega.XR.UI
                 _deckExpandedRoots.Add(
                     _spatialDeckRect.GetChild(i).gameObject);
 
-            Image restore = MakeImage(
-                _spatialDeckRect,
-                "Atelier minimized restore chip",
-                Vector2.zero,
-                new Vector2(270f, 58f),
-                new Color(.02f, .22f, .25f, .46f));
-            _deckRestoreChip = restore.gameObject.AddComponent<Button>();
-            var restoreCollider = restore.gameObject.AddComponent<BoxCollider>();
-            restoreCollider.center = Vector3.zero;
-            restoreCollider.size = new Vector3(270f, 58f, 14f);
-            _deckRestoreChip.onClick.AddListener(() => SetDeckMinimized(false));
-            MakeText(
-                restore.transform,
-                "ATELIER  â–´",
-                Vector2.zero,
-                new Vector2(250f, 48f),
-                19f,
-                new Color(.62f, 1f, .96f),
-                FontStyles.Bold);
-            _deckRestoreChip.gameObject.SetActive(false);
-
             _deckHitGraphics.Clear();
             _spatialDeckRect.GetComponentsInChildren(
                 true,
@@ -914,6 +893,7 @@ namespace MLOmega.XR.UI
             screenPoint = default;
             worldPoint = default;
             if (
+                _deckMinimized ||
                 _spatialDeckRect == null ||
                 _camera == null ||
                 ray.direction.sqrMagnitude < .5f)
@@ -1026,6 +1006,10 @@ namespace MLOmega.XR.UI
             _deckManipulationStartPosition = _spatialDeckRect.position;
             _deckManipulationStartCameraPosition =
                 _camera.transform.position;
+            _deckManipulationStartCameraRotation =
+                _camera.transform.rotation;
+            _deckManipulationStartRotation =
+                _spatialDeckRect.rotation;
             _deckManipulationStartDistance = Mathf.Clamp(
                 Vector3.Distance(
                     _camera.transform.position,
@@ -1036,14 +1020,10 @@ namespace MLOmega.XR.UI
                 (_deckManipulationStartPosition -
                  _deckManipulationStartCameraPosition)
                 .normalized;
-            // Freeze the viewing plane at grab time. Head-pose changes must not
-            // rotate or drag an already world-anchored panel while the user is
-            // moving their hand.
-            _deckManipulationStartRight = _camera.transform.right.normalized;
-            _deckManipulationStartUp = _camera.transform.up.normalized;
             _deckManipulationStartScale = _spatialDeckRect.localScale.x;
             _deckManipulationStartZoom = Mathf.Max(.1f, zoomFactor);
             _deckManipulationTargetPosition = _deckManipulationStartPosition;
+            _deckManipulationTargetRotation = _deckManipulationStartRotation;
             _deckManipulationTargetScale = _deckManipulationStartScale;
             _deckManipulationSmoothing = true;
             SetDeckHandleVisuals(mode);
@@ -1071,19 +1051,30 @@ namespace MLOmega.XR.UI
             delta.y = Mathf.Clamp(delta.y, -.65f, .65f);
             if (_deckManipulationMode == DeckManipulationMode.Move)
             {
+                // While held, transport the original world pose by the current
+                // head rotation. This keeps the exact grab offset (no jump), lets
+                // the user carry the deck through a full turn, and stops updating
+                // the instant the pinch ends so the released deck stays anchored.
+                Quaternion headDelta =
+                    _camera.transform.rotation *
+                    Quaternion.Inverse(_deckManipulationStartCameraRotation);
+                Vector3 carriedDirection =
+                    (headDelta * _deckManipulationStartDirection).normalized;
                 float span = _deckManipulationStartDistance * 1.15f;
                 Vector3 planar =
-                    _deckManipulationStartRight * (delta.x * span) +
-                    _deckManipulationStartUp * (-delta.y * span * .8f);
+                    _camera.transform.right * (delta.x * span) +
+                    _camera.transform.up * (-delta.y * span * .8f);
                 float depth = Mathf.Clamp(
                     _deckManipulationStartDistance -
                     (zoomFactor - _deckManipulationStartZoom) * .16f,
                     .45f,
                     2.8f);
                 _deckManipulationTargetPosition =
-                    _deckManipulationStartCameraPosition +
-                    _deckManipulationStartDirection * depth +
+                    _camera.transform.position +
+                    carriedDirection * depth +
                     planar;
+                _deckManipulationTargetRotation =
+                    headDelta * _deckManipulationStartRotation;
             }
             else
             {
@@ -1167,8 +1158,6 @@ namespace MLOmega.XR.UI
                 GameObject root = _deckExpandedRoots[i];
                 if (root != null) root.SetActive(!minimized);
             }
-            if (_deckRestoreChip != null)
-                _deckRestoreChip.gameObject.SetActive(minimized);
             if (!minimized)
             {
                 SetDeckHandleVisuals(DeckManipulationMode.None);
@@ -1189,6 +1178,10 @@ namespace MLOmega.XR.UI
                 _spatialDeckRect.position,
                 _deckManipulationTargetPosition,
                 blend);
+            _spatialDeckRect.rotation = Quaternion.Slerp(
+                _spatialDeckRect.rotation,
+                _deckManipulationTargetRotation,
+                blend);
             float scale = Mathf.Lerp(
                 _spatialDeckRect.localScale.x,
                 _deckManipulationTargetScale,
@@ -1200,9 +1193,13 @@ namespace MLOmega.XR.UI
                 Vector3.Distance(
                     _spatialDeckRect.position,
                     _deckManipulationTargetPosition) < .001f &&
+                Quaternion.Angle(
+                    _spatialDeckRect.rotation,
+                    _deckManipulationTargetRotation) < .1f &&
                 Mathf.Abs(scale - _deckManipulationTargetScale) < .000002f)
             {
                 _spatialDeckRect.position = _deckManipulationTargetPosition;
+                _spatialDeckRect.rotation = _deckManipulationTargetRotation;
                 _spatialDeckRect.localScale =
                     Vector3.one * _deckManipulationTargetScale;
                 _deckManipulationSmoothing = false;
@@ -1306,6 +1303,7 @@ namespace MLOmega.XR.UI
             if (_spatialDeckRect != null)
             {
                 _deckManipulationTargetPosition = _spatialDeckRect.position;
+                _deckManipulationTargetRotation = _spatialDeckRect.rotation;
                 _deckManipulationTargetScale = _spatialDeckRect.localScale.x;
             }
         }

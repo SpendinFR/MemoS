@@ -497,6 +497,38 @@ pour un pinch très nettement fermé, et transport 360° de la pose initiale par
 delta de rotation de la tête. Le relâchement doit toujours laisser le pupitre
 ancré dans le monde.
 
+### 8.6 Jalon matériel controls-v3 : transport 360° et menu réellement masqué
+
+Gate réel One Pro + Eye/S24 validé le 31 juillet 2026. Cette version devient le
+rollback de référence avant toute optimisation supplémentaire :
+
+- géométrie Eye conservée à la résolution matérielle prouvée de 768 px ;
+- cadence Atelier seule portée à 20 fps, sans modifier la cadence du produit ;
+- un pinch très nettement fermé peut engager dès le premier résultat, tandis
+  qu'un pinch proche du seuil conserve la confirmation anti-faux-clic ;
+- le pupitre tenu suit le delta de rotation de la tête sur 360°, puis reste
+  ancré dans le monde au relâchement ;
+- position, rotation et échelle sont interpolées à la cadence de rendu Unity ;
+- Réduire masque maintenant tout le pupitre et une paume ouverte le restaure ;
+- les frames Eye restent en RAM. La frame diagnostic unique est désactivée dans
+  la scène validée : aucune image des mains n'est écrite sur disque ;
+- clics, déplacement, resize, paume, transparence et ancrage 6DoF restent verts.
+
+Artefact matériel validé, à ne jamais écraser :
+
+```text
+apps/xr-mobile/build/android/mlomega-xreal-world-atelier-controls-v3.apk
+taille = 223801014 octets
+sha256 = A5D42E8CCD6C815B9D249A4C20CA36EA17A359D8F0E5AB85B7A275E89EE67107
+```
+
+Limites honnêtes restantes : la manipulation saccade encore légèrement et le
+pinch demande souvent environ une seconde en conditions réelles. Le prochain lot
+doit donc rester une APK v4 séparée. Il peut ajouter un bouton Recentrer explicite
+qui remet le pupitre droit face à l'utilisateur et un poing fermé de bascule des
+gestes. Pour que le même poing puisse les réactiver, l'état désactivé doit garder
+une veille HandLandmarker lente et bornée ; il ne doit jamais modifier la v3.
+
 ## 9. APK produit : travail explicitement restant
 
 Après correction et preuve de l'Atelier :

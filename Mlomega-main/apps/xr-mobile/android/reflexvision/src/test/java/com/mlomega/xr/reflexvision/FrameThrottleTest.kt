@@ -88,6 +88,17 @@ class FrameThrottleTest {
     }
 
     @Test
+    fun atelier_can_raise_its_scoped_ceiling_without_changing_product_cap() {
+        val product = FrameThrottle.forTargetFps(20f)
+        assertTrue(product.accept(0L))
+        assertFalse(product.accept(50L))
+
+        val atelier = FrameThrottle.forTargetFps(20f, 20f)
+        assertTrue(atelier.accept(0L))
+        assertTrue(atelier.accept(50L))
+    }
+
+    @Test
     fun non_positive_target_fps_falls_back_to_default() {
         val t = FrameThrottle.forTargetFps(0f)
         assertTrue(t.accept(0L))

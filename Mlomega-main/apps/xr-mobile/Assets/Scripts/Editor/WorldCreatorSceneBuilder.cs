@@ -71,11 +71,15 @@ namespace MLOmega.XR.Editor
             Assign(capture, "_session", session);
             Assign(capture, "_pose", pose);
             Assign(eyeGestures, "_capture", capture);
-            Assign(eyeGestures, "_deviceDiagnostics", true);
+            // Hardware capture is validated: keep Eye frames strictly ephemeral.
+            // Diagnostics can still be re-enabled explicitly for a future gate.
+            Assign(eyeGestures, "_deviceDiagnostics", false);
             Assign(eyeGestures, "_useDedicatedEyePinchPipeline", true);
             Assign(eyeGestures, "_modelRelativePath", "models/hand_landmarker.task");
+            // Keep the hardware-proven 768 px Eye geometry. The Atelier is
+            // short-lived and may use 20 fps; product remains 12/15.
             Assign(eyeGestures, "_maxDimension", 768);
-            Assign(eyeGestures, "_targetFps", 15f);
+            Assign(eyeGestures, "_targetFps", 20f);
             Assign(creator, "_camera", camera);
             Assign(creator, "_exchange", exchange);
 
