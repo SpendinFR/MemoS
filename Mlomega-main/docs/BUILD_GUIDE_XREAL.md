@@ -393,6 +393,84 @@ Ne jamais importer tout MRTK3 directement dans le projet principal avant ce
 spike : il modifierait packages, Input System, EventSystem et shaders en même
 temps, et rendrait PhoneOnly/runs impossibles à isoler.
 
+### 8.4 Jalon matériel : pinch, clic 3D et manipulation verts
+
+Validé physiquement le 31 juillet 2026 sur Galaxy S24 + XREAL One Pro + Eye :
+
+- la caméra Eye fournit réellement les images couleur à Unity ;
+- `HandLandmarker` tourne sur le S24 en GPU/LIVE_STREAM à 768 x 432 et 15 fps ;
+- la main est détectée et le ratio pouce-index traverse réellement les seuils ;
+- `PINCH_BEGIN`, `PINCH_UPDATE` et `PINCH_END` remontent jusqu'à Unity ;
+- le pinch déclenche réellement les boutons regardés ;
+- la poignée basse déplace le pupitre et la poignée bas-gauche le redimensionne ;
+- le contrôleur/touchpad S24 reste disponible comme repli ;
+- le pupitre reste world-space et peut être observé en se déplaçant autour.
+
+Chaîne prouvée à conserver :
+
+```text
+XREAL Eye YUV_420_888
+  -> shader CaptureBackgroundYUV compatible GLES3
+  -> RGB 768 x 432
+  -> MediaPipe HandLandmarker GPU
+  -> ratio 3D thumb tip / index tip normalisé par wrist / index MCP
+  -> EMA 0,5 + hystérésis 0,28/0,38 + debounce 3 frames/2 frames
+  -> GestureBridge
+  -> head-gaze pour viser
+  -> collider 3D exact du Button/TMP_InputField
+  -> pointerDown/pointerUp/pointerClick Unity
+```
+
+Deux causes racines ont été mesurées pendant le gate :
+
+1. `SRGBToLinear` ne compilait pas sur GLES3 : le shader avait zéro programme
+   Android et MediaPipe recevait une image magenta uniforme. Le shader local
+   reprend désormais la passe officielle XREAL (`UnityCG`, plans Alpha8,
+   `GammaToLinearSpace`) et le build doit annoncer `gles3 ... 6 programs`.
+2. Un `GraphicRaycaster` 2D ne suffit pas pour un Canvas world-space rendu dans
+   la cible XR alors que `Screen.width/height` décrit le S24. Chaque contrôle
+   interactif possède donc une mince surface `BoxCollider`; un
+   `Physics.RaycastNonAlloc` world-space sélectionne le vrai contrôle, sans
+   approximation ni conversion écran. Ne pas retirer ces colliders.
+
+Le pipeline natif XREAL Hands reste vide sur cette monture. La source main
+validée est la caméra Eye + MediaPipe. `Xreal-tools` a servi de référence pour
+la géométrie du pinch, sans reprendre son acquisition UVC brute qui entrerait
+en conflit avec la session XREAL : https://github.com/nudou350/Xreal-tools.
+
+Limites honnêtes du jalon : le pinch demande parfois environ 1 à 2 secondes et
+le déplacement/redimensionnement fonctionne mais manque encore de fluidité et
+de précision. Ces optimisations viennent après ce commit de référence : ne pas
+changer simultanément modèle, acquisition Eye, seuils, raycast et UI.
+
+Build et installation ayant servi au gate :
+
+```powershell
+& "C:\Program Files\Unity\Hub\Editor\6000.0.23f1\Editor\Unity.exe" `
+  -batchmode -quit `
+  -projectPath "$PWD\apps\xr-mobile" `
+  -executeMethod MLOmega.XR.Editor.AndroidBuildXreal.BuildCreatorApk `
+  -logFile "$PWD\apps\xr-mobile\build\android\world-atelier-build.log"
+
+$adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
+& $adb connect 192.168.1.134:5555
+& $adb -s 192.168.1.134:5555 install -r `
+  ".\apps\xr-mobile\build\android\mlomega-xreal-world-atelier.apk"
+```
+
+Preuve attendue dans `adb logcat` :
+
+```text
+MLOmegaEyePinch: HandLandmarker ready (GPU/LIVE_STREAM, 15.0 fps)
+MLOmegaEyePinch: ... hand=true ratio=...
+GestureBridge: native PINCH_BEGIN
+XrealNativeHandPointer: pinch press: deckHit=True, hover=Button ...
+```
+
+Prochain lot borné, après ce jalon : réduire la latence d'engagement sans faux
+clics, lisser la manipulation world-space, ajouter une poignée haute-droite de
+réduction/fermeture, puis évaluer le geste paume ouverte pour rappeler le menu.
+
 ## 9. APK produit : travail explicitement restant
 
 Après correction et preuve de l'Atelier :
@@ -454,6 +532,7 @@ Le chantier XREAL n'est fini que lorsque :
 - APKs, logs, versions et hashes du gate matériel sont conservés.
 
 Au 31 juillet 2026, DeX/template, 6DoF, Eye, contrôleur IMU, framerate,
-world-lock, transparence optique et clic Atelier sont verts sur S24 + One Pro +
-Eye. Le prochain chantier est le pinch main/manipulation, puis la parité de
-l'APK produit.
+world-lock, transparence optique, clic Atelier, pinch main MediaPipe,
+déplacement et redimensionnement sont verts sur S24 + One Pro + Eye. Restent
+l'optimisation de latence/fluidité, les contrôles réduire/fermer et rappel par
+paume, puis la parité de l'APK produit.

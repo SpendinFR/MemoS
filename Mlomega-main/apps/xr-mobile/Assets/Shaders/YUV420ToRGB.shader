@@ -17,43 +17,53 @@ Shader "Hidden/MLOmega/YUV420ToRGB"
 
         Pass
         {
-            HLSLPROGRAM
+            // Keep this pass byte-for-byte compatible with the XREAL SDK's
+            // CaptureBackgroundYUV shader.  The Eye planes are Alpha8, and the
+            // device-facing conversion is deliberately BGR ordered.
+            CGPROGRAM
             #pragma vertex vert
             #pragma fragment frag
-            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "UnityCG.cginc"
 
-            TEXTURE2D(_YTex); SAMPLER(sampler_YTex);
-            TEXTURE2D(_UTex); SAMPLER(sampler_UTex);
-            TEXTURE2D(_VTex); SAMPLER(sampler_VTex);
-
-            struct Attributes { float4 positionOS : POSITION; float2 uv : TEXCOORD0; };
-            struct Varyings   { float4 positionHCS : SV_POSITION; float2 uv : TEXCOORD0; };
-
-            Varyings vert (Attributes IN)
+            struct appdata
             {
-                Varyings OUT;
-                OUT.positionHCS = TransformObjectToHClip(IN.positionOS.xyz);
-                OUT.uv = IN.uv;
-                return OUT;
+                float4 vertex : POSITION;
+                float2 uv : TEXCOORD0;
+            };
+
+            struct v2f
+            {
+                float2 uv : TEXCOORD0;
+                float4 vertex : SV_POSITION;
+            };
+
+            sampler2D _YTex;
+            sampler2D _UTex;
+            sampler2D _VTex;
+
+            v2f vert(appdata v)
+            {
+                v2f o;
+                o.vertex = UnityObjectToClipPos(v.vertex);
+                o.uv = v.uv;
+                return o;
             }
 
-            half4 frag (Varyings IN) : SV_Target
+            fixed4 frag(v2f i) : SV_Target
             {
-                // XREALRGBCameraTexture creates TextureFormat.Alpha8 planes.
-                // The SDK's own CaptureBackgroundYUV shader samples `.a`; `.r`
-                // does not contain the camera byte on these textures.
-                float y = SAMPLE_TEXTURE2D(_YTex, sampler_YTex, IN.uv).a;
-                float u = SAMPLE_TEXTURE2D(_UTex, sampler_UTex, IN.uv).a - 0.5;
-                float v = SAMPLE_TEXTURE2D(_VTex, sampler_VTex, IN.uv).a - 0.5;
+                fixed4 ycol = tex2D(_YTex, i.uv);
+                fixed4 ucol = tex2D(_UTex, i.uv);
+                fixed4 vcol = tex2D(_VTex, i.uv);
 
-                // BT.601, limited range Y in [16/255, 235/255].
-                y = (y - 0.0625) * 1.164;
-                float r = y + 1.596 * v;
-                float g = y - 0.391 * u - 0.813 * v;
-                float b = y + 2.018 * u;
-                return half4(saturate(float3(r, g, b)), 1.0);
+                float r = ycol.a + 1.4022 * vcol.a - 0.7011;
+                float g = ycol.a - 0.3456 * ucol.a - 0.7145 * vcol.a + 0.53005;
+                float b = ycol.a + 1.771 * ucol.a - 0.8855;
+
+                fixed4 col = fixed4(b, g, r, 1);
+                col.rgb = GammaToLinearSpace(col.rgb);
+                return col;
             }
-            ENDHLSL
+            ENDCG
         }
     }
     Fallback Off

@@ -194,6 +194,10 @@ namespace MLOmega.XR.Editor
                 EnableXrealLoader();
                 ValidateArFoundationLoaded();
                 EnsureOfficialXriRigAssets();
+                // Atelier hand pinch uses the same on-device MediaPipe model as
+                // PhoneOnly, but its package has a separate app-private files dir.
+                // Embed it here so first launch never depends on a download.
+                AndroidBuild.EmbedSmallDeviceModels();
                 WorldCreatorSceneBuilder.BuildScene();
                 ValidateXrealBuildSettings(expectTemplateBuiltInPipeline: true);
                 if (!File.Exists(WorldCreatorSceneBuilder.ScenePath))

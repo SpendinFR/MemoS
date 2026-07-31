@@ -12,6 +12,7 @@
 // editor-sim split as LiveTransportBridge (DECISIONS §E24/§E26).
 using System;
 using System.Collections.Generic;
+using System.IO;
 using MLOmega.Contracts.V19;
 using MLOmega.XR.Core;
 using UnityEngine;
@@ -60,6 +61,14 @@ namespace MLOmega.XR.Reflex
         [Range(10f, 15f)]
         [SerializeField] private float _targetFps = 12f;
 
+        [Tooltip("Atelier hardware gate only: log the Eye->MediaPipe cadence and " +
+                 "persist one downscaled diagnostic frame. Disabled in product scenes.")]
+        [SerializeField] private bool _deviceDiagnostics;
+
+        [Tooltip("Use the lighter HandLandmarker-only Eye pinch path. Atelier-only; " +
+                 "the product GestureRecognizer path remains unchanged.")]
+        [SerializeField] private bool _useDedicatedEyePinchPipeline;
+
         /// <summary>Raised on the main thread for each recognised gesture.</summary>
         public event Action<GestureEvent> GestureRecognized;
 
@@ -81,6 +90,8 @@ namespace MLOmega.XR.Reflex
         private AndroidJavaObject _bitmap; // reused native ARGB_8888 Bitmap
         private int[] _argbBuffer;         // reused packed-ARGB scratch for setPixels
         private int _bitmapW, _bitmapH;
+        private int _submittedFrames;
+        private bool _savedDiagnosticFrame;
 #endif
 
         private void Awake()
@@ -190,8 +201,10 @@ namespace MLOmega.XR.Reflex
             var cfg = new AndroidJavaClass("com.mlomega.xr.reflexvision.GestureConfigFactory")
                 .CallStatic<AndroidJavaObject>("forUnity", modelPath, _numHands, _targetFps);
             _proxy = new GestureProxy(this);
-            _pipeline = new AndroidJavaObject(
-                "com.mlomega.xr.reflexvision.GesturePipeline", ctx, cfg, _proxy);
+            string pipelineClass = _useDedicatedEyePinchPipeline
+                ? "com.mlomega.xr.reflexvision.EyePinchPipeline"
+                : "com.mlomega.xr.reflexvision.GesturePipeline";
+            _pipeline = new AndroidJavaObject(pipelineClass, ctx, cfg, _proxy);
             _pipeline.Call("start");
         }
 
@@ -250,6 +263,24 @@ namespace MLOmega.XR.Reflex
 
             _bitmap.Call("setPixels", _argbBuffer, 0, w, 0, 0, w, h);
             _pipeline.Call("pushFrame", _bitmap, timestampMs);
+            _submittedFrames++;
+            if (_deviceDiagnostics && !_savedDiagnosticFrame)
+            {
+                _savedDiagnosticFrame = true;
+                string path = Path.Combine(
+                    Application.persistentDataPath,
+                    "eye-hand-diagnostic.png");
+                File.WriteAllBytes(path, _readback.EncodeToPNG());
+                Debug.Log(
+                    $"[GestureBridge] first Eye frame submitted: {w}x{h}, " +
+                    $"ts={timestampMs}, diagnostic={path}");
+            }
+            else if (_deviceDiagnostics && _submittedFrames % 60 == 0)
+            {
+                Debug.Log(
+                    $"[GestureBridge] Eye frames submitted={_submittedFrames}, " +
+                    $"last={w}x{h}, ts={timestampMs}");
+            }
         }
 
         private void EnsureBitmap(int w, int h)
@@ -280,6 +311,10 @@ namespace MLOmega.XR.Reflex
 
         internal void OnNativeGesture(string kindName, float zoom, float x, float y, long tsMs)
         {
+            if (_deviceDiagnostics)
+                Debug.Log(
+                    $"[GestureBridge] native {kindName}: zoom={zoom:F2}, " +
+                    $"anchor=({x:F3},{y:F3}), ts={tsMs}");
             GestureKind kind = MapKind(kindName);
             Enqueue(() => GestureRecognized?.Invoke(
                 new GestureEvent(kind, zoom, new Vector2(x, y), tsMs)));

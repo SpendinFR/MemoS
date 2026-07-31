@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using MLOmega.XR.Core;
+using MLOmega.XR.Reflex;
 using MLOmega.XR.UI.Components;
 using Unity.XR.XREAL;
 using Unity.XR.CoreUtils;
@@ -10,8 +12,9 @@ namespace MLOmega.XR.UI
 {
     /// <summary>
     /// Native XREAL/XR Hands pointer for the product menu and the isolated
-    /// World Atelier deck. It does not consume Eye RGB frames and therefore
-    /// remains independent from the MediaPipe/transport gesture path.
+    /// World Atelier deck. On One Pro + Eye, where the SDK exposes no native
+    /// hand subsystem, the existing gaze ray remains the pointer and the
+    /// on-device MediaPipe pinch becomes its select/grab button.
     ///
     /// Point with the index and pinch thumb-to-index to click. Two thresholds
     /// provide hysteresis so a noisy pinch cannot emit repeated clicks. Touch
@@ -21,11 +24,15 @@ namespace MLOmega.XR.UI
     {
         [SerializeField] private Camera _camera;
         [SerializeField] private WorldCreatorController _creator;
+        [SerializeField] private GestureBridge _eyeGestures;
+        [SerializeField] private StreamingAssetsModelInstaller _modelInstaller;
+        [SerializeField] private bool _activateEyeGesturesContinuously;
 
         private readonly List<XRHandSubsystem> _subsystems =
             new List<XRHandSubsystem>();
         private readonly List<RaycastResult> _uiHits =
             new List<RaycastResult>(16);
+        private readonly RaycastHit[] _physicalUiHits = new RaycastHit[64];
         private XROrigin _origin;
         private MenuPanel _menu;
         private EventSystem _events;
@@ -41,6 +48,10 @@ namespace MLOmega.XR.UI
         private bool _phoneControllerSubscribed;
         private bool _phoneTouchActive;
         private bool _phoneTriggerPressed;
+        private bool _eyePinching;
+        private bool _deckPinchClaimed;
+        private Vector2 _eyeGesturePoint = new Vector2(-1f, -1f);
+        private float _eyeGestureZoom = 1f;
         private Vector2 _phonePointerViewport = new Vector2(.5f, .5f);
         private XREALVirtualController _phoneController;
         private Vector3 _smoothedOrigin;
@@ -54,12 +65,43 @@ namespace MLOmega.XR.UI
                 _creator = FindAnyObjectByType<WorldCreatorController>();
             _menu = FindAnyObjectByType<MenuPanel>();
             _origin = FindAnyObjectByType<XROrigin>();
+            if (_eyeGestures == null)
+                _eyeGestures = FindAnyObjectByType<GestureBridge>();
+            if (_modelInstaller == null)
+                _modelInstaller = FindAnyObjectByType<StreamingAssetsModelInstaller>();
             EnsurePointerInfrastructure();
             BuildCursor();
         }
 
+        private void OnEnable()
+        {
+            if (_eyeGestures == null)
+                _eyeGestures = FindAnyObjectByType<GestureBridge>();
+            if (_eyeGestures != null)
+                _eyeGestures.GestureRecognized += OnEyeGesture;
+            if (!_activateEyeGesturesContinuously || _eyeGestures == null) return;
+            if (_modelInstaller == null)
+                _modelInstaller = FindAnyObjectByType<StreamingAssetsModelInstaller>();
+            if (_modelInstaller == null || _modelInstaller.Done)
+                ActivateEyeGestures();
+            else
+                _modelInstaller.Completed += ActivateEyeGestures;
+        }
+
         private void OnDisable()
         {
+            if (_modelInstaller != null)
+                _modelInstaller.Completed -= ActivateEyeGestures;
+            if (_eyeGestures != null)
+            {
+                _eyeGestures.GestureRecognized -= OnEyeGesture;
+                if (_activateEyeGesturesContinuously)
+                    _eyeGestures.Deactivate();
+            }
+            _eyePinching = false;
+            if (_deckPinchClaimed && _creator != null)
+                _creator.EndDeckManipulation();
+            _deckPinchClaimed = false;
             UnsubscribePhoneController();
             ReleasePointer(false);
             SetCursorVisible(false);
@@ -84,6 +126,16 @@ namespace MLOmega.XR.UI
             bool hasPointer = TryGetHandRay(
                 out Ray handRay,
                 out bool pinching);
+            // A subscribed XREALVirtualController exists even while the S24
+            // touch surface is idle.  Treating that idle singleton as a live
+            // pointer made it permanently win over head gaze, so Eye pinches
+            // clicked the last phone coordinate instead of what the user was
+            // looking at.  Phone input still takes priority while it is
+            // actively touched/pressed, then gaze resumes automatically.
+            if (!hasPointer && (_phoneTouchActive || _phoneTriggerPressed))
+                hasPointer = TryGetPhonePointer(out handRay, out pinching);
+            if (!hasPointer)
+                hasPointer = TryGetGazePointer(out handRay, out pinching);
             if (!hasPointer)
                 hasPointer = TryGetPhonePointer(out handRay, out pinching);
             if (
@@ -115,12 +167,27 @@ namespace MLOmega.XR.UI
 
             Vector2 screenPoint = default;
             Vector3 worldHit = default;
-            bool deckHit =
-                _creator != null &&
-                _creator.TryProjectDeckPointer(
-                    handRay,
-                    out screenPoint,
-                    out worldHit);
+            GameObject physicalTarget = null;
+            bool physicalHit = TryGetPhysicalUiTarget(
+                handRay,
+                out worldHit,
+                out physicalTarget);
+            bool deckHit = physicalHit;
+            if (physicalHit)
+            {
+                screenPoint = RectTransformUtility.WorldToScreenPoint(
+                    _camera,
+                    worldHit);
+            }
+            else
+            {
+                deckHit =
+                    _creator != null &&
+                    _creator.TryProjectDeckPointer(
+                        handRay,
+                        out screenPoint,
+                        out worldHit);
+            }
             if (!deckHit)
             {
                 Vector3 projected =
@@ -135,18 +202,79 @@ namespace MLOmega.XR.UI
                 worldHit = handRay.GetPoint(1.25f);
             }
 
-            UpdateEventPointer(screenPoint, deckHit);
+            UpdateEventPointer(
+                screenPoint,
+                deckHit,
+                worldHit,
+                physicalTarget);
             UpdateProductMenu(screenPoint, pinching);
+            if (_creator != null)
+                _creator.UpdateDeckManipulationHover(worldHit, deckHit);
             SetCursor(
                 handRay.origin,
                 worldHit,
                 deckHit || (_menu != null && _menu.IsOpen));
 
             if (pinching && !_pinching)
-                PressPointer();
+            {
+                Debug.Log(
+                    "[XrealNativeHandPointer] pinch press: " +
+                    $"deckHit={deckHit}, hover={(_hover != null ? _hover.name : "<none>")}, " +
+                    $"gaze={_eyePinching}, phone={_phoneTriggerPressed}");
+                _deckPinchClaimed =
+                    _eyePinching &&
+                    _creator != null &&
+                    _creator.TryBeginDeckManipulation(
+                        worldHit,
+                        _eyeGesturePoint,
+                        _eyeGestureZoom);
+                if (!_deckPinchClaimed) PressPointer();
+            }
+            else if (pinching && _pinching && _deckPinchClaimed)
+            {
+                _creator.UpdateDeckManipulation(
+                    _eyeGesturePoint,
+                    _eyeGestureZoom);
+            }
             else if (!pinching && _pinching)
-                ReleasePointer(true);
+            {
+                if (_deckPinchClaimed)
+                    _creator.EndDeckManipulation();
+                else
+                    ReleasePointer(true);
+                _deckPinchClaimed = false;
+            }
             _pinching = pinching;
+        }
+
+        private void ActivateEyeGestures()
+        {
+            if (_modelInstaller != null)
+                _modelInstaller.Completed -= ActivateEyeGestures;
+            if (_activateEyeGesturesContinuously && _eyeGestures != null)
+            {
+                _eyeGestures.Activate();
+                Debug.Log(
+                    "[XrealNativeHandPointer] Eye MediaPipe armed: " +
+                    "head gaze aims, physical hand pinch selects.");
+            }
+        }
+
+        private void OnEyeGesture(GestureEvent ev)
+        {
+            if (ev.ScreenPoint.x >= 0f && ev.ScreenPoint.y >= 0f)
+                _eyeGesturePoint = ev.ScreenPoint;
+            if (ev.ZoomFactor > 0f) _eyeGestureZoom = ev.ZoomFactor;
+            switch (ev.Kind)
+            {
+                case GestureKind.PinchBegin:
+                case GestureKind.PinchUpdate:
+                    _eyePinching = true;
+                    break;
+                case GestureKind.PinchEnd:
+                    _eyePinching = false;
+                    break;
+            }
         }
 
         private void EnsurePointerInfrastructure()
@@ -303,10 +431,53 @@ namespace MLOmega.XR.UI
                 _phonePointerViewport.x,
                 _phonePointerViewport.y,
                 0f));
-            pressing = _phoneTriggerPressed;
+            pressing = _phoneTriggerPressed || _eyePinching;
             // Keep the cursor visible at its last position so the user always
             // knows what a tap will select, even between touch movements.
             return true;
+        }
+
+        private bool TryGetGazePointer(out Ray ray, out bool pressing)
+        {
+            ray = default;
+            pressing = false;
+            if (
+                _camera == null ||
+                _eyeGestures == null ||
+                !_eyeGestures.IsRunning)
+                return false;
+            ray = _camera.ViewportPointToRay(new Vector3(.5f, .5f, 0f));
+            pressing = _eyePinching;
+            return true;
+        }
+
+        private bool TryGetPhysicalUiTarget(
+            Ray ray,
+            out Vector3 worldPoint,
+            out GameObject target)
+        {
+            worldPoint = default;
+            target = null;
+            int count = Physics.RaycastNonAlloc(
+                ray,
+                _physicalUiHits,
+                4f,
+                ~0,
+                QueryTriggerInteraction.Collide);
+            float nearest = float.MaxValue;
+            for (int i = 0; i < count; i++)
+            {
+                RaycastHit hit = _physicalUiHits[i];
+                if (hit.collider == null || hit.distance >= nearest) continue;
+                GameObject handler =
+                    ExecuteEvents.GetEventHandler<IPointerClickHandler>(
+                        hit.collider.gameObject);
+                if (handler == null) continue;
+                nearest = hit.distance;
+                worldPoint = hit.point;
+                target = handler;
+            }
+            return target != null;
         }
 
         private void LogTrackedHandOnce(string handedness)
@@ -369,22 +540,50 @@ namespace MLOmega.XR.UI
             return true;
         }
 
-        private void UpdateEventPointer(Vector2 screenPoint, bool raycastUi)
+        private void UpdateEventPointer(
+            Vector2 screenPoint,
+            bool raycastUi,
+            Vector3 worldPoint,
+            GameObject physicalTarget)
         {
             if (_pointer == null) return;
             _pointer.delta = screenPoint - _pointer.position;
             _pointer.position = screenPoint;
-            GameObject next = null;
+            GameObject next = physicalTarget;
             if (raycastUi)
             {
-                _uiHits.Clear();
-                _events.RaycastAll(_pointer, _uiHits);
-                foreach (RaycastResult hit in _uiHits)
+                if (next == null)
                 {
-                    if (hit.gameObject == null) continue;
-                    next = hit.gameObject;
-                    _pointer.pointerCurrentRaycast = hit;
-                    break;
+                    _uiHits.Clear();
+                    _events.RaycastAll(_pointer, _uiHits);
+                    foreach (RaycastResult hit in _uiHits)
+                    {
+                        if (hit.gameObject == null) continue;
+                        next = hit.gameObject;
+                        _pointer.pointerCurrentRaycast = hit;
+                        break;
+                    }
+                }
+                if (
+                    next == null &&
+                    _creator != null &&
+                    _creator.TryResolveDeckTarget(worldPoint, out next))
+                {
+                    _pointer.pointerCurrentRaycast = new RaycastResult
+                    {
+                        gameObject = next,
+                        screenPosition = screenPoint,
+                        worldPosition = worldPoint,
+                    };
+                }
+                else if (physicalTarget != null)
+                {
+                    _pointer.pointerCurrentRaycast = new RaycastResult
+                    {
+                        gameObject = physicalTarget,
+                        screenPosition = screenPoint,
+                        worldPosition = worldPoint,
+                    };
                 }
             }
             SetHover(next);

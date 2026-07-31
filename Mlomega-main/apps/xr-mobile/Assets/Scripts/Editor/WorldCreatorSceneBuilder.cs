@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using MLOmega.XR.Core;
+using MLOmega.XR.Reflex;
 using MLOmega.XR.UI;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -50,8 +52,30 @@ namespace MLOmega.XR.Editor
             // S24 + One Pro + Eye. Atelier content is only added world-space.
 
             var root = new GameObject("MLOmega World Atelier");
+            var runtimeAssets = root.AddComponent<XrealRuntimeAssets>();
+            Assign(
+                runtimeAssets,
+                "_yuv420ToRgb",
+                RequiredShader(PhoneOnlySceneBuilder.XrealYuvShaderPath));
+            var permissions = root.AddComponent<PermissionGate>();
+            var session = root.AddComponent<XrSessionController>();
+            var pose = root.AddComponent<PosePublisher>();
+            var capture = root.AddComponent<EyeCaptureSource>();
+            var modelInstaller =
+                root.AddComponent<StreamingAssetsModelInstaller>();
+            var eyeGestures = root.AddComponent<GestureBridge>();
             var exchange = root.AddComponent<WorldMapDocumentExchange>();
             var creator = root.AddComponent<WorldCreatorController>();
+            Assign(session, "_permissions", permissions);
+            Assign(pose, "_session", session);
+            Assign(capture, "_session", session);
+            Assign(capture, "_pose", pose);
+            Assign(eyeGestures, "_capture", capture);
+            Assign(eyeGestures, "_deviceDiagnostics", true);
+            Assign(eyeGestures, "_useDedicatedEyePinchPipeline", true);
+            Assign(eyeGestures, "_modelRelativePath", "models/hand_landmarker.task");
+            Assign(eyeGestures, "_maxDimension", 768);
+            Assign(eyeGestures, "_targetFps", 15f);
             Assign(creator, "_camera", camera);
             Assign(creator, "_exchange", exchange);
 
@@ -88,6 +112,9 @@ namespace MLOmega.XR.Editor
             Component pointer = root.AddComponent(pointerType);
             Assign(pointer, "_camera", camera);
             Assign(pointer, "_creator", creator);
+            Assign(pointer, "_eyeGestures", eyeGestures);
+            Assign(pointer, "_modelInstaller", modelInstaller);
+            Assign(pointer, "_activateEyeGesturesContinuously", true);
 
             Directory.CreateDirectory(Path.GetDirectoryName(ScenePath));
             if (!EditorSceneManager.SaveScene(scene, ScenePath))
@@ -130,6 +157,45 @@ namespace MLOmega.XR.Editor
             if (property == null)
                 throw new MissingFieldException(target.GetType().Name, field);
             property.boolValue = value;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void Assign(
+            UnityEngine.Object target,
+            string field,
+            string value)
+        {
+            var serialized = new SerializedObject(target);
+            SerializedProperty property = serialized.FindProperty(field);
+            if (property == null)
+                throw new MissingFieldException(target.GetType().Name, field);
+            property.stringValue = value;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void Assign(
+            UnityEngine.Object target,
+            string field,
+            int value)
+        {
+            var serialized = new SerializedObject(target);
+            SerializedProperty property = serialized.FindProperty(field);
+            if (property == null)
+                throw new MissingFieldException(target.GetType().Name, field);
+            property.intValue = value;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void Assign(
+            UnityEngine.Object target,
+            string field,
+            float value)
+        {
+            var serialized = new SerializedObject(target);
+            SerializedProperty property = serialized.FindProperty(field);
+            if (property == null)
+                throw new MissingFieldException(target.GetType().Name, field);
+            property.floatValue = value;
             serialized.ApplyModifiedPropertiesWithoutUndo();
         }
     }

@@ -73,6 +73,8 @@ namespace MLOmega.XR.UI
             new List<TextMeshProUGUI>();
         private readonly List<Button> _deckCategoryButtons =
             new List<Button>();
+        private readonly List<Graphic> _deckHitGraphics =
+            new List<Graphic>();
         private TextMeshProUGUI _deckPage;
         private TextMeshProUGUI _deckScale;
         private TextMeshProUGUI _deckAsset;
@@ -84,6 +86,16 @@ namespace MLOmega.XR.UI
         private TextMeshProUGUI _deckMapLabel;
         private TextMeshProUGUI _deckMotionLabel;
         private TMP_InputField _deckTarget;
+        private Image _deckMoveHandle;
+        private Image _deckResizeHandle;
+        private DeckManipulationMode _deckHoverMode;
+        private DeckManipulationMode _deckManipulationMode;
+        private Vector2 _deckManipulationStartHand;
+        private Vector3 _deckManipulationStartPosition;
+        private Vector3 _deckManipulationStartDirection;
+        private float _deckManipulationStartDistance;
+        private float _deckManipulationStartScale;
+        private float _deckManipulationStartZoom;
         private static Material _deckDepthMaterial;
         private static Material _deckPrimaryDepthMaterial;
         private static readonly string[] DynamicKinds =
@@ -98,6 +110,16 @@ namespace MLOmega.XR.UI
         {
             "static", "orbit", "patrol", "figure8", "vertical",
         };
+
+        private enum DeckManipulationMode
+        {
+            None = 0,
+            Move = 1,
+            Resize = 2,
+        }
+
+        public bool IsDeckManipulating =>
+            _deckManipulationMode != DeckManipulationMode.None;
 
         private void Awake()
         {
@@ -690,6 +712,32 @@ namespace MLOmega.XR.UI
                 17f,
                 new Color(.25f, 1f, .9f),
                 FontStyles.Bold);
+
+            // Vision-Pro-style affordances: invisible until the existing gaze
+            // ray reaches their zone. They are ordinary UGUI quads (never a
+            // LineRenderer, which is unsafe under XREAL single-pass stereo).
+            _deckMoveHandle = MakeImage(
+                _spatialDeckRect,
+                "Gaze move handle",
+                new Vector2(0f, -603f),
+                new Vector2(150f, 10f),
+                new Color(.25f, 1f, .92f, .92f));
+            _deckMoveHandle.raycastTarget = false;
+            _deckMoveHandle.gameObject.SetActive(false);
+            _deckResizeHandle = MakeImage(
+                _spatialDeckRect,
+                "Gaze resize handle",
+                new Vector2(-447f, -587f),
+                new Vector2(22f, 22f),
+                new Color(.72f, .36f, 1f, .94f));
+            _deckResizeHandle.rectTransform.localRotation =
+                Quaternion.Euler(0f, 0f, 45f);
+            _deckResizeHandle.raycastTarget = false;
+            _deckResizeHandle.gameObject.SetActive(false);
+            _deckHitGraphics.Clear();
+            _spatialDeckRect.GetComponentsInChildren(
+                true,
+                _deckHitGraphics);
             RefreshSpatialDeck();
         }
 
@@ -839,6 +887,179 @@ namespace MLOmega.XR.UI
             // comparing these unrelated coordinate spaces rejected valid XR
             // hits while leaving the visual cursor alive.
             return true;
+        }
+
+        /// <summary>
+        /// Resolve an interactive UGUI target directly in the world-space
+        /// deck's local coordinates. XREAL's eye render target and the S24
+        /// display do not share a screen coordinate system, so GraphicRaycaster
+        /// can legitimately return no hit even after the 3D ray has intersected
+        /// the correct control. This fallback never guesses a target: the
+        /// world point must be inside the actual raycastable Graphic rect and
+        /// that graphic must have a real click handler in its parent chain.
+        /// </summary>
+        public bool TryResolveDeckTarget(
+            Vector3 worldPoint,
+            out GameObject target)
+        {
+            target = null;
+            float smallestArea = float.MaxValue;
+            for (int i = 0; i < _deckHitGraphics.Count; i++)
+            {
+                Graphic graphic = _deckHitGraphics[i];
+                if (
+                    graphic == null ||
+                    !graphic.isActiveAndEnabled ||
+                    !graphic.raycastTarget)
+                    continue;
+                var rect = graphic.rectTransform;
+                Vector3 local = rect.InverseTransformPoint(worldPoint);
+                if (!rect.rect.Contains(new Vector2(local.x, local.y)))
+                    continue;
+                GameObject handler =
+                    ExecuteEvents.GetEventHandler<IPointerClickHandler>(
+                        graphic.gameObject);
+                if (handler == null) continue;
+                float area = Mathf.Abs(rect.rect.width * rect.rect.height);
+                if (area >= smallestArea) continue;
+                smallestArea = area;
+                target = handler;
+            }
+            return target != null;
+        }
+
+        /// <summary>
+        /// Reveal only the manipulation affordance currently targeted by the
+        /// already-working gaze ray. No hand coordinates are used for aiming.
+        /// </summary>
+        public void UpdateDeckManipulationHover(
+            Vector3 worldPoint,
+            bool deckHit)
+        {
+            if (_deckManipulationMode != DeckManipulationMode.None) return;
+            _deckHoverMode = deckHit
+                ? ClassifyDeckManipulationHandle(worldPoint)
+                : DeckManipulationMode.None;
+            SetDeckHandleVisuals(_deckHoverMode);
+        }
+
+        /// <summary>
+        /// Claim a physical hand pinch only when gaze was on the bottom move
+        /// handle or bottom-left resize handle. Normal buttons remain clicks.
+        /// </summary>
+        public bool TryBeginDeckManipulation(
+            Vector3 gazeWorldPoint,
+            Vector2 handAnchor,
+            float zoomFactor)
+        {
+            if (
+                _spatialDeckRect == null ||
+                _camera == null ||
+                handAnchor.x < 0f ||
+                handAnchor.y < 0f)
+                return false;
+            DeckManipulationMode mode =
+                ClassifyDeckManipulationHandle(gazeWorldPoint);
+            if (mode == DeckManipulationMode.None) return false;
+            _deckManipulationMode = mode;
+            _deckManipulationStartHand = handAnchor;
+            _deckManipulationStartPosition = _spatialDeckRect.position;
+            _deckManipulationStartDistance = Mathf.Clamp(
+                Vector3.Distance(
+                    _camera.transform.position,
+                    _deckManipulationStartPosition),
+                .45f,
+                2.8f);
+            _deckManipulationStartDirection =
+                (_deckManipulationStartPosition - _camera.transform.position)
+                .normalized;
+            _deckManipulationStartScale = _spatialDeckRect.localScale.x;
+            _deckManipulationStartZoom = Mathf.Max(.1f, zoomFactor);
+            SetDeckHandleVisuals(mode);
+            return true;
+        }
+
+        /// <summary>
+        /// Hand motion manipulates the gaze-selected handle. X/Y move in the
+        /// viewing plane; pinch aperture provides a bounded monocular depth
+        /// adjustment. The resize handle preserves the deck aspect ratio.
+        /// </summary>
+        public void UpdateDeckManipulation(
+            Vector2 handAnchor,
+            float zoomFactor)
+        {
+            if (
+                _deckManipulationMode == DeckManipulationMode.None ||
+                _spatialDeckRect == null ||
+                _camera == null ||
+                handAnchor.x < 0f ||
+                handAnchor.y < 0f)
+                return;
+            Vector2 delta = handAnchor - _deckManipulationStartHand;
+            if (_deckManipulationMode == DeckManipulationMode.Move)
+            {
+                float span = _deckManipulationStartDistance * 1.15f;
+                Vector3 planar =
+                    _camera.transform.right * (delta.x * span) +
+                    _camera.transform.up * (-delta.y * span * .8f);
+                float depth = Mathf.Clamp(
+                    _deckManipulationStartDistance -
+                    (zoomFactor - _deckManipulationStartZoom) * .16f,
+                    .45f,
+                    2.8f);
+                _spatialDeckRect.position =
+                    _camera.transform.position +
+                    _deckManipulationStartDirection * depth +
+                    planar;
+            }
+            else
+            {
+                // Dragging the bottom-left handle outwards (left/down in the
+                // Eye image) grows the deck; inward motion shrinks it.
+                float gesture = -delta.x + delta.y;
+                float factor = Mathf.Clamp(1f + gesture * 1.35f, .58f, 1.75f);
+                float scale = Mathf.Clamp(
+                    _deckManipulationStartScale * factor,
+                    .00038f,
+                    .00108f);
+                _spatialDeckRect.localScale = Vector3.one * scale;
+            }
+        }
+
+        public void EndDeckManipulation()
+        {
+            _deckManipulationMode = DeckManipulationMode.None;
+            _deckHoverMode = DeckManipulationMode.None;
+            SetDeckHandleVisuals(DeckManipulationMode.None);
+        }
+
+        private DeckManipulationMode ClassifyDeckManipulationHandle(
+            Vector3 worldPoint)
+        {
+            if (_spatialDeckRect == null) return DeckManipulationMode.None;
+            Vector3 local3 = _spatialDeckRect.InverseTransformPoint(worldPoint);
+            Vector2 local = new Vector2(local3.x, local3.y);
+            Rect rect = _spatialDeckRect.rect;
+            if (!rect.Contains(local)) return DeckManipulationMode.None;
+            if (
+                local.x <= rect.xMin + 95f &&
+                local.y <= rect.yMin + 85f)
+                return DeckManipulationMode.Resize;
+            if (
+                Mathf.Abs(local.x) <= 175f &&
+                local.y <= rect.yMin + 58f)
+                return DeckManipulationMode.Move;
+            return DeckManipulationMode.None;
+        }
+
+        private void SetDeckHandleVisuals(DeckManipulationMode mode)
+        {
+            if (_deckMoveHandle != null)
+                _deckMoveHandle.gameObject.SetActive(
+                    mode == DeckManipulationMode.Move);
+            if (_deckResizeHandle != null)
+                _deckResizeHandle.gameObject.SetActive(
+                    mode == DeckManipulationMode.Resize);
         }
 
         private void ExportFromSpatialDeck()
@@ -1049,6 +1270,9 @@ namespace MLOmega.XR.UI
                     ? new Color(.02f, .45f, .42f, .42f)
                     : new Color(.025f, .11f, .2f, .30f));
             Button button = image.gameObject.AddComponent<Button>();
+            var collider = image.gameObject.AddComponent<BoxCollider>();
+            collider.center = Vector3.zero;
+            collider.size = new Vector3(size.x, size.y, 14f);
             ColorBlock colors = button.colors;
             colors.normalColor = Color.white;
             colors.highlightedColor =
@@ -1130,6 +1354,9 @@ namespace MLOmega.XR.UI
                 new Color(.02f, .07f, .14f, .34f));
             TMP_InputField input =
                 image.gameObject.AddComponent<TMP_InputField>();
+            var collider = image.gameObject.AddComponent<BoxCollider>();
+            collider.center = Vector3.zero;
+            collider.size = new Vector3(size.x, size.y, 14f);
             TextMeshProUGUI text = MakeText(
                 image.transform,
                 string.Empty,
