@@ -17,6 +17,9 @@ enum class GestureKind {
     /** Open palm held long enough to request the menu. */
     OPEN_PALM_MENU,
 
+    /** Two open palms held together request the centered application dock. */
+    TWO_PALM_MENU,
+
     /** Closed fist held long enough to toggle full-rate gesture interaction. */
     FIST_TOGGLE,
 

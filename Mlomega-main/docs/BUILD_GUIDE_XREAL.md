@@ -570,6 +570,68 @@ sur ce jalon :
    y compris vers le haut. Retirer le bouton `↻` visible devenu redondant, ou le
    remplacer par une affordance discrète révélée seulement par le regard.
 
+### 8.8 Jalons matériels controls-v5/v6 : fermeture réelle et réglages séparés
+
+Gates réels One Pro + Eye/S24 validés le 1er août 2026, sans modifier l'APK
+produit ni les runs Memory local/PRO :
+
+- le `X` est une affordance révélée uniquement par le regard ; fermer masque
+  réellement tout le Canvas, sans laisser de rectangle résiduel ;
+- une paume ouverte rappelle et recentre la dernière fenêtre ;
+- la manipulation conserve un horizon droit et une inclinaison naturelle selon
+  la hauteur de regard, sans persister un roll accidentel ;
+- le pupitre mémorise sa position head-relative et son échelle dans
+  `mlomega.atelier.deck_layout.v1.*` ;
+- Paramètres est une fenêtre distincte avec commandes gestes haute/basse
+  consommation et rayon Eye actif/coupé, curseur conservé ;
+- les états actifs/veille sont confirmés par un toast world-space ; la veille
+  HandLandmarker descend réellement à 1 fps.
+
+Artefacts matériels conservés :
+
+```text
+apps/xr-mobile/build/android/mlomega-xreal-world-atelier-controls-v5.apk
+taille = 223725484 octets
+sha256 = 63F657E2F4364B555DEA8859FD7A750A94B7A4E17E5D8AD264D0A03A128CF4F2
+
+apps/xr-mobile/build/android/mlomega-xreal-world-atelier-controls-v6.apk
+taille = 223732028 octets
+sha256 = 91E5CA0E8003AE49B4210932FB87B51EE0D420E68ECF1CE8EA73602CC39F1E4C
+```
+
+### 8.9 Jalon matériel controls-v7 : deux fenêtres et dock spatial
+
+Gate réel One Pro + Eye/S24 validé le 1er août 2026 :
+
+- les reticles/traits rouge et blanc du contrôleur téléphone présents dans le
+  rig XRI officiel sont désactivés dans l'Atelier seulement ; le téléphone ne
+  pilote plus le pointeur, mais le bootstrap XREAL `Controller` reste intact ;
+- Pupitre et Paramètres sont deux vraies fenêtres indépendantes, chacune
+  déplaçable, redimensionnable, fermable et mémorisée sous son propre préfixe
+  `PlayerPrefs` ;
+- ouvrir une fenêtre depuis le dock restaure sa pose head-relative et son échelle
+  mémorisées ; sans préférence enregistrée, sa pose confortable par défaut est
+  utilisée ;
+- une paume ouverte rappelle/recentre la dernière fenêtre ;
+- deux paumes ouvertes tenues environ 550 ms ouvrent un dock spatial centré avec
+  deux orbes `PUPITRE` et `RÉGLAGES` ; la détection deux mains supprime
+  explicitement le déclenchement concurrent de la paume simple ;
+- clic, pinch, ancrage 6DoF, transparence, déplacement, resize, fermeture et
+  veille restent verts sur le matériel.
+
+Artefact matériel validé, à conserver comme rollback :
+
+```text
+apps/xr-mobile/build/android/mlomega-xreal-world-atelier-controls-v7.apk
+taille = 223811922 octets
+sha256 = 3554AF58ACAC01B890BBAA274204653B392B1764C172B2C54684890461CCB3EE
+```
+
+Le slot nul observé lors de la réinjection du prefab XRI officiel est normal
+pour certains scripts optionnels absents du player : le builder doit ignorer ces
+slots avant d'inspecter leur type. Le plugin Android doit être reconstruit avec
+`scripts/BUILD_ANDROID_PLUGINS.ps1` après toute modification des gestes Kotlin.
+
 ## 9. APK produit : travail explicitement restant
 
 Après correction et preuve de l'Atelier :

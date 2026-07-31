@@ -20,13 +20,16 @@ namespace MLOmega.XR.UI
     /// provide hysteresis so a noisy pinch cannot emit repeated clicks. Touch
     /// input remains active as a fallback.
     /// </summary>
-    public sealed class XrealNativeHandPointer : MonoBehaviour
+    public sealed class XrealNativeHandPointer :
+        MonoBehaviour,
+        IWorldCreatorInteractionSettings
     {
         [SerializeField] private Camera _camera;
         [SerializeField] private WorldCreatorController _creator;
         [SerializeField] private GestureBridge _eyeGestures;
         [SerializeField] private StreamingAssetsModelInstaller _modelInstaller;
         [SerializeField] private bool _activateEyeGesturesContinuously;
+        [SerializeField] private bool _allowPhoneController = true;
 
         private readonly List<XRHandSubsystem> _subsystems =
             new List<XRHandSubsystem>();
@@ -57,6 +60,13 @@ namespace MLOmega.XR.UI
         private Vector3 _smoothedOrigin;
         private Vector3 _smoothedDirection;
         private float _nextSubsystemLookupAt;
+        private bool _rayVisible;
+        private const string RayVisiblePreference =
+            "mlomega.atelier.eye_ray_visible.v1";
+
+        public bool IsRayVisible => _rayVisible;
+        public bool IsGestureStandby =>
+            _eyeGestures != null && _eyeGestures.IsInteractionStandby;
 
         private void Awake()
         {
@@ -69,8 +79,35 @@ namespace MLOmega.XR.UI
                 _eyeGestures = FindAnyObjectByType<GestureBridge>();
             if (_modelInstaller == null)
                 _modelInstaller = FindAnyObjectByType<StreamingAssetsModelInstaller>();
+            // A point cursor is enough for precise gaze+pinch selection. Keep the
+            // long Eye ray opt-in because it is visually intrusive in OST lenses.
+            _rayVisible = PlayerPrefs.GetInt(RayVisiblePreference, 0) == 1;
             EnsurePointerInfrastructure();
             BuildCursor();
+        }
+
+        public void SetRayVisible(bool visible)
+        {
+            _rayVisible = visible;
+            PlayerPrefs.SetInt(RayVisiblePreference, visible ? 1 : 0);
+            PlayerPrefs.Save();
+            if (_laser != null && !visible) _laser.enabled = false;
+        }
+
+        public void ToggleRayVisible() => SetRayVisible(!_rayVisible);
+
+        public void SetGestureStandby(bool standby)
+        {
+            if (_eyeGestures == null)
+                _eyeGestures = FindAnyObjectByType<GestureBridge>();
+            if (_eyeGestures == null) return;
+            _eyeGestures.SetInteractionStandby(standby);
+            _eyePinching = false;
+            if (_deckPinchClaimed && _creator != null)
+                _creator.EndDeckManipulation();
+            _deckPinchClaimed = false;
+            ReleasePointer(false);
+            if (_creator != null) _creator.SetGestureStandby(standby);
         }
 
         private void OnEnable()
@@ -122,7 +159,32 @@ namespace MLOmega.XR.UI
         private void Update()
         {
             EnsurePointerInfrastructure();
-            EnsurePhoneController();
+            if (_allowPhoneController)
+                EnsurePhoneController();
+            else if (_phoneControllerSubscribed)
+                UnsubscribePhoneController();
+            // A closed Atelier must be optically empty. The palm callback still
+            // runs through GestureBridge and can reopen it without a cursor.
+            if (_creator != null && _creator.IsDeckClosed)
+            {
+                ReleasePointer(false);
+                SetCursorVisible(false);
+                _hasSmoothedRay = false;
+                return;
+            }
+            // In low-power gesture standby, hide the Eye ray/cursor completely.
+            // A deliberate S24 touch remains an available independent fallback.
+            if (
+                _eyeGestures != null &&
+                _eyeGestures.IsInteractionStandby &&
+                (!_allowPhoneController ||
+                 (!_phoneTouchActive && !_phoneTriggerPressed)))
+            {
+                ReleasePointer(false);
+                SetCursorVisible(false);
+                _hasSmoothedRay = false;
+                return;
+            }
             bool hasPointer = TryGetHandRay(
                 out Ray handRay,
                 out bool pinching);
@@ -132,11 +194,14 @@ namespace MLOmega.XR.UI
             // clicked the last phone coordinate instead of what the user was
             // looking at.  Phone input still takes priority while it is
             // actively touched/pressed, then gaze resumes automatically.
-            if (!hasPointer && (_phoneTouchActive || _phoneTriggerPressed))
+            if (
+                _allowPhoneController &&
+                !hasPointer &&
+                (_phoneTouchActive || _phoneTriggerPressed))
                 hasPointer = TryGetPhonePointer(out handRay, out pinching);
             if (!hasPointer)
                 hasPointer = TryGetGazePointer(out handRay, out pinching);
-            if (!hasPointer)
+            if (!hasPointer && _allowPhoneController)
                 hasPointer = TryGetPhonePointer(out handRay, out pinching);
             if (
                 _camera == null ||
@@ -277,6 +342,10 @@ namespace MLOmega.XR.UI
                 case GestureKind.OpenPalmMenu:
                     if (_creator != null)
                         _creator.OpenDeckFromPalm();
+                    break;
+                case GestureKind.TwoPalmMenu:
+                    if (_creator != null)
+                        _creator.OpenWindowDockFromTwoPalms();
                     break;
                 case GestureKind.FistToggle:
                     _eyePinching = false;
@@ -732,7 +801,7 @@ namespace MLOmega.XR.UI
 
         private void SetCursorVisible(bool visible)
         {
-            if (_laser != null) _laser.enabled = visible;
+            if (_laser != null) _laser.enabled = visible && _rayVisible;
             if (_cursor != null) _cursor.gameObject.SetActive(visible);
         }
     }

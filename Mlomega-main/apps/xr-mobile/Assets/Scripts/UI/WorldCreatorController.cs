@@ -90,8 +90,23 @@ namespace MLOmega.XR.UI
         private TMP_InputField _deckTarget;
         private Image _deckMoveHandle;
         private Image _deckResizeHandle;
-        private Image _deckMinimizeHandle;
+        private TextMeshProUGUI _deckCloseHandle;
         private bool _deckMinimized;
+        private Canvas _gestureToastCanvas;
+        private TextMeshProUGUI _gestureToastLabel;
+        private float _gestureToastHideAt = -1f;
+        private Canvas _settingsDeck;
+        private RectTransform _settingsDeckRect;
+        private TextMeshProUGUI _settingsGestureLabel;
+        private TextMeshProUGUI _settingsRayLabel;
+        private Image _settingsMoveHandle;
+        private Image _settingsResizeHandle;
+        private TextMeshProUGUI _settingsCloseHandle;
+        private readonly List<Graphic> _settingsHitGraphics =
+            new List<Graphic>();
+        private Canvas _windowDock;
+        private RectTransform _windowDockRect;
+        private IWorldCreatorInteractionSettings _interactionSettings;
         private DeckManipulationMode _deckHoverMode;
         private DeckManipulationMode _deckManipulationMode;
         private Vector2 _deckManipulationStartHand;
@@ -107,8 +122,16 @@ namespace MLOmega.XR.UI
         private Quaternion _deckManipulationTargetRotation;
         private float _deckManipulationTargetScale;
         private bool _deckManipulationSmoothing;
+        private RectTransform _activeManipulationRect;
+        private DeckWindowKind _hoverWindow;
+        private DeckWindowKind _activeWindow;
+        private DeckWindowKind _lastWindow = DeckWindowKind.Workspace;
         private static Material _deckDepthMaterial;
         private static Material _deckPrimaryDepthMaterial;
+        private const string DeckLayoutPrefix =
+            "mlomega.atelier.deck_layout.v1.";
+        private const string SettingsLayoutPrefix =
+            "mlomega.atelier.settings_layout.v1.";
         private static readonly string[] DynamicKinds =
         {
             "object", "vehicle", "storefront", "sign", "building", "person",
@@ -130,8 +153,22 @@ namespace MLOmega.XR.UI
             Minimize = 3,
         }
 
+        private enum DeckWindowKind
+        {
+            None = 0,
+            Workspace = 1,
+            Settings = 2,
+        }
+
         public bool IsDeckManipulating =>
             _deckManipulationMode != DeckManipulationMode.None;
+
+        // The pointer may sleep only when every Atelier surface is absent. A
+        // closed workspace must not disable the independent settings or dock.
+        public bool IsDeckClosed =>
+            _deckMinimized &&
+            (_settingsDeck == null || !_settingsDeck.gameObject.activeSelf) &&
+            (_windowDock == null || !_windowDock.gameObject.activeSelf);
 
         private void Awake()
         {
@@ -140,6 +177,7 @@ namespace MLOmega.XR.UI
                 _exchange =
                     GetComponent<WorldMapDocumentExchange>() ??
                     gameObject.AddComponent<WorldMapDocumentExchange>();
+            ResolveInteractionSettings();
             if (_spatialBehaviour == null)
             {
                 foreach (MonoBehaviour behaviour in FindObjectsByType<MonoBehaviour>(
@@ -178,10 +216,17 @@ namespace MLOmega.XR.UI
             }
             if (_spatialDeck != null)
                 Destroy(_spatialDeck.gameObject);
+            if (_gestureToastCanvas != null)
+                Destroy(_gestureToastCanvas.gameObject);
+            if (_settingsDeck != null)
+                Destroy(_settingsDeck.gameObject);
+            if (_windowDock != null)
+                Destroy(_windowDock.gameObject);
         }
 
         private void Update()
         {
+            UpdateGestureToast();
             SmoothDeckManipulation();
             if (
                 Spatial == null ||
@@ -445,21 +490,10 @@ namespace MLOmega.XR.UI
                 FontStyles.Bold);
             MakeButton(
                 _spatialDeckRect,
-                "↻",
-                new Vector2(350f, 535f),
-                new Vector2(56f, 40f),
-                () =>
-                {
-                    SetDeckPose();
-                    _status = "PUPITRE RECENTRÉ // FACE UTILISATEUR";
-                    RefreshSpatialDeck();
-                });
-            MakeButton(
-                _spatialDeckRect,
-                "—",
-                new Vector2(425f, 535f),
-                new Vector2(56f, 40f),
-                () => SetDeckMinimized(true));
+                "⚙ PARAMÈTRES",
+                new Vector2(-350f, 535f),
+                new Vector2(180f, 40f),
+                ToggleSettingsDeck);
             MakeText(
                 _spatialDeckRect,
                 "VOLUMES 3D • ANCRES XREAL • AUCUNE CAPTURE MÉMOIRE",
@@ -643,12 +677,6 @@ namespace MLOmega.XR.UI
                 ExportFromSpatialDeck);
             MakeButton(
                 _spatialDeckRect,
-                "RECENTRER PUPITRE",
-                new Vector2(285f, -408f),
-                new Vector2(250f, 48f),
-                SetDeckPose);
-            MakeButton(
-                _spatialDeckRect,
                 "IMPORTER GLB",
                 new Vector2(-350f, -474f),
                 new Vector2(170f, 44f),
@@ -765,17 +793,18 @@ namespace MLOmega.XR.UI
             _deckResizeHandle.raycastTarget = false;
             _deckResizeHandle.gameObject.SetActive(false);
 
-            // The top-right affordance is intentionally gaze-revealed like the
-            // move/resize handles. A pinch minimizes the dense deck; the compact
-            // restore chip and the open-palm gesture can bring it back.
-            _deckMinimizeHandle = MakeImage(
+            // The top-right close affordance is revealed only by gaze. It is a
+            // real cross, never the small residual rectangle of the old minimize.
+            _deckCloseHandle = MakeText(
                 _spatialDeckRect,
-                "Gaze minimize handle",
+                "×",
                 new Vector2(438f, 592f),
-                new Vector2(34f, 8f),
-                new Color(.35f, 1f, .94f, .94f));
-            _deckMinimizeHandle.raycastTarget = false;
-            _deckMinimizeHandle.gameObject.SetActive(false);
+                new Vector2(38f, 38f),
+                30f,
+                new Color(.35f, 1f, .94f, .98f),
+                FontStyles.Bold);
+            _deckCloseHandle.raycastTarget = false;
+            _deckCloseHandle.gameObject.SetActive(false);
 
             _deckExpandedRoots.Clear();
             for (int i = 0; i < _spatialDeckRect.childCount; i++)
@@ -786,6 +815,9 @@ namespace MLOmega.XR.UI
             _spatialDeckRect.GetComponentsInChildren(
                 true,
                 _deckHitGraphics);
+            BuildGestureToast();
+            BuildSettingsDeck();
+            BuildWindowDock();
             RefreshSpatialDeck();
         }
 
@@ -910,24 +942,24 @@ namespace MLOmega.XR.UI
             screenPoint = default;
             worldPoint = default;
             if (
-                _deckMinimized ||
-                _spatialDeckRect == null ||
                 _camera == null ||
                 ray.direction.sqrMagnitude < .5f)
                 return false;
-            var plane = new Plane(
-                _spatialDeckRect.forward,
-                _spatialDeckRect.position);
-            if (
-                !plane.Raycast(ray, out float distance) ||
-                distance < .03f ||
-                distance > 4f)
-                return false;
-            worldPoint = ray.GetPoint(distance);
-            Vector3 local =
-                _spatialDeckRect.InverseTransformPoint(worldPoint);
-            if (!_spatialDeckRect.rect.Contains(new Vector2(local.x, local.y)))
-                return false;
+            bool hit = false;
+            float bestDistance = float.MaxValue;
+            if (!_deckMinimized)
+                hit |= TryProjectWindow(
+                    ray,
+                    _spatialDeckRect,
+                    ref bestDistance,
+                    ref worldPoint);
+            if (_settingsDeck != null && _settingsDeck.gameObject.activeSelf)
+                hit |= TryProjectWindow(
+                    ray,
+                    _settingsDeckRect,
+                    ref bestDistance,
+                    ref worldPoint);
+            if (!hit) return false;
             screenPoint =
                 RectTransformUtility.WorldToScreenPoint(_camera, worldPoint);
             // WorldToScreenPoint uses the active XR eye target, whereas
@@ -935,6 +967,28 @@ namespace MLOmega.XR.UI
             // The RectTransform hit above already validates the deck bounds;
             // comparing these unrelated coordinate spaces rejected valid XR
             // hits while leaving the visual cursor alive.
+            return true;
+        }
+
+        private static bool TryProjectWindow(
+            Ray ray,
+            RectTransform rect,
+            ref float bestDistance,
+            ref Vector3 bestPoint)
+        {
+            if (rect == null || !rect.gameObject.activeInHierarchy) return false;
+            var plane = new Plane(rect.forward, rect.position);
+            if (
+                !plane.Raycast(ray, out float distance) ||
+                distance < .03f ||
+                distance > 4f ||
+                distance >= bestDistance)
+                return false;
+            Vector3 point = ray.GetPoint(distance);
+            Vector3 local = rect.InverseTransformPoint(point);
+            if (!rect.rect.Contains(new Vector2(local.x, local.y))) return false;
+            bestDistance = distance;
+            bestPoint = point;
             return true;
         }
 
@@ -953,9 +1007,28 @@ namespace MLOmega.XR.UI
         {
             target = null;
             float smallestArea = float.MaxValue;
-            for (int i = 0; i < _deckHitGraphics.Count; i++)
+            ResolveTargetInGraphics(
+                _deckHitGraphics,
+                worldPoint,
+                ref target,
+                ref smallestArea);
+            ResolveTargetInGraphics(
+                _settingsHitGraphics,
+                worldPoint,
+                ref target,
+                ref smallestArea);
+            return target != null;
+        }
+
+        private static void ResolveTargetInGraphics(
+            List<Graphic> graphics,
+            Vector3 worldPoint,
+            ref GameObject target,
+            ref float smallestArea)
+        {
+            for (int i = 0; i < graphics.Count; i++)
             {
-                Graphic graphic = _deckHitGraphics[i];
+                Graphic graphic = graphics[i];
                 if (
                     graphic == null ||
                     !graphic.isActiveAndEnabled ||
@@ -974,7 +1047,6 @@ namespace MLOmega.XR.UI
                 smallestArea = area;
                 target = handler;
             }
-            return target != null;
         }
 
         /// <summary>
@@ -985,14 +1057,12 @@ namespace MLOmega.XR.UI
             Vector3 worldPoint,
             bool deckHit)
         {
-            if (
-                _deckManipulationMode != DeckManipulationMode.None ||
-                _deckMinimized)
-                return;
+            if (_deckManipulationMode != DeckManipulationMode.None) return;
             _deckHoverMode = deckHit
-                ? ClassifyDeckManipulationHandle(worldPoint)
+                ? ClassifyDeckManipulationHandle(worldPoint, out _hoverWindow)
                 : DeckManipulationMode.None;
-            SetDeckHandleVisuals(_deckHoverMode);
+            if (!deckHit) _hoverWindow = DeckWindowKind.None;
+            SetDeckHandleVisuals(_deckHoverMode, _hoverWindow);
         }
 
         /// <summary>
@@ -1005,28 +1075,33 @@ namespace MLOmega.XR.UI
             float zoomFactor)
         {
             if (
-                _spatialDeckRect == null ||
                 _camera == null ||
                 handAnchor.x < 0f ||
                 handAnchor.y < 0f)
                 return false;
             DeckManipulationMode mode =
-                ClassifyDeckManipulationHandle(gazeWorldPoint);
+                ClassifyDeckManipulationHandle(
+                    gazeWorldPoint,
+                    out DeckWindowKind window);
             if (mode == DeckManipulationMode.None) return false;
             if (mode == DeckManipulationMode.Minimize)
             {
-                SetDeckMinimized(true);
+                CloseWindow(window);
                 return true;
             }
+            _activeWindow = window;
+            _lastWindow = window;
+            _activeManipulationRect = RectForWindow(window);
+            if (_activeManipulationRect == null) return false;
             _deckManipulationMode = mode;
             _deckManipulationStartHand = handAnchor;
-            _deckManipulationStartPosition = _spatialDeckRect.position;
+            _deckManipulationStartPosition = _activeManipulationRect.position;
             _deckManipulationStartCameraPosition =
                 _camera.transform.position;
             _deckManipulationStartCameraRotation =
                 _camera.transform.rotation;
             _deckManipulationStartRotation =
-                _spatialDeckRect.rotation;
+                _activeManipulationRect.rotation;
             _deckManipulationStartDistance = Mathf.Clamp(
                 Vector3.Distance(
                     _camera.transform.position,
@@ -1037,13 +1112,13 @@ namespace MLOmega.XR.UI
                 (_deckManipulationStartPosition -
                  _deckManipulationStartCameraPosition)
                 .normalized;
-            _deckManipulationStartScale = _spatialDeckRect.localScale.x;
+            _deckManipulationStartScale = _activeManipulationRect.localScale.x;
             _deckManipulationStartZoom = Mathf.Max(.1f, zoomFactor);
             _deckManipulationTargetPosition = _deckManipulationStartPosition;
             _deckManipulationTargetRotation = _deckManipulationStartRotation;
             _deckManipulationTargetScale = _deckManipulationStartScale;
             _deckManipulationSmoothing = true;
-            SetDeckHandleVisuals(mode);
+            SetDeckHandleVisuals(mode, window);
             return true;
         }
 
@@ -1058,7 +1133,7 @@ namespace MLOmega.XR.UI
         {
             if (
                 _deckManipulationMode == DeckManipulationMode.None ||
-                _spatialDeckRect == null ||
+                _activeManipulationRect == null ||
                 _camera == null ||
                 handAnchor.x < 0f ||
                 handAnchor.y < 0f)
@@ -1090,8 +1165,19 @@ namespace MLOmega.XR.UI
                     _camera.transform.position +
                     carriedDirection * depth +
                     planar;
-                _deckManipulationTargetRotation =
-                    headDelta * _deckManipulationStartRotation;
+                // Carry pitch/yaw with the user but rebuild an upright frame.
+                // Copying the raw head quaternion also copied roll and could
+                // leave the released deck visibly tilted like '/'.
+                Vector3 rotationUp =
+                    Mathf.Abs(Vector3.Dot(carriedDirection, Vector3.up)) > .96f
+                        ? Vector3.ProjectOnPlane(
+                            _camera.transform.up,
+                            carriedDirection).normalized
+                        : Vector3.up;
+                if (rotationUp.sqrMagnitude < .5f) rotationUp = Vector3.forward;
+                _deckManipulationTargetRotation = Quaternion.LookRotation(
+                    carriedDirection,
+                    rotationUp);
             }
             else
             {
@@ -1110,58 +1196,122 @@ namespace MLOmega.XR.UI
 
         public void EndDeckManipulation()
         {
+            if (
+                _deckManipulationMode != DeckManipulationMode.None &&
+                _activeManipulationRect != null)
+            {
+                SaveWindowLayout(
+                    _activeWindow,
+                    _deckManipulationTargetPosition,
+                    _deckManipulationTargetScale);
+            }
             _deckManipulationMode = DeckManipulationMode.None;
             _deckHoverMode = DeckManipulationMode.None;
-            SetDeckHandleVisuals(DeckManipulationMode.None);
+            SetDeckHandleVisuals(
+                DeckManipulationMode.None,
+                DeckWindowKind.None);
         }
 
         private DeckManipulationMode ClassifyDeckManipulationHandle(
+            Vector3 worldPoint,
+            out DeckWindowKind window)
+        {
+            window = DeckWindowKind.None;
+            DeckManipulationMode mode = ClassifyWindowHandle(
+                _spatialDeckRect,
+                !_deckMinimized,
+                worldPoint);
+            if (mode != DeckManipulationMode.None)
+            {
+                window = DeckWindowKind.Workspace;
+                return mode;
+            }
+            mode = ClassifyWindowHandle(
+                _settingsDeckRect,
+                _settingsDeck != null && _settingsDeck.gameObject.activeSelf,
+                worldPoint);
+            if (mode != DeckManipulationMode.None)
+                window = DeckWindowKind.Settings;
+            return mode;
+        }
+
+        private static DeckManipulationMode ClassifyWindowHandle(
+            RectTransform windowRect,
+            bool active,
             Vector3 worldPoint)
         {
-            if (_spatialDeckRect == null) return DeckManipulationMode.None;
-            Vector3 local3 = _spatialDeckRect.InverseTransformPoint(worldPoint);
+            if (!active || windowRect == null) return DeckManipulationMode.None;
+            Vector3 local3 = windowRect.InverseTransformPoint(worldPoint);
+            if (Mathf.Abs(local3.z) > 45f) return DeckManipulationMode.None;
             Vector2 local = new Vector2(local3.x, local3.y);
-            Rect rect = _spatialDeckRect.rect;
+            Rect rect = windowRect.rect;
             if (!rect.Contains(local)) return DeckManipulationMode.None;
+            float edge = Mathf.Min(95f, rect.width * .20f);
+            float bottom = Mathf.Min(85f, rect.height * .24f);
             if (
-                local.x <= rect.xMin + 95f &&
-                local.y <= rect.yMin + 85f)
+                local.x <= rect.xMin + edge &&
+                local.y <= rect.yMin + bottom)
                 return DeckManipulationMode.Resize;
             if (
-                local.x >= rect.xMax - 55f &&
-                local.y >= rect.yMax - 45f)
+                local.x >= rect.xMax - Mathf.Min(55f, rect.width * .16f) &&
+                local.y >= rect.yMax - Mathf.Min(45f, rect.height * .18f))
                 return DeckManipulationMode.Minimize;
             if (
-                Mathf.Abs(local.x) <= 175f &&
-                local.y <= rect.yMin + 58f)
+                Mathf.Abs(local.x) <= Mathf.Min(175f, rect.width * .38f) &&
+                local.y <= rect.yMin + Mathf.Min(58f, rect.height * .20f))
                 return DeckManipulationMode.Move;
             return DeckManipulationMode.None;
         }
 
-        private void SetDeckHandleVisuals(DeckManipulationMode mode)
+        private void SetDeckHandleVisuals(
+            DeckManipulationMode mode,
+            DeckWindowKind window)
         {
             if (_deckMoveHandle != null)
                 _deckMoveHandle.gameObject.SetActive(
+                    window == DeckWindowKind.Workspace &&
                     mode == DeckManipulationMode.Move);
             if (_deckResizeHandle != null)
                 _deckResizeHandle.gameObject.SetActive(
+                    window == DeckWindowKind.Workspace &&
                     mode == DeckManipulationMode.Resize);
-            if (_deckMinimizeHandle != null)
-                _deckMinimizeHandle.gameObject.SetActive(
+            if (_deckCloseHandle != null)
+                _deckCloseHandle.gameObject.SetActive(
+                    window == DeckWindowKind.Workspace &&
+                    mode == DeckManipulationMode.Minimize);
+            if (_settingsMoveHandle != null)
+                _settingsMoveHandle.gameObject.SetActive(
+                    window == DeckWindowKind.Settings &&
+                    mode == DeckManipulationMode.Move);
+            if (_settingsResizeHandle != null)
+                _settingsResizeHandle.gameObject.SetActive(
+                    window == DeckWindowKind.Settings &&
+                    mode == DeckManipulationMode.Resize);
+            if (_settingsCloseHandle != null)
+                _settingsCloseHandle.gameObject.SetActive(
+                    window == DeckWindowKind.Settings &&
                     mode == DeckManipulationMode.Minimize);
         }
 
         /// <summary>
-        /// Restore the deck from a held open palm. This is intentionally open-
-        /// only rather than a toggle so a repeated/late palm classification can
-        /// never make the controls disappear again.
+        /// A held open palm is the single spatial reset gesture: it reopens a
+        /// closed deck and always places it upright in the current gaze direction.
         /// </summary>
         public void OpenDeckFromPalm()
         {
-            if (!_deckMinimized) return;
-            SetDeckMinimized(false);
+            if (_windowDock != null) _windowDock.gameObject.SetActive(false);
+            if (_lastWindow == DeckWindowKind.Settings)
+            {
+                OpenSettingsDeck(true);
+                ShowGestureToast(
+                    "PARAMÈTRES OUVERTS ET RECENTRÉS // PAUME",
+                    new Color(.35f, 1f, .94f));
+                return;
+            }
+            if (_deckMinimized) SetDeckMinimized(false);
+            _lastWindow = DeckWindowKind.Workspace;
             SetDeckPose();
-            _status = "PUPITRE OUVERT // PAUME";
+            _status = "PUPITRE OUVERT ET RECENTRÉ // PAUME";
             RefreshSpatialDeck();
         }
 
@@ -1171,7 +1321,13 @@ namespace MLOmega.XR.UI
             _status = standby
                 ? "GESTES EN VEILLE // FERME LE POING POUR RÉACTIVER"
                 : "GESTES ACTIFS // 25 FPS";
+            ShowGestureToast(
+                standby ? "GESTES EN VEILLE • 1 FPS" : "GESTES ACTIFS • 25 FPS",
+                standby
+                    ? new Color(1f, .66f, .24f)
+                    : new Color(.25f, 1f, .9f));
             RefreshSpatialDeck();
+            RefreshSettingsDeck();
         }
 
         private void SetDeckMinimized(bool minimized)
@@ -1179,6 +1335,7 @@ namespace MLOmega.XR.UI
             if (_deckMinimized == minimized) return;
             if (minimized) EndDeckManipulation();
             _deckMinimized = minimized;
+            if (_spatialDeck != null) _spatialDeck.enabled = !minimized;
             for (int i = 0; i < _deckExpandedRoots.Count; i++)
             {
                 GameObject root = _deckExpandedRoots[i];
@@ -1186,8 +1343,16 @@ namespace MLOmega.XR.UI
             }
             if (!minimized)
             {
-                SetDeckHandleVisuals(DeckManipulationMode.None);
+                _lastWindow = DeckWindowKind.Workspace;
+                SetDeckHandleVisuals(
+                    DeckManipulationMode.None,
+                    DeckWindowKind.None);
                 SetDeckPose();
+            }
+            else if (_gestureToastCanvas != null)
+            {
+                _gestureToastCanvas.gameObject.SetActive(false);
+                _gestureToastHideAt = -1f;
             }
         }
 
@@ -1198,35 +1363,36 @@ namespace MLOmega.XR.UI
         /// </summary>
         private void SmoothDeckManipulation()
         {
-            if (!_deckManipulationSmoothing || _spatialDeckRect == null) return;
+            if (!_deckManipulationSmoothing || _activeManipulationRect == null)
+                return;
             float blend = 1f - Mathf.Exp(-18f * Time.unscaledDeltaTime);
-            _spatialDeckRect.position = Vector3.Lerp(
-                _spatialDeckRect.position,
+            _activeManipulationRect.position = Vector3.Lerp(
+                _activeManipulationRect.position,
                 _deckManipulationTargetPosition,
                 blend);
-            _spatialDeckRect.rotation = Quaternion.Slerp(
-                _spatialDeckRect.rotation,
+            _activeManipulationRect.rotation = Quaternion.Slerp(
+                _activeManipulationRect.rotation,
                 _deckManipulationTargetRotation,
                 blend);
             float scale = Mathf.Lerp(
-                _spatialDeckRect.localScale.x,
+                _activeManipulationRect.localScale.x,
                 _deckManipulationTargetScale,
                 blend);
-            _spatialDeckRect.localScale = Vector3.one * scale;
+            _activeManipulationRect.localScale = Vector3.one * scale;
 
             if (
                 _deckManipulationMode == DeckManipulationMode.None &&
                 Vector3.Distance(
-                    _spatialDeckRect.position,
+                    _activeManipulationRect.position,
                     _deckManipulationTargetPosition) < .001f &&
                 Quaternion.Angle(
-                    _spatialDeckRect.rotation,
+                    _activeManipulationRect.rotation,
                     _deckManipulationTargetRotation) < .1f &&
                 Mathf.Abs(scale - _deckManipulationTargetScale) < .000002f)
             {
-                _spatialDeckRect.position = _deckManipulationTargetPosition;
-                _spatialDeckRect.rotation = _deckManipulationTargetRotation;
-                _spatialDeckRect.localScale =
+                _activeManipulationRect.position = _deckManipulationTargetPosition;
+                _activeManipulationRect.rotation = _deckManipulationTargetRotation;
+                _activeManipulationRect.localScale =
                     Vector3.one * _deckManipulationTargetScale;
                 _deckManipulationSmoothing = false;
             }
@@ -1325,7 +1491,7 @@ namespace MLOmega.XR.UI
         private void SetDeckPose()
         {
             _deckManipulationSmoothing = false;
-            FollowSpatialDeck(true);
+            ApplyPreferredDeckPose();
             if (_spatialDeckRect != null)
             {
                 _deckManipulationTargetPosition = _spatialDeckRect.position;
@@ -1377,6 +1543,410 @@ namespace MLOmega.XR.UI
                 _spatialDeckRect.rotation,
                 targetRotation,
                 blend);
+        }
+
+        private void ApplyPreferredDeckPose()
+        {
+            if (_spatialDeckRect == null || _camera == null) return;
+            Vector3 local = PlayerPrefs.HasKey(DeckLayoutPrefix + "x")
+                ? new Vector3(
+                    PlayerPrefs.GetFloat(DeckLayoutPrefix + "x"),
+                    PlayerPrefs.GetFloat(DeckLayoutPrefix + "y"),
+                    PlayerPrefs.GetFloat(DeckLayoutPrefix + "z", 1.12f))
+                // First opening: a comfortable upper-left placement. Once the
+                // user moves/resizes it, the saved head-relative layout wins.
+                : new Vector3(-.18f, .11f, 1.12f);
+            Vector3 targetPosition = _camera.transform.TransformPoint(local);
+            Vector3 forward = (targetPosition - _camera.transform.position).normalized;
+            Vector3 up = Mathf.Abs(Vector3.Dot(forward, Vector3.up)) > .96f
+                ? _camera.transform.up
+                : Vector3.up;
+            _spatialDeckRect.SetPositionAndRotation(
+                targetPosition,
+                Quaternion.LookRotation(forward, up));
+            float scale = PlayerPrefs.GetFloat(
+                DeckLayoutPrefix + "scale",
+                .00062f);
+            _spatialDeckRect.localScale = Vector3.one * Mathf.Clamp(
+                scale,
+                .00038f,
+                .00108f);
+            _deckPoseInitialized = true;
+        }
+
+        private void SaveWindowLayout(
+            DeckWindowKind window,
+            Vector3 worldPosition,
+            float scale)
+        {
+            if (_camera == null) return;
+            string prefix = window == DeckWindowKind.Settings
+                ? SettingsLayoutPrefix
+                : DeckLayoutPrefix;
+            Vector3 local = _camera.transform.InverseTransformPoint(worldPosition);
+            PlayerPrefs.SetFloat(prefix + "x", local.x);
+            PlayerPrefs.SetFloat(prefix + "y", local.y);
+            PlayerPrefs.SetFloat(
+                prefix + "z",
+                Mathf.Clamp(local.z, .45f, 2.8f));
+            PlayerPrefs.SetFloat(
+                prefix + "scale",
+                Mathf.Clamp(scale, .00038f, .00108f));
+            PlayerPrefs.Save();
+        }
+
+        private void BuildSettingsDeck()
+        {
+            if (_settingsDeck != null || _camera == null) return;
+            var go = new GameObject("Atelier Interaction Settings");
+            _settingsDeck = go.AddComponent<Canvas>();
+            _settingsDeck.renderMode = RenderMode.WorldSpace;
+            _settingsDeck.worldCamera = _camera;
+            _settingsDeck.sortingOrder = 110;
+            go.AddComponent<GraphicRaycaster>();
+            _settingsDeckRect = go.GetComponent<RectTransform>();
+            _settingsDeckRect.sizeDelta = new Vector2(430f, 300f);
+            _settingsDeckRect.localScale = Vector3.one * .00062f;
+
+            MakeText(
+                _settingsDeckRect,
+                "PARAMÈTRES // INTERACTION",
+                new Vector2(0f, 105f),
+                new Vector2(390f, 48f),
+                25f,
+                new Color(.35f, 1f, .94f),
+                FontStyles.Bold);
+            Button gestures = MakeButton(
+                _settingsDeckRect,
+                "GESTES",
+                new Vector2(0f, 32f),
+                new Vector2(360f, 58f),
+                ToggleGesturePower);
+            _settingsGestureLabel =
+                gestures.GetComponentInChildren<TextMeshProUGUI>();
+            Button ray = MakeButton(
+                _settingsDeckRect,
+                "RAYON EYE",
+                new Vector2(0f, -48f),
+                new Vector2(360f, 58f),
+                ToggleEyeRay);
+            _settingsRayLabel =
+                ray.GetComponentInChildren<TextMeshProUGUI>();
+            MakeText(
+                _settingsDeckRect,
+                "LE CURSEUR RESTE ACTIF QUAND LE RAYON EST COUPÉ",
+                new Vector2(0f, -112f),
+                new Vector2(390f, 34f),
+                13f,
+                new Color(.62f, .82f, 1f));
+            _settingsMoveHandle = MakeImage(
+                _settingsDeckRect,
+                "Settings gaze move handle",
+                new Vector2(0f, -145f),
+                new Vector2(120f, 9f),
+                new Color(.25f, 1f, .92f, .92f));
+            _settingsMoveHandle.raycastTarget = false;
+            _settingsMoveHandle.gameObject.SetActive(false);
+            _settingsResizeHandle = MakeImage(
+                _settingsDeckRect,
+                "Settings gaze resize handle",
+                new Vector2(-205f, -138f),
+                new Vector2(20f, 20f),
+                new Color(.72f, .36f, 1f, .94f));
+            _settingsResizeHandle.rectTransform.localRotation =
+                Quaternion.Euler(0f, 0f, 45f);
+            _settingsResizeHandle.raycastTarget = false;
+            _settingsResizeHandle.gameObject.SetActive(false);
+            _settingsCloseHandle = MakeText(
+                _settingsDeckRect,
+                "×",
+                new Vector2(205f, 138f),
+                new Vector2(34f, 34f),
+                28f,
+                new Color(.35f, 1f, .94f, .98f),
+                FontStyles.Bold);
+            _settingsCloseHandle.raycastTarget = false;
+            _settingsCloseHandle.gameObject.SetActive(false);
+            _settingsHitGraphics.Clear();
+            _settingsDeckRect.GetComponentsInChildren(
+                true,
+                _settingsHitGraphics);
+            go.SetActive(false);
+            RefreshSettingsDeck();
+        }
+
+        private void ToggleSettingsDeck()
+        {
+            if (_settingsDeck == null) BuildSettingsDeck();
+            if (_settingsDeck == null || _camera == null) return;
+            bool show = !_settingsDeck.gameObject.activeSelf;
+            if (show)
+                OpenSettingsDeck(true);
+            else
+                CloseWindow(DeckWindowKind.Settings);
+        }
+
+        private void OpenSettingsDeck(bool recenter)
+        {
+            if (_settingsDeck == null) BuildSettingsDeck();
+            if (_settingsDeck == null || _camera == null) return;
+            _settingsDeck.gameObject.SetActive(true);
+            _lastWindow = DeckWindowKind.Settings;
+            if (recenter) ApplyPreferredSettingsPose();
+            RefreshSettingsDeck();
+        }
+
+        private void ApplyPreferredSettingsPose()
+        {
+            if (_settingsDeckRect == null || _camera == null) return;
+            Vector3 local = PlayerPrefs.HasKey(SettingsLayoutPrefix + "x")
+                ? new Vector3(
+                    PlayerPrefs.GetFloat(SettingsLayoutPrefix + "x"),
+                    PlayerPrefs.GetFloat(SettingsLayoutPrefix + "y"),
+                    PlayerPrefs.GetFloat(SettingsLayoutPrefix + "z", .92f))
+                : new Vector3(-.32f, .20f, .92f);
+            Vector3 position = _camera.transform.TransformPoint(local);
+            Vector3 forward = (position - _camera.transform.position).normalized;
+            _settingsDeckRect.SetPositionAndRotation(
+                position,
+                Quaternion.LookRotation(forward, Vector3.up));
+            float scale = PlayerPrefs.GetFloat(
+                SettingsLayoutPrefix + "scale",
+                .00062f);
+            _settingsDeckRect.localScale = Vector3.one * Mathf.Clamp(
+                scale,
+                .00038f,
+                .00108f);
+        }
+
+        private RectTransform RectForWindow(DeckWindowKind window) => window switch
+        {
+            DeckWindowKind.Workspace => _spatialDeckRect,
+            DeckWindowKind.Settings => _settingsDeckRect,
+            _ => null,
+        };
+
+        private void CloseWindow(DeckWindowKind window)
+        {
+            if (window == DeckWindowKind.Workspace)
+            {
+                _lastWindow = DeckWindowKind.Workspace;
+                SetDeckMinimized(true);
+                return;
+            }
+            if (window == DeckWindowKind.Settings && _settingsDeck != null)
+            {
+                if (
+                    _deckManipulationMode != DeckManipulationMode.None &&
+                    _activeWindow == DeckWindowKind.Settings)
+                    EndDeckManipulation();
+                _lastWindow = DeckWindowKind.Settings;
+                _settingsDeck.gameObject.SetActive(false);
+                SetDeckHandleVisuals(
+                    DeckManipulationMode.None,
+                    DeckWindowKind.None);
+            }
+        }
+
+        private void ToggleGesturePower()
+        {
+            ResolveInteractionSettings();
+            if (_interactionSettings == null) return;
+            _interactionSettings.SetGestureStandby(
+                !_interactionSettings.IsGestureStandby);
+        }
+
+        private void ToggleEyeRay()
+        {
+            ResolveInteractionSettings();
+            if (_interactionSettings == null) return;
+            _interactionSettings.ToggleRayVisible();
+            _status = _interactionSettings.IsRayVisible
+                ? "RAYON EYE ACTIF // CURSEUR ACTIF"
+                : "RAYON EYE COUPÉ // CURSEUR ACTIF";
+            RefreshSettingsDeck();
+            RefreshSpatialDeck();
+        }
+
+        private void RefreshSettingsDeck()
+        {
+            ResolveInteractionSettings();
+            if (_settingsGestureLabel != null)
+                _settingsGestureLabel.text =
+                    _interactionSettings != null &&
+                    _interactionSettings.IsGestureStandby
+                        ? "GESTES // BASSE • 1 FPS"
+                        : "GESTES // HAUTE • 25 FPS";
+            if (_settingsRayLabel != null)
+                _settingsRayLabel.text =
+                    _interactionSettings != null &&
+                    _interactionSettings.IsRayVisible
+                        ? "RAYON EYE // ACTIF"
+                        : "RAYON EYE // COUPÉ";
+        }
+
+        private void ResolveInteractionSettings()
+        {
+            if (_interactionSettings != null) return;
+            foreach (MonoBehaviour behaviour in FindObjectsByType<MonoBehaviour>(
+                FindObjectsSortMode.None))
+            {
+                if (behaviour is IWorldCreatorInteractionSettings settings)
+                {
+                    _interactionSettings = settings;
+                    return;
+                }
+            }
+        }
+
+        private void BuildWindowDock()
+        {
+            if (_windowDock != null || _camera == null) return;
+            var go = new GameObject("Atelier Vision Dock");
+            _windowDock = go.AddComponent<Canvas>();
+            _windowDock.renderMode = RenderMode.WorldSpace;
+            _windowDock.worldCamera = _camera;
+            _windowDock.sortingOrder = 130;
+            go.AddComponent<GraphicRaycaster>();
+            _windowDockRect = go.GetComponent<RectTransform>();
+            _windowDockRect.sizeDelta = new Vector2(300f, 138f);
+            _windowDockRect.localScale = Vector3.one * .00072f;
+            MakeDockOrbButton(
+                _windowDockRect,
+                "◉\n<size=42%>PUPITRE</size>",
+                new Vector2(-72f, 0f),
+                () => OpenWindowFromDock(DeckWindowKind.Workspace));
+            MakeDockOrbButton(
+                _windowDockRect,
+                "⚙\n<size=42%>RÉGLAGES</size>",
+                new Vector2(72f, 0f),
+                () => OpenWindowFromDock(DeckWindowKind.Settings));
+            go.SetActive(false);
+        }
+
+        public void OpenWindowDockFromTwoPalms()
+        {
+            if (_windowDock == null) BuildWindowDock();
+            if (_windowDock == null || _camera == null) return;
+            Vector3 forward = _camera.transform.forward.normalized;
+            Vector3 up = Mathf.Abs(Vector3.Dot(forward, Vector3.up)) > .96f
+                ? _camera.transform.up
+                : Vector3.up;
+            _windowDockRect.SetPositionAndRotation(
+                _camera.transform.position + forward * .82f,
+                Quaternion.LookRotation(forward, up));
+            _windowDock.gameObject.SetActive(true);
+            ShowGestureToast(
+                "MENU PRINCIPAL // DEUX PAUMES",
+                new Color(.35f, 1f, .94f));
+        }
+
+        private void OpenWindowFromDock(DeckWindowKind window)
+        {
+            if (_windowDock != null) _windowDock.gameObject.SetActive(false);
+            if (window == DeckWindowKind.Settings)
+            {
+                OpenSettingsDeck(true);
+                return;
+            }
+            _lastWindow = DeckWindowKind.Workspace;
+            if (_deckMinimized) SetDeckMinimized(false);
+            SetDeckPose();
+            RefreshSpatialDeck();
+        }
+
+        private static Button MakeDockOrbButton(
+            Transform parent,
+            string label,
+            Vector2 position,
+            UnityEngine.Events.UnityAction action)
+        {
+            Image hit = MakeImage(
+                parent,
+                "Dock orb " + label,
+                position,
+                new Vector2(112f, 112f),
+                new Color(.02f, .12f, .18f, .08f));
+            Button button = hit.gameObject.AddComponent<Button>();
+            var collider = hit.gameObject.AddComponent<BoxCollider>();
+            collider.size = new Vector3(112f, 112f, 18f);
+            button.onClick.AddListener(action);
+            MakeText(
+                hit.transform,
+                "●",
+                Vector2.zero,
+                new Vector2(108f, 108f),
+                82f,
+                new Color(.05f, .32f, .38f, .94f));
+            MakeText(
+                hit.transform,
+                label,
+                Vector2.zero,
+                new Vector2(102f, 88f),
+                25f,
+                Color.white,
+                FontStyles.Bold);
+            return button;
+        }
+
+        private void BuildGestureToast()
+        {
+            if (_gestureToastCanvas != null || _camera == null) return;
+            var go = new GameObject("Atelier Gesture Status Toast");
+            _gestureToastCanvas = go.AddComponent<Canvas>();
+            _gestureToastCanvas.renderMode = RenderMode.WorldSpace;
+            _gestureToastCanvas.worldCamera = _camera;
+            _gestureToastCanvas.sortingOrder = 120;
+            RectTransform rect = go.GetComponent<RectTransform>();
+            rect.sizeDelta = new Vector2(520f, 72f);
+            rect.localScale = Vector3.one * .0008f;
+            _gestureToastLabel = MakeText(
+                rect,
+                string.Empty,
+                Vector2.zero,
+                rect.sizeDelta,
+                25f,
+                new Color(.25f, 1f, .9f),
+                FontStyles.Bold);
+            _gestureToastLabel.alignment = TextAlignmentOptions.Center;
+            go.SetActive(false);
+        }
+
+        private void ShowGestureToast(string text, Color color)
+        {
+            if (_gestureToastCanvas == null) BuildGestureToast();
+            if (
+                _gestureToastCanvas == null ||
+                _gestureToastLabel == null ||
+                _camera == null)
+                return;
+            Vector3 forward = _camera.transform.forward.normalized;
+            Vector3 up = Mathf.Abs(Vector3.Dot(forward, Vector3.up)) > .96f
+                ? _camera.transform.up
+                : Vector3.up;
+            RectTransform rect =
+                (RectTransform)_gestureToastCanvas.transform;
+            rect.SetPositionAndRotation(
+                _camera.transform.position +
+                forward * .82f -
+                _camera.transform.up * .10f,
+                Quaternion.LookRotation(forward, up));
+            _gestureToastLabel.text = text;
+            _gestureToastLabel.color = color;
+            _gestureToastCanvas.gameObject.SetActive(true);
+            _gestureToastHideAt = Time.unscaledTime + 1.6f;
+        }
+
+        private void UpdateGestureToast()
+        {
+            if (
+                _gestureToastCanvas == null ||
+                !_gestureToastCanvas.gameObject.activeSelf ||
+                _gestureToastHideAt < 0f ||
+                Time.unscaledTime < _gestureToastHideAt)
+                return;
+            _gestureToastCanvas.gameObject.SetActive(false);
+            _gestureToastHideAt = -1f;
         }
 
         private static Image MakeImage(

@@ -41,6 +41,22 @@ namespace MLOmega.XR.Editor
                 throw new InvalidOperationException(
                     "Unable to instantiate the official XREAL interaction rig.");
             rig.name = "XR Interaction Hands Setup (Official)";
+            // The official rig includes handset-oriented XRI reticles. They are
+            // useful in HelloMR but create the red/white rays that follow S24
+            // orientation. Atelier selection is gaze + Eye/MediaPipe pinch, so
+            // remove only those visuals while retaining the proven tracking rig.
+            foreach (MonoBehaviour behaviour in
+                     rig.GetComponentsInChildren<MonoBehaviour>(true))
+            {
+                // Some optional scripts in the imported XRI sample are absent
+                // from the player assembly. Unity exposes those slots as null.
+                if (behaviour == null) continue;
+                string typeName = behaviour.GetType().FullName ?? string.Empty;
+                if (
+                    typeName.EndsWith("XRInteractorReticleVisual") ||
+                    typeName.EndsWith("XRInteractorLineVisual"))
+                    behaviour.enabled = false;
+            }
 
             Camera camera = rig.GetComponentInChildren<Camera>(true);
             if (camera == null)
@@ -80,6 +96,7 @@ namespace MLOmega.XR.Editor
             // short-lived and may use 25 fps; product remains 12/15.
             Assign(eyeGestures, "_maxDimension", 768);
             Assign(eyeGestures, "_targetFps", 25f);
+            Assign(eyeGestures, "_numHands", 2);
             Assign(creator, "_camera", camera);
             Assign(creator, "_exchange", exchange);
 
@@ -119,6 +136,7 @@ namespace MLOmega.XR.Editor
             Assign(pointer, "_eyeGestures", eyeGestures);
             Assign(pointer, "_modelInstaller", modelInstaller);
             Assign(pointer, "_activateEyeGesturesContinuously", true);
+            Assign(pointer, "_allowPhoneController", false);
 
             Directory.CreateDirectory(Path.GetDirectoryName(ScenePath));
             if (!EditorSceneManager.SaveScene(scene, ScenePath))

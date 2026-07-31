@@ -77,7 +77,7 @@ namespace MLOmega.XR.Reflex
         public bool IsRunning { get; private set; }
 
         /// <summary>
-        /// Full gesture interaction is suspended, but a 3 fps fist sentinel stays
+        /// Full gesture interaction is suspended, but a 1 fps fist sentinel stays
         /// alive so the same physical gesture can restore it without a controller.
         /// </summary>
         public bool IsInteractionStandby { get; private set; }
@@ -89,7 +89,7 @@ namespace MLOmega.XR.Reflex
         // throttle would drop anyway, so downscale + Bitmap copy only run 10-15x/s.
         private float _readbackAccum;
         private float _readbackPeriod;
-        private const float StandbyFps = 3f;
+        private const float StandbyFps = 1f;
 
 #if UNITY_ANDROID && !UNITY_EDITOR
         private AndroidJavaObject _pipeline;
@@ -199,16 +199,20 @@ namespace MLOmega.XR.Reflex
             _readbackAccum = _readbackPeriod;
         }
 
-        private void ToggleInteractionStandby()
+        public void SetInteractionStandby(bool standby)
         {
-            IsInteractionStandby = !IsInteractionStandby;
+            if (IsInteractionStandby == standby) return;
+            IsInteractionStandby = standby;
             UpdateReadbackPeriod();
             Debug.Log(
                 "[GestureBridge] physical gestures " +
                 (IsInteractionStandby
-                    ? "standby (3 fps fist sentinel)"
+                    ? "standby (1 fps fist sentinel)"
                     : $"active ({_targetFps:F0} fps)"));
         }
+
+        private void ToggleInteractionStandby() =>
+            SetInteractionStandby(!IsInteractionStandby);
 
         // --- native plumbing ------------------------------------------------------
 
@@ -378,6 +382,7 @@ namespace MLOmega.XR.Reflex
             "PINCH_UPDATE" => GestureKind.PinchUpdate,
             "PINCH_END" => GestureKind.PinchEnd,
             "OPEN_PALM_MENU" => GestureKind.OpenPalmMenu,
+            "TWO_PALM_MENU" => GestureKind.TwoPalmMenu,
             "SWIPE_HIDE" => GestureKind.SwipeHide,
             "FIST_TOGGLE" => GestureKind.FistToggle,
             _ => GestureKind.PinchUpdate

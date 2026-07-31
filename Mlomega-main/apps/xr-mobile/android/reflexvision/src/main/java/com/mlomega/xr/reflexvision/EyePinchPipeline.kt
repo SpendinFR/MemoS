@@ -48,6 +48,8 @@ class EyePinchPipeline(
     private var lastDiagnosticMs = Long.MIN_VALUE
     private var palmSinceMs = -1L
     private var palmFired = false
+    private var twoPalmSinceMs = -1L
+    private var twoPalmFired = false
     private var fistSinceMs = -1L
     private var fistFired = false
 
@@ -56,6 +58,7 @@ class EyePinchPipeline(
         throttle.reset()
         resetPinch()
         resetFist()
+        resetTwoPalm()
         try {
             val base = BaseOptions.builder()
                 .setModelAssetPath(config.modelAssetPath)
@@ -89,6 +92,7 @@ class EyePinchPipeline(
             landmarker = null
             resetPinch()
             resetFist()
+            resetTwoPalm()
         }
     }
 
@@ -115,6 +119,7 @@ class EyePinchPipeline(
                 missingFrames++
                 resetPalm()
                 resetFist()
+                resetTwoPalm()
                 if (pinched && missingFrames >= RELEASE_FRAMES) {
                     callbacks.onGesture(GestureKind.PINCH_END, 1f, -1f, -1f, ts)
                     resetPinch()
@@ -123,6 +128,34 @@ class EyePinchPipeline(
                 return
             }
             missingFrames = 0
+            val openHands = if (!pinched && candidate != true) {
+                hands.filter { candidateHand ->
+                    candidateHand.size > PINKY_TIP &&
+                        isOpenPalmGeometry(candidateHand)
+                }
+            } else {
+                emptyList()
+            }
+            val suppressSinglePalm = hands.size >= 2
+            if (suppressSinglePalm) {
+                // When both hands are visible, do not accidentally fire the
+                // one-palm recenter. The dock requires two genuinely open palms.
+                resetPalm()
+                if (openHands.size >= 2) {
+                    val left = openHands[0][WRIST]
+                    val right = openHands[1][WRIST]
+                    evaluateTwoPalm(
+                        true,
+                        (left.x() + right.x()) * .5f,
+                        (left.y() + right.y()) * .5f,
+                        ts,
+                    )
+                    resetFist()
+                    logDiagnostic(ts, true, ema, -1f, -1f)
+                    return
+                }
+            }
+            resetTwoPalm()
             val hand = hands[0]
             val thumb = hand[THUMB_TIP]
             val index = hand[INDEX_TIP]
@@ -156,7 +189,11 @@ class EyePinchPipeline(
                 ema
             }
             evaluatePinch(decisionRatio, x, y, ts)
-            evaluatePalm(isOpenPalm(hand), x, y, ts)
+            if (suppressSinglePalm) {
+                resetPalm()
+            } else {
+                evaluatePalm(isOpenPalm(hand), x, y, ts)
+            }
             logDiagnostic(ts, true, ema, x, y)
         } finally {
             image.close()
@@ -171,6 +208,13 @@ class EyePinchPipeline(
      */
     private fun isOpenPalm(hand: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>): Boolean {
         if (pinched || candidate == true || hand.size <= PINKY_TIP) return false
+        return isOpenPalmGeometry(hand)
+    }
+
+    private fun isOpenPalmGeometry(
+        hand: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>,
+    ): Boolean {
+        if (hand.size <= PINKY_TIP) return false
         val wrist = hand[WRIST]
 
         fun extended(mcpIndex: Int, pipIndex: Int, tipIndex: Int): Boolean {
@@ -212,6 +256,18 @@ class EyePinchPipeline(
         if (!palmFired && ts - palmSinceMs >= config.palm.minHoldMs) {
             palmFired = true
             callbacks.onGesture(GestureKind.OPEN_PALM_MENU, 0f, x, y, ts)
+        }
+    }
+
+    private fun evaluateTwoPalm(open: Boolean, x: Float, y: Float, ts: Long) {
+        if (!open) {
+            resetTwoPalm()
+            return
+        }
+        if (twoPalmSinceMs < 0L) twoPalmSinceMs = ts
+        if (!twoPalmFired && ts - twoPalmSinceMs >= TWO_PALM_HOLD_MS) {
+            twoPalmFired = true
+            callbacks.onGesture(GestureKind.TWO_PALM_MENU, 0f, x, y, ts)
         }
     }
 
@@ -318,6 +374,11 @@ class EyePinchPipeline(
         palmFired = false
     }
 
+    private fun resetTwoPalm() {
+        twoPalmSinceMs = -1L
+        twoPalmFired = false
+    }
+
     private fun resetFist() {
         fistSinceMs = -1L
         fistFired = false
@@ -365,6 +426,7 @@ class EyePinchPipeline(
         private const val FIST_TIP_TO_PIP_RATIO = 1.08f
         private const val FIST_TIP_TO_MCP_RATIO = 1.22f
         private const val FIST_HOLD_MS = 400L
+        private const val TWO_PALM_HOLD_MS = 550L
         private const val MAX_ATELIER_FPS = 25f
     }
 }
