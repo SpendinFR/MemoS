@@ -740,6 +740,35 @@ pouce/index entre dans la zone d'intention de pinch, le latch poing est remis à
 zéro. Le poing reste disponible hors pinch. Toute régression future se vérifie
 d'abord contre cet APK et ce comportement matériel, sans modifier ce jalon.
 
+### 8.13 Jalon matériel corrective-v21 : dock, fenêtres et inclinaison
+
+Validé matériellement le 1er août 2026 sur Galaxy S24 + XREAL One Pro + Eye.
+Ce jalon devient la référence Atelier avant les expériences navigateur/clavier :
+
+- ouverture directe sur le dock, sans notification redondante ;
+- toasts recentrés verticalement avec verre noir optique plus discret ;
+- Pupitre Atelier et Réglages conservent pinch, déplacement, profondeur,
+  fermeture, rappel par paume et mémoire de disposition ;
+- le resize Pupitre reste l'ancien resize uniforme éprouvé ; le resize Réglages
+  reste responsive par blocs ; portrait/paysage ne remplacent aucun des deux ;
+- Pupitre possède ses propres commandes portrait/paysage et un reflow sans
+  étirement des contrôles ;
+- une manipulation d'inclinaison verrouille son axe dominant : un pinch règle
+  haut/bas ou gauche/droite, jamais les deux par bruit de la caméra Eye ;
+- sensibilité et amplitude d'inclinaison augmentées pour les gestes courts.
+
+Artefact matériel validé à ne pas écraser :
+
+```text
+apps/xr-mobile/build/android/mlomega-xreal-world-atelier-corrective-v21.apk
+taille = 238509082 octets
+sha256 = 678BBC2D9AC755D97656E9436FADD31DADFF4288C70BB7E594A460B7F336980D
+```
+
+Toute expérience d'application web, clavier XR ou multi-fenêtres doit utiliser
+un package Android et un artefact distincts. Elle ne remplace ni cette APK ni
+le builder stable de l'Atelier.
+
 ## 9. APK produit : travail explicitement restant
 
 Après correction et preuve de l'Atelier :
