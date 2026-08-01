@@ -661,6 +661,58 @@ taille = 223743852 octets
 sha256 = 1854371B54B412AFAF8BD4AE249CFC21B50065932B9D4A10B9E868FEF3B05568
 ```
 
+### 8.11 Jalon matériel controls-lens-v11 : luminosité et électrochromie réelles
+
+Validé le 1er août 2026 sur Galaxy S24 + XREAL One Pro + Eye. Cette variante
+conserve intégralement la v8 et ajoute quatre commandes dans Réglages : `LUM -`,
+`LUM +`, `EC -`, `EC +`. Elles pilotent le matériel ; aucun voile sombre ou
+effet visuel Unity n'est utilisé.
+
+Le contrôle public XREAL 3.1 ne fournit pas ces setters. Le spike utilise donc
+la bibliothèque `libnr_service.so` de la version ControlGlasses 3.1 réellement
+testée, isolée dans un AAR local. Le binaire propriétaire reste hors Git. Le
+script refuse toute autre version grâce au SHA-256 attendu et reconstruit l'AAR :
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File .\scripts\BUILD_XREAL_LENS_PROBE_AAR.ps1 `
+  -PrivateLibrary "C:\chemin\vers\libnr_service.so"
+```
+
+Sécurité du flux :
+
+1. l'ouverture de Réglages ne fait qu'une lecture ;
+2. le premier clic initialise le service privé par la séquence minimale
+   officielle `nativeInitService -> nativeSetServiceMode(1) ->
+   nativeStartService -> nativeGlassesInit` ;
+3. toute lecture négative ou cardinalité invalide bloque les setters ;
+4. le premier clic réécrit uniquement les valeurs courantes et exige un retour
+   natif vrai ainsi qu'une relecture identique ;
+5. une seconde activation est nécessaire pour changer réellement le niveau ;
+6. chaque changement est relu et n'est déclaré réussi que si la cible exacte a
+   été observée.
+
+Preuve matérielle logcat : initialisation `VALID|b=7|bc=10|ec=0|ecc=3|nb=true|ne=true`,
+électrochromie parcourue `0 -> 1 -> 2 -> 1 -> 0`, luminosité parcourue
+`7 -> 8 -> 9 -> 8 -> 7 -> 6 -> 5 -> 6 -> 7 -> 8`. Les changements étaient
+visibles dans les lentilles et chaque setter a été confirmé par sa relecture.
+La session 6DoF, l'ancrage, le pointeur et les gestes sont restés fonctionnels.
+
+Artefacts à conserver :
+
+```text
+rollback public = apps/xr-mobile/build/android/mlomega-xreal-world-atelier-controls-v8.apk
+candidate matérielle = apps/xr-mobile/build/android/mlomega-xreal-world-atelier-controls-lens-v11.apk
+taille v11 = 238470354 octets
+sha256 v11 = 99661E1D65179A67B22819F59855851DF3CDEE72989F63D311D1DDDC8C89B71A
+libnr_service.so testée sha256 = D87965AAE92FC07A61F4A4542A88D698C406FC3849D9274248746B580E357135
+```
+
+Cette intégration reste une API privée épinglée : après mise à jour de
+ControlGlasses ou du firmware, refaire le gate matériel avant de remplacer le
+hash. Si l'AAR locale n'est pas présente, l'UI échoue fermée et demande les
+boutons physiques XREAL ; elle ne simule jamais un succès.
+
 ## 9. APK produit : travail explicitement restant
 
 Après correction et preuve de l'Atelier :

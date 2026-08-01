@@ -55,3 +55,6 @@ apps/xr-mobile/Assets/Scenes/G1Gate.unity
 apps/xr-mobile/Assets/Scenes/G1Gate.unity.meta
 apps/xr-mobile/Assets/XR/Loaders.meta
 apps/xr-mobile/Assets/XR/Settings.meta
+# Local proprietary XREAL lens-control probe; never commit or ship this AAR.
+apps/xr-mobile/Assets/Plugins/Android/xreal-private-lens-probe.aar
+apps/xr-mobile/Assets/Plugins/Android/xreal-private-lens-probe.aar.meta

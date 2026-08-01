@@ -103,6 +103,9 @@ namespace MLOmega.XR.UI
         private TextMeshProUGUI _settingsAudioLabel;
         private TextMeshProUGUI _settingsDeviceLabel;
         private TextMeshProUGUI _settingsTrackingLabel;
+        private TextMeshProUGUI _settingsLensLabel;
+        private bool _lensControlValidated;
+        private string _lensControlState = "ERR|not_probed";
         private Image _settingsMoveHandle;
         private Image _settingsResizeHandle;
         private TextMeshProUGUI _settingsCloseHandle;
@@ -1741,7 +1744,7 @@ namespace MLOmega.XR.UI
                 15f,
                 new Color(.35f, 1f, .72f),
                 FontStyles.Bold);
-            MakeText(
+            _settingsLensLabel = MakeText(
                 _settingsDeckRect,
                 "BRILLANCE / ASSOMBRISSEMENT : BOUTONS XREAL\n" +
                 "AUCUN FAUX FILTRE SOMBRE",
@@ -1756,6 +1759,30 @@ namespace MLOmega.XR.UI
                 new Vector2(510f, 30f),
                 12f,
                 new Color(.62f, .82f, 1f));
+            MakeButton(
+                _settingsDeckRect,
+                "LUM -",
+                new Vector2(-183f, -280f),
+                new Vector2(112f, 44f),
+                () => AdjustLensControl(false, -1));
+            MakeButton(
+                _settingsDeckRect,
+                "LUM +",
+                new Vector2(-61f, -280f),
+                new Vector2(112f, 44f),
+                () => AdjustLensControl(false, 1));
+            MakeButton(
+                _settingsDeckRect,
+                "EC -",
+                new Vector2(61f, -280f),
+                new Vector2(112f, 44f),
+                () => AdjustLensControl(true, -1));
+            MakeButton(
+                _settingsDeckRect,
+                "EC +",
+                new Vector2(183f, -280f),
+                new Vector2(112f, 44f),
+                () => AdjustLensControl(true, 1));
             _settingsMoveHandle = MakeImage(
                 _settingsDeckRect,
                 "Settings gaze move handle",
@@ -1789,6 +1816,7 @@ namespace MLOmega.XR.UI
                 true,
                 _settingsHitGraphics);
             go.SetActive(false);
+            ProbeLensControl();
             RefreshSettingsDeck();
         }
 
@@ -1985,6 +2013,60 @@ namespace MLOmega.XR.UI
             TryAdjustAndroidMediaVolume(direction);
             _nextSettingsTelemetryAt = 0f;
             UpdateSettingsTelemetry();
+        }
+
+        private void ProbeLensControl()
+        {
+            _lensControlState = XrealPrivateLensControl.Probe();
+            Debug.Log("[XrealLensControl] probe=" + _lensControlState);
+            if (_settingsLensLabel != null)
+                _settingsLensLabel.text =
+                    XrealPrivateLensControl.HumanStatus(_lensControlState);
+        }
+
+        private void AdjustLensControl(bool electrochromic, int direction)
+        {
+            // The first press rewrites current values only. A second press is
+            // required before any visible lens state can change. Validation
+            // also performs the private service's minimal official startup.
+            if (!_lensControlValidated)
+            {
+                _lensControlState = XrealPrivateLensControl.ValidateCurrent();
+                Debug.Log("[XrealLensControl] validate=" + _lensControlState);
+                _lensControlValidated = _lensControlState.StartsWith(
+                    "VALID|",
+                    StringComparison.Ordinal);
+                if (_settingsLensLabel != null)
+                    _settingsLensLabel.text =
+                        XrealPrivateLensControl.HumanStatus(_lensControlState);
+                ShowGestureToast(
+                    _lensControlValidated
+                        ? "LENTILLES PRETES // REPETER POUR CHANGER"
+                        : "TEST LENTILLES REFUSE",
+                    _lensControlValidated
+                        ? new Color(.35f, 1f, .72f)
+                        : new Color(1f, .55f, .3f));
+                return;
+            }
+
+            _lensControlState = electrochromic
+                ? XrealPrivateLensControl.StepEc(direction)
+                : XrealPrivateLensControl.StepBrightness(direction);
+            Debug.Log("[XrealLensControl] change=" + _lensControlState);
+            if (_settingsLensLabel != null)
+                _settingsLensLabel.text =
+                    XrealPrivateLensControl.HumanStatus(_lensControlState);
+            bool succeeded =
+                XrealPrivateLensControl.IsSuccess(_lensControlState);
+            ShowGestureToast(
+                succeeded
+                    ? (electrochromic
+                        ? "ASSOMBRISSEMENT XREAL MODIFIE"
+                        : "LUMINOSITE XREAL MODIFIEE")
+                    : "COMMANDE LENTILLES REFUSEE",
+                succeeded
+                    ? new Color(.35f, 1f, .94f)
+                    : new Color(1f, .55f, .3f));
         }
 
         private static void TryAdjustAndroidMediaVolume(int direction)
