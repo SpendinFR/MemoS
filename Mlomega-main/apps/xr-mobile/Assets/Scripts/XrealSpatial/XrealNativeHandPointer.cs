@@ -47,6 +47,7 @@ namespace MLOmega.XR.UI
         private GameObject _pressed;
         private LineRenderer _laser;
         private Transform _cursor;
+        private Transform _cursorDot;
         private bool _pinching;
         private bool _hasSmoothedRay;
         private bool _loggedRunningSubsystem;
@@ -64,6 +65,9 @@ namespace MLOmega.XR.UI
         private Vector3 _smoothedDirection;
         private float _nextSubsystemLookupAt;
         private float _nextDeviceStatusAt;
+        private XREALSessionSubsystem _trackingSession;
+        private float _trackingBadUntil = -1f;
+        private string _trackingBadReason = "INITIALISATION";
         private bool _rayVisible;
         private string _trackingStatus = "TRACKING // INITIALISATION";
         private string _glassesTemperatureStatus = "XREAL // TEMP NORMALE";
@@ -293,7 +297,8 @@ namespace MLOmega.XR.UI
             SetCursor(
                 handRay.origin,
                 worldHit,
-                deckHit || (_menu != null && _menu.IsOpen));
+                deckHit || (_menu != null && _menu.IsOpen),
+                pinching);
 
             if (pinching && !_pinching)
             {
@@ -329,38 +334,86 @@ namespace MLOmega.XR.UI
 
         private void UpdateDeviceStatus()
         {
-            if (Time.unscaledTime < _nextDeviceStatusAt) return;
-            _nextDeviceStatusAt = Time.unscaledTime + .75f;
-            _sessionSubsystems.Clear();
-            SubsystemManager.GetSubsystems(_sessionSubsystems);
-            XREALSessionSubsystem session = null;
-            for (int i = 0; i < _sessionSubsystems.Count; i++)
+            // XREAL's own "look around" popup samples its native tracking
+            // reason every frame. The former 750 ms polling could miss that
+            // short transition and leave our gauge green. Cache subsystem
+            // discovery, but sample the native-backed state every rendered
+            // frame and latch a loss long enough for the 1 Hz UI to show it.
+            if (
+                _trackingSession == null ||
+                !_trackingSession.running ||
+                Time.unscaledTime >= _nextDeviceStatusAt)
             {
-                if (_sessionSubsystems[i] == null) continue;
-                session = _sessionSubsystems[i];
-                if (session.running) break;
+                _nextDeviceStatusAt = Time.unscaledTime + .75f;
+                _sessionSubsystems.Clear();
+                SubsystemManager.GetSubsystems(_sessionSubsystems);
+                _trackingSession = null;
+                for (int i = 0; i < _sessionSubsystems.Count; i++)
+                {
+                    if (_sessionSubsystems[i] == null) continue;
+                    if (_trackingSession == null)
+                        _trackingSession = _sessionSubsystems[i];
+                    if (_sessionSubsystems[i].running)
+                    {
+                        _trackingSession = _sessionSubsystems[i];
+                        break;
+                    }
+                }
             }
+            XREALSessionSubsystem session = _trackingSession;
             if (session == null)
             {
                 _trackingStatus = "TRACKING // INDISPONIBLE";
                 return;
             }
-            if (session.trackingState == TrackingState.Tracking)
+            bool reasonIsClear =
+                session.notTrackingReason == NotTrackingReason.None;
+            bool headPoseExplicitlyLost = false;
+            UnityEngine.XR.InputDevice head =
+                UnityEngine.XR.InputDevices.GetDeviceAtXRNode(
+                    UnityEngine.XR.XRNode.Head);
+            if (head.isValid)
             {
-                _trackingStatus = "TRACKING // OK";
-                return;
+                if (
+                    head.TryGetFeatureValue(
+                        UnityEngine.XR.CommonUsages.isTracked,
+                        out bool isTracked) &&
+                    !isTracked)
+                    headPoseExplicitlyLost = true;
+                if (
+                    head.TryGetFeatureValue(
+                        UnityEngine.XR.CommonUsages.trackingState,
+                        out UnityEngine.XR.InputTrackingState inputState) &&
+                    inputState == UnityEngine.XR.InputTrackingState.None)
+                    headPoseExplicitlyLost = true;
             }
-            string reason = session.notTrackingReason switch
+            bool trackingLost =
+                session.trackingState != TrackingState.Tracking ||
+                !reasonIsClear ||
+                headPoseExplicitlyLost;
+            if (trackingLost)
             {
-                NotTrackingReason.InsufficientLight => "LUMIÈRE INSUFFISANTE",
-                NotTrackingReason.InsufficientFeatures => "PEU DE REPÈRES",
-                NotTrackingReason.ExcessiveMotion => "MOUVEMENT EXCESSIF",
-                NotTrackingReason.Relocalizing => "RELOCALISATION",
-                NotTrackingReason.Initializing => "INITIALISATION",
-                NotTrackingReason.CameraUnavailable => "CAMÉRA INDISPONIBLE",
-                _ => session.trackingState.ToString().ToUpperInvariant(),
-            };
-            _trackingStatus = "TRACKING // " + reason;
+                _trackingBadReason = headPoseExplicitlyLost
+                    ? "POSE PERDUE"
+                    : session.notTrackingReason switch
+                    {
+                        NotTrackingReason.InsufficientLight =>
+                            "LUMIÈRE INSUFFISANTE",
+                        NotTrackingReason.InsufficientFeatures =>
+                            "PEU DE REPÈRES",
+                        NotTrackingReason.ExcessiveMotion =>
+                            "MOUVEMENT EXCESSIF",
+                        NotTrackingReason.Relocalizing => "RELOCALISATION",
+                        NotTrackingReason.Initializing => "INITIALISATION",
+                        NotTrackingReason.CameraUnavailable =>
+                            "CAMÉRA INDISPONIBLE",
+                        _ => session.trackingState.ToString().ToUpperInvariant(),
+                    };
+                _trackingBadUntil = Time.unscaledTime + 2.25f;
+            }
+            _trackingStatus = Time.unscaledTime < _trackingBadUntil
+                ? "TRACKING // " + _trackingBadReason
+                : "TRACKING // OK";
         }
 
         private void OnGlassesTemperatureLevel(XREALTemperatureLevel level)
@@ -819,51 +872,102 @@ namespace MLOmega.XR.UI
             _laser = line.AddComponent<LineRenderer>();
             _laser.useWorldSpace = true;
             _laser.positionCount = 2;
-            _laser.widthMultiplier = .004f;
-            _laser.numCapVertices = 5;
-            _laser.startColor = new Color(.1f, 1f, .9f, .75f);
-            _laser.endColor = new Color(.7f, .2f, 1f, .95f);
+            _laser.widthMultiplier = .00115f;
+            _laser.numCapVertices = 6;
+            _laser.startColor = new Color(1f, 1f, 1f, .22f);
+            _laser.endColor = new Color(1f, 1f, 1f, .72f);
             Shader shader = Shader.Find("Sprites/Default");
             if (shader != null) _laser.material = new Material(shader);
 
-            GameObject cursor = GameObject.CreatePrimitive(
-                PrimitiveType.Sphere);
-            cursor.name = "XREAL Hand Cursor";
+            var cursor = new GameObject("XREAL Vision Cursor Ring");
             cursor.transform.SetParent(transform, false);
-            cursor.transform.localScale = Vector3.one * .018f;
-            Collider collider = cursor.GetComponent<Collider>();
-            if (collider != null) Destroy(collider);
-            Renderer renderer = cursor.GetComponent<Renderer>();
+            cursor.transform.localScale = Vector3.one * .012f;
+            var filter = cursor.AddComponent<MeshFilter>();
+            filter.sharedMesh = BuildCursorRingMesh();
+            Renderer renderer = cursor.AddComponent<MeshRenderer>();
             Shader unlit = Shader.Find("MLOmega/XREAL Runtime Unlit") ??
                 Shader.Find("Unlit/Color");
             if (renderer != null && unlit != null)
             {
                 renderer.material = new Material(unlit);
-                renderer.material.color = new Color(.2f, 1f, .88f, .95f);
+                renderer.material.color = new Color(1f, 1f, 1f, .92f);
             }
             _cursor = cursor.transform;
+
+            GameObject dot = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            dot.name = "XREAL Vision Cursor Dot";
+            dot.transform.SetParent(transform, false);
+            Collider dotCollider = dot.GetComponent<Collider>();
+            if (dotCollider != null) Destroy(dotCollider);
+            Renderer dotRenderer = dot.GetComponent<Renderer>();
+            if (dotRenderer != null && unlit != null)
+            {
+                dotRenderer.material = new Material(unlit);
+                dotRenderer.material.color = new Color(1f, 1f, 1f, .96f);
+            }
+            _cursorDot = dot.transform;
             SetCursorVisible(false);
+        }
+
+        private static Mesh BuildCursorRingMesh()
+        {
+            const int segments = 32;
+            var vertices = new Vector3[segments * 2];
+            var triangles = new int[segments * 6];
+            for (int i = 0; i < segments; i++)
+            {
+                float angle = i * Mathf.PI * 2f / segments;
+                Vector3 direction = new Vector3(
+                    Mathf.Cos(angle),
+                    Mathf.Sin(angle),
+                    0f);
+                vertices[i * 2] = direction;
+                vertices[i * 2 + 1] = direction * .62f;
+                int next = (i + 1) % segments;
+                int t = i * 6;
+                triangles[t] = i * 2;
+                triangles[t + 1] = next * 2;
+                triangles[t + 2] = next * 2 + 1;
+                triangles[t + 3] = i * 2;
+                triangles[t + 4] = next * 2 + 1;
+                triangles[t + 5] = i * 2 + 1;
+            }
+            var mesh = new Mesh { name = "MLOmega Vision Cursor Ring" };
+            mesh.vertices = vertices;
+            mesh.triangles = triangles;
+            mesh.RecalculateBounds();
+            return mesh;
         }
 
         private void SetCursor(
             Vector3 origin,
             Vector3 hit,
-            bool visible)
+            bool visible,
+            bool pressed)
         {
             SetCursorVisible(visible);
             if (!visible) return;
             _laser.SetPosition(0, origin);
             _laser.SetPosition(1, hit);
             _cursor.position = hit;
-            float pulse = .016f +
-                .004f * Mathf.Sin(Time.unscaledTime * 6f);
+            if (_camera != null) _cursor.rotation = _camera.transform.rotation;
+            float pulse = pressed
+                ? .0095f
+                : .012f + .00065f * Mathf.Sin(Time.unscaledTime * 4f);
             _cursor.localScale = Vector3.one * pulse;
+            if (_cursorDot != null)
+            {
+                _cursorDot.position = hit;
+                _cursorDot.localScale = Vector3.one *
+                    (pressed ? .0055f : .0038f);
+            }
         }
 
         private void SetCursorVisible(bool visible)
         {
             if (_laser != null) _laser.enabled = visible && _rayVisible;
             if (_cursor != null) _cursor.gameObject.SetActive(visible);
+            if (_cursorDot != null) _cursorDot.gameObject.SetActive(visible);
         }
     }
 }

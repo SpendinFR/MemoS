@@ -713,6 +713,33 @@ ControlGlasses ou du firmware, refaire le gate matériel avant de remplacer le
 hash. Si l'AAR locale n'est pas présente, l'UI échoue fermée et demande les
 boutons physiques XREAL ; elle ne simule jamais un succès.
 
+### 8.12 Jalon matériel pinch-priority-v19 : UI responsive et gestes fiables
+
+Validé matériellement le 1er août 2026 sur Galaxy S24 + XREAL One Pro + Eye.
+Ce jalon est le rollback de référence avant toute nouvelle évolution visuelle :
+
+- pinch main fiable à 25 FPS, prioritaire sur le geste poing fermé ;
+- aucune bascule basse consommation pendant la fermeture pouce/index ;
+- paume ouverte protégée contre les faux recentrages après un pinch ;
+- dock deux-paumes, Pupitre et Réglages fonctionnels ;
+- déplacement, profondeur, inclinaison, redimensionnement et restauration de
+  disposition validés ;
+- modes portrait/paysage visibles et reflow responsive des Réglages ;
+- suivi XREAL, contrôles de lentilles, curseur, fermeture et rappel conservés.
+
+Artefact matériel validé à ne jamais écraser :
+
+```text
+apps/xr-mobile/build/android/mlomega-xreal-world-atelier-pinch-priority-v19.apk
+taille = 238506766 octets
+sha256 = EB758B5BAA70BFC78E1D9FE53866EE16F5B4AB3EE1EF36B3A69149F62CABD45F
+```
+
+Le correctif décisif est dans `EyePinchPipeline.kt` : dès que la distance
+pouce/index entre dans la zone d'intention de pinch, le latch poing est remis à
+zéro. Le poing reste disponible hors pinch. Toute régression future se vérifie
+d'abord contre cet APK et ce comportement matériel, sans modifier ce jalon.
+
 ## 9. APK produit : travail explicitement restant
 
 Après correction et preuve de l'Atelier :

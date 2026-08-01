@@ -90,10 +90,17 @@ namespace MLOmega.XR.UI
         private TMP_InputField _deckTarget;
         private Image _deckMoveHandle;
         private Image _deckResizeHandle;
+        private Image _deckResizeHandleRight;
+        private Image _deckDepthHandle;
+        private Image _deckTiltHandle;
         private TextMeshProUGUI _deckCloseHandle;
         private bool _deckMinimized;
         private Canvas _gestureToastCanvas;
+        private CanvasGroup _gestureToastGroup;
+        private RectTransform _gestureToastRect;
+        private Image _gestureToastPanel;
         private TextMeshProUGUI _gestureToastLabel;
+        private float _gestureToastShownAt = -1f;
         private float _gestureToastHideAt = -1f;
         private Canvas _settingsDeck;
         private RectTransform _settingsDeckRect;
@@ -104,15 +111,52 @@ namespace MLOmega.XR.UI
         private TextMeshProUGUI _settingsDeviceLabel;
         private TextMeshProUGUI _settingsTrackingLabel;
         private TextMeshProUGUI _settingsLensLabel;
+        private TextMeshProUGUI _settingsTemperatureLabel;
+        private Image _settingsDevicePill;
+        private Image _settingsAudioPill;
+        private Image _settingsTrackingPill;
+        private Image _settingsLensPill;
+        private Image _settingsBatteryRing;
+        private Image _settingsTemperatureRing;
+        private Image _settingsTrackingRing;
+        private Image _settingsAudioRing;
+        private Image _settingsVolumeControlRing;
+        private Image _settingsBrightnessRing;
+        private Image _settingsEcRing;
         private bool _lensControlValidated;
         private string _lensControlState = "ERR|not_probed";
         private Image _settingsMoveHandle;
         private Image _settingsResizeHandle;
+        private Image _settingsResizeHandleRight;
+        private Image _settingsDepthHandle;
+        private Image _settingsTiltHandle;
         private TextMeshProUGUI _settingsCloseHandle;
+        private TextMeshProUGUI _settingsTitleLabel;
+        private TextMeshProUGUI _settingsFollowLabel;
+        private Image _settingsWindowRim;
+        private Image _settingsWindowSurface;
+        private Image _settingsHeaderSurface;
+        private Image _settingsControlsSurface;
+        private Image _settingsSectionDivider;
+        private Button _settingsPortraitButton;
+        private Button _settingsLandscapeButton;
+        private RectTransform _settingsBrightnessControl;
+        private RectTransform _settingsEcControl;
+        private RectTransform _settingsVolumeControl;
+        private Button _settingsWindowModeButton;
+        private Button _settingsGesturesButton;
+        private Button _settingsRayButton;
+        private Button _settingsVolumeDownButton;
+        private Button _settingsVolumeUpButton;
+        private Button _settingsRecenterButton;
+        private Button _settingsCloseAllButton;
+        private readonly Button[] _settingsLensButtons = new Button[4];
         private readonly List<Graphic> _settingsHitGraphics =
             new List<Graphic>();
         private Canvas _windowDock;
+        private CanvasGroup _windowDockGroup;
         private RectTransform _windowDockRect;
+        private float _windowDockShownAt = -1f;
         private IWorldCreatorInteractionSettings _interactionSettings;
         private DeckManipulationMode _deckHoverMode;
         private DeckManipulationMode _deckManipulationMode;
@@ -125,9 +169,13 @@ namespace MLOmega.XR.UI
         private float _deckManipulationStartDistance;
         private float _deckManipulationStartScale;
         private float _deckManipulationStartZoom;
+        private float _deckManipulationStartTilt;
         private Vector3 _deckManipulationTargetPosition;
         private Quaternion _deckManipulationTargetRotation;
         private float _deckManipulationTargetScale;
+        private float _deckManipulationTargetTilt;
+        private Vector2 _deckManipulationStartSize;
+        private Vector2 _deckManipulationTargetSize;
         private bool _deckManipulationSmoothing;
         private bool _headFollowWindows;
         private float _nextSettingsTelemetryAt;
@@ -135,8 +183,28 @@ namespace MLOmega.XR.UI
         private DeckWindowKind _hoverWindow;
         private DeckWindowKind _activeWindow;
         private DeckWindowKind _lastWindow = DeckWindowKind.Workspace;
+        private DeckWindowKind _deckAffordanceRevealWindow;
+        private float _deckAffordanceRevealUntil = -1f;
         private static Material _deckDepthMaterial;
         private static Material _deckPrimaryDepthMaterial;
+        private static Sprite _visionCircleSprite;
+        private static Sprite _visionRingSprite;
+        private static Sprite _visionRoundedSprite;
+        private static Sprite _visionCornerArcSprite;
+        private static Sprite _visionSpeakerSprite;
+        private static Sprite _visionTopRoundedSprite;
+        private static readonly Color VisionGlass =
+            new Color(.15f, .16f, .18f, .72f);
+        private static readonly Color VisionGlassHover =
+            new Color(.38f, .40f, .44f, .92f);
+        private static readonly Color VisionPressed =
+            new Color(.93f, .95f, .98f, .98f);
+        private static readonly Color VisionInk =
+            new Color(.055f, .06f, .075f, 1f);
+        private static readonly Color VisionText =
+            new Color(.96f, .97f, 1f, .98f);
+        private static readonly Color VisionSecondary =
+            new Color(.76f, .78f, .84f, .90f);
         private const string DeckLayoutPrefix =
             "mlomega.atelier.deck_layout.v1.";
         private const string SettingsLayoutPrefix =
@@ -160,8 +228,11 @@ namespace MLOmega.XR.UI
         {
             None = 0,
             Move = 1,
-            Resize = 2,
-            Minimize = 3,
+            ResizeLeft = 2,
+            ResizeRight = 3,
+            Depth = 4,
+            Minimize = 5,
+            Tilt = 6,
         }
 
         private enum DeckWindowKind
@@ -169,6 +240,33 @@ namespace MLOmega.XR.UI
             None = 0,
             Workspace = 1,
             Settings = 2,
+        }
+
+        private enum VisionIconKind
+        {
+            Phone,
+            Temperature,
+            Tracking,
+            Audio,
+            Glasses,
+            Depth,
+            Window,
+            Hand,
+            Eye,
+            VolumeMinus,
+            VolumePlus,
+            Recenter,
+            Close,
+            Brightness,
+            BrightnessMinus,
+            BrightnessPlus,
+            ElectrochromicMinus,
+            ElectrochromicPlus,
+            Workspace,
+            Settings,
+            Portrait,
+            Landscape,
+            Tilt,
         }
 
         public bool IsDeckManipulating =>
@@ -240,6 +338,7 @@ namespace MLOmega.XR.UI
         private void Update()
         {
             UpdateGestureToast();
+            UpdateWindowDockAnimation();
             SmoothDeckManipulation();
             UpdateWindowFollowMode();
             UpdateSettingsTelemetry();
@@ -501,21 +600,15 @@ namespace MLOmega.XR.UI
                 new Vector2(0f, 475f),
                 new Vector2(850f, 60f),
                 34f,
-                new Color(.35f, 1f, .94f),
+                VisionText,
                 FontStyles.Bold);
-            MakeButton(
-                _spatialDeckRect,
-                "⚙ PARAMÈTRES",
-                new Vector2(-350f, 535f),
-                new Vector2(180f, 40f),
-                ToggleSettingsDeck);
             MakeText(
                 _spatialDeckRect,
                 "VOLUMES 3D • ANCRES XREAL • AUCUNE CAPTURE MÉMOIRE",
                 new Vector2(0f, 433f),
                 new Vector2(850f, 34f),
                 17f,
-                new Color(.62f, .82f, 1f));
+                VisionSecondary);
 
             for (int i = 0; i < Categories.Length; i++)
             {
@@ -563,7 +656,7 @@ namespace MLOmega.XR.UI
                 new Vector2(0f, -18f),
                 new Vector2(200f, 42f),
                 18f,
-                new Color(.72f, .94f, 1f));
+                VisionSecondary);
             MakeButton(
                 _spatialDeckRect,
                 "▶",
@@ -604,7 +697,7 @@ namespace MLOmega.XR.UI
                 new Vector2(-260f, -198f),
                 new Vector2(100f, 46f),
                 18f,
-                new Color(.32f, 1f, .88f),
+                VisionText,
                 FontStyles.Bold);
             MakeButton(
                 _spatialDeckRect,
@@ -654,7 +747,7 @@ namespace MLOmega.XR.UI
                 new Vector2(0f, -258f),
                 new Vector2(230f, 48f),
                 15f,
-                new Color(.7f, .85f, 1f));
+                VisionSecondary);
             MakeButton(
                 _spatialDeckRect,
                 "RETIRER",
@@ -751,7 +844,7 @@ namespace MLOmega.XR.UI
                 new Vector2(-270f, -528f),
                 new Vector2(190f, 44f),
                 13f,
-                new Color(.72f, .94f, 1f));
+                VisionSecondary);
             MakeButton(
                 _spatialDeckRect,
                 "▶",
@@ -783,7 +876,7 @@ namespace MLOmega.XR.UI
                 new Vector2(0f, -586f),
                 new Vector2(850f, 62f),
                 17f,
-                new Color(.25f, 1f, .9f),
+                VisionText,
                 FontStyles.Bold);
 
             // Vision-Pro-style affordances: invisible until the existing gaze
@@ -792,21 +885,48 @@ namespace MLOmega.XR.UI
             _deckMoveHandle = MakeImage(
                 _spatialDeckRect,
                 "Gaze move handle",
-                new Vector2(0f, -603f),
-                new Vector2(150f, 10f),
-                new Color(.25f, 1f, .92f, .92f));
+                new Vector2(-48f, -603f),
+                new Vector2(104f, 7f),
+                new Color(.76f, .78f, .82f, .78f));
             _deckMoveHandle.raycastTarget = false;
+            AddVisionHandleDot(_deckMoveHandle, false);
             _deckMoveHandle.gameObject.SetActive(false);
             _deckResizeHandle = MakeImage(
                 _spatialDeckRect,
                 "Gaze resize handle",
-                new Vector2(-447f, -587f),
-                new Vector2(22f, 22f),
-                new Color(.72f, .36f, 1f, .94f));
-            _deckResizeHandle.rectTransform.localRotation =
-                Quaternion.Euler(0f, 0f, 45f);
+                new Vector2(-437f, -577f),
+                Vector2.one * 48f,
+                new Color(.76f, .78f, .82f, .78f));
+            ConfigureVisionResizeHandle(_deckResizeHandle, false);
             _deckResizeHandle.raycastTarget = false;
             _deckResizeHandle.gameObject.SetActive(false);
+            _deckResizeHandleRight = MakeImage(
+                _spatialDeckRect,
+                "Gaze resize handle right",
+                new Vector2(437f, -577f),
+                Vector2.one * 48f,
+                new Color(.76f, .78f, .82f, .78f));
+            ConfigureVisionResizeHandle(_deckResizeHandleRight, true);
+            _deckResizeHandleRight.raycastTarget = false;
+            _deckResizeHandleRight.gameObject.SetActive(false);
+            _deckDepthHandle = MakeImage(
+                _spatialDeckRect,
+                "Gaze depth handle",
+                new Vector2(82f, -603f),
+                Vector2.one * 34f,
+                new Color(.76f, .78f, .82f, .78f));
+            ConfigureVisionDepthHandle(_deckDepthHandle);
+            _deckDepthHandle.raycastTarget = false;
+            _deckDepthHandle.gameObject.SetActive(false);
+            _deckTiltHandle = MakeImage(
+                _spatialDeckRect,
+                "Gaze tilt handle",
+                new Vector2(130f, -603f),
+                Vector2.one * 34f,
+                new Color(.76f, .78f, .82f, .78f));
+            ConfigureVisionTiltHandle(_deckTiltHandle);
+            _deckTiltHandle.raycastTarget = false;
+            _deckTiltHandle.gameObject.SetActive(false);
 
             // The top-right close affordance is revealed only by gaze. It is a
             // real cross, never the small residual rectangle of the old minimize.
@@ -815,9 +935,8 @@ namespace MLOmega.XR.UI
                 "×",
                 new Vector2(438f, 592f),
                 new Vector2(38f, 38f),
-                30f,
-                new Color(.35f, 1f, .94f, .98f),
-                FontStyles.Bold);
+                24f,
+                new Color(.82f, .84f, .88f, .90f));
             _deckCloseHandle.raycastTarget = false;
             _deckCloseHandle.gameObject.SetActive(false);
 
@@ -1081,8 +1200,8 @@ namespace MLOmega.XR.UI
         }
 
         /// <summary>
-        /// Claim a physical hand pinch only when gaze was on the bottom move
-        /// handle or bottom-left resize handle. Normal buttons remain clicks.
+        /// Claim a physical hand pinch only when gaze was on a bottom window
+        /// handle. Normal buttons remain clicks.
         /// </summary>
         public bool TryBeginDeckManipulation(
             Vector3 gazeWorldPoint,
@@ -1129,18 +1248,37 @@ namespace MLOmega.XR.UI
                 .normalized;
             _deckManipulationStartScale = _activeManipulationRect.localScale.x;
             _deckManipulationStartZoom = Mathf.Max(.1f, zoomFactor);
+            string layoutPrefix = window == DeckWindowKind.Settings
+                ? SettingsLayoutPrefix
+                : DeckLayoutPrefix;
+            _deckManipulationStartTilt = PlayerPrefs.GetFloat(
+                layoutPrefix + "tilt",
+                0f);
             _deckManipulationTargetPosition = _deckManipulationStartPosition;
             _deckManipulationTargetRotation = _deckManipulationStartRotation;
             _deckManipulationTargetScale = _deckManipulationStartScale;
+            _deckManipulationTargetTilt = _deckManipulationStartTilt;
+            _deckManipulationStartSize = _activeManipulationRect.sizeDelta;
+            _deckManipulationTargetSize = _deckManipulationStartSize;
             _deckManipulationSmoothing = true;
             SetDeckHandleVisuals(mode, window);
+            if (mode == DeckManipulationMode.Depth)
+                ShowGestureToast(
+                    "PROFONDEUR // GAUCHE RAPPROCHE • DROITE ELOIGNE",
+                    new Color(.72f, .36f, 1f));
+            else if (mode == DeckManipulationMode.Tilt)
+                ShowGestureToast(
+                    "INCLINAISON // GAUCHE BAS - DROITE HAUT",
+                    new Color(.55f, .78f, 1f));
             return true;
         }
 
         /// <summary>
         /// Hand motion manipulates the gaze-selected handle. X/Y move in the
         /// viewing plane; pinch aperture provides a bounded monocular depth
-        /// adjustment. The resize handle preserves the deck aspect ratio.
+        /// adjustment. The dedicated depth handle instead maps horizontal hand
+        /// travel to one stable distance axis. Settings resize responsively;
+        /// the workspace keeps its established aspect ratio.
         /// </summary>
         public void UpdateDeckManipulation(
             Vector2 handAnchor,
@@ -1180,37 +1318,89 @@ namespace MLOmega.XR.UI
                     _camera.transform.position +
                     carriedDirection * depth +
                     planar;
-                // Carry pitch/yaw with the user but rebuild an upright frame.
-                // Copying the raw head quaternion also copied roll and could
-                // leave the released deck visibly tilted like '/'.
-                Vector3 rotationUp =
-                    Mathf.Abs(Vector3.Dot(carriedDirection, Vector3.up)) > .96f
-                        ? Vector3.ProjectOnPlane(
-                            _camera.transform.up,
-                            carriedDirection).normalized
-                        : Vector3.up;
-                if (rotationUp.sqrMagnitude < .5f) rotationUp = Vector3.forward;
-                _deckManipulationTargetRotation = Quaternion.LookRotation(
+                // Moving owns X/Y only. Keep the window upright and preserve
+                // only the explicit tilt selected with its dedicated handle.
+                _deckManipulationTargetRotation = BuildWindowRotation(
                     carriedDirection,
-                    rotationUp);
+                    _deckManipulationStartTilt);
             }
-            else
+            else if (_deckManipulationMode == DeckManipulationMode.Depth)
             {
-                // Dragging the bottom-left handle outwards (left/down in the
-                // Eye image) grows the deck; inward motion shrinks it.
-                float gesture = -delta.x + delta.y;
-                float factor = Mathf.Clamp(1f + gesture * 1.35f, .58f, 1.75f);
-                float scale = Mathf.Clamp(
-                    _deckManipulationStartScale * factor,
-                    .00038f,
-                    .00108f);
-                _deckManipulationTargetScale = scale;
+                float depth = Mathf.Clamp(
+                    _deckManipulationStartDistance + delta.x * 2.15f,
+                    .45f,
+                    2.8f);
+                _deckManipulationTargetPosition =
+                    _deckManipulationStartCameraPosition +
+                    _deckManipulationStartDirection * depth;
+                _deckManipulationTargetRotation =
+                    _deckManipulationStartRotation;
+            }
+            else if (_deckManipulationMode == DeckManipulationMode.Tilt)
+            {
+                _deckManipulationTargetTilt = Mathf.Clamp(
+                    _deckManipulationStartTilt + delta.x * 58f,
+                    -28f,
+                    28f);
+                Vector3 direction =
+                    (_deckManipulationStartPosition -
+                     _deckManipulationStartCameraPosition).normalized;
+                _deckManipulationTargetRotation = BuildWindowRotation(
+                    direction,
+                    _deckManipulationTargetTilt);
+            }
+            else if (IsResizeMode(_deckManipulationMode))
+            {
+                float outwardX =
+                    _deckManipulationMode == DeckManipulationMode.ResizeLeft
+                        ? -delta.x
+                        : delta.x;
+                if (_activeWindow == DeckWindowKind.Settings)
+                {
+                    bool landscapeMode =
+                        _deckManipulationStartSize.x >=
+                        _deckManipulationStartSize.y;
+                    float width = _deckManipulationStartSize.x * Mathf.Clamp(
+                        1f + outwardX * 1.28f,
+                        .62f,
+                        1.58f);
+                    float height = _deckManipulationStartSize.y * Mathf.Clamp(
+                        1f + delta.y * 1.28f,
+                        .62f,
+                        1.58f);
+                    if (landscapeMode)
+                    {
+                        width = Mathf.Clamp(width, 680f, 1120f);
+                        height = Mathf.Clamp(height, 520f, 820f);
+                        width = Mathf.Max(width, height + 80f);
+                    }
+                    else
+                    {
+                        width = Mathf.Clamp(width, 500f, 760f);
+                        height = Mathf.Clamp(height, 700f, 1120f);
+                        height = Mathf.Max(height, width + 80f);
+                    }
+                    _deckManipulationTargetSize = new Vector2(width, height);
+                }
+                else
+                {
+                    float gesture = outwardX + delta.y;
+                    float factor = Mathf.Clamp(
+                        1f + gesture * 1.35f,
+                        .58f,
+                        1.75f);
+                    _deckManipulationTargetScale = Mathf.Clamp(
+                        _deckManipulationStartScale * factor,
+                        .00038f,
+                        .00108f);
+                }
             }
             _deckManipulationSmoothing = true;
         }
 
         public void EndDeckManipulation()
         {
+            DeckWindowKind completedWindow = _activeWindow;
             if (
                 _deckManipulationMode != DeckManipulationMode.None &&
                 _activeManipulationRect != null)
@@ -1219,9 +1409,17 @@ namespace MLOmega.XR.UI
                     _activeWindow,
                     _deckManipulationTargetPosition,
                     _deckManipulationTargetScale);
+                string prefix = _activeWindow == DeckWindowKind.Settings
+                    ? SettingsLayoutPrefix
+                    : DeckLayoutPrefix;
+                PlayerPrefs.SetFloat(prefix + "tilt", _deckManipulationTargetTilt);
+                if (_activeWindow == DeckWindowKind.Settings)
+                    SaveSettingsSize(_deckManipulationTargetSize);
+                PlayerPrefs.Save();
             }
             _deckManipulationMode = DeckManipulationMode.None;
             _deckHoverMode = DeckManipulationMode.None;
+            RevealDeckAffordances(completedWindow);
             SetDeckHandleVisuals(
                 DeckManipulationMode.None,
                 DeckWindowKind.None);
@@ -1262,72 +1460,249 @@ namespace MLOmega.XR.UI
             Rect rect = windowRect.rect;
             if (!rect.Contains(local)) return DeckManipulationMode.None;
             float edge = Mathf.Min(95f, rect.width * .20f);
-            float bottom = Mathf.Min(85f, rect.height * .24f);
-            if (
-                local.x <= rect.xMin + edge &&
-                local.y <= rect.yMin + bottom)
-                return DeckManipulationMode.Resize;
+            // Keep manipulation strictly inside the bottom rim. The former
+            // 85 px band overlapped the portrait LUM/EC row, so a valid pinch
+            // could be claimed before the Button received it.
+            float bottom = Mathf.Min(40f, rect.height * .10f);
+            if (local.y <= rect.yMin + bottom)
+            {
+                if (local.x <= rect.xMin + edge)
+                    return DeckManipulationMode.ResizeLeft;
+                if (local.x >= rect.xMax - edge)
+                    return DeckManipulationMode.ResizeRight;
+                // Dedicated central zones keep translation, depth and tilt
+                // independent. This prevents an ordinary move from changing
+                // the panel angle.
+                if (local.x < -20f) return DeckManipulationMode.Move;
+                if (local.x < 65f) return DeckManipulationMode.Depth;
+                return DeckManipulationMode.Tilt;
+            }
             if (
                 local.x >= rect.xMax - Mathf.Min(55f, rect.width * .16f) &&
                 local.y >= rect.yMax - Mathf.Min(45f, rect.height * .18f))
                 return DeckManipulationMode.Minimize;
-            if (
-                Mathf.Abs(local.x) <= Mathf.Min(175f, rect.width * .38f) &&
-                local.y <= rect.yMin + Mathf.Min(58f, rect.height * .20f))
-                return DeckManipulationMode.Move;
             return DeckManipulationMode.None;
         }
+
+        private static bool IsResizeMode(DeckManipulationMode mode) =>
+            mode == DeckManipulationMode.ResizeLeft ||
+            mode == DeckManipulationMode.ResizeRight;
 
         private void SetDeckHandleVisuals(
             DeckManipulationMode mode,
             DeckWindowKind window)
         {
-            if (_deckMoveHandle != null)
-                _deckMoveHandle.gameObject.SetActive(
-                    window == DeckWindowKind.Workspace &&
-                    mode == DeckManipulationMode.Move);
-            if (_deckResizeHandle != null)
-                _deckResizeHandle.gameObject.SetActive(
-                    window == DeckWindowKind.Workspace &&
-                    mode == DeckManipulationMode.Resize);
-            if (_deckCloseHandle != null)
-                _deckCloseHandle.gameObject.SetActive(
-                    window == DeckWindowKind.Workspace &&
-                    mode == DeckManipulationMode.Minimize);
-            if (_settingsMoveHandle != null)
-                _settingsMoveHandle.gameObject.SetActive(
-                    window == DeckWindowKind.Settings &&
-                    mode == DeckManipulationMode.Move);
-            if (_settingsResizeHandle != null)
-                _settingsResizeHandle.gameObject.SetActive(
-                    window == DeckWindowKind.Settings &&
-                    mode == DeckManipulationMode.Resize);
-            if (_settingsCloseHandle != null)
-                _settingsCloseHandle.gameObject.SetActive(
-                    window == DeckWindowKind.Settings &&
-                    mode == DeckManipulationMode.Minimize);
+            bool revealWorkspace =
+                Time.unscaledTime < _deckAffordanceRevealUntil &&
+                _deckAffordanceRevealWindow == DeckWindowKind.Workspace;
+            bool revealSettings =
+                Time.unscaledTime < _deckAffordanceRevealUntil &&
+                _deckAffordanceRevealWindow == DeckWindowKind.Settings;
+            SetVisionHandle(
+                _deckMoveHandle,
+                revealWorkspace,
+                mode,
+                window,
+                DeckManipulationMode.Move,
+                DeckWindowKind.Workspace);
+            SetVisionHandle(
+                _deckResizeHandle,
+                revealWorkspace,
+                mode,
+                window,
+                DeckManipulationMode.ResizeLeft,
+                DeckWindowKind.Workspace);
+            SetVisionHandle(
+                _deckResizeHandleRight,
+                revealWorkspace,
+                mode,
+                window,
+                DeckManipulationMode.ResizeRight,
+                DeckWindowKind.Workspace);
+            SetVisionHandle(
+                _deckDepthHandle,
+                revealWorkspace,
+                mode,
+                window,
+                DeckManipulationMode.Depth,
+                DeckWindowKind.Workspace);
+            SetVisionHandle(
+                _deckTiltHandle,
+                revealWorkspace,
+                mode,
+                window,
+                DeckManipulationMode.Tilt,
+                DeckWindowKind.Workspace);
+            SetVisionHandle(
+                _deckCloseHandle,
+                revealWorkspace,
+                mode,
+                window,
+                DeckManipulationMode.Minimize,
+                DeckWindowKind.Workspace);
+            SetVisionHandle(
+                _settingsMoveHandle,
+                revealSettings,
+                mode,
+                window,
+                DeckManipulationMode.Move,
+                DeckWindowKind.Settings);
+            SetVisionHandle(
+                _settingsResizeHandle,
+                revealSettings,
+                mode,
+                window,
+                DeckManipulationMode.ResizeLeft,
+                DeckWindowKind.Settings);
+            SetVisionHandle(
+                _settingsResizeHandleRight,
+                revealSettings,
+                mode,
+                window,
+                DeckManipulationMode.ResizeRight,
+                DeckWindowKind.Settings);
+            SetVisionHandle(
+                _settingsDepthHandle,
+                revealSettings,
+                mode,
+                window,
+                DeckManipulationMode.Depth,
+                DeckWindowKind.Settings);
+            SetVisionHandle(
+                _settingsTiltHandle,
+                revealSettings,
+                mode,
+                window,
+                DeckManipulationMode.Tilt,
+                DeckWindowKind.Settings);
+            SetVisionHandle(
+                _settingsCloseHandle,
+                revealSettings,
+                mode,
+                window,
+                DeckManipulationMode.Minimize,
+                DeckWindowKind.Settings);
+        }
+
+        private void SetVisionHandle(
+            Graphic handle,
+            bool reveal,
+            DeckManipulationMode hoverMode,
+            DeckWindowKind hoverWindow,
+            DeckManipulationMode ownMode,
+            DeckWindowKind ownWindow)
+        {
+            if (handle == null) return;
+            bool targeted = hoverWindow == ownWindow && hoverMode == ownMode;
+            bool engaged =
+                _deckManipulationMode == ownMode &&
+                _activeWindow == ownWindow;
+            handle.gameObject.SetActive(reveal || targeted || engaged);
+            if (!handle.gameObject.activeSelf) return;
+            Color color = engaged
+                ? Color.white
+                : (targeted
+                    ? new Color(.94f, .95f, .98f, .98f)
+                    : new Color(.72f, .74f, .79f, .72f));
+            Graphic[] graphics = handle.GetComponentsInChildren<Graphic>(true);
+            for (int i = 0; i < graphics.Length; i++)
+            {
+                if (
+                    (ownMode == DeckManipulationMode.Depth ||
+                     ownMode == DeckManipulationMode.Tilt) &&
+                    graphics[i] == handle)
+                    graphics[i].color = new Color(
+                        color.r,
+                        color.g,
+                        color.b,
+                        engaged ? .18f : (targeted ? .14f : .06f));
+                else
+                    graphics[i].color = color;
+            }
+        }
+
+        private void RevealDeckAffordances(
+            DeckWindowKind window,
+            float seconds = 4f)
+        {
+            if (window == DeckWindowKind.None) return;
+            _deckAffordanceRevealWindow = window;
+            _deckAffordanceRevealUntil = Time.unscaledTime + seconds;
         }
 
         /// <summary>
-        /// A held open palm is the single spatial reset gesture: it reopens a
-        /// closed deck and always places it upright in the current gaze direction.
+        /// A held open palm recentres the active visible window. It only reopens
+        /// the last window when every window is closed.
         /// </summary>
         public void OpenDeckFromPalm()
         {
             if (_windowDock != null) _windowDock.gameObject.SetActive(false);
-            if (_lastWindow == DeckWindowKind.Settings)
+            bool workspaceVisible =
+                !_deckMinimized && _spatialDeckRect != null;
+            bool settingsVisible =
+                _settingsDeck != null && _settingsDeck.gameObject.activeSelf;
+            DeckWindowKind target = DeckWindowKind.None;
+            if (_lastWindow == DeckWindowKind.Settings && settingsVisible)
+                target = DeckWindowKind.Settings;
+            else if (_lastWindow == DeckWindowKind.Workspace && workspaceVisible)
+                target = DeckWindowKind.Workspace;
+            else if (settingsVisible)
+                target = DeckWindowKind.Settings;
+            else if (workspaceVisible)
+                target = DeckWindowKind.Workspace;
+
+            // No active surface: and only in that case, recall the last one.
+            bool recalledClosedWindow = target == DeckWindowKind.None;
+            if (target == DeckWindowKind.None)
             {
-                OpenSettingsDeck(true);
-                ShowGestureToast(
-                    "PARAMÈTRES OUVERTS ET RECENTRÉS // PAUME",
-                    new Color(.35f, 1f, .94f));
-                return;
+                target = _lastWindow == DeckWindowKind.Settings
+                    ? DeckWindowKind.Settings
+                    : DeckWindowKind.Workspace;
+                if (target == DeckWindowKind.Settings)
+                    OpenSettingsDeck(true);
+                else if (_deckMinimized)
+                    SetDeckMinimized(false);
             }
-            if (_deckMinimized) SetDeckMinimized(false);
-            _lastWindow = DeckWindowKind.Workspace;
-            SetDeckPose();
-            _status = "PUPITRE OUVERT ET RECENTRÉ // PAUME";
+
+            _lastWindow = target;
+            RectTransform rect = RectForWindow(target);
+            if (rect == null) return;
+            if (!recalledClosedWindow)
+            {
+                if (target == DeckWindowKind.Settings)
+                    rect.localScale = Vector3.one * Mathf.Clamp(
+                        rect.localScale.x,
+                        .00046f,
+                        .00078f);
+                PlaceWindowAtCameraLocal(
+                    rect,
+                    target == DeckWindowKind.Settings
+                        ? new Vector3(0f, .06f, .96f)
+                        : new Vector3(0f, .04f, 1.12f));
+                // A palm recenter is deliberately temporary.  It must not
+                // overwrite the manually arranged pose which close/reopen and
+                // the dock are expected to recall.
+                Debug.Log(
+                    "[AtelierWindowMemory] temporary_recenter window=" +
+                    target);
+            }
+            else
+                Debug.Log(
+                    "[AtelierWindowMemory] recalled window=" + target +
+                    " local=" +
+                    _camera.transform.InverseTransformPoint(rect.position));
+            RevealDeckAffordances(target);
+            SetDeckHandleVisuals(DeckManipulationMode.None, DeckWindowKind.None);
+            _status = recalledClosedWindow
+                ? (target == DeckWindowKind.Settings
+                    ? "PARAMÈTRES ROUVERTS // DERNIÈRE POSITION"
+                    : "PUPITRE ROUVERT // DERNIÈRE POSITION")
+                : (target == DeckWindowKind.Settings
+                    ? "PARAMÈTRES RECENTRÉS // PAUME"
+                    : "PUPITRE RECENTRÉ // PAUME");
+            ShowGestureToast(_status, new Color(.35f, 1f, .94f));
             RefreshSpatialDeck();
+            RefreshSettingsDeck();
         }
 
         /// <summary>Visible feedback for the physical fist power toggle.</summary>
@@ -1394,6 +1769,15 @@ namespace MLOmega.XR.UI
                 _deckManipulationTargetScale,
                 blend);
             _activeManipulationRect.localScale = Vector3.one * scale;
+            Vector2 size = Vector2.Lerp(
+                _activeManipulationRect.sizeDelta,
+                _deckManipulationTargetSize,
+                blend);
+            if (_activeWindow == DeckWindowKind.Settings)
+            {
+                _activeManipulationRect.sizeDelta = size;
+                LayoutSettingsDeck();
+            }
 
             if (
                 _deckManipulationMode == DeckManipulationMode.None &&
@@ -1403,12 +1787,20 @@ namespace MLOmega.XR.UI
                 Quaternion.Angle(
                     _activeManipulationRect.rotation,
                     _deckManipulationTargetRotation) < .1f &&
-                Mathf.Abs(scale - _deckManipulationTargetScale) < .000002f)
+                Mathf.Abs(scale - _deckManipulationTargetScale) < .000002f &&
+                (_activeWindow != DeckWindowKind.Settings ||
+                 Vector2.Distance(size, _deckManipulationTargetSize) < .25f))
             {
                 _activeManipulationRect.position = _deckManipulationTargetPosition;
                 _activeManipulationRect.rotation = _deckManipulationTargetRotation;
                 _activeManipulationRect.localScale =
                     Vector3.one * _deckManipulationTargetScale;
+                if (_activeWindow == DeckWindowKind.Settings)
+                {
+                    _activeManipulationRect.sizeDelta =
+                        _deckManipulationTargetSize;
+                    LayoutSettingsDeck();
+                }
                 _deckManipulationSmoothing = false;
             }
         }
@@ -1578,7 +1970,9 @@ namespace MLOmega.XR.UI
                 : Vector3.up;
             _spatialDeckRect.SetPositionAndRotation(
                 targetPosition,
-                Quaternion.LookRotation(forward, up));
+                BuildWindowRotation(
+                    forward,
+                    PlayerPrefs.GetFloat(DeckLayoutPrefix + "tilt", 0f)));
             float scale = PlayerPrefs.GetFloat(
                 DeckLayoutPrefix + "scale",
                 .00062f);
@@ -1625,7 +2019,9 @@ namespace MLOmega.XR.UI
             Vector3 up = Mathf.Abs(Vector3.Dot(forward, Vector3.up)) > .96f
                 ? _camera.transform.up
                 : Vector3.up;
-            Quaternion rotation = Quaternion.LookRotation(forward, up);
+            Quaternion rotation = BuildWindowRotation(
+                forward,
+                PlayerPrefs.GetFloat(prefix + "tilt", 0f));
             float blend = 1f - Mathf.Exp(-14f * Time.unscaledDeltaTime);
             window.position = Vector3.Lerp(window.position, target, blend);
             window.rotation = Quaternion.Slerp(window.rotation, rotation, blend);
@@ -1652,7 +2048,380 @@ namespace MLOmega.XR.UI
             PlayerPrefs.Save();
         }
 
+        private static Quaternion BuildWindowRotation(
+            Vector3 direction,
+            float tiltDegrees)
+        {
+            Vector3 horizontal = Vector3.ProjectOnPlane(direction, Vector3.up);
+            if (horizontal.sqrMagnitude < .001f) horizontal = Vector3.forward;
+            Quaternion upright = Quaternion.LookRotation(
+                horizontal.normalized,
+                Vector3.up);
+            return upright * Quaternion.Euler(tiltDegrees, 0f, 0f);
+        }
+
+        private static void SaveSettingsSize(Vector2 size)
+        {
+            PlayerPrefs.SetFloat(
+                SettingsLayoutPrefix + "width",
+                Mathf.Clamp(size.x, 500f, 1120f));
+            PlayerPrefs.SetFloat(
+                SettingsLayoutPrefix + "height",
+                Mathf.Clamp(size.y, 520f, 1120f));
+            PlayerPrefs.Save();
+        }
+
         private void BuildSettingsDeck()
+        {
+            if (_settingsDeck != null || _camera == null) return;
+            var go = new GameObject("Atelier Vision Control Center");
+            _settingsDeck = go.AddComponent<Canvas>();
+            _settingsDeck.renderMode = RenderMode.WorldSpace;
+            _settingsDeck.worldCamera = _camera;
+            _settingsDeck.sortingOrder = 110;
+            go.AddComponent<GraphicRaycaster>();
+            _settingsDeckRect = go.GetComponent<RectTransform>();
+            _settingsDeckRect.sizeDelta = new Vector2(840f, 620f);
+            _settingsDeckRect.localScale = Vector3.one * .00062f;
+
+            _settingsWindowRim = MakeImage(
+                _settingsDeckRect, "Vision window fine rim", Vector2.zero,
+                new Vector2(818f, 598f),
+                new Color(.88f, .91f, .98f, .10f));
+            _settingsWindowRim.raycastTarget = false;
+            _settingsWindowSurface = MakeImage(
+                _settingsDeckRect, "Vision window optical glass", Vector2.zero,
+                new Vector2(814f, 594f),
+                new Color(.105f, .112f, .132f, .48f));
+            _settingsWindowSurface.raycastTarget = false;
+            _settingsHeaderSurface = MakeImage(
+                _settingsDeckRect, "Vision window diagnostics material",
+                new Vector2(0f, 192f), new Vector2(782f, 196f),
+                new Color(.045f, .052f, .068f, .72f));
+            _settingsHeaderSurface.sprite = GetVisionTopRoundedSprite();
+            _settingsHeaderSurface.type = Image.Type.Sliced;
+            _settingsHeaderSurface.raycastTarget = false;
+
+            _settingsPortraitButton = MakeOrientationButton(
+                _settingsDeckRect, "Portrait", VisionIconKind.Portrait,
+                () => SetSettingsOrientation(false));
+            _settingsLandscapeButton = MakeOrientationButton(
+                _settingsDeckRect, "Landscape", VisionIconKind.Landscape,
+                () => SetSettingsOrientation(true));
+
+            _settingsTitleLabel = MakeText(
+                _settingsDeckRect, "--:--", new Vector2(0f, 280f),
+                new Vector2(300f, 52f), 31f, VisionText);
+            _settingsTitleLabel.characterSpacing = 1.5f;
+
+            _settingsDevicePill = MakeCircularStatusGauge(
+                _settingsDeckRect, "Telephone", VisionIconKind.Phone,
+                new Vector2(-145f, 190f), out _settingsDeviceLabel,
+                out _settingsBatteryRing);
+            _settingsLensPill = MakeCircularStatusGauge(
+                _settingsDeckRect, "Temperature", VisionIconKind.Temperature,
+                new Vector2(0f, 190f), out _settingsTemperatureLabel,
+                out _settingsTemperatureRing);
+            _settingsTrackingPill = MakeCircularStatusGauge(
+                _settingsDeckRect, "Tracking", VisionIconKind.Tracking,
+                new Vector2(145f, 190f), out _settingsTrackingLabel,
+                out _settingsTrackingRing);
+            _settingsAudioPill = MakeCircularStatusGauge(
+                _settingsDeckRect, "Son", VisionIconKind.Audio,
+                new Vector2(220f, 190f), out _settingsAudioLabel,
+                out _settingsAudioRing);
+
+            _settingsWindowModeButton = MakeVisionControlButton(
+                _settingsDeckRect, "WINDOW MODE", VisionIconKind.Window,
+                "Fenetres", new Vector2(-255f, 70f), ToggleWindowMode);
+            _settingsWindowModeLabel = CaptionFor(_settingsWindowModeButton);
+            _settingsGesturesButton = MakeVisionControlButton(
+                _settingsDeckRect, "GESTURE MODE", VisionIconKind.Hand,
+                "Gestes", new Vector2(-85f, 70f), ToggleGesturePower);
+            _settingsGestureLabel = CaptionFor(_settingsGesturesButton);
+            _settingsRayButton = MakeVisionControlButton(
+                _settingsDeckRect, "EYE RAY", VisionIconKind.Eye,
+                "Curseur", new Vector2(85f, 70f), ToggleEyeRay);
+            _settingsRayLabel = CaptionFor(_settingsRayButton);
+            _settingsRecenterButton = MakeVisionControlButton(
+                _settingsDeckRect, "RECENTER UI", VisionIconKind.Recenter,
+                "Recentrer", new Vector2(255f, 70f), RecenterAllWindows);
+
+            _settingsBrightnessControl = MakeStepperControl(
+                _settingsDeckRect, "Luminosite", VisionIconKind.Brightness,
+                new Vector2(-220f, -95f),
+                () => AdjustLensControl(false, -1),
+                () => AdjustLensControl(false, 1),
+                out _settingsLensButtons[0], out _settingsLensButtons[1],
+                out _settingsBrightnessRing);
+            _settingsEcControl = MakeStepperControl(
+                _settingsDeckRect, "Lentilles", VisionIconKind.Glasses,
+                new Vector2(0f, -95f),
+                () => AdjustLensControl(true, -1),
+                () => AdjustLensControl(true, 1),
+                out _settingsLensButtons[2], out _settingsLensButtons[3],
+                out _settingsEcRing);
+            _settingsVolumeControl = MakeStepperControl(
+                _settingsDeckRect, "Volume", VisionIconKind.Audio,
+                new Vector2(220f, -95f),
+                () => AdjustMediaVolume(-1),
+                () => AdjustMediaVolume(1),
+                out _settingsVolumeDownButton, out _settingsVolumeUpButton,
+                out _settingsVolumeControlRing);
+            _settingsLensLabel = MakeText(
+                _settingsDeckRect, "LUM --/--  |  EC --/--",
+                new Vector2(0f, -205f), new Vector2(370f, 22f),
+                11f, VisionSecondary);
+            _settingsCloseAllButton = MakeVisionControlButton(
+                _settingsDeckRect, "CLOSE ALL", VisionIconKind.Close,
+                "Tout fermer", new Vector2(0f, -245f), CloseAllWindows,
+                58f);
+
+            _settingsFollowLabel = MakeText(
+                _settingsDeckRect, "SUIVI TETE = CHOIX MANUEL",
+                new Vector2(0f, -270f), new Vector2(510f, 24f),
+                11f, new Color(.62f, .82f, 1f));
+            _settingsFollowLabel.gameObject.SetActive(false);
+
+            BuildSettingsWindowHandles();
+            LayoutSettingsDeck();
+            _settingsHitGraphics.Clear();
+            _settingsDeckRect.GetComponentsInChildren(true, _settingsHitGraphics);
+            go.SetActive(false);
+            ProbeLensControl();
+            RefreshSettingsDeck();
+        }
+
+        private void BuildSettingsWindowHandles()
+        {
+            _settingsMoveHandle = MakeImage(
+                _settingsDeckRect, "Settings gaze move handle",
+                new Vector2(-48f, -300f), new Vector2(104f, 7f),
+                new Color(.76f, .78f, .82f, .78f));
+            _settingsMoveHandle.raycastTarget = false;
+            AddVisionHandleDot(_settingsMoveHandle, false);
+            _settingsMoveHandle.gameObject.SetActive(false);
+            _settingsResizeHandle = MakeImage(
+                _settingsDeckRect, "Settings gaze resize handle",
+                new Vector2(-397f, -287f), Vector2.one * 48f,
+                new Color(.76f, .78f, .82f, .78f));
+            ConfigureVisionResizeHandle(_settingsResizeHandle, false);
+            _settingsResizeHandle.raycastTarget = false;
+            _settingsResizeHandle.gameObject.SetActive(false);
+            _settingsResizeHandleRight = MakeImage(
+                _settingsDeckRect, "Settings gaze resize handle right",
+                new Vector2(397f, -287f), Vector2.one * 48f,
+                new Color(.76f, .78f, .82f, .78f));
+            ConfigureVisionResizeHandle(_settingsResizeHandleRight, true);
+            _settingsResizeHandleRight.raycastTarget = false;
+            _settingsResizeHandleRight.gameObject.SetActive(false);
+            _settingsDepthHandle = MakeImage(
+                _settingsDeckRect, "Settings gaze depth handle",
+                new Vector2(82f, -300f), Vector2.one * 34f,
+                new Color(.76f, .78f, .82f, .78f));
+            ConfigureVisionDepthHandle(_settingsDepthHandle);
+            _settingsDepthHandle.raycastTarget = false;
+            _settingsDepthHandle.gameObject.SetActive(false);
+            _settingsTiltHandle = MakeImage(
+                _settingsDeckRect, "Settings gaze tilt handle",
+                new Vector2(130f, -300f), Vector2.one * 34f,
+                new Color(.76f, .78f, .82f, .78f));
+            ConfigureVisionTiltHandle(_settingsTiltHandle);
+            _settingsTiltHandle.raycastTarget = false;
+            _settingsTiltHandle.gameObject.SetActive(false);
+            _settingsCloseHandle = MakeText(
+                _settingsDeckRect, "x", new Vector2(397f, 287f),
+                new Vector2(34f, 34f), 24f,
+                new Color(.82f, .84f, .88f, .90f));
+            _settingsCloseHandle.raycastTarget = false;
+            _settingsCloseHandle.gameObject.SetActive(false);
+        }
+
+        private static Button MakeVisionControlButton(
+            Transform parent,
+            string internalName,
+            VisionIconKind icon,
+            string caption,
+            Vector2 position,
+            UnityEngine.Events.UnityAction action,
+            float size = 78f)
+        {
+            Button button = MakeButton(
+                parent, internalName, position, Vector2.one * size, action);
+            ConfigureControlCenterButton(button, icon, caption);
+            return button;
+        }
+
+        private static Button MakeOrientationButton(
+            Transform parent,
+            string name,
+            VisionIconKind icon,
+            UnityEngine.Events.UnityAction action)
+        {
+            Button button = MakeButton(
+                parent,
+                name,
+                Vector2.zero,
+                new Vector2(48f, 34f),
+                action);
+            TMP_Text text = button.GetComponentInChildren<TMP_Text>();
+            if (text != null) text.gameObject.SetActive(false);
+            Image surface = button.GetComponent<Image>();
+            if (surface != null)
+            {
+                surface.sprite = GetVisionRoundedSprite();
+                surface.type = Image.Type.Sliced;
+                surface.color = new Color(.16f, .17f, .20f, .72f);
+            }
+            BuildVisionIcon(button.transform, icon, Vector2.zero, .62f);
+            VisionSpatialControlFeedback feedback =
+                button.gameObject.AddComponent<VisionSpatialControlFeedback>();
+            feedback.Configure(
+                surface,
+                new Color(.16f, .17f, .20f, .72f),
+                new Color(.38f, .40f, .44f, .92f),
+                VisionPressed,
+                VisionText);
+            return button;
+        }
+
+        private static TextMeshProUGUI CaptionFor(Button button) =>
+            button == null
+                ? null
+                : button.transform.Find("Vision caption")
+                    ?.GetComponent<TextMeshProUGUI>();
+
+        private static Image MakeCircularStatusGauge(
+            Transform parent,
+            string caption,
+            VisionIconKind icon,
+            Vector2 position,
+            out TextMeshProUGUI valueLabel,
+            out Image progressRing,
+            float size = 92f)
+        {
+            Image root = MakeImage(
+                parent, "Vision gauge " + caption, position,
+                Vector2.one * size, new Color(.15f, .16f, .18f, .60f));
+            root.sprite = GetVisionCircleSprite();
+            root.type = Image.Type.Simple;
+            root.raycastTarget = false;
+            Image track = AddVisionProgressRing(
+                root.transform, "Vision gauge track", Vector2.zero, size + 9f);
+            track.fillAmount = 1f;
+            track.color = new Color(.70f, .73f, .80f, .20f);
+            progressRing = AddVisionProgressRing(
+                root.transform, "Vision gauge progress", Vector2.zero,
+                size + 9f);
+            BuildVisionIcon(root.transform, icon, new Vector2(0f, 17f), .62f);
+            valueLabel = MakeText(
+                root.transform, "--", new Vector2(0f, -14f),
+                new Vector2(size - 14f, 28f), 18f, VisionText,
+                FontStyles.Bold);
+            TextMeshProUGUI captionLabel = MakeText(
+                root.transform, caption, new Vector2(0f, -size * .5f - 15f),
+                new Vector2(size + 46f, 22f), 11f, VisionSecondary);
+            captionLabel.enableWordWrapping = false;
+            return root;
+        }
+
+        private static RectTransform MakeStepperControl(
+            Transform parent,
+            string caption,
+            VisionIconKind icon,
+            Vector2 position,
+            UnityEngine.Events.UnityAction minusAction,
+            UnityEngine.Events.UnityAction plusAction,
+            out Button minusButton,
+            out Button plusButton,
+            out Image progressRing)
+        {
+            var go = new GameObject("Vision stepper " + caption);
+            go.transform.SetParent(parent, false);
+            RectTransform root = go.AddComponent<RectTransform>();
+            root.anchorMin = root.anchorMax = new Vector2(.5f, .5f);
+            root.anchoredPosition = position;
+            root.sizeDelta = new Vector2(150f, 132f);
+
+            Image orb = MakeImage(
+                root, "Vision stepper orb " + caption,
+                new Vector2(0f, 25f), Vector2.one * 68f,
+                new Color(.16f, .17f, .20f, .68f));
+            orb.sprite = GetVisionCircleSprite();
+            orb.type = Image.Type.Simple;
+            orb.raycastTarget = false;
+            Image track = AddVisionProgressRing(
+                orb.transform, "Vision stepper track", Vector2.zero, 78f);
+            track.fillAmount = 1f;
+            track.color = new Color(.70f, .73f, .80f, .18f);
+            progressRing = AddVisionProgressRing(
+                orb.transform, "Vision stepper progress", Vector2.zero, 78f);
+            BuildVisionIcon(orb.transform, icon, Vector2.zero, .92f);
+            TextMeshProUGUI captionLabel = MakeText(
+                root, caption, new Vector2(0f, -21f),
+                new Vector2(140f, 22f), 11f, VisionSecondary);
+            captionLabel.enableWordWrapping = false;
+
+            Image bar = MakeImage(
+                root, "Vision stepper bar " + caption,
+                new Vector2(0f, -53f), new Vector2(116f, 31f),
+                new Color(.13f, .14f, .17f, .76f));
+            bar.raycastTarget = false;
+            Image divider = MakeImage(
+                bar.transform, "Vision stepper divider", Vector2.zero,
+                new Vector2(1.5f, 17f),
+                new Color(.72f, .75f, .82f, .32f));
+            divider.raycastTarget = false;
+            minusButton = MakeStepperButton(
+                bar.transform, "minus", new Vector2(-29f, 0f), false,
+                minusAction);
+            plusButton = MakeStepperButton(
+                bar.transform, "plus", new Vector2(29f, 0f), true,
+                plusAction);
+            return root;
+        }
+
+        private static Button MakeStepperButton(
+            Transform parent,
+            string name,
+            Vector2 position,
+            bool plus,
+            UnityEngine.Events.UnityAction action)
+        {
+            Image hit = MakeImage(
+                parent, "Vision stepper " + name, position,
+                new Vector2(54f, 29f), new Color(1f, 1f, 1f, .01f));
+            hit.raycastTarget = true;
+            Button button = hit.gameObject.AddComponent<Button>();
+            button.transition = Selectable.Transition.None;
+            button.onClick.AddListener(action);
+            var collider = hit.gameObject.AddComponent<BoxCollider>();
+            collider.size = new Vector3(54f, 31f, 14f);
+            Image horizontal = MakeImage(
+                hit.transform, "Vision icon stepper line", Vector2.zero,
+                new Vector2(15f, 2.5f), VisionText);
+            horizontal.raycastTarget = false;
+            if (plus)
+            {
+                Image vertical = MakeImage(
+                    hit.transform, "Vision icon stepper line", Vector2.zero,
+                    new Vector2(2.5f, 15f), VisionText);
+                vertical.raycastTarget = false;
+            }
+            var feedback = hit.gameObject.AddComponent<
+                VisionSpatialControlFeedback>();
+            feedback.Configure(
+                hit,
+                new Color(1f, 1f, 1f, .01f),
+                new Color(.55f, .58f, .64f, .32f),
+                VisionPressed,
+                VisionText);
+            return button;
+        }
+
+        // Kept during the hardware-validated visual migration as a readable
+        // rollback reference. It is never invoked by the product.
+        private void BuildSettingsDeckLegacy()
         {
             if (_settingsDeck != null || _camera == null) return;
             var go = new GameObject("Atelier Interaction Settings");
@@ -1662,155 +2431,235 @@ namespace MLOmega.XR.UI
             _settingsDeck.sortingOrder = 110;
             go.AddComponent<GraphicRaycaster>();
             _settingsDeckRect = go.GetComponent<RectTransform>();
-            _settingsDeckRect.sizeDelta = new Vector2(560f, 690f);
+            _settingsDeckRect.sizeDelta = new Vector2(840f, 560f);
             _settingsDeckRect.localScale = Vector3.one * .00062f;
 
-            MakeText(
+            _settingsTitleLabel = MakeText(
                 _settingsDeckRect,
-                "PARAMÈTRES // XREAL",
+                "MLOMEGA CONTROL CENTER",
                 new Vector2(0f, 305f),
                 new Vector2(510f, 48f),
-                25f,
-                new Color(.35f, 1f, .94f),
+                12f,
+                VisionSecondary,
                 FontStyles.Bold);
-            _settingsDeviceLabel = MakeText(
+            _settingsDevicePill = MakeStatusPill(
                 _settingsDeckRect,
+                "APPAREIL",
                 "--:-- • TEL --% • XREAL // TEMP NORMALE",
                 new Vector2(0f, 260f),
-                new Vector2(520f, 34f),
-                14f,
-                new Color(.72f, .94f, 1f));
-            Button windowMode = MakeButton(
+                new Vector2(270f, 46f),
+                out _settingsDeviceLabel);
+            _settingsBatteryRing = AddVisionProgressRing(
+                _settingsDevicePill.transform,
+                "Battery progress",
+                new Vector2(-98f, 0f),
+                30f);
+            _settingsWindowModeButton = MakeButton(
                 _settingsDeckRect,
                 "FENÊTRES",
                 new Vector2(0f, 202f),
                 new Vector2(470f, 52f),
                 ToggleWindowMode);
-            _settingsWindowModeLabel =
-                windowMode.GetComponentInChildren<TextMeshProUGUI>();
-            Button gestures = MakeButton(
+            _settingsWindowModeLabel = _settingsWindowModeButton
+                .GetComponentInChildren<TextMeshProUGUI>();
+            ConfigureControlCenterButton(
+                _settingsWindowModeButton,
+                "⌖",
+                "FENÊTRES");
+            _settingsGesturesButton = MakeButton(
                 _settingsDeckRect,
                 "GESTES",
                 new Vector2(0f, 139f),
                 new Vector2(470f, 52f),
                 ToggleGesturePower);
-            _settingsGestureLabel =
-                gestures.GetComponentInChildren<TextMeshProUGUI>();
-            Button ray = MakeButton(
+            _settingsGestureLabel = _settingsGesturesButton
+                .GetComponentInChildren<TextMeshProUGUI>();
+            ConfigureControlCenterButton(
+                _settingsGesturesButton,
+                "✋",
+                "GESTES");
+            _settingsRayButton = MakeButton(
                 _settingsDeckRect,
                 "RAYON EYE",
                 new Vector2(0f, 76f),
                 new Vector2(470f, 52f),
                 ToggleEyeRay);
-            _settingsRayLabel =
-                ray.GetComponentInChildren<TextMeshProUGUI>();
-            MakeButton(
+            _settingsRayLabel = _settingsRayButton
+                .GetComponentInChildren<TextMeshProUGUI>();
+            ConfigureControlCenterButton(
+                _settingsRayButton,
+                "◉",
+                "RAYON");
+            _settingsVolumeDownButton = MakeButton(
                 _settingsDeckRect,
                 "−",
                 new Vector2(-190f, 13f),
                 new Vector2(90f, 52f),
                 () => AdjustMediaVolume(-1));
-            _settingsAudioLabel = MakeText(
+            ConfigureControlCenterButton(
+                _settingsVolumeDownButton,
+                "−",
+                "SON");
+            _settingsAudioPill = MakeStatusPill(
                 _settingsDeckRect,
+                "AUDIO",
                 "AUDIO SYSTÈME // --%",
                 new Vector2(0f, 13f),
-                new Vector2(260f, 46f),
-                16f,
-                new Color(.84f, .96f, 1f),
-                FontStyles.Bold);
-            MakeButton(
+                new Vector2(150f, 46f),
+                out _settingsAudioLabel);
+            _settingsAudioRing = AddVisionProgressRing(
+                _settingsAudioPill.transform,
+                "Audio progress",
+                new Vector2(-48f, 0f),
+                28f);
+            _settingsVolumeUpButton = MakeButton(
                 _settingsDeckRect,
                 "+",
                 new Vector2(190f, 13f),
                 new Vector2(90f, 52f),
                 () => AdjustMediaVolume(1));
-            MakeButton(
+            ConfigureControlCenterButton(
+                _settingsVolumeUpButton,
+                "+",
+                "SON");
+            _settingsRecenterButton = MakeButton(
                 _settingsDeckRect,
                 "RECENTRER UI",
                 new Vector2(-120f, -57f),
                 new Vector2(225f, 52f),
                 RecenterAllWindows);
-            MakeButton(
+            ConfigureControlCenterButton(
+                _settingsRecenterButton,
+                "◎",
+                "RECENTRER");
+            _settingsCloseAllButton = MakeButton(
                 _settingsDeckRect,
                 "FERMER TOUT",
                 new Vector2(120f, -57f),
                 new Vector2(225f, 52f),
                 CloseAllWindows);
-            _settingsTrackingLabel = MakeText(
+            ConfigureControlCenterButton(
+                _settingsCloseAllButton,
+                "×",
+                "FERMER");
+            _settingsTrackingPill = MakeStatusPill(
                 _settingsDeckRect,
+                "TRACKING",
                 "TRACKING // INITIALISATION",
                 new Vector2(0f, -118f),
-                new Vector2(510f, 38f),
-                15f,
-                new Color(.35f, 1f, .72f),
-                FontStyles.Bold);
-            _settingsLensLabel = MakeText(
+                new Vector2(220f, 46f),
+                out _settingsTrackingLabel);
+            _settingsLensPill = MakeStatusPill(
                 _settingsDeckRect,
-                "BRILLANCE / ASSOMBRISSEMENT : BOUTONS XREAL\n" +
-                "AUCUN FAUX FILTRE SOMBRE",
+                "LENTILLES",
+                "LUM --/-- • EC --/--",
                 new Vector2(0f, -175f),
-                new Vector2(510f, 58f),
-                13f,
-                new Color(.62f, .82f, 1f));
-            MakeText(
+                new Vector2(250f, 46f),
+                out _settingsLensLabel);
+            _settingsFollowLabel = MakeText(
                 _settingsDeckRect,
                 "SUIVI TÊTE = CHOIX MANUEL • PAS DE BASCULE AUTO",
                 new Vector2(0f, -225f),
                 new Vector2(510f, 30f),
                 12f,
                 new Color(.62f, .82f, 1f));
-            MakeButton(
+            _settingsFollowLabel.gameObject.SetActive(false);
+            _settingsLensButtons[0] = MakeButton(
                 _settingsDeckRect,
                 "LUM -",
                 new Vector2(-183f, -280f),
                 new Vector2(112f, 44f),
                 () => AdjustLensControl(false, -1));
-            MakeButton(
+            ConfigureControlCenterButton(
+                _settingsLensButtons[0],
+                "☀−",
+                "LUM");
+            _settingsLensButtons[1] = MakeButton(
                 _settingsDeckRect,
                 "LUM +",
                 new Vector2(-61f, -280f),
                 new Vector2(112f, 44f),
                 () => AdjustLensControl(false, 1));
-            MakeButton(
+            ConfigureControlCenterButton(
+                _settingsLensButtons[1],
+                "☀+",
+                "LUM");
+            _settingsBrightnessRing = AddVisionProgressRing(
+                _settingsLensButtons[1].transform,
+                "Brightness progress",
+                Vector2.zero,
+                104f);
+            _settingsLensButtons[2] = MakeButton(
                 _settingsDeckRect,
                 "EC -",
                 new Vector2(61f, -280f),
                 new Vector2(112f, 44f),
                 () => AdjustLensControl(true, -1));
-            MakeButton(
+            ConfigureControlCenterButton(
+                _settingsLensButtons[2],
+                "◐−",
+                "TEINTE");
+            _settingsLensButtons[3] = MakeButton(
                 _settingsDeckRect,
                 "EC +",
                 new Vector2(183f, -280f),
                 new Vector2(112f, 44f),
                 () => AdjustLensControl(true, 1));
+            ConfigureControlCenterButton(
+                _settingsLensButtons[3],
+                "◐+",
+                "TEINTE");
+            _settingsEcRing = AddVisionProgressRing(
+                _settingsLensButtons[3].transform,
+                "Electrochromic progress",
+                Vector2.zero,
+                104f);
             _settingsMoveHandle = MakeImage(
                 _settingsDeckRect,
                 "Settings gaze move handle",
                 new Vector2(0f, -337f),
-                new Vector2(120f, 9f),
-                new Color(.25f, 1f, .92f, .92f));
+                new Vector2(120f, 7f),
+                new Color(.76f, .78f, .82f, .78f));
             _settingsMoveHandle.raycastTarget = false;
+            AddVisionHandleDot(_settingsMoveHandle, true);
             _settingsMoveHandle.gameObject.SetActive(false);
             _settingsResizeHandle = MakeImage(
                 _settingsDeckRect,
                 "Settings gaze resize handle",
                 new Vector2(-267f, -330f),
-                new Vector2(20f, 20f),
-                new Color(.72f, .36f, 1f, .94f));
-            _settingsResizeHandle.rectTransform.localRotation =
-                Quaternion.Euler(0f, 0f, 45f);
+                new Vector2(24f, 32f),
+                new Color(.76f, .78f, .82f, .78f));
+            ConfigureVisionResizeHandle(_settingsResizeHandle, false);
             _settingsResizeHandle.raycastTarget = false;
             _settingsResizeHandle.gameObject.SetActive(false);
+            _settingsResizeHandleRight = MakeImage(
+                _settingsDeckRect,
+                "Settings gaze resize handle right",
+                new Vector2(267f, -330f),
+                new Vector2(24f, 32f),
+                new Color(.76f, .78f, .82f, .78f));
+            ConfigureVisionResizeHandle(_settingsResizeHandleRight, true);
+            _settingsResizeHandleRight.raycastTarget = false;
+            _settingsResizeHandleRight.gameObject.SetActive(false);
+            _settingsDepthHandle = MakeImage(
+                _settingsDeckRect,
+                "Settings gaze depth handle",
+                new Vector2(58f, -337f),
+                new Vector2(72f, 7f),
+                new Color(.76f, .78f, .82f, .78f));
+            _settingsDepthHandle.raycastTarget = false;
+            AddVisionHandleDot(_settingsDepthHandle, false);
+            _settingsDepthHandle.gameObject.SetActive(false);
             _settingsCloseHandle = MakeText(
                 _settingsDeckRect,
                 "×",
                 new Vector2(267f, 330f),
                 new Vector2(34f, 34f),
-                28f,
-                new Color(.35f, 1f, .94f, .98f),
-                FontStyles.Bold);
+                24f,
+                new Color(.82f, .84f, .88f, .90f));
             _settingsCloseHandle.raycastTarget = false;
             _settingsCloseHandle.gameObject.SetActive(false);
+            LayoutSettingsDeck();
             _settingsHitGraphics.Clear();
             _settingsDeckRect.GetComponentsInChildren(
                 true,
@@ -1818,6 +2667,596 @@ namespace MLOmega.XR.UI
             go.SetActive(false);
             ProbeLensControl();
             RefreshSettingsDeck();
+        }
+
+        private void LayoutSettingsDeck()
+        {
+            if (_settingsDeckRect == null) return;
+            Vector2 size = _settingsDeckRect.sizeDelta;
+            float halfWidth = size.x * .5f;
+            float halfHeight = size.y * .5f;
+            bool landscape = size.x >= size.y;
+
+            // The Canvas includes a narrow interaction gutter. The visible
+            // glass is one continuous rounded surface inside it; handles and
+            // orientation controls therefore sit genuinely outside the frame.
+            const float sideGutter = 30f;
+            const float verticalGutter = 48f;
+            float surfaceLeft = -halfWidth + sideGutter;
+            float surfaceRight = halfWidth - sideGutter;
+            float surfaceTop = halfHeight - verticalGutter;
+            float surfaceBottom = -halfHeight + verticalGutter;
+            float surfaceWidth = surfaceRight - surfaceLeft;
+            float surfaceHeight = surfaceTop - surfaceBottom;
+            bool compact = surfaceWidth < 600f;
+            Vector2 surfaceCenter = new Vector2(
+                0f,
+                (surfaceTop + surfaceBottom) * .5f);
+            LayoutSurface(
+                _settingsWindowRim,
+                surfaceCenter,
+                new Vector2(surfaceWidth + 4f, surfaceHeight + 4f));
+            LayoutSurface(
+                _settingsWindowSurface,
+                surfaceCenter,
+                new Vector2(surfaceWidth, surfaceHeight));
+
+            // One window, two optical densities: the darker header touches the
+            // same outer edges and has a flat lower edge. No nested card and no
+            // separator line.
+            float headerHeight = compact
+                ? Mathf.Clamp(surfaceHeight * .37f, 235f, 282f)
+                : Mathf.Clamp(surfaceHeight * .34f, 176f, 220f);
+            float headerBottom = surfaceTop - headerHeight;
+            LayoutSurface(
+                _settingsHeaderSurface,
+                new Vector2(0f, (surfaceTop + headerBottom) * .5f),
+                new Vector2(surfaceWidth, headerHeight));
+            if (_settingsControlsSurface != null)
+                _settingsControlsSurface.gameObject.SetActive(false);
+            if (_settingsSectionDivider != null)
+                _settingsSectionDivider.gameObject.SetActive(false);
+
+            LayoutButton(
+                _settingsPortraitButton,
+                new Vector2(surfaceLeft + 35f, surfaceTop - 27f),
+                new Vector2(52f, 38f));
+            LayoutButton(
+                _settingsLandscapeButton,
+                new Vector2(surfaceLeft + 95f, surfaceTop - 27f),
+                new Vector2(52f, 38f));
+            SetOrientationSelection(landscape);
+
+            float clockScale = compact ? .88f : 1f;
+            float clockY = surfaceTop - (compact ? 38f : 34f);
+            LayoutScaledText(
+                _settingsTitleLabel, new Vector2(0f, clockY),
+                new Vector2(300f, 52f), clockScale);
+
+            if (compact)
+            {
+                // Responsive portrait/narrow layout: information is reflowed,
+                // never merely shrunk out of the visible glass.
+                float gaugeScale = Mathf.Clamp(
+                    (surfaceWidth - 90f) / 410f,
+                    .72f,
+                    .84f);
+                float gaugeSize = 66f * gaugeScale;
+                float gaugeX = Mathf.Min(102f, surfaceWidth * .22f);
+                float gaugeTopY = surfaceTop - 112f;
+                float gaugeBottomY = surfaceTop - 202f;
+                LayoutGauge(_settingsDevicePill,
+                    new Vector2(-gaugeX, gaugeTopY), gaugeSize);
+                LayoutGauge(_settingsLensPill,
+                    new Vector2(gaugeX, gaugeTopY), gaugeSize);
+                LayoutGauge(_settingsTrackingPill,
+                    new Vector2(-gaugeX, gaugeBottomY), gaugeSize);
+                LayoutGauge(_settingsAudioPill,
+                    new Vector2(gaugeX, gaugeBottomY), gaugeSize);
+
+                float buttonScale = Mathf.Clamp(
+                    (surfaceWidth - 70f) / 430f,
+                    .72f,
+                    .84f);
+                float buttonStep = Mathf.Min(132f, surfaceWidth * .27f);
+                float buttonRowOne = headerBottom - 54f;
+                float buttonRowTwo = buttonRowOne - 96f;
+                LayoutScaledButton(_settingsWindowModeButton,
+                    new Vector2(-buttonStep, buttonRowOne), 78f, buttonScale);
+                LayoutScaledButton(_settingsGesturesButton,
+                    new Vector2(0f, buttonRowOne), 78f, buttonScale);
+                LayoutScaledButton(_settingsRayButton,
+                    new Vector2(buttonStep, buttonRowOne), 78f, buttonScale);
+                LayoutScaledButton(_settingsRecenterButton,
+                    new Vector2(-buttonStep * .5f, buttonRowTwo),
+                    78f, buttonScale);
+                LayoutScaledButton(_settingsCloseAllButton,
+                    new Vector2(buttonStep * .5f, buttonRowTwo),
+                    78f, buttonScale);
+
+                float stepScale = Mathf.Clamp(
+                    (surfaceWidth - 50f) / 475f,
+                    .68f,
+                    .82f);
+                float stepX = Mathf.Min(134f, surfaceWidth * .28f);
+                float stepY = surfaceBottom + 92f;
+                LayoutScaledRoot(_settingsBrightnessControl,
+                    new Vector2(-stepX, stepY), stepScale);
+                LayoutScaledRoot(_settingsEcControl,
+                    new Vector2(0f, stepY), stepScale);
+                LayoutScaledRoot(_settingsVolumeControl,
+                    new Vector2(stepX, stepY), stepScale);
+            }
+            else
+            {
+                float contentScale = Mathf.Clamp(
+                    surfaceWidth / 780f,
+                    .88f,
+                    1.08f);
+                float gaugeY = surfaceTop - 116f;
+                float gaugeStep = Mathf.Min(118f, surfaceWidth * .15f);
+                LayoutGauge(_settingsDevicePill,
+                    new Vector2(-gaugeStep * 1.5f, gaugeY),
+                    66f * contentScale);
+                LayoutGauge(_settingsLensPill,
+                    new Vector2(-gaugeStep * .5f, gaugeY),
+                    66f * contentScale);
+                LayoutGauge(_settingsTrackingPill,
+                    new Vector2(gaugeStep * .5f, gaugeY),
+                    66f * contentScale);
+                LayoutGauge(_settingsAudioPill,
+                    new Vector2(gaugeStep * 1.5f, gaugeY),
+                    66f * contentScale);
+
+                // Five actions share one row when space permits. On a narrow
+                // portrait window, the branch above becomes a deliberate 3+2.
+                float buttonScale = Mathf.Clamp(contentScale, .88f, 1f);
+                float buttonStep = (surfaceWidth - 80f) / 5f;
+                float controlsY = headerBottom - 58f;
+                LayoutScaledButton(_settingsWindowModeButton,
+                    new Vector2(-buttonStep * 2f, controlsY),
+                    78f, buttonScale);
+                LayoutScaledButton(_settingsGesturesButton,
+                    new Vector2(-buttonStep, controlsY),
+                    78f, buttonScale);
+                LayoutScaledButton(_settingsRayButton,
+                    new Vector2(0f, controlsY), 78f, buttonScale);
+                LayoutScaledButton(_settingsRecenterButton,
+                    new Vector2(buttonStep, controlsY),
+                    78f, buttonScale);
+                LayoutScaledButton(_settingsCloseAllButton,
+                    new Vector2(buttonStep * 2f, controlsY),
+                    78f, buttonScale);
+
+                float stepScale = Mathf.Clamp(contentScale, .84f, 1f);
+                float stepX = Mathf.Min(220f, surfaceWidth * .28f);
+                float stepY = Mathf.Lerp(
+                    controlsY,
+                    surfaceBottom,
+                    .56f);
+                LayoutScaledRoot(_settingsBrightnessControl,
+                    new Vector2(-stepX, stepY), stepScale);
+                LayoutScaledRoot(_settingsEcControl,
+                    new Vector2(0f, stepY), stepScale);
+                LayoutScaledRoot(_settingsVolumeControl,
+                    new Vector2(stepX, stepY), stepScale);
+            }
+
+            float lensScale = compact ? .80f : 1f;
+            LayoutScaledText(
+                _settingsLensLabel,
+                new Vector2(0f, surfaceBottom + 20f),
+                new Vector2(370f, 22f), lensScale);
+
+            float bottom = -halfHeight + 17f;
+            LayoutHandle(_settingsMoveHandle, new Vector2(-70f, bottom),
+                new Vector2(104f, 5f));
+            LayoutHandle(_settingsDepthHandle, new Vector2(38f, bottom),
+                new Vector2(36f, 28f));
+            LayoutHandle(_settingsTiltHandle, new Vector2(86f, bottom),
+                new Vector2(36f, 28f));
+            LayoutHandle(_settingsResizeHandle,
+                new Vector2(-halfWidth + 20f, -halfHeight + 22f),
+                Vector2.one * 52f);
+            LayoutHandle(_settingsResizeHandleRight,
+                new Vector2(halfWidth - 20f, -halfHeight + 22f),
+                Vector2.one * 52f);
+            LayoutRect(_settingsCloseHandle,
+                new Vector2(surfaceRight + 14f, surfaceTop + 14f),
+                new Vector2(34f, 34f));
+        }
+
+        private static void LayoutScaledText(
+            TMP_Text label,
+            Vector2 basePosition,
+            Vector2 baseSize,
+            float scale)
+        {
+            if (label == null) return;
+            label.rectTransform.anchoredPosition = basePosition;
+            label.rectTransform.sizeDelta = baseSize;
+            label.rectTransform.localScale = Vector3.one * scale;
+        }
+
+        private static void LayoutSurface(
+            Image surface,
+            Vector2 position,
+            Vector2 size)
+        {
+            if (surface == null) return;
+            surface.rectTransform.anchoredPosition = position;
+            surface.rectTransform.sizeDelta = size;
+            surface.rectTransform.localScale = Vector3.one;
+        }
+
+        private static void LayoutScaledButton(
+            Button button,
+            Vector2 basePosition,
+            float baseSize,
+            float scale)
+        {
+            if (button == null) return;
+            LayoutButton(button, basePosition, Vector2.one * baseSize);
+            RectTransform rect = button.GetComponent<RectTransform>();
+            rect.localScale = Vector3.one * scale;
+            VisionSpatialControlFeedback feedback =
+                button.GetComponent<VisionSpatialControlFeedback>();
+            if (feedback != null) feedback.SetLayoutScale(scale);
+        }
+
+        private static void LayoutScaledRoot(
+            RectTransform root,
+            Vector2 basePosition,
+            float scale)
+        {
+            if (root == null) return;
+            root.anchoredPosition = basePosition;
+            root.localScale = Vector3.one * scale;
+        }
+
+        private void LayoutSettingsDeckV16()
+        {
+            if (_settingsDeckRect == null) return;
+            Vector2 size = _settingsDeckRect.sizeDelta;
+            float halfWidth = size.x * .5f;
+            float halfHeight = size.y * .5f;
+            float gaugeSize = 66f;
+            float gaugeGap = Mathf.Min(118f, (size.x - 170f) / 4f);
+            float controlSize = 78f;
+            float controlGap = Mathf.Min(166f, (size.x - 120f) / 4f);
+            float stepGap = Mathf.Min(220f, (size.x - 160f) / 3f);
+
+            LayoutRect(_settingsTitleLabel,
+                new Vector2(0f, halfHeight - 28f), new Vector2(300f, 52f));
+            float diagnosticsY = halfHeight - 112f;
+            LayoutGauge(_settingsDevicePill,
+                new Vector2(-1.5f * gaugeGap, diagnosticsY), gaugeSize);
+            LayoutGauge(_settingsLensPill,
+                new Vector2(-.5f * gaugeGap, diagnosticsY), gaugeSize);
+            LayoutGauge(_settingsTrackingPill,
+                new Vector2(.5f * gaugeGap, diagnosticsY), gaugeSize);
+            LayoutGauge(_settingsAudioPill,
+                new Vector2(1.5f * gaugeGap, diagnosticsY), gaugeSize);
+
+            float controlsY = halfHeight - 235f;
+            LayoutButton(_settingsWindowModeButton,
+                new Vector2(-1.5f * controlGap, controlsY),
+                Vector2.one * controlSize);
+            LayoutButton(_settingsGesturesButton,
+                new Vector2(-.5f * controlGap, controlsY),
+                Vector2.one * controlSize);
+            LayoutButton(_settingsRayButton,
+                new Vector2(.5f * controlGap, controlsY),
+                Vector2.one * controlSize);
+            LayoutButton(_settingsRecenterButton,
+                new Vector2(1.5f * controlGap, controlsY),
+                Vector2.one * controlSize);
+
+            float stepY = controlsY - 175f;
+            LayoutRoot(_settingsBrightnessControl,
+                new Vector2(-stepGap, stepY));
+            LayoutRoot(_settingsEcControl, new Vector2(0f, stepY));
+            LayoutRoot(_settingsVolumeControl,
+                new Vector2(stepGap, stepY));
+            LayoutRect(_settingsLensLabel,
+                new Vector2(0f, stepY - 90f), new Vector2(370f, 22f));
+            LayoutButton(_settingsCloseAllButton,
+                new Vector2(halfWidth - 58f, stepY + 25f),
+                Vector2.one * 58f);
+
+            float bottom = -halfHeight + 10f;
+            LayoutHandle(_settingsMoveHandle, new Vector2(-48f, bottom),
+                new Vector2(104f, 5f));
+            LayoutHandle(_settingsDepthHandle, new Vector2(82f, bottom),
+                new Vector2(42f, 28f));
+            LayoutHandle(_settingsResizeHandle,
+                new Vector2(-halfWidth + 25f, -halfHeight + 25f),
+                Vector2.one * 52f);
+            LayoutHandle(_settingsResizeHandleRight,
+                new Vector2(halfWidth - 25f, -halfHeight + 25f),
+                Vector2.one * 52f);
+            LayoutRect(_settingsCloseHandle,
+                new Vector2(halfWidth - 17f, halfHeight - 17f),
+                new Vector2(34f, 34f));
+        }
+
+        private static void LayoutRoot(RectTransform root, Vector2 position)
+        {
+            if (root == null) return;
+            root.anchoredPosition = position;
+        }
+
+        private void LayoutSettingsDeckV15()
+        {
+            if (_settingsDeckRect == null) return;
+            Vector2 size = _settingsDeckRect.sizeDelta;
+            float halfWidth = size.x * .5f;
+            float halfHeight = size.y * .5f;
+            bool landscape = size.x >= size.y;
+            float controlSize = landscape ? 78f : 70f;
+            float gaugeSize = landscape ? 92f : 82f;
+            float gaugeGap = landscape
+                ? Mathf.Min(145f, (size.x - 230f) / 3f)
+                : Mathf.Min(122f, (size.x - 180f) / 3f);
+            float controlGap = landscape
+                ? Mathf.Min(170f, (size.x - 160f) / 4f)
+                : Mathf.Min(122f, (size.x - 90f) / 4f);
+
+            LayoutRect(_settingsTitleLabel,
+                new Vector2(0f, halfHeight - 28f), new Vector2(300f, 52f));
+            float gaugeY = halfHeight - 120f;
+            LayoutGauge(_settingsDevicePill,
+                new Vector2(-gaugeGap, gaugeY), gaugeSize);
+            LayoutGauge(_settingsLensPill, new Vector2(0f, gaugeY), gaugeSize);
+            LayoutGauge(_settingsTrackingPill,
+                new Vector2(gaugeGap, gaugeY), gaugeSize);
+
+            float controlsY = halfHeight - (landscape ? 245f : 235f);
+            LayoutButton(_settingsWindowModeButton,
+                new Vector2(-1.5f * controlGap, controlsY),
+                Vector2.one * controlSize);
+            LayoutButton(_settingsGesturesButton,
+                new Vector2(-.5f * controlGap, controlsY),
+                Vector2.one * controlSize);
+            LayoutButton(_settingsRayButton,
+                new Vector2(.5f * controlGap, controlsY),
+                Vector2.one * controlSize);
+            LayoutButton(_settingsRecenterButton,
+                new Vector2(1.5f * controlGap, controlsY),
+                Vector2.one * controlSize);
+
+            float lensY = controlsY - (landscape ? 132f : 125f);
+            for (int i = 0; i < _settingsLensButtons.Length; i++)
+                LayoutButton(
+                    _settingsLensButtons[i],
+                    new Vector2((i - 1.5f) * controlGap, lensY),
+                    Vector2.one * controlSize);
+            LayoutRect(_settingsLensLabel,
+                new Vector2(0f, lensY - 72f), new Vector2(380f, 22f));
+
+            float audioY = lensY - (landscape ? 150f : 145f);
+            LayoutButton(_settingsVolumeDownButton,
+                new Vector2(-1.45f * controlGap, audioY),
+                Vector2.one * (controlSize - 8f));
+            LayoutGauge(_settingsAudioPill,
+                new Vector2(-.48f * controlGap, audioY),
+                controlSize - 4f);
+            LayoutButton(_settingsVolumeUpButton,
+                new Vector2(.48f * controlGap, audioY),
+                Vector2.one * (controlSize - 8f));
+            LayoutButton(_settingsCloseAllButton,
+                new Vector2(1.45f * controlGap, audioY),
+                Vector2.one * (controlSize - 8f));
+
+            float bottom = -halfHeight + 10f;
+            LayoutHandle(_settingsMoveHandle, new Vector2(-48f, bottom),
+                new Vector2(104f, 7f));
+            LayoutHandle(_settingsDepthHandle, new Vector2(82f, bottom),
+                Vector2.one * 34f);
+            LayoutHandle(_settingsResizeHandle,
+                new Vector2(-halfWidth + 23f, -halfHeight + 23f),
+                Vector2.one * 48f);
+            LayoutHandle(_settingsResizeHandleRight,
+                new Vector2(halfWidth - 23f, -halfHeight + 23f),
+                Vector2.one * 48f);
+            LayoutRect(_settingsCloseHandle,
+                new Vector2(halfWidth - 17f, halfHeight - 17f),
+                new Vector2(34f, 34f));
+        }
+
+        private static void LayoutGauge(Image gauge, Vector2 position, float size)
+        {
+            if (gauge == null) return;
+            gauge.rectTransform.anchoredPosition = position;
+            // Preserve the authored circular proportions; only scale as a unit
+            // so its ring, icon, value and fine caption stay aligned.
+            float authored = Mathf.Max(1f, gauge.rectTransform.sizeDelta.x);
+            gauge.rectTransform.localScale = Vector3.one * (size / authored);
+        }
+
+        private void LayoutSettingsDeckLegacy()
+        {
+            if (_settingsDeckRect == null) return;
+            Vector2 size = _settingsDeckRect.sizeDelta;
+            float halfWidth = size.x * .5f;
+            float halfHeight = size.y * .5f;
+            bool landscape = size.x >= size.y;
+
+            if (landscape)
+            {
+                LayoutRect(_settingsTitleLabel, new Vector2(0f, halfHeight - 14f),
+                    new Vector2(240f, 18f));
+                LayoutStatusPill(_settingsDevicePill,
+                    new Vector2(-260f, halfHeight - 49f), new Vector2(250f, 46f));
+                LayoutStatusPill(_settingsTrackingPill,
+                    new Vector2(0f, halfHeight - 49f), new Vector2(220f, 46f));
+                LayoutStatusPill(_settingsLensPill,
+                    new Vector2(260f, halfHeight - 49f), new Vector2(250f, 46f));
+
+                float firstRow = halfHeight - 145f;
+                float secondRow = halfHeight - 260f;
+                float thirdRow = halfHeight - 386f;
+                float actionSize = 92f;
+                LayoutButton(_settingsWindowModeButton,
+                    new Vector2(-270f, firstRow), Vector2.one * actionSize);
+                LayoutButton(_settingsGesturesButton,
+                    new Vector2(-90f, firstRow), Vector2.one * actionSize);
+                LayoutButton(_settingsRayButton,
+                    new Vector2(90f, firstRow), Vector2.one * actionSize);
+                LayoutButton(_settingsRecenterButton,
+                    new Vector2(270f, firstRow), Vector2.one * actionSize);
+                LayoutButton(_settingsVolumeDownButton,
+                    new Vector2(-150f, secondRow), Vector2.one * 86f);
+                LayoutStatusPill(_settingsAudioPill,
+                    new Vector2(0f, secondRow), new Vector2(130f, 48f));
+                LayoutButton(_settingsVolumeUpButton,
+                    new Vector2(150f, secondRow), Vector2.one * 86f);
+                LayoutButton(_settingsCloseAllButton,
+                    new Vector2(300f, secondRow), Vector2.one * 86f);
+                for (int i = 0; i < _settingsLensButtons.Length; i++)
+                    LayoutButton(
+                        _settingsLensButtons[i],
+                        new Vector2((i - 1.5f) * 160f, thirdRow),
+                        Vector2.one * 88f);
+            }
+            else
+            {
+                LayoutRect(_settingsTitleLabel, new Vector2(0f, halfHeight - 14f),
+                    new Vector2(240f, 18f));
+                LayoutStatusPill(_settingsDevicePill,
+                    new Vector2(-125f, halfHeight - 49f), new Vector2(235f, 44f));
+                LayoutStatusPill(_settingsTrackingPill,
+                    new Vector2(130f, halfHeight - 49f), new Vector2(205f, 44f));
+                LayoutStatusPill(_settingsLensPill,
+                    new Vector2(0f, halfHeight - 100f), new Vector2(250f, 42f));
+
+                float rowOne = halfHeight - 190f;
+                float rowTwo = halfHeight - 305f;
+                float rowThree = halfHeight - 425f;
+                float rowFour = halfHeight - 545f;
+                LayoutButton(_settingsWindowModeButton,
+                    new Vector2(-145f, rowOne), Vector2.one * 90f);
+                LayoutButton(_settingsGesturesButton,
+                    new Vector2(0f, rowOne), Vector2.one * 90f);
+                LayoutButton(_settingsRayButton,
+                    new Vector2(145f, rowOne), Vector2.one * 90f);
+                LayoutButton(_settingsVolumeDownButton,
+                    new Vector2(-145f, rowTwo), Vector2.one * 86f);
+                LayoutStatusPill(_settingsAudioPill,
+                    new Vector2(0f, rowTwo), new Vector2(120f, 46f));
+                LayoutButton(_settingsVolumeUpButton,
+                    new Vector2(145f, rowTwo), Vector2.one * 86f);
+                LayoutButton(_settingsRecenterButton,
+                    new Vector2(-75f, rowThree), Vector2.one * 88f);
+                LayoutButton(_settingsCloseAllButton,
+                    new Vector2(75f, rowThree), Vector2.one * 88f);
+                for (int i = 0; i < _settingsLensButtons.Length; i++)
+                    LayoutButton(
+                        _settingsLensButtons[i],
+                        new Vector2((i - 1.5f) * 120f, rowFour),
+                        Vector2.one * 84f);
+            }
+
+            float bottom = -halfHeight + 10f;
+            LayoutHandle(_settingsMoveHandle, new Vector2(-58f, bottom),
+                new Vector2(118f, 7f));
+            LayoutHandle(_settingsDepthHandle, new Vector2(58f, bottom),
+                new Vector2(72f, 7f));
+            LayoutHandle(_settingsResizeHandle,
+                new Vector2(-halfWidth + 13f, -halfHeight + 13f),
+                new Vector2(24f, 32f));
+            LayoutHandle(_settingsResizeHandleRight,
+                new Vector2(halfWidth - 13f, -halfHeight + 13f),
+                new Vector2(24f, 32f));
+            LayoutRect(_settingsCloseHandle,
+                new Vector2(halfWidth - 17f, halfHeight - 17f),
+                new Vector2(34f, 34f));
+        }
+
+        private static void LayoutRect(
+            TMP_Text label,
+            Vector2 position,
+            Vector2 size)
+        {
+            if (label == null) return;
+            RectTransform rect = label.rectTransform;
+            rect.anchoredPosition = position;
+            rect.sizeDelta = size;
+        }
+
+        private static void LayoutStatusPill(
+            Image pill,
+            Vector2 position,
+            Vector2 size)
+        {
+            if (pill == null) return;
+            RectTransform rect = pill.rectTransform;
+            rect.anchoredPosition = position;
+            rect.sizeDelta = size;
+            TMP_Text[] labels = pill.GetComponentsInChildren<TMP_Text>(true);
+            for (int i = 0; i < labels.Length; i++)
+            {
+                RectTransform labelRect = labels[i].rectTransform;
+                labelRect.sizeDelta = new Vector2(
+                    Mathf.Max(40f, size.x - 16f),
+                    labelRect.sizeDelta.y);
+            }
+        }
+
+        private static void LayoutHandle(
+            Image image,
+            Vector2 position,
+            Vector2 size)
+        {
+            if (image == null) return;
+            image.rectTransform.anchoredPosition = position;
+            image.rectTransform.sizeDelta = size;
+        }
+
+        private static void LayoutButton(
+            Button button,
+            Vector2 position,
+            Vector2 size)
+        {
+            if (button == null) return;
+            RectTransform rect = button.GetComponent<RectTransform>();
+            rect.anchoredPosition = position;
+            rect.sizeDelta = size;
+            BoxCollider collider = button.GetComponent<BoxCollider>();
+            if (collider != null)
+                collider.size = new Vector3(size.x, size.y, 14f);
+            TMP_Text label = button.GetComponentInChildren<TMP_Text>();
+            if (label != null)
+            {
+                if (label.gameObject.name == "Vision caption")
+                {
+                    label.rectTransform.anchoredPosition = new Vector2(
+                        0f,
+                        -size.y * .5f - 15f);
+                    label.rectTransform.sizeDelta = new Vector2(
+                        Mathf.Max(112f, size.x + 38f),
+                        22f);
+                }
+                else
+                    label.rectTransform.sizeDelta = size - new Vector2(12f, 8f);
+            }
+
+            const string facePrefix = "Button ";
+            string suffix = button.gameObject.name.StartsWith(facePrefix,
+                    StringComparison.Ordinal)
+                ? button.gameObject.name.Substring(facePrefix.Length)
+                : button.gameObject.name;
+            Transform depth = button.transform.parent.Find(
+                "Button depth " + suffix);
+            if (depth == null) return;
+            depth.localPosition = new Vector3(
+                position.x,
+                position.y,
+                depth.localPosition.z);
+            depth.localScale = new Vector3(
+                size.x,
+                size.y,
+                depth.localScale.z);
         }
 
         private void ToggleSettingsDeck()
@@ -1829,6 +3268,34 @@ namespace MLOmega.XR.UI
                 OpenSettingsDeck(true);
             else
                 CloseWindow(DeckWindowKind.Settings);
+        }
+
+        private void SetSettingsOrientation(bool landscape)
+        {
+            if (_settingsDeckRect == null) return;
+            Vector2 target = landscape
+                ? new Vector2(840f, 620f)
+                : new Vector2(620f, 840f);
+            _settingsDeckRect.sizeDelta = target;
+            _deckManipulationStartSize = target;
+            _deckManipulationTargetSize = target;
+            SaveSettingsSize(target);
+            LayoutSettingsDeck();
+            ShowGestureToast(
+                landscape ? "FENETRE // PAYSAGE" : "FENETRE // PORTRAIT",
+                new Color(.55f, .78f, 1f));
+        }
+
+        private void SetOrientationSelection(bool landscape)
+        {
+            SetControlCenterState(
+                _settingsPortraitButton,
+                !landscape,
+                VisionPressed);
+            SetControlCenterState(
+                _settingsLandscapeButton,
+                landscape,
+                VisionPressed);
         }
 
         private void OpenSettingsDeck(bool recenter)
@@ -1844,6 +3311,27 @@ namespace MLOmega.XR.UI
         private void ApplyPreferredSettingsPose()
         {
             if (_settingsDeckRect == null || _camera == null) return;
+            float savedWidth = PlayerPrefs.GetFloat(
+                SettingsLayoutPrefix + "width",
+                840f);
+            float savedHeight = PlayerPrefs.GetFloat(
+                SettingsLayoutPrefix + "height",
+                620f);
+            bool landscape = savedWidth >= savedHeight;
+            if (landscape)
+            {
+                savedWidth = Mathf.Clamp(savedWidth, 680f, 1120f);
+                savedHeight = Mathf.Clamp(savedHeight, 520f, 820f);
+                savedWidth = Mathf.Max(savedWidth, savedHeight + 80f);
+            }
+            else
+            {
+                savedWidth = Mathf.Clamp(savedWidth, 500f, 760f);
+                savedHeight = Mathf.Clamp(savedHeight, 700f, 1120f);
+                savedHeight = Mathf.Max(savedHeight, savedWidth + 80f);
+            }
+            _settingsDeckRect.sizeDelta = new Vector2(savedWidth, savedHeight);
+            LayoutSettingsDeck();
             Vector3 local = PlayerPrefs.HasKey(SettingsLayoutPrefix + "x")
                 ? new Vector3(
                     PlayerPrefs.GetFloat(SettingsLayoutPrefix + "x"),
@@ -1854,7 +3342,9 @@ namespace MLOmega.XR.UI
             Vector3 forward = (position - _camera.transform.position).normalized;
             _settingsDeckRect.SetPositionAndRotation(
                 position,
-                Quaternion.LookRotation(forward, Vector3.up));
+                BuildWindowRotation(
+                    forward,
+                    PlayerPrefs.GetFloat(SettingsLayoutPrefix + "tilt", 0f)));
             float scale = PlayerPrefs.GetFloat(
                 SettingsLayoutPrefix + "scale",
                 .00062f);
@@ -1941,10 +3431,13 @@ namespace MLOmega.XR.UI
                     _spatialDeckRect.position,
                     _spatialDeckRect.localScale.x);
             if (_settingsDeck != null && _settingsDeck.gameObject.activeSelf)
+            {
                 SaveWindowLayout(
                     DeckWindowKind.Settings,
                     _settingsDeckRect.position,
                     _settingsDeckRect.localScale.x);
+                SaveSettingsSize(_settingsDeckRect.sizeDelta);
+            }
         }
 
         private void RecenterAllWindows()
@@ -1982,12 +3475,9 @@ namespace MLOmega.XR.UI
             if (window == null || _camera == null) return;
             Vector3 position = _camera.transform.TransformPoint(local);
             Vector3 forward = (position - _camera.transform.position).normalized;
-            Vector3 up = Mathf.Abs(Vector3.Dot(forward, Vector3.up)) > .96f
-                ? _camera.transform.up
-                : Vector3.up;
             window.SetPositionAndRotation(
                 position,
-                Quaternion.LookRotation(forward, up));
+                BuildWindowRotation(forward, 0f));
             _deckManipulationSmoothing = false;
         }
 
@@ -2021,7 +3511,43 @@ namespace MLOmega.XR.UI
             Debug.Log("[XrealLensControl] probe=" + _lensControlState);
             if (_settingsLensLabel != null)
                 _settingsLensLabel.text =
-                    XrealPrivateLensControl.HumanStatus(_lensControlState);
+                    CompactLensStatus(_lensControlState);
+            UpdateLensProgressRings();
+        }
+
+        private static string CompactLensStatus(string state) =>
+            XrealPrivateLensControl.HumanStatus(state).Replace(
+                "LENTILLES // ",
+                string.Empty);
+
+        private void UpdateLensProgressRings()
+        {
+            int brightness = ReadLensMetric(_lensControlState, "b");
+            int brightnessCount = ReadLensMetric(_lensControlState, "bc");
+            int ec = ReadLensMetric(_lensControlState, "ec");
+            int ecCount = ReadLensMetric(_lensControlState, "ecc");
+            if (_settingsBrightnessRing != null)
+                _settingsBrightnessRing.fillAmount = brightness < 0
+                    ? 0f
+                    : Mathf.Clamp01((brightness + 1f) /
+                        Mathf.Max(1f, brightnessCount));
+            if (_settingsEcRing != null)
+                _settingsEcRing.fillAmount = ec < 0
+                    ? 0f
+                    : Mathf.Clamp01((ec + 1f) / Mathf.Max(1f, ecCount));
+        }
+
+        private static int ReadLensMetric(string state, string key)
+        {
+            if (string.IsNullOrEmpty(state)) return -1;
+            string prefix = key + "=";
+            string[] parts = state.Split('|');
+            for (int i = 0; i < parts.Length; i++)
+                if (
+                    parts[i].StartsWith(prefix, StringComparison.Ordinal) &&
+                    int.TryParse(parts[i].Substring(prefix.Length), out int value))
+                    return value;
+            return -1;
         }
 
         private void AdjustLensControl(bool electrochromic, int direction)
@@ -2038,7 +3564,8 @@ namespace MLOmega.XR.UI
                     StringComparison.Ordinal);
                 if (_settingsLensLabel != null)
                     _settingsLensLabel.text =
-                        XrealPrivateLensControl.HumanStatus(_lensControlState);
+                        CompactLensStatus(_lensControlState);
+                UpdateLensProgressRings();
                 ShowGestureToast(
                     _lensControlValidated
                         ? "LENTILLES PRETES // REPETER POUR CHANGER"
@@ -2055,7 +3582,8 @@ namespace MLOmega.XR.UI
             Debug.Log("[XrealLensControl] change=" + _lensControlState);
             if (_settingsLensLabel != null)
                 _settingsLensLabel.text =
-                    XrealPrivateLensControl.HumanStatus(_lensControlState);
+                    CompactLensStatus(_lensControlState);
+            UpdateLensProgressRings();
             bool succeeded =
                 XrealPrivateLensControl.IsSuccess(_lensControlState);
             ShowGestureToast(
@@ -2140,6 +3668,96 @@ namespace MLOmega.XR.UI
                 return;
             _nextSettingsTelemetryAt = Time.unscaledTime + 1f;
             ResolveInteractionSettings();
+
+            if (_settingsTitleLabel != null)
+                _settingsTitleLabel.text = DateTime.Now.ToString("HH:mm");
+
+            float batteryLevel = SystemInfo.batteryLevel;
+            int batteryPercent = batteryLevel < 0f
+                ? -1
+                : Mathf.RoundToInt(batteryLevel * 100f);
+            if (_settingsDeviceLabel != null)
+                _settingsDeviceLabel.text = batteryPercent < 0
+                    ? "--"
+                    : batteryPercent + "%";
+            if (_settingsBatteryRing != null)
+            {
+                _settingsBatteryRing.fillAmount = batteryLevel < 0f
+                    ? 0f
+                    : Mathf.Clamp01(batteryLevel);
+                _settingsBatteryRing.color = batteryLevel >= 0f && batteryLevel < .2f
+                    ? new Color(1f, .42f, .32f, .96f)
+                    : new Color(.55f, .86f, 1f, .96f);
+            }
+
+            string temperature =
+                _interactionSettings?.GlassesTemperatureStatus ??
+                "XREAL // TEMP --";
+            string foldedTemperature = temperature.ToUpperInvariant();
+            bool hot = foldedTemperature.Contains("ELEV") ||
+                foldedTemperature.Contains("HOT") ||
+                foldedTemperature.Contains("CHAUD");
+            bool warm = foldedTemperature.Contains("TIEDE") ||
+                foldedTemperature.Contains("WARM");
+            bool unknown = foldedTemperature.EndsWith("--");
+            Color temperatureColor = hot
+                ? new Color(1f, .36f, .30f, .98f)
+                : (warm
+                    ? new Color(1f, .67f, .22f, .98f)
+                    : new Color(.35f, 1f, .72f, .96f));
+            if (_settingsTemperatureLabel != null)
+            {
+                _settingsTemperatureLabel.text = unknown
+                    ? "--"
+                    : (hot ? "CHAUD" : (warm ? "TIEDE" : "OK"));
+                _settingsTemperatureLabel.color = temperatureColor;
+            }
+            if (_settingsTemperatureRing != null)
+            {
+                _settingsTemperatureRing.fillAmount = unknown ? 0f : 1f;
+                _settingsTemperatureRing.color = temperatureColor;
+            }
+
+            string tracking = _interactionSettings?.TrackingStatus ??
+                "TRACKING // INDISPONIBLE";
+            bool trackingOk = tracking.EndsWith("OK", StringComparison.Ordinal);
+            if (_settingsTrackingLabel != null)
+            {
+                _settingsTrackingLabel.text = trackingOk ? "OK" : "BAD";
+                _settingsTrackingLabel.color = trackingOk
+                    ? new Color(.35f, 1f, .72f)
+                    : new Color(1f, .72f, .24f);
+            }
+            if (_settingsTrackingRing != null)
+            {
+                _settingsTrackingRing.fillAmount = 1f;
+                _settingsTrackingRing.color = trackingOk
+                    ? new Color(.35f, 1f, .72f, .96f)
+                    : new Color(1f, .67f, .22f, .96f);
+            }
+
+            int volume = ReadMediaVolumePercent();
+            if (_settingsAudioLabel != null)
+                _settingsAudioLabel.text = volume < 0 ? "--" : volume + "%";
+            if (_settingsAudioRing != null)
+                _settingsAudioRing.fillAmount = volume < 0
+                    ? 0f
+                    : Mathf.Clamp01(volume / 100f);
+            if (_settingsVolumeControlRing != null)
+                _settingsVolumeControlRing.fillAmount = volume < 0
+                    ? 0f
+                    : Mathf.Clamp01(volume / 100f);
+        }
+
+        private void UpdateSettingsTelemetryLegacy()
+        {
+            if (
+                _settingsDeck == null ||
+                !_settingsDeck.gameObject.activeSelf ||
+                Time.unscaledTime < _nextSettingsTelemetryAt)
+                return;
+            _nextSettingsTelemetryAt = Time.unscaledTime + 1f;
+            ResolveInteractionSettings();
             float batteryLevel = SystemInfo.batteryLevel;
             string battery = batteryLevel < 0f
                 ? "--"
@@ -2149,42 +3767,119 @@ namespace MLOmega.XR.UI
             if (_settingsDeviceLabel != null)
                 _settingsDeviceLabel.text =
                     DateTime.Now.ToString("HH:mm") +
-                    " • TEL " + battery + "% • " + temperature;
+                    "  •  " + battery + "%  •  " +
+                    temperature.Replace("XREAL // ", string.Empty);
+            if (_settingsBatteryRing != null)
+                _settingsBatteryRing.fillAmount = batteryLevel < 0f
+                    ? 0f
+                    : Mathf.Clamp01(batteryLevel);
+            if (_settingsDevicePill != null)
+                _settingsDevicePill.color =
+                    temperature.Contains("ÉLEVÉE", StringComparison.Ordinal) ||
+                    temperature.Contains("TIÈDE", StringComparison.Ordinal)
+                        ? new Color(.42f, .25f, .08f, .78f)
+                        : new Color(.18f, .19f, .22f, .64f);
             int volume = ReadMediaVolumePercent();
             if (_settingsAudioLabel != null)
                 _settingsAudioLabel.text = volume < 0
-                    ? "AUDIO SYSTÈME // --%"
-                    : "AUDIO SYSTÈME // " + volume + "%";
+                    ? "--%"
+                    : volume + "%";
+            if (_settingsAudioRing != null)
+                _settingsAudioRing.fillAmount = volume < 0
+                    ? 0f
+                    : Mathf.Clamp01(volume / 100f);
             if (_settingsTrackingLabel != null)
             {
                 string tracking = _interactionSettings?.TrackingStatus ??
                     "TRACKING // INDISPONIBLE";
-                _settingsTrackingLabel.text = tracking;
+                bool trackingOk = tracking.EndsWith("OK");
+                _settingsTrackingLabel.text = tracking.Replace(
+                    "TRACKING // ",
+                    string.Empty);
                 _settingsTrackingLabel.color = tracking.EndsWith("OK")
                     ? new Color(.35f, 1f, .72f)
                     : new Color(1f, .72f, .24f);
+                if (_settingsTrackingPill != null)
+                    _settingsTrackingPill.color = trackingOk
+                        ? new Color(.08f, .32f, .22f, .72f)
+                        : new Color(.42f, .25f, .08f, .78f);
             }
         }
 
         private void RefreshSettingsDeck()
         {
             ResolveInteractionSettings();
+            bool standby =
+                _interactionSettings != null &&
+                _interactionSettings.IsGestureStandby;
+            bool rayVisible =
+                _interactionSettings != null &&
+                _interactionSettings.IsRayVisible;
             if (_settingsGestureLabel != null)
-                _settingsGestureLabel.text =
-                    _interactionSettings != null &&
-                    _interactionSettings.IsGestureStandby
-                        ? "GESTES // BASSE • 1 FPS"
-                        : "GESTES // HAUTE • 25 FPS";
+                _settingsGestureLabel.text = standby ? "Gestes eco" : "Gestes";
             if (_settingsRayLabel != null)
-                _settingsRayLabel.text =
-                    _interactionSettings != null &&
-                    _interactionSettings.IsRayVisible
-                        ? "RAYON EYE // ACTIF"
-                        : "RAYON EYE // COUPÉ";
+                _settingsRayLabel.text = "Curseur";
             if (_settingsWindowModeLabel != null)
                 _settingsWindowModeLabel.text = _headFollowWindows
-                    ? "FENÊTRES // SUIVI TÊTE"
-                    : "FENÊTRES // ANCRAGE 6DOF";
+                    ? "Suivi tete"
+                    : "Ancrage";
+            SetControlCenterState(
+                _settingsGesturesButton,
+                true,
+                standby
+                    ? new Color(1f, .65f, .22f, .96f)
+                    : VisionPressed);
+            SetControlCenterState(
+                _settingsRayButton,
+                rayVisible,
+                VisionPressed);
+            SetControlCenterState(
+                _settingsWindowModeButton,
+                true,
+                _headFollowWindows
+                    ? new Color(1f, .65f, .22f, .96f)
+                    : VisionPressed);
+            _nextSettingsTelemetryAt = 0f;
+            UpdateSettingsTelemetry();
+        }
+
+        private void RefreshSettingsDeckLegacy()
+        {
+            ResolveInteractionSettings();
+            bool standby =
+                _interactionSettings != null &&
+                _interactionSettings.IsGestureStandby;
+            bool rayVisible =
+                _interactionSettings != null &&
+                _interactionSettings.IsRayVisible;
+            if (_settingsGestureLabel != null)
+                _settingsGestureLabel.text = standby
+                    ? "✋\n<size=38%>BASSE 1 FPS</size>"
+                    : "✋\n<size=38%>GESTES 25 FPS</size>";
+            if (_settingsRayLabel != null)
+                _settingsRayLabel.text = rayVisible
+                    ? "◉\n<size=38%>RAYON ACTIF</size>"
+                    : "◉\n<size=38%>RAYON COUPÉ</size>";
+            if (_settingsWindowModeLabel != null)
+                _settingsWindowModeLabel.text = _headFollowWindows
+                    ? "⌖\n<size=38%>SUIVI TÊTE</size>"
+                    : "⌖\n<size=38%>ANCRAGE 6DOF</size>";
+            SetControlCenterState(
+                _settingsGesturesButton,
+                true,
+                standby
+                    ? new Color(1f, .65f, .22f, .96f)
+                    : VisionPressed);
+            SetControlCenterState(
+                _settingsRayButton,
+                rayVisible,
+                VisionPressed);
+            SetControlCenterState(
+                _settingsWindowModeButton,
+                true,
+                _headFollowWindows
+                    ? new Color(1f, .65f, .22f, .96f)
+                    : VisionPressed);
             _nextSettingsTelemetryAt = 0f;
             UpdateSettingsTelemetry();
         }
@@ -2211,19 +3906,22 @@ namespace MLOmega.XR.UI
             _windowDock.renderMode = RenderMode.WorldSpace;
             _windowDock.worldCamera = _camera;
             _windowDock.sortingOrder = 130;
+            _windowDockGroup = go.AddComponent<CanvasGroup>();
             go.AddComponent<GraphicRaycaster>();
             _windowDockRect = go.GetComponent<RectTransform>();
-            _windowDockRect.sizeDelta = new Vector2(300f, 138f);
+            _windowDockRect.sizeDelta = new Vector2(320f, 170f);
             _windowDockRect.localScale = Vector3.one * .00072f;
             MakeDockOrbButton(
                 _windowDockRect,
-                "◉\n<size=42%>PUPITRE</size>",
-                new Vector2(-72f, 0f),
+                VisionIconKind.Workspace,
+                "PUPITRE",
+                new Vector2(-76f, 15f),
                 () => OpenWindowFromDock(DeckWindowKind.Workspace));
             MakeDockOrbButton(
                 _windowDockRect,
-                "⚙\n<size=42%>RÉGLAGES</size>",
-                new Vector2(72f, 0f),
+                VisionIconKind.Settings,
+                "RÉGLAGES",
+                new Vector2(76f, 15f),
                 () => OpenWindowFromDock(DeckWindowKind.Settings));
             go.SetActive(false);
         }
@@ -2237,12 +3935,33 @@ namespace MLOmega.XR.UI
                 ? _camera.transform.up
                 : Vector3.up;
             _windowDockRect.SetPositionAndRotation(
-                _camera.transform.position + forward * .82f,
+                _camera.transform.position + forward * 1.08f,
                 Quaternion.LookRotation(forward, up));
             _windowDock.gameObject.SetActive(true);
+            _windowDockShownAt = Time.unscaledTime;
+            _windowDockRect.localScale = Vector3.one * .00072f;
+            if (_windowDockGroup != null) _windowDockGroup.alpha = 0f;
             ShowGestureToast(
                 "MENU PRINCIPAL // DEUX PAUMES",
                 new Color(.35f, 1f, .94f));
+        }
+
+        private void UpdateWindowDockAnimation()
+        {
+            if (
+                _windowDock == null ||
+                !_windowDock.gameObject.activeSelf ||
+                _windowDockRect == null ||
+                _windowDockShownAt < 0f)
+                return;
+            float progress = Mathf.SmoothStep(
+                0f,
+                1f,
+                Mathf.Clamp01((Time.unscaledTime - _windowDockShownAt) / .18f));
+            _windowDockRect.localScale = Vector3.one *
+                Mathf.Lerp(.00072f, .00078f, progress);
+            if (_windowDockGroup != null) _windowDockGroup.alpha = progress;
+            if (progress >= 1f) _windowDockShownAt = -1f;
         }
 
         private void OpenWindowFromDock(DeckWindowKind window)
@@ -2261,35 +3980,50 @@ namespace MLOmega.XR.UI
 
         private static Button MakeDockOrbButton(
             Transform parent,
+            VisionIconKind icon,
             string label,
             Vector2 position,
             UnityEngine.Events.UnityAction action)
         {
+            Image rim = MakeImage(
+                parent,
+                "Dock rim " + label,
+                position,
+                new Vector2(112f, 112f),
+                new Color(.94f, .96f, 1f, .16f));
+            rim.sprite = GetVisionCircleSprite();
+            rim.type = Image.Type.Simple;
+            rim.raycastTarget = false;
             Image hit = MakeImage(
                 parent,
                 "Dock orb " + label,
                 position,
-                new Vector2(112f, 112f),
-                new Color(.02f, .12f, .18f, .08f));
+                new Vector2(98f, 98f),
+                VisionGlass);
+            hit.sprite = GetVisionCircleSprite();
+            hit.type = Image.Type.Simple;
             Button button = hit.gameObject.AddComponent<Button>();
+            button.transition = Selectable.Transition.None;
             var collider = hit.gameObject.AddComponent<BoxCollider>();
             collider.size = new Vector3(112f, 112f, 18f);
             button.onClick.AddListener(action);
+            BuildVisionIcon(hit.transform, icon, Vector2.zero, 1.25f);
             MakeText(
-                hit.transform,
-                "●",
-                Vector2.zero,
-                new Vector2(108f, 108f),
-                82f,
-                new Color(.05f, .32f, .38f, .94f));
-            MakeText(
-                hit.transform,
+                parent,
                 label,
-                Vector2.zero,
-                new Vector2(102f, 88f),
-                25f,
-                Color.white,
+                position + new Vector2(0f, -68f),
+                new Vector2(124f, 24f),
+                14f,
+                VisionSecondary,
                 FontStyles.Bold);
+            var feedback = hit.gameObject.AddComponent<
+                VisionSpatialControlFeedback>();
+            feedback.Configure(
+                hit,
+                VisionGlass,
+                VisionGlassHover,
+                VisionPressed,
+                VisionText);
             return button;
         }
 
@@ -2301,18 +4035,29 @@ namespace MLOmega.XR.UI
             _gestureToastCanvas.renderMode = RenderMode.WorldSpace;
             _gestureToastCanvas.worldCamera = _camera;
             _gestureToastCanvas.sortingOrder = 120;
-            RectTransform rect = go.GetComponent<RectTransform>();
-            rect.sizeDelta = new Vector2(520f, 72f);
-            rect.localScale = Vector3.one * .0008f;
+            _gestureToastGroup = go.AddComponent<CanvasGroup>();
+            _gestureToastGroup.interactable = false;
+            _gestureToastGroup.blocksRaycasts = false;
+            _gestureToastRect = go.GetComponent<RectTransform>();
+            _gestureToastRect.sizeDelta = new Vector2(500f, 64f);
+            _gestureToastRect.localScale = Vector3.one * .00072f;
+            _gestureToastPanel = MakeImage(
+                _gestureToastRect,
+                "Vision notification glass",
+                Vector2.zero,
+                _gestureToastRect.sizeDelta,
+                new Color(.20f, .21f, .24f, .82f));
+            _gestureToastPanel.raycastTarget = false;
             _gestureToastLabel = MakeText(
-                rect,
+                _gestureToastPanel.transform,
                 string.Empty,
                 Vector2.zero,
-                rect.sizeDelta,
-                25f,
-                new Color(.25f, 1f, .9f),
+                new Vector2(464f, 54f),
+                18f,
+                VisionText,
                 FontStyles.Bold);
             _gestureToastLabel.alignment = TextAlignmentOptions.Center;
+            _gestureToastGroup.alpha = 0f;
             go.SetActive(false);
         }
 
@@ -2328,17 +4073,18 @@ namespace MLOmega.XR.UI
             Vector3 up = Mathf.Abs(Vector3.Dot(forward, Vector3.up)) > .96f
                 ? _camera.transform.up
                 : Vector3.up;
-            RectTransform rect =
-                (RectTransform)_gestureToastCanvas.transform;
-            rect.SetPositionAndRotation(
+            _gestureToastRect.SetPositionAndRotation(
                 _camera.transform.position +
-                forward * .82f -
-                _camera.transform.up * .10f,
+                forward * .86f +
+                _camera.transform.up * .23f,
                 Quaternion.LookRotation(forward, up));
             _gestureToastLabel.text = text;
-            _gestureToastLabel.color = color;
+            _gestureToastLabel.color = Color.Lerp(VisionText, color, .28f);
             _gestureToastCanvas.gameObject.SetActive(true);
-            _gestureToastHideAt = Time.unscaledTime + 1.6f;
+            _gestureToastShownAt = Time.unscaledTime;
+            _gestureToastHideAt = Time.unscaledTime + 2.1f;
+            _gestureToastRect.localScale = Vector3.one * .00068f;
+            if (_gestureToastGroup != null) _gestureToastGroup.alpha = 0f;
         }
 
         private void UpdateGestureToast()
@@ -2346,10 +4092,22 @@ namespace MLOmega.XR.UI
             if (
                 _gestureToastCanvas == null ||
                 !_gestureToastCanvas.gameObject.activeSelf ||
-                _gestureToastHideAt < 0f ||
-                Time.unscaledTime < _gestureToastHideAt)
+                _gestureToastHideAt < 0f)
                 return;
+            float now = Time.unscaledTime;
+            float intro = Mathf.SmoothStep(
+                0f,
+                1f,
+                Mathf.Clamp01((now - _gestureToastShownAt) / .16f));
+            float outro = Mathf.Clamp01((_gestureToastHideAt - now) / .24f);
+            if (_gestureToastGroup != null)
+                _gestureToastGroup.alpha = Mathf.Min(intro, outro);
+            if (_gestureToastRect != null)
+                _gestureToastRect.localScale = Vector3.one *
+                    Mathf.Lerp(.00068f, .00072f, intro);
+            if (now < _gestureToastHideAt) return;
             _gestureToastCanvas.gameObject.SetActive(false);
+            _gestureToastShownAt = -1f;
             _gestureToastHideAt = -1f;
         }
 
@@ -2364,11 +4122,683 @@ namespace MLOmega.XR.UI
             go.transform.SetParent(parent, false);
             Image image = go.AddComponent<Image>();
             image.color = color;
+            image.sprite = GetVisionRoundedSprite();
+            image.type = Image.Type.Sliced;
             RectTransform rect = image.rectTransform;
             rect.anchorMin = rect.anchorMax = new Vector2(.5f, .5f);
             rect.anchoredPosition = position;
             rect.sizeDelta = size;
             return image;
+        }
+
+        private static Image MakeStatusPill(
+            Transform parent,
+            string title,
+            string value,
+            Vector2 position,
+            Vector2 size,
+            out TextMeshProUGUI valueLabel)
+        {
+            Image pill = MakeImage(
+                parent,
+                "Vision status " + title,
+                position,
+                size,
+                new Color(.18f, .19f, .22f, .64f));
+            pill.raycastTarget = false;
+            TextMeshProUGUI titleLabel = MakeText(
+                pill.transform,
+                title,
+                new Vector2(0f, 10f),
+                new Vector2(size.x - 16f, 16f),
+                9f,
+                new Color(.72f, .74f, .80f, .92f),
+                FontStyles.Bold);
+            titleLabel.characterSpacing = 1.2f;
+            valueLabel = MakeText(
+                pill.transform,
+                value,
+                new Vector2(0f, -8f),
+                new Vector2(size.x - 16f, 22f),
+                12f,
+                VisionText,
+                FontStyles.Bold);
+            valueLabel.enableWordWrapping = false;
+            return pill;
+        }
+
+        private static void ConfigureControlCenterButton(
+            Button button,
+            string icon,
+            string caption)
+        {
+            if (button == null) return;
+            Image image = button.GetComponent<Image>();
+            if (image != null)
+            {
+                image.sprite = GetVisionCircleSprite();
+                image.type = Image.Type.Simple;
+            }
+            TextMeshProUGUI label =
+                button.GetComponentInChildren<TextMeshProUGUI>();
+            if (label == null) return;
+            label.text = icon + "\n<size=38%>" + caption + "</size>";
+            label.fontSize = 29f;
+            label.fontStyle = FontStyles.Normal;
+            label.enableWordWrapping = false;
+            label.lineSpacing = -12f;
+        }
+
+        private static void ConfigureControlCenterButton(
+            Button button,
+            VisionIconKind icon,
+            string caption)
+        {
+            if (button == null) return;
+            Image surface = button.GetComponent<Image>();
+            if (surface != null)
+            {
+                surface.sprite = GetVisionCircleSprite();
+                surface.type = Image.Type.Simple;
+                surface.color = new Color(.16f, .17f, .20f, .68f);
+            }
+
+            // MakeButton also authors a rectangular depth plate.  It is useful
+            // on the workshop deck, but behind a circular Control Center icon
+            // it reads as an ugly square.  Vision controls are intentionally
+            // borderless orbs, so remove only their matching plate.
+            const string buttonPrefix = "Button ";
+            string suffix = button.gameObject.name.StartsWith(
+                    buttonPrefix, StringComparison.Ordinal)
+                ? button.gameObject.name.Substring(buttonPrefix.Length)
+                : button.gameObject.name;
+            Transform depth = button.transform.parent?.Find(
+                "Button depth " + suffix);
+            if (depth != null) depth.gameObject.SetActive(false);
+
+            TextMeshProUGUI label =
+                button.GetComponentInChildren<TextMeshProUGUI>();
+            if (label != null)
+            {
+                label.gameObject.name = "Vision caption";
+                label.text = caption;
+                label.fontSize = 11f;
+                label.fontStyle = FontStyles.Normal;
+                label.enableWordWrapping = false;
+                label.characterSpacing = .35f;
+                label.color = VisionSecondary;
+                label.rectTransform.anchoredPosition = new Vector2(
+                    0f,
+                    -button.GetComponent<RectTransform>().sizeDelta.y * .5f -
+                    15f);
+                label.rectTransform.sizeDelta = new Vector2(124f, 22f);
+            }
+            BuildVisionIcon(button.transform, icon, Vector2.zero, 1f);
+            VisionSpatialControlFeedback feedback =
+                button.GetComponent<VisionSpatialControlFeedback>();
+            if (feedback != null)
+                feedback.Configure(
+                    surface,
+                    new Color(.16f, .17f, .20f, .68f),
+                    new Color(.38f, .40f, .44f, .92f),
+                    VisionPressed,
+                    VisionText);
+        }
+
+        private static void BuildVisionIcon(
+            Transform parent,
+            VisionIconKind kind,
+            Vector2 offset,
+            float scale)
+        {
+            Color color = VisionText;
+            void Line(float x, float y, float w, float h, float rotation = 0f)
+            {
+                Image line = MakeImage(
+                    parent, "Vision icon line", offset + new Vector2(x, y) * scale,
+                    new Vector2(w, h) * scale, color);
+                line.raycastTarget = false;
+                line.rectTransform.localRotation = Quaternion.Euler(0f, 0f, rotation);
+            }
+            void Dot(float x, float y, float diameter, bool ring = false)
+            {
+                Image dot = MakeImage(
+                    parent, "Vision icon dot", offset + new Vector2(x, y) * scale,
+                    Vector2.one * diameter * scale, color);
+                dot.sprite = ring ? GetVisionRingSprite() : GetVisionCircleSprite();
+                dot.type = Image.Type.Simple;
+                dot.raycastTarget = false;
+            }
+            void Sign(bool plus, float x = 13f, float y = -11f)
+            {
+                Line(x, y, 12f, 2.5f);
+                if (plus) Line(x, y, 2.5f, 12f);
+            }
+            void Sun()
+            {
+                Dot(0f, 2f, 15f, true);
+                for (int i = 0; i < 8; i++)
+                {
+                    float angle = i * 45f;
+                    float radians = angle * Mathf.Deg2Rad;
+                    Line(
+                        Mathf.Cos(radians) * 14f,
+                        2f + Mathf.Sin(radians) * 14f,
+                        8f,
+                        2.2f,
+                        angle);
+                }
+            }
+
+            switch (kind)
+            {
+                case VisionIconKind.Phone:
+                    Line(-10f, 0f, 3f, 30f);
+                    Line(10f, 0f, 3f, 30f);
+                    Line(0f, 14f, 20f, 3f);
+                    Line(0f, -14f, 20f, 3f);
+                    Dot(0f, -9f, 3.5f);
+                    break;
+                case VisionIconKind.Temperature:
+                    Line(-3f, 4f, 6f, 24f);
+                    Dot(-3f, -10f, 13f);
+                    Line(7f, 8f, 8f, 2f);
+                    Line(7f, 1f, 6f, 2f);
+                    break;
+                case VisionIconKind.Tracking:
+                    Dot(0f, 1f, 29f, true);
+                    Dot(0f, 1f, 8f);
+                    Line(-19f, 1f, 8f, 2f);
+                    Line(19f, 1f, 8f, 2f);
+                    break;
+                case VisionIconKind.Audio:
+                    Image speaker = MakeImage(
+                        parent, "Vision icon speaker", offset,
+                        new Vector2(40f, 34f) * scale, color);
+                    speaker.sprite = GetVisionSpeakerSprite();
+                    speaker.type = Image.Type.Simple;
+                    speaker.raycastTarget = false;
+                    break;
+                case VisionIconKind.Glasses:
+                    Image leftLens = MakeImage(
+                        parent, "Vision icon glasses left",
+                        offset + new Vector2(-10f, 0f) * scale,
+                        new Vector2(22f, 16f) * scale, color);
+                    leftLens.sprite = GetVisionRingSprite();
+                    leftLens.type = Image.Type.Simple;
+                    leftLens.raycastTarget = false;
+                    Image rightLens = MakeImage(
+                        parent, "Vision icon glasses right",
+                        offset + new Vector2(10f, 0f) * scale,
+                        new Vector2(22f, 16f) * scale, color);
+                    rightLens.sprite = GetVisionRingSprite();
+                    rightLens.type = Image.Type.Simple;
+                    rightLens.raycastTarget = false;
+                    Line(0f, 1f, 7f, 2.5f);
+                    Line(-21f, 4f, 8f, 2.5f, 12f);
+                    Line(21f, 4f, 8f, 2.5f, -12f);
+                    break;
+                case VisionIconKind.Depth:
+                    Line(-7f, 5f, 19f, 2.5f);
+                    Line(-16f, -4f, 2.5f, 19f);
+                    Line(-7f, -13f, 19f, 2.5f);
+                    Line(2f, -4f, 2.5f, 19f);
+                    Line(7f, 13f, 17f, 2.5f);
+                    Line(15f, 5f, 2.5f, 17f);
+                    Line(10f, -3f, 12f, 2.5f);
+                    break;
+                case VisionIconKind.Window:
+                case VisionIconKind.Workspace:
+                    Line(-15f, 0f, 3f, 27f);
+                    Line(15f, 0f, 3f, 27f);
+                    Line(0f, 13f, 30f, 3f);
+                    Line(0f, -13f, 30f, 3f);
+                    Line(-7f, 7f, 10f, 2.5f);
+                    break;
+                case VisionIconKind.Hand:
+                    Line(0f, -5f, 21f, 19f);
+                    Line(-8f, 8f, 4f, 16f);
+                    Line(-2f, 11f, 4f, 21f);
+                    Line(4f, 10f, 4f, 19f);
+                    Line(10f, 7f, 4f, 14f);
+                    break;
+                case VisionIconKind.Eye:
+                    Image eye = MakeImage(
+                        parent, "Vision icon eye", offset,
+                        new Vector2(37f, 23f) * scale, color);
+                    eye.sprite = GetVisionRingSprite();
+                    eye.type = Image.Type.Simple;
+                    eye.raycastTarget = false;
+                    Dot(0f, 0f, 9f);
+                    break;
+                case VisionIconKind.VolumeMinus:
+                case VisionIconKind.VolumePlus:
+                    Line(-12f, 0f, 8f, 13f);
+                    Line(-5f, 0f, 4f, 24f);
+                    Line(2f, 5f, 9f, 2.5f, 35f);
+                    Line(2f, -5f, 9f, 2.5f, -35f);
+                    Sign(kind == VisionIconKind.VolumePlus);
+                    break;
+                case VisionIconKind.Recenter:
+                    Line(-12f, 11f, 10f, 2.5f);
+                    Line(-16f, 7f, 2.5f, 10f);
+                    Line(12f, 11f, 10f, 2.5f);
+                    Line(16f, 7f, 2.5f, 10f);
+                    Line(-12f, -11f, 10f, 2.5f);
+                    Line(-16f, -7f, 2.5f, 10f);
+                    Line(12f, -11f, 10f, 2.5f);
+                    Line(16f, -7f, 2.5f, 10f);
+                    Dot(0f, 0f, 6f);
+                    break;
+                case VisionIconKind.Close:
+                    Line(0f, 0f, 30f, 3f, 45f);
+                    Line(0f, 0f, 30f, 3f, -45f);
+                    break;
+                case VisionIconKind.Brightness:
+                    Sun();
+                    break;
+                case VisionIconKind.BrightnessMinus:
+                case VisionIconKind.BrightnessPlus:
+                    Sun();
+                    Sign(kind == VisionIconKind.BrightnessPlus);
+                    break;
+                case VisionIconKind.ElectrochromicMinus:
+                case VisionIconKind.ElectrochromicPlus:
+                    Dot(-2f, 2f, 29f, true);
+                    Line(-8f, 2f, 11f, 25f);
+                    Sign(kind == VisionIconKind.ElectrochromicPlus);
+                    break;
+                case VisionIconKind.Settings:
+                    Line(0f, 10f, 30f, 2.5f);
+                    Line(0f, 0f, 30f, 2.5f);
+                    Line(0f, -10f, 30f, 2.5f);
+                    Dot(-8f, 10f, 7f);
+                    Dot(8f, 0f, 7f);
+                    Dot(-3f, -10f, 7f);
+                    break;
+                case VisionIconKind.Portrait:
+                    Line(-9f, 0f, 2.5f, 27f);
+                    Line(9f, 0f, 2.5f, 27f);
+                    Line(0f, 13f, 18f, 2.5f);
+                    Line(0f, -13f, 18f, 2.5f);
+                    break;
+                case VisionIconKind.Landscape:
+                    Line(-15f, 0f, 2.5f, 18f);
+                    Line(15f, 0f, 2.5f, 18f);
+                    Line(0f, 9f, 30f, 2.5f);
+                    Line(0f, -9f, 30f, 2.5f);
+                    break;
+                case VisionIconKind.Tilt:
+                    Line(0f, 0f, 31f, 3f, 18f);
+                    Line(-13f, 7f, 8f, 2.5f, 52f);
+                    Line(13f, -7f, 8f, 2.5f, 52f);
+                    break;
+            }
+        }
+
+        private static void SetControlCenterState(
+            Button button,
+            bool selected,
+            Color selectedSurface)
+        {
+            if (button == null) return;
+            VisionSpatialControlFeedback feedback =
+                button.GetComponent<VisionSpatialControlFeedback>();
+            if (feedback != null)
+                feedback.SetSelected(selected, selectedSurface, VisionInk);
+        }
+
+        private static Sprite GetVisionRoundedSprite()
+        {
+            if (_visionRoundedSprite != null) return _visionRoundedSprite;
+            _visionRoundedSprite = BuildVisionSprite(false);
+            return _visionRoundedSprite;
+        }
+
+        private static Sprite GetVisionTopRoundedSprite()
+        {
+            if (_visionTopRoundedSprite != null)
+                return _visionTopRoundedSprite;
+            const int size = 64;
+            const float radius = 18f;
+            var texture = new Texture2D(
+                size, size, TextureFormat.RGBA32, false, true)
+            {
+                name = "MLOmega Vision top-rounded section",
+                filterMode = FilterMode.Bilinear,
+                wrapMode = TextureWrapMode.Clamp,
+            };
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    float alpha = 1f;
+                    if (y + .5f > size - radius)
+                    {
+                        float centreX = x + .5f < radius
+                            ? radius
+                            : (x + .5f > size - radius
+                                ? size - radius
+                                : x + .5f);
+                        float dx = x + .5f - centreX;
+                        float dy = y + .5f - (size - radius);
+                        float distance = Mathf.Sqrt(dx * dx + dy * dy) - radius;
+                        alpha = Mathf.Clamp01(.75f - distance);
+                    }
+                    texture.SetPixel(x, y, new Color(1f, 1f, 1f, alpha));
+                }
+            }
+            texture.Apply(false, true);
+            _visionTopRoundedSprite = Sprite.Create(
+                texture,
+                new Rect(0f, 0f, size, size),
+                new Vector2(.5f, .5f),
+                100f,
+                0,
+                SpriteMeshType.FullRect,
+                new Vector4(radius, radius, radius, radius));
+            return _visionTopRoundedSprite;
+        }
+
+        private static Sprite GetVisionCircleSprite()
+        {
+            if (_visionCircleSprite != null) return _visionCircleSprite;
+            _visionCircleSprite = BuildVisionSprite(true);
+            return _visionCircleSprite;
+        }
+
+        private static Sprite GetVisionRingSprite()
+        {
+            if (_visionRingSprite != null) return _visionRingSprite;
+            const int size = 64;
+            var texture = new Texture2D(
+                size,
+                size,
+                TextureFormat.RGBA32,
+                false,
+                true)
+            {
+                name = "MLOmega Vision progress ring",
+                filterMode = FilterMode.Bilinear,
+                wrapMode = TextureWrapMode.Clamp,
+            };
+            float half = size * .5f;
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    float px = x + .5f - half;
+                    float py = y + .5f - half;
+                    float radius = Mathf.Sqrt(px * px + py * py);
+                    float outer = Mathf.Clamp01(1.2f - Mathf.Abs(radius - 29f));
+                    float inner = Mathf.Clamp01((radius - 24.5f) * 2f);
+                    texture.SetPixel(
+                        x,
+                        y,
+                        new Color(1f, 1f, 1f, outer * inner));
+                }
+            }
+            texture.Apply(false, true);
+            _visionRingSprite = Sprite.Create(
+                texture,
+                new Rect(0f, 0f, size, size),
+                new Vector2(.5f, .5f),
+                100f);
+            return _visionRingSprite;
+        }
+
+        private static Sprite GetVisionSpeakerSprite()
+        {
+            if (_visionSpeakerSprite != null) return _visionSpeakerSprite;
+            const int size = 64;
+            var texture = new Texture2D(
+                size, size, TextureFormat.RGBA32, false, true)
+            {
+                name = "MLOmega Vision speaker",
+                filterMode = FilterMode.Bilinear,
+                wrapMode = TextureWrapMode.Clamp,
+            };
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    bool body = x >= 8 && x <= 20 && y >= 25 && y <= 39;
+                    bool cone = false;
+                    if (x >= 20 && x <= 36)
+                    {
+                        float t = (x - 20f) / 16f;
+                        float upper = Mathf.Lerp(25f, 14f, t);
+                        float lower = Mathf.Lerp(39f, 50f, t);
+                        cone = y >= upper && y <= lower;
+                    }
+                    float dx = x - 35f;
+                    float dy = y - 32f;
+                    float distance = Mathf.Sqrt(dx * dx + dy * dy);
+                    bool wave = x >= 38 &&
+                        (Mathf.Abs(distance - 13f) < 1.45f ||
+                         Mathf.Abs(distance - 22f) < 1.45f);
+                    float alpha = body || cone || wave ? 1f : 0f;
+                    texture.SetPixel(x, y, new Color(1f, 1f, 1f, alpha));
+                }
+            }
+            texture.Apply(false, true);
+            _visionSpeakerSprite = Sprite.Create(
+                texture,
+                new Rect(0f, 0f, size, size),
+                new Vector2(.5f, .5f),
+                100f);
+            return _visionSpeakerSprite;
+        }
+
+        private static Image AddVisionProgressRing(
+            Transform parent,
+            string name,
+            Vector2 position,
+            float size)
+        {
+            Image ring = MakeImage(
+                parent,
+                name,
+                position,
+                Vector2.one * size,
+                new Color(.94f, .96f, 1f, .90f));
+            ring.sprite = GetVisionRingSprite();
+            ring.type = Image.Type.Filled;
+            ring.fillMethod = Image.FillMethod.Radial360;
+            ring.fillOrigin = (int)Image.Origin360.Top;
+            ring.fillClockwise = true;
+            ring.fillAmount = 0f;
+            ring.raycastTarget = false;
+            return ring;
+        }
+
+        private static Sprite GetVisionCornerArcSprite()
+        {
+            if (_visionCornerArcSprite != null) return _visionCornerArcSprite;
+            const int size = 72;
+            var texture = new Texture2D(
+                size, size, TextureFormat.RGBA32, false, true)
+            {
+                name = "MLOmega Vision corner resize arc",
+                filterMode = FilterMode.Bilinear,
+                wrapMode = TextureWrapMode.Clamp,
+            };
+            // A genuine quarter-circle hugging the lower corner, rather than a
+            // nearly vertical parenthesis.  The mirrored right handle reuses
+            // the exact same texture and therefore remains visually balanced.
+            Vector2 centre = new Vector2(size + 2f, size + 2f);
+            const float radius = 51f;
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    float distance = Mathf.Abs(
+                        Vector2.Distance(new Vector2(x + .5f, y + .5f), centre) -
+                        radius);
+                    float alpha = Mathf.Clamp01(2.7f - distance);
+                    // Feather the two open ends so the affordance looks drawn,
+                    // not cut off by its texture bounds.
+                    float edge = Mathf.Min(x + .5f, y + .5f);
+                    alpha *= Mathf.Clamp01(edge / 5f);
+                    texture.SetPixel(x, y, new Color(1f, 1f, 1f, alpha));
+                }
+            }
+            texture.Apply(false, true);
+            _visionCornerArcSprite = Sprite.Create(
+                texture,
+                new Rect(0f, 0f, size, size),
+                new Vector2(.5f, .5f),
+                100f);
+            return _visionCornerArcSprite;
+        }
+
+        private static Sprite GetVisionCornerArcSpriteLegacy()
+        {
+            if (_visionCornerArcSprite != null) return _visionCornerArcSprite;
+            const int width = 48;
+            const int height = 64;
+            var texture = new Texture2D(
+                width,
+                height,
+                TextureFormat.RGBA32,
+                false,
+                true)
+            {
+                name = "MLOmega Vision resize parenthesis",
+                filterMode = FilterMode.Bilinear,
+                wrapMode = TextureWrapMode.Clamp,
+            };
+            for (int y = 0; y < height; y++)
+            {
+                float ny = ((y + .5f) / height) * 2f - 1f;
+                float targetX = width * (.30f + .25f * ny * ny);
+                for (int x = 0; x < width; x++)
+                {
+                    float distance = Mathf.Abs(x + .5f - targetX);
+                    float alpha = Mathf.Clamp01(2.35f - distance);
+                    alpha *= Mathf.SmoothStep(0f, 1f,
+                        Mathf.Clamp01((1f - Mathf.Abs(ny)) * 8f));
+                    texture.SetPixel(x, y, new Color(1f, 1f, 1f, alpha));
+                }
+            }
+            texture.Apply(false, true);
+            _visionCornerArcSprite = Sprite.Create(
+                texture,
+                new Rect(0f, 0f, width, height),
+                new Vector2(.5f, .5f),
+                100f);
+            return _visionCornerArcSprite;
+        }
+
+        private static void ConfigureVisionResizeHandle(
+            Image handle,
+            bool mirrored)
+        {
+            if (handle == null) return;
+            handle.sprite = GetVisionCornerArcSprite();
+            handle.type = Image.Type.Simple;
+            handle.preserveAspect = true;
+            handle.rectTransform.localRotation = Quaternion.identity;
+            handle.rectTransform.localScale = new Vector3(
+                mirrored ? -1f : 1f,
+                1f,
+                1f);
+        }
+
+        private static void ConfigureVisionDepthHandle(Image handle)
+        {
+            if (handle == null) return;
+            handle.sprite = GetVisionCircleSprite();
+            handle.type = Image.Type.Simple;
+            BuildVisionIcon(
+                handle.transform,
+                VisionIconKind.Depth,
+                Vector2.zero,
+                .58f);
+        }
+
+        private static void ConfigureVisionTiltHandle(Image handle)
+        {
+            if (handle == null) return;
+            handle.sprite = GetVisionCircleSprite();
+            handle.type = Image.Type.Simple;
+            BuildVisionIcon(
+                handle.transform,
+                VisionIconKind.Tilt,
+                Vector2.zero,
+                .58f);
+        }
+
+        private static void AddVisionHandleDot(Image bar, bool onLeft)
+        {
+            if (bar == null) return;
+            Image dot = MakeImage(
+                bar.transform,
+                "Vision handle dot",
+                new Vector2(onLeft
+                    ? -bar.rectTransform.sizeDelta.x * .5f - 8f
+                    : bar.rectTransform.sizeDelta.x * .5f + 28f, 0f),
+                new Vector2(7f, 7f),
+                bar.color);
+            dot.sprite = GetVisionCircleSprite();
+            dot.type = Image.Type.Simple;
+            dot.raycastTarget = false;
+        }
+
+        private static Sprite BuildVisionSprite(bool circle)
+        {
+            const int size = 64;
+            const float radius = 18f;
+            var texture = new Texture2D(
+                size,
+                size,
+                TextureFormat.RGBA32,
+                false,
+                true)
+            {
+                name = circle
+                    ? "MLOmega Vision circle"
+                    : "MLOmega Vision rounded rectangle",
+                filterMode = FilterMode.Bilinear,
+                wrapMode = TextureWrapMode.Clamp,
+            };
+            float half = size * .5f;
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    float px = x + .5f - half;
+                    float py = y + .5f - half;
+                    float distance;
+                    if (circle)
+                    {
+                        distance = Mathf.Sqrt(px * px + py * py) - (half - 1f);
+                    }
+                    else
+                    {
+                        float qx = Mathf.Abs(px) - (half - radius - 1f);
+                        float qy = Mathf.Abs(py) - (half - radius - 1f);
+                        float ox = Mathf.Max(qx, 0f);
+                        float oy = Mathf.Max(qy, 0f);
+                        distance = Mathf.Sqrt(ox * ox + oy * oy) +
+                            Mathf.Min(Mathf.Max(qx, qy), 0f) - radius;
+                    }
+                    float alpha = Mathf.Clamp01(.75f - distance);
+                    texture.SetPixel(x, y, new Color(1f, 1f, 1f, alpha));
+                }
+            }
+            texture.Apply(false, true);
+            Vector4 border = circle
+                ? Vector4.zero
+                : new Vector4(radius, radius, radius, radius);
+            return Sprite.Create(
+                texture,
+                new Rect(0f, 0f, size, size),
+                new Vector2(.5f, .5f),
+                100f,
+                0,
+                SpriteMeshType.FullRect,
+                border);
         }
 
         private static TextMeshProUGUI MakeText(
@@ -2410,36 +4840,40 @@ namespace MLOmega.XR.UI
                 "Button depth " + label,
                 position,
                 size,
-                primary ? 30f : 18f,
+                primary ? 12f : 7f,
                 primary);
+            Color normalSurface = primary
+                ? new Color(.92f, .95f, .98f, .96f)
+                : VisionGlass;
             Image image = MakeImage(
                 parent,
                 "Button " + label,
                 position,
                 size,
-                primary
-                    ? new Color(.02f, .45f, .42f, .42f)
-                    : new Color(.025f, .11f, .2f, .30f));
+                normalSurface);
             Button button = image.gameObject.AddComponent<Button>();
+            button.transition = Selectable.Transition.None;
             var collider = image.gameObject.AddComponent<BoxCollider>();
             collider.center = Vector3.zero;
             collider.size = new Vector3(size.x, size.y, 14f);
-            ColorBlock colors = button.colors;
-            colors.normalColor = Color.white;
-            colors.highlightedColor =
-                new Color(.35f, 1f, .92f, 1f);
-            colors.pressedColor =
-                new Color(.18f, .7f, .76f, 1f);
-            button.colors = colors;
             button.onClick.AddListener(action);
-            MakeText(
+            TextMeshProUGUI labelText = MakeText(
                 image.transform,
                 label,
                 Vector2.zero,
                 size - new Vector2(12f, 8f),
                 primary ? 21f : 16f,
-                Color.white,
+                primary ? VisionInk : VisionText,
                 primary ? FontStyles.Bold : FontStyles.Normal);
+            labelText.enableWordWrapping = false;
+            var feedback = image.gameObject.AddComponent<
+                VisionSpatialControlFeedback>();
+            feedback.Configure(
+                image,
+                normalSurface,
+                primary ? Color.white : VisionGlassHover,
+                VisionPressed,
+                primary ? VisionInk : VisionText);
             return button;
         }
 
@@ -2476,8 +4910,8 @@ namespace MLOmega.XR.UI
                 Shader.Find("MLOmega/XREAL Runtime Unlit");
             var material = new Material(shader);
             Color color = primary
-                ? new Color(.04f, .38f, .42f, .16f)
-                : new Color(.01f, .045f, .1f, .08f);
+                ? new Color(.72f, .76f, .82f, .10f)
+                : new Color(.32f, .35f, .40f, .045f);
             if (material.HasProperty("_BaseColor"))
                 material.SetColor("_BaseColor", color);
             if (material.HasProperty("_Color"))
@@ -2502,7 +4936,7 @@ namespace MLOmega.XR.UI
                 "Input " + placeholder,
                 position,
                 size,
-                new Color(.02f, .07f, .14f, .34f));
+                new Color(.16f, .17f, .20f, .68f));
             TMP_InputField input =
                 image.gameObject.AddComponent<TMP_InputField>();
             var collider = image.gameObject.AddComponent<BoxCollider>();
@@ -2514,7 +4948,7 @@ namespace MLOmega.XR.UI
                 Vector2.zero,
                 size - new Vector2(28f, 8f),
                 18f,
-                Color.white);
+                VisionText);
             text.alignment = TextAlignmentOptions.MidlineLeft;
             TextMeshProUGUI hint = MakeText(
                 image.transform,
@@ -2522,7 +4956,7 @@ namespace MLOmega.XR.UI
                 Vector2.zero,
                 size - new Vector2(28f, 8f),
                 17f,
-                new Color(.38f, .55f, .67f));
+                new Color(.65f, .67f, .72f, .88f));
             hint.alignment = TextAlignmentOptions.MidlineLeft;
             input.textComponent = text;
             input.placeholder = hint;
@@ -2540,11 +4974,13 @@ namespace MLOmega.XR.UI
         private static void TintButton(Button button, bool selected)
         {
             if (button == null) return;
-            Image image = button.GetComponent<Image>();
-            if (image != null)
-                image.color = selected
-                    ? new Color(.05f, .55f, .48f, .48f)
-                    : new Color(.025f, .11f, .2f, .30f);
+            VisionSpatialControlFeedback feedback =
+                button.GetComponent<VisionSpatialControlFeedback>();
+            if (feedback != null)
+                feedback.SetSelected(
+                    selected,
+                    VisionPressed,
+                    VisionInk);
         }
 
         private void EnsurePreview()

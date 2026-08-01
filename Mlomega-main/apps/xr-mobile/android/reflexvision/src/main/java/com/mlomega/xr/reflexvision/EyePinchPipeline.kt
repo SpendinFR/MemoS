@@ -23,6 +23,8 @@ import kotlin.math.sqrt
  * distance(wrist,index MCP), EMA 0.5, hysteresis 0.28/0.38 and 2/2-frame
  * asymmetric debounce. A held, fully-open palm also emits the existing
  * OPEN_PALM_MENU contract without loading the heavier GestureRecognizer.
+ * Palm recognition requires a visibly spread thumb and a short post-pinch
+ * cooldown, so releasing a click cannot accidentally recenter a window.
  * Apache-2.0 reference:
  * https://github.com/nudou350/Xreal-tools
  */
@@ -46,6 +48,7 @@ class EyePinchPipeline(
     private var missingFrames = 0
     private var resultCount = 0L
     private var lastDiagnosticMs = Long.MIN_VALUE
+    private var lastPinchActivityMs = Long.MIN_VALUE
     private var palmSinceMs = -1L
     private var palmFired = false
     private var twoPalmSinceMs = -1L
@@ -56,6 +59,7 @@ class EyePinchPipeline(
     fun start() {
         if (!running.compareAndSet(false, true)) return
         throttle.reset()
+        lastPinchActivityMs = Long.MIN_VALUE
         resetPinch()
         resetFist()
         resetTwoPalm()
@@ -167,8 +171,15 @@ class EyePinchPipeline(
             ema = if (ema.isNaN()) ratio else EMA_ALPHA * ratio + (1f - EMA_ALPHA) * ema
             val x = (thumb.x() + index.x()) * .5f
             val y = (thumb.y() + index.y()) * .5f
-            val closedFist = isClosedFist(hand)
-            evaluateFist(closedFist, x, y, ts)
+            // Pinch is the primary interaction. A slowly closing pinch can
+            // temporarily curl all four long fingers and must never be stolen
+            // by the lower-priority fist toggle (observed on One Pro + Eye at
+            // ratios .64 -> .51 -> .19). Once thumb/index start converging,
+            // reset the fist latch and let the proven pinch path finish.
+            val pinchIntent =
+                pinched || candidate == true || ratio < FIST_SAFE_RATIO
+            val closedFist = !pinchIntent && isClosedFist(hand)
+            if (pinchIntent) resetFist() else evaluateFist(closedFist, x, y, ts)
             if (closedFist) {
                 resetPalm()
                 if (pinched) {
@@ -192,7 +203,7 @@ class EyePinchPipeline(
             if (suppressSinglePalm) {
                 resetPalm()
             } else {
-                evaluatePalm(isOpenPalm(hand), x, y, ts)
+                evaluatePalm(isOpenPalm(hand, ts), x, y, ts)
             }
             logDiagnostic(ts, true, ema, x, y)
         } finally {
@@ -206,8 +217,15 @@ class EyePinchPipeline(
      * four fingers, a non-pinched hand and a timed hold avoids opening the deck
      * during an ordinary point or click.
      */
-    private fun isOpenPalm(hand: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>): Boolean {
+    private fun isOpenPalm(
+        hand: List<com.google.mediapipe.tasks.components.containers.NormalizedLandmark>,
+        ts: Long,
+    ): Boolean {
         if (pinched || candidate == true || hand.size <= PINKY_TIP) return false
+        if (
+            lastPinchActivityMs != Long.MIN_VALUE &&
+            ts - lastPinchActivityMs < PALM_AFTER_PINCH_COOLDOWN_MS
+        ) return false
         return isOpenPalmGeometry(hand)
     }
 
@@ -216,6 +234,22 @@ class EyePinchPipeline(
     ): Boolean {
         if (hand.size <= PINKY_TIP) return false
         val wrist = hand[WRIST]
+        val indexMcp = hand[INDEX_MCP]
+        val handScale = dist3(
+            wrist.x(), wrist.y(), wrist.z(),
+            indexMcp.x(), indexMcp.y(), indexMcp.z(),
+        )
+        val thumb = hand[THUMB_TIP]
+        val index = hand[INDEX_TIP]
+        val thumbSpread = if (handScale > 1e-4f) {
+            dist3(
+                thumb.x(), thumb.y(), thumb.z(),
+                index.x(), index.y(), index.z(),
+            ) / handScale
+        } else {
+            0f
+        }
+        if (thumbSpread < PALM_THUMB_SPREAD_RATIO) return false
 
         fun extended(mcpIndex: Int, pipIndex: Int, tipIndex: Int): Boolean {
             val mcp = hand[mcpIndex]
@@ -318,6 +352,9 @@ class EyePinchPipeline(
     }
 
     private fun evaluatePinch(ratio: Float, x: Float, y: Float, ts: Long) {
+        if (pinched || candidate == true || ratio < PALM_PINCH_ACTIVITY_RATIO) {
+            lastPinchActivityMs = ts
+        }
         val want = when {
             !pinched && ratio < ENTER_THRESHOLD -> true
             pinched && ratio > EXIT_THRESHOLD -> false
@@ -423,8 +460,12 @@ class EyePinchPipeline(
         private const val RELEASE_FRAMES = 2
         private const val PALM_STRAIGHT_DOT = -.62f
         private const val PALM_EXTENSION_RATIO = 1.08f
+        private const val PALM_THUMB_SPREAD_RATIO = .58f
+        private const val PALM_PINCH_ACTIVITY_RATIO = .48f
+        private const val PALM_AFTER_PINCH_COOLDOWN_MS = 900L
         private const val FIST_TIP_TO_PIP_RATIO = 1.08f
         private const val FIST_TIP_TO_MCP_RATIO = 1.22f
+        private const val FIST_SAFE_RATIO = .66f
         private const val FIST_HOLD_MS = 400L
         private const val TWO_PALM_HOLD_MS = 550L
         private const val MAX_ATELIER_FPS = 25f
