@@ -961,6 +961,45 @@ La suite doit rester dans ce package isolé : sources DASH/HLS génériques, pui
 virtual display/application vidéo protégée. Ne pas porter vers le Lab ou le
 Produit avant validation de la stabilité, du contrôle et du fournisseur réel.
 
+### 8.17 Jalon application Android contrôlable dans une fenêtre XR
+
+Le 2 août 2026, la v13 isolée a validé sur le matériel réel :
+
+- application YouTube Android lancée sur un `VirtualDisplay` créé par le
+  service Shizuku (`flags=0xdd4b`, injection prête sous `uid=2000`) ;
+- image et audio visibles dans une fenêtre Unity world-locked ;
+- coexistence avec les autres fenêtres 3D et les poignées Atelier ;
+- curseur regard visible, recherche, sélection d'une vidéo, play/pause et
+  navigation par pinch réellement reçus par l'activité YouTube ;
+- `ACTION_DOWN` et `ACTION_UP` confirmés par `InputDispatcher` sur le display
+  virtuel.
+
+Référence à conserver :
+
+```text
+apps/xr-mobile/build/android/mlomega-xreal-trusted-youtube-v13.apk
+taille = 244020209 octets
+sha256 = EB9CFD218823DBB707ECB8ECD3A09045CFC24A2955169BEB9421CE6724F3E0B6
+package = com.mlomega.xr.securesurfacespike
+```
+
+Piège Samsung/Android 16 important : une `Presentation` transparente et
+`FLAG_NOT_TOUCHABLE` placée au-dessus d'une application d'un autre UID est
+quand même classée `BLOCK_UNTRUSTED`. Une opacité de 0,72 puis de 0 ne suffit
+pas. La méthode validée est : afficher le curseur pour viser, appeler
+`Presentation.hide()` au pinch, attendre 100 ms pour la publication de la
+nouvelle pile d'input, injecter le geste, puis rappeler `show()` après
+`ACTION_UP`. À 20 ms, le log matériel montrait encore l'ancienne fenêtre ; à
+100 ms, le toucher est livré.
+
+Les rejets `BLOCK_UNTRUSTED` observés lorsque le curseur est visible concernent
+les événements de hover et ne rendent pas le clic rouge. Ne pas les confondre
+avec un rejet situé entre `pinch press` et `ACTION_DOWN`.
+
+Limites non encore prouvées : plein écran fournisseur, Netflix et autres DRM
+commerciaux. Le display est `TRUSTED`, pas `SECURE`, car `uid=shell` ne possède
+pas `CAPTURE_SECURE_VIDEO_OUTPUT`. Conserver v13 avant tout essai Netflix.
+
 ## 9. APK produit : travail explicitement restant
 
 Après correction et preuve de l'Atelier :

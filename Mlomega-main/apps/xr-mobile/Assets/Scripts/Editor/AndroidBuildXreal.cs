@@ -1652,12 +1652,110 @@ namespace MLOmega.XR.Editor
             Directory.CreateDirectory(Path.GetDirectoryName(java));
             File.Copy(template, java, true);
 
+            string trustedServiceTemplate = Path.Combine(
+                Application.dataPath,
+                "Scripts",
+                "Editor",
+                "SecureSurfaceSpike",
+                "TrustedDisplayUserService.java.txt");
+            if (!File.Exists(trustedServiceTemplate))
+                throw new FileNotFoundException(
+                    "Trusted-display Shizuku UserService template missing.",
+                    trustedServiceTemplate);
+            string trustedServiceJava = Path.Combine(
+                Path.GetDirectoryName(java),
+                "TrustedDisplayUserService.java");
+            File.Copy(trustedServiceTemplate, trustedServiceJava, true);
+
+            string manifest = Path.Combine(
+                unityLibraryPath,
+                "src",
+                "main",
+                "AndroidManifest.xml");
+            if (File.Exists(manifest))
+            {
+                string xml = File.ReadAllText(manifest);
+                const string youtubePackage =
+                    "        <package android:name=\"com.google.android.youtube\" />\n";
+                const string shizukuPackage =
+                    "        <package android:name=\"moe.shizuku.privileged.api\" />\n";
+                string missingQueries = string.Empty;
+                if (!xml.Contains("com.google.android.youtube"))
+                    missingQueries += youtubePackage;
+                if (!xml.Contains("moe.shizuku.privileged.api"))
+                    missingQueries += shizukuPackage;
+                if (!string.IsNullOrEmpty(missingQueries))
+                {
+                    int queryEnd = xml.IndexOf("</queries>", StringComparison.Ordinal);
+                    if (queryEnd >= 0)
+                    {
+                        xml = xml.Insert(queryEnd, missingQueries);
+                    }
+                    else
+                    {
+                        int application = xml.IndexOf(
+                            "<application",
+                            StringComparison.Ordinal);
+                        if (application < 0)
+                            throw new InvalidDataException(
+                                "Generated secure-surface manifest has no application: " +
+                                manifest);
+                        xml = xml.Insert(
+                            application,
+                            "    <queries>\n" + missingQueries + "    </queries>\n");
+                    }
+                }
+
+                if (!xml.Contains("moe.shizuku.manager.permission.API_V23"))
+                {
+                    int application = xml.IndexOf(
+                        "<application",
+                        StringComparison.Ordinal);
+                    xml = xml.Insert(
+                        application,
+                        "    <uses-permission android:name=\"moe.shizuku.manager.permission.API_V23\" />\n");
+                }
+
+                if (!xml.Contains("rikka.shizuku.ShizukuProvider"))
+                {
+                    int applicationEnd = xml.IndexOf(
+                        "</application>",
+                        StringComparison.Ordinal);
+                    if (applicationEnd < 0)
+                        throw new InvalidDataException(
+                            "Generated secure-surface manifest has no application end: " +
+                            manifest);
+                    const string provider =
+                        "        <provider\n" +
+                        "            android:name=\"rikka.shizuku.ShizukuProvider\"\n" +
+                        "            android:authorities=\"${applicationId}.shizuku\"\n" +
+                        "            android:enabled=\"true\"\n" +
+                        "            android:exported=\"true\"\n" +
+                        "            android:multiprocess=\"false\"\n" +
+                        "            android:permission=\"android.permission.INTERACT_ACROSS_USERS_FULL\" />\n";
+                    xml = xml.Insert(applicationEnd, provider);
+                }
+                File.WriteAllText(manifest, xml);
+            }
+
             string gradle = Path.Combine(unityLibraryPath, "build.gradle");
             if (!File.Exists(gradle))
                 throw new FileNotFoundException(
                     "Generated unityLibrary build.gradle missing.", gradle);
             string text = File.ReadAllText(gradle);
             const string marker = "// MLOMEGA_SECURE_SURFACE_MEDIA3";
+            const string plainShizuku =
+                "    implementation('dev.rikka.shizuku:api:13.1.5')\n" +
+                "    implementation('dev.rikka.shizuku:provider:13.1.5')\n";
+            const string isolatedShizuku =
+                "    implementation('dev.rikka.shizuku:api:13.1.5') {\n" +
+                "        exclude group: 'androidx.annotation'\n" +
+                "    }\n" +
+                "    implementation('dev.rikka.shizuku:provider:13.1.5') {\n" +
+                "        exclude group: 'androidx.annotation'\n" +
+                "    }\n";
+            if (text.Contains(plainShizuku))
+                text = text.Replace(plainShizuku, isolatedShizuku);
             if (!text.Contains(marker))
             {
                 int dependencies = text.IndexOf(
@@ -1670,6 +1768,7 @@ namespace MLOmega.XR.Editor
                 dependencies += "dependencies {".Length;
                 const string media3 =
                     "\n    // MLOMEGA_SECURE_SURFACE_MEDIA3\n" +
+                    isolatedShizuku +
                     "    implementation('androidx.media3:media3-exoplayer:1.5.1') {\n" +
                     "        exclude group: 'androidx.core'\n" +
                     "        exclude group: 'androidx.annotation'\n" +
@@ -1699,12 +1798,12 @@ namespace MLOmega.XR.Editor
                         "Generated unityLibrary JAR fileTree declaration changed: " +
                         gradle);
                 text = text.Replace(allJars, spikeJars);
-                File.WriteAllText(gradle, text);
             }
+            File.WriteAllText(gradle, text);
 
             Debug.Log(
-                "[AndroidBuildXreal] Isolated Widevine/Media3 probe injected: " +
-                java);
+                "[AndroidBuildXreal] Isolated Media3/Shizuku display probe injected: " +
+                java + " + " + trustedServiceJava);
         }
     }
 }

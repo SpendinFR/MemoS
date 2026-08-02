@@ -1,8 +1,31 @@
 package com.mlomega.xr.securesurface;
 
 import android.app.Activity;
+import android.app.Presentation;
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.ServiceConnection;
+import android.content.pm.PackageManager;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.PixelFormat;
+import android.graphics.drawable.ColorDrawable;
+import android.hardware.display.DisplayManager;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Looper;
+import android.os.Parcel;
+import android.os.SystemClock;
 import android.util.Log;
+import android.view.Display;
 import android.view.Surface;
+import android.view.View;
+import android.view.Window;
+import android.view.WindowManager;
+
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
@@ -13,6 +36,8 @@ import androidx.media3.common.util.UnstableApi;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector;
 
+import rikka.shizuku.Shizuku;
+
 /**
  * Isolated Widevine player used only by com.mlomega.xr.securesurfacespike.
  * Product, Atelier and Browser Lab never compile or package this source.
@@ -22,6 +47,46 @@ public final class SecureWidevinePlayer {
     private static final String TAG = "MLOmegaSecureSurface";
     private static volatile String status = "WIDEVINE: initialisation";
     private static ExoPlayer player;
+    private static IBinder trustedService;
+    private static boolean trustedServiceBound;
+    private static Activity pendingActivity;
+    private static Surface pendingSurface;
+    private static int pendingWidth;
+    private static int pendingHeight;
+    private static int pendingDensityDpi;
+    private static String pendingVideoUri;
+    private static int trustedDisplayId = -1;
+    private static long pointerDownTime;
+    private static CursorPresentation cursorPresentation;
+    private static CursorView cursorView;
+
+    // PortalPad's Samsung/Android 16 proven flag word. Do not add SECURE here:
+    // uid=shell lacks CAPTURE_SECURE_VIDEO_OUTPUT on stock Android. The XREAL
+    // destination Surface remains protected; this display hosts public apps.
+    // PUBLIC|PRESENTATION|OWN_CONTENT_ONLY|SCALING_DISABLED|
+    // ROTATES_WITH_CONTENT|DESTROY_CONTENT_ON_REMOVAL|TRUSTED|
+    // OWN_DISPLAY_GROUP|ALWAYS_UNLOCKED|OWN_FOCUS|DEVICE_DISPLAY_GROUP.
+    private static final int TRUSTED_APP_DISPLAY_FLAGS = 0xDD4B;
+
+    private static final ServiceConnection TRUSTED_CONNECTION = new ServiceConnection() {
+        @Override
+        public void onServiceConnected(ComponentName name, IBinder binder) {
+            if (binder == null || !binder.pingBinder()) {
+                status = "SHIZUKU: service trusted invalide";
+                return;
+            }
+            trustedService = binder;
+            trustedServiceBound = true;
+            createTrustedDisplayAndLaunch();
+        }
+
+        @Override
+        public void onServiceDisconnected(ComponentName name) {
+            trustedService = null;
+            trustedServiceBound = false;
+            status = "SHIZUKU: service trusted deconnecte";
+        }
+    };
 
     private SecureWidevinePlayer() {}
 
@@ -92,6 +157,385 @@ public final class SecureWidevinePlayer {
         return status;
     }
 
+    /**
+     * Launches the real YouTube Android application on a secure/trusted display
+     * created by a minimal Shizuku UserService. Its independent display/focus
+     * group keeps Unity/XREAL resumed while YouTube is active.
+     */
+    public static void startYoutubeDisplay(
+            Activity activity,
+            Surface surface,
+            int width,
+            int height,
+            int densityDpi,
+            String videoUri) {
+        activity.runOnUiThread(() -> {
+            try {
+                releaseInternal();
+                pendingActivity = activity;
+                pendingSurface = surface;
+                pendingWidth = Math.max(640, width);
+                pendingHeight = Math.max(360, height);
+                pendingDensityDpi = Math.max(160, densityDpi);
+                pendingVideoUri = videoUri;
+
+                if (!Shizuku.pingBinder()) {
+                    status = "SHIZUKU: service non demarre";
+                    return;
+                }
+                if (Shizuku.checkSelfPermission()
+                        != PackageManager.PERMISSION_GRANTED) {
+                    status = "SHIZUKU: autorisation requise sur le telephone";
+                    Shizuku.requestPermission(9107);
+                    return;
+                }
+
+                status = "SHIZUKU: connexion display trusted";
+                Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
+                        new ComponentName(
+                                activity.getPackageName(),
+                                TrustedDisplayUserService.class.getName()))
+                        .daemon(false)
+                        .processNameSuffix("mlomega_trusted")
+                        .debuggable(false)
+                        .version(6);
+                Shizuku.bindUserService(args, TRUSTED_CONNECTION);
+            } catch (Throwable error) {
+                status = "YOUTUBE EXCEPTION: " + error.getClass().getSimpleName()
+                        + ": " + String.valueOf(error.getMessage());
+                Log.e(TAG, status, error);
+            }
+        });
+    }
+
+    private static void createTrustedDisplayAndLaunch() {
+        IBinder binder = trustedService;
+        if (binder == null || pendingSurface == null) return;
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TrustedDisplayUserService.DESCRIPTOR);
+            data.writeString("MLOmega XREAL trusted video app");
+            data.writeInt(pendingWidth);
+            data.writeInt(pendingHeight);
+            data.writeInt(pendingDensityDpi);
+            data.writeInt(TRUSTED_APP_DISPLAY_FLAGS);
+            pendingSurface.writeToParcel(data, 0);
+            binder.transact(
+                    TrustedDisplayUserService.TRANSACTION_CREATE,
+                    data,
+                    reply,
+                    0);
+            reply.readException();
+            int displayId = reply.readInt();
+            if (displayId < 0) {
+                throw new IllegalStateException("trusted display id=" + displayId);
+            }
+            trustedDisplayId = displayId;
+
+            data.recycle();
+            reply.recycle();
+            data = Parcel.obtain();
+            reply = Parcel.obtain();
+            data.writeInterfaceToken(TrustedDisplayUserService.DESCRIPTOR);
+            data.writeInt(displayId);
+            data.writeString(pendingVideoUri);
+            binder.transact(
+                    TrustedDisplayUserService.TRANSACTION_LAUNCH_YOUTUBE,
+                    data,
+                    reply,
+                    0);
+            reply.readException();
+            String launch = reply.readString();
+            status = "YOUTUBE: TRUSTED DISPLAY " + displayId;
+            Log.i(TAG, status + " launch=" + launch);
+            showCursorPresentation(displayId, 8);
+        } catch (Throwable error) {
+            status = "YOUTUBE TRUSTED EXCEPTION: "
+                    + error.getClass().getSimpleName() + ": " + error.getMessage();
+            Log.e(TAG, status, error);
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    public static boolean pointerDown(float x, float y) {
+        pointerDownTime = SystemClock.uptimeMillis();
+        // Samsung rejects cross-UID injected touches whenever our cursor
+        // Presentation overlaps the target app, even though the window is
+        // NOT_TOUCHABLE and below Android's documented 0.8 opacity limit.
+        // Hide only that visual overlay for the duration of the gesture;
+        // this restores the exact touch path proven by v8.
+        setCursorPresentationVisible(false, true);
+        boolean sent = sendPointer(0, x, y, pointerDownTime);
+        if (!sent) {
+            pointerDownTime = 0L;
+            setCursorPresentationVisible(true, false);
+            updateCursor(x, y, false);
+        }
+        return sent;
+    }
+
+    public static boolean pointerMove(float x, float y) {
+        if (pointerDownTime <= 0L) return false;
+        return sendPointer(2, x, y, pointerDownTime);
+    }
+
+    public static boolean pointerUp(float x, float y) {
+        long down = pointerDownTime;
+        pointerDownTime = 0L;
+        if (down <= 0L) return false;
+        boolean sent = sendPointer(1, x, y, down);
+        updateCursor(x, y, false);
+        setCursorPresentationVisible(true, false);
+        return sent;
+    }
+
+    public static boolean pointerHover(float x, float y) {
+        updateCursor(x, y, false);
+        IBinder binder = trustedService;
+        int displayId = trustedDisplayId;
+        if (binder == null || !binder.pingBinder() || displayId < 0)
+            return false;
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TrustedDisplayUserService.DESCRIPTOR);
+            data.writeInt(displayId);
+            data.writeFloat(x);
+            data.writeFloat(y);
+            binder.transact(
+                    TrustedDisplayUserService.TRANSACTION_HOVER,
+                    data,
+                    reply,
+                    0);
+            reply.readException();
+            return reply.readInt() != 0;
+        } catch (Throwable error) {
+            Log.e(TAG, "pointer hover send failed", error);
+            return false;
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    public static boolean openKeyboard() {
+        IBinder binder = trustedService;
+        int displayId = trustedDisplayId;
+        if (binder == null || !binder.pingBinder() || displayId < 0)
+            return false;
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TrustedDisplayUserService.DESCRIPTOR);
+            data.writeInt(displayId);
+            binder.transact(
+                    TrustedDisplayUserService.TRANSACTION_OPEN_KEYBOARD,
+                    data,
+                    reply,
+                    0);
+            reply.readException();
+            return reply.readInt() != 0;
+        } catch (Throwable error) {
+            Log.e(TAG, "keyboard request failed", error);
+            return false;
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    private static void showCursorPresentation(int displayId, int retries) {
+        Activity activity = pendingActivity;
+        if (activity == null) return;
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            try {
+                DisplayManager manager = (DisplayManager) activity.getSystemService(
+                        Context.DISPLAY_SERVICE);
+                Display display = manager != null ? manager.getDisplay(displayId) : null;
+                if (display == null) {
+                    if (retries > 0) showCursorPresentation(displayId, retries - 1);
+                    else Log.w(TAG, "cursor display unavailable id=" + displayId);
+                    return;
+                }
+                if (cursorPresentation != null) {
+                    try { cursorPresentation.dismiss(); } catch (Throwable ignored) {}
+                }
+                cursorPresentation = new CursorPresentation(activity, display);
+                cursorPresentation.show();
+                cursorView = cursorPresentation.cursor;
+                Log.i(TAG, "cursor presentation ready display=" + displayId);
+            } catch (Throwable error) {
+                Log.e(TAG, "cursor presentation failed display=" + displayId, error);
+            }
+        }, retries == 8 ? 900L : 250L);
+    }
+
+    private static void updateCursor(float x, float y, boolean pressed) {
+        CursorView view = cursorView;
+        if (view == null) return;
+        view.post(() -> view.setPointer(x, y, pressed));
+    }
+
+    private static void setCursorPresentationVisible(
+            boolean visible,
+            boolean waitForComposition) {
+        Activity activity = pendingActivity;
+        CursorPresentation presentation = cursorPresentation;
+        CursorView view = cursorView;
+        if (activity == null || presentation == null) return;
+
+        Runnable update = () -> {
+            try {
+                if (view != null) {
+                    view.setVisibility(visible ? View.VISIBLE : View.INVISIBLE);
+                }
+                if (visible) {
+                    // Dialog.show() after hide() restores the existing decor;
+                    // it does not recreate the Presentation or its Surface.
+                    presentation.show();
+                } else {
+                    // Alpha zero is insufficient on Samsung: InputDispatcher
+                    // keeps the Presentation in BLOCK_UNTRUSTED. hide() makes
+                    // the decor GONE and removes it from hit-test occlusion.
+                    presentation.hide();
+                }
+                Log.i(TAG, "cursor presentation visible=" + visible);
+            } catch (Throwable error) {
+                Log.w(TAG, "cursor presentation visibility failed", error);
+            }
+        };
+
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            update.run();
+        } else if (waitForComposition) {
+            CountDownLatch applied = new CountDownLatch(1);
+            activity.runOnUiThread(() -> {
+                update.run();
+                applied.countDown();
+            });
+            try {
+                applied.await(120L, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        } else {
+            activity.runOnUiThread(update);
+        }
+
+        // Samsung updates the decor visibility immediately but publishes its
+        // input-window stack later. Hardware logs showed ACTION_DOWN still
+        // seeing the stale window 11 ms after the relayout, so allow several
+        // compositor/input-dispatch frames. This happens only on pinch-down.
+        if (!visible && waitForComposition &&
+                Looper.myLooper() != Looper.getMainLooper()) {
+            SystemClock.sleep(100L);
+        }
+    }
+
+    private static final class CursorPresentation extends Presentation {
+        CursorView cursor;
+
+        CursorPresentation(Context context, Display display) {
+            super(context, display);
+        }
+
+        @Override
+        protected void onCreate(android.os.Bundle state) {
+            super.onCreate(state);
+            Window window = getWindow();
+            if (window != null) {
+                window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+                window.setDimAmount(0f);
+                window.setFormat(PixelFormat.TRANSLUCENT);
+                window.addFlags(
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE |
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL |
+                        WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+                // Samsung One UI still classifies this cross-UID Presentation
+                // as BLOCK_UNTRUSTED at 0.72. The pointer bridge therefore
+                // drops it to alpha=0 only while a touch gesture is injected.
+                WindowManager.LayoutParams attributes = window.getAttributes();
+                attributes.alpha = 0.72f;
+                window.setAttributes(attributes);
+            }
+            cursor = new CursorView(getContext());
+            setContentView(cursor);
+        }
+    }
+
+    private static final class CursorView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private float pointerX = -100f;
+        private float pointerY = -100f;
+        private boolean pressed;
+
+        CursorView(Context context) {
+            super(context);
+            setBackgroundColor(Color.TRANSPARENT);
+            setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        }
+
+        void setPointer(float x, float y, boolean isPressed) {
+            pointerX = x;
+            pointerY = y;
+            pressed = isPressed;
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            if (pointerX < 0f || pointerY < 0f) return;
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.argb(210, 12, 16, 22));
+            canvas.drawCircle(pointerX, pointerY, pressed ? 17f : 14f, paint);
+            paint.setColor(Color.argb(255, 246, 249, 255));
+            canvas.drawCircle(pointerX, pointerY, pressed ? 11f : 9f, paint);
+            paint.setColor(pressed
+                    ? Color.rgb(54, 220, 255)
+                    : Color.rgb(100, 118, 142));
+            canvas.drawCircle(pointerX, pointerY, pressed ? 5f : 3.5f, paint);
+        }
+    }
+
+    private static boolean sendPointer(
+            int action,
+            float x,
+            float y,
+            long downTime) {
+        IBinder binder = trustedService;
+        int displayId = trustedDisplayId;
+        if (binder == null || !binder.pingBinder() || displayId < 0)
+            return false;
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TrustedDisplayUserService.DESCRIPTOR);
+            data.writeInt(displayId);
+            data.writeInt(action);
+            data.writeFloat(x);
+            data.writeFloat(y);
+            data.writeLong(downTime);
+            binder.transact(
+                    TrustedDisplayUserService.TRANSACTION_POINTER,
+                    data,
+                    reply,
+                    0);
+            reply.readException();
+            return reply.readInt() != 0;
+        } catch (Throwable error) {
+            Log.e(TAG, "pointer send failed action=" + action, error);
+            return false;
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
     public static void release(Activity activity) {
         activity.runOnUiThread(SecureWidevinePlayer::releaseInternal);
     }
@@ -102,5 +546,35 @@ public final class SecureWidevinePlayer {
             player.release();
             player = null;
         }
+        if (cursorPresentation != null) {
+            try { cursorPresentation.dismiss(); } catch (Throwable ignored) {}
+            cursorPresentation = null;
+            cursorView = null;
+        }
+        if (trustedService != null) {
+            Parcel data = Parcel.obtain();
+            Parcel reply = Parcel.obtain();
+            try {
+                data.writeInterfaceToken(TrustedDisplayUserService.DESCRIPTOR);
+                trustedService.transact(
+                        TrustedDisplayUserService.TRANSACTION_RELEASE,
+                        data,
+                        reply,
+                        0);
+                reply.readException();
+            } catch (Throwable error) {
+                Log.w(TAG, "trusted display release failed", error);
+            } finally {
+                data.recycle();
+                reply.recycle();
+            }
+        }
+        trustedService = null;
+        trustedServiceBound = false;
+        trustedDisplayId = -1;
+        pointerDownTime = 0L;
+        pendingActivity = null;
+        pendingSurface = null;
+        pendingVideoUri = null;
     }
 }

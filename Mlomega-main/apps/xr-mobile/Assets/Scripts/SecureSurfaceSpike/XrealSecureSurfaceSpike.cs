@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using MLOmega.XR.UI;
 using TMPro;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 namespace MLOmega.XR.SecureSurfaceSpike
@@ -25,6 +26,8 @@ namespace MLOmega.XR.SecureSurfaceSpike
             "https://storage.googleapis.com/shaka-demo-assets/sintel-widevine/dash.mpd";
         private const string WidevineLicense =
             "https://cwip-shaka-proxy.appspot.com/no_auth";
+        private const string YoutubePublicVideo =
+            "https://www.youtube.com/watch?v=aqz-KE-bpKQ";
         private const string WidevineBridge =
             "com.mlomega.xr.securesurface.SecureWidevinePlayer";
 
@@ -172,13 +175,15 @@ namespace MLOmega.XR.SecureSurfaceSpike
 
                 _widevine = new AndroidJavaClass(WidevineBridge);
                 _widevine.CallStatic(
-                    "start",
+                    "startYoutubeDisplay",
                     _activity,
                     _surface,
-                    WidevineManifest,
-                    WidevineLicense);
-                _status = "WIDEVINE: demarrage";
-                Debug.Log(Tag + " Widevine Media3 started on protected XREAL surface");
+                    _layer.pixelWidth,
+                    _layer.pixelHeight,
+                    240,
+                    YoutubePublicVideo);
+                _status = "YOUTUBE: demarrage application";
+                Debug.Log(Tag + " YouTube app display started on protected XREAL surface");
             }
             catch (Exception ex)
             {
@@ -263,14 +268,18 @@ namespace MLOmega.XR.SecureSurfaceSpike
             _xrCamera = Camera.main ?? FindAnyObjectByType<Camera>();
             if (_xrCamera == null) return;
 
-            var root = new GameObject("Secure Widevine spatial window");
+            var root = new GameObject("Secure Android app spatial window");
             Canvas canvas = root.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.WorldSpace;
             canvas.worldCamera = _xrCamera;
             canvas.sortingOrder = 240;
             root.AddComponent<GraphicRaycaster>();
             _windowRect = root.GetComponent<RectTransform>();
-            _windowRect.sizeDelta = new Vector2(1120f, 760f);
+            // The Android display itself is the window. Keep the default at
+            // 16:9 and leave transient handles to WorldCreatorController.
+            // Invisible 36 px interaction gutter around a 1120x630 (16:9)
+            // native surface. The compositor otherwise covers Unity handles.
+            _windowRect.sizeDelta = new Vector2(1192f, 702f);
             _windowRect.localScale = Vector3.one * 0.0012f;
 
             Vector3 forward = _xrCamera.transform.forward.normalized;
@@ -283,8 +292,12 @@ namespace MLOmega.XR.SecureSurfaceSpike
                 "Secure video glass",
                 Vector2.zero,
                 _windowRect.sizeDelta,
-                new Color(0.035f, 0.045f, 0.06f, 0.82f));
-            frame.raycastTarget = true;
+                Color.clear);
+            frame.raycastTarget = false;
+            frame.rectTransform.anchorMin = Vector2.zero;
+            frame.rectTransform.anchorMax = Vector2.one;
+            frame.rectTransform.offsetMin = Vector2.zero;
+            frame.rectTransform.offsetMax = Vector2.zero;
             Image header = MakeImage(
                 _windowRect,
                 "Secure video header",
@@ -294,22 +307,34 @@ namespace MLOmega.XR.SecureSurfaceSpike
             header.raycastTarget = true;
             MakeLabel(
                 header.rectTransform,
-                "Video securisee  •  Widevine",
+                "YouTube  •  application Android spatiale",
                 new Vector2(-280f, 0f),
                 new Vector2(480f, 42f),
                 22f);
+            header.gameObject.SetActive(false);
 
             var video = new GameObject("Protected native video area");
             video.transform.SetParent(_windowRect, false);
             _videoRect = video.AddComponent<RectTransform>();
+            Image videoHitSurface = video.AddComponent<Image>();
+            videoHitSurface.color = Color.clear;
+            videoHitSurface.raycastTarget = true;
+            var appPointer = video.AddComponent<SecureAndroidAppPointer>();
+            appPointer.Configure(_videoRect, new Vector2Int(1280, 720));
             LayoutVideoArea();
+            MakeTopActionHandle(
+                _windowRect, -56f, "▲", SecureAndroidAppAction.ScrollUp, appPointer);
+            MakeTopActionHandle(
+                _windowRect, 0f, "▼", SecureAndroidAppAction.ScrollDown, appPointer);
+            MakeTopActionHandle(
+                _windowRect, 56f, "⌨", SecureAndroidAppAction.Keyboard, appPointer);
 
             _creator = FindAnyObjectByType<WorldCreatorController>();
             if (_creator != null)
             {
                 _creator.RegisterExternalSpatialWindow(
                     _windowRect,
-                    "secure.widevine.video",
+                    "secure.android.youtube.fullscreen.v2",
                     CloseSpatialVideoWindow,
                     ApplySpatialWindowSize);
                 _creator.FocusExternalSpatialWindow(_windowRect);
@@ -336,10 +361,10 @@ namespace MLOmega.XR.SecureSurfaceSpike
             if (_windowRect == null || _videoRect == null) return;
             Vector2 size = _windowRect.sizeDelta;
             _videoRect.anchorMin = _videoRect.anchorMax = new Vector2(0.5f, 0.5f);
-            _videoRect.anchoredPosition = new Vector2(0f, -42f);
+            _videoRect.anchoredPosition = Vector2.zero;
             _videoRect.sizeDelta = new Vector2(
-                Mathf.Max(560f, size.x - 60f),
-                Mathf.Max(315f, size.y - 164f));
+                Mathf.Max(560f, size.x - 72f),
+                Mathf.Max(315f, size.y - 72f));
         }
 
         private void CloseSpatialVideoWindow()
@@ -390,6 +415,34 @@ namespace MLOmega.XR.SecureSurfaceSpike
             return label;
         }
 
+        private static void MakeTopActionHandle(
+            RectTransform parent,
+            float x,
+            string glyph,
+            SecureAndroidAppAction action,
+            SecureAndroidAppPointer pointer)
+        {
+            Image handle = MakeImage(
+                parent,
+                "Android app " + action,
+                Vector2.zero,
+                new Vector2(42f, 28f),
+                new Color(.12f, .15f, .19f, .78f));
+            RectTransform rect = handle.rectTransform;
+            rect.anchorMin = rect.anchorMax = new Vector2(.5f, 1f);
+            rect.anchoredPosition = new Vector2(x, -18f);
+            handle.raycastTarget = true;
+            TextMeshProUGUI label = MakeLabel(
+                rect,
+                glyph,
+                Vector2.zero,
+                new Vector2(34f, 24f),
+                18f);
+            label.alignment = TextAlignmentOptions.Center;
+            var control = handle.gameObject.AddComponent<SecureAndroidAppActionHandle>();
+            control.Configure(handle, pointer, action);
+        }
+
         private void Fail(string reason)
         {
             _status = "ERREUR: " + reason;
@@ -398,6 +451,12 @@ namespace MLOmega.XR.SecureSurfaceSpike
 
         private void OnGUI()
         {
+            // The successful path is deliberately chrome-free. Diagnostics stay
+            // in logcat; only a fatal probe error may overlay the optical view.
+            if (string.IsNullOrEmpty(_status) ||
+                (!_status.StartsWith("ERREUR", StringComparison.Ordinal) &&
+                 _status.IndexOf("EXCEPTION", StringComparison.OrdinalIgnoreCase) < 0))
+                return;
             var style = new GUIStyle(GUI.skin.label)
             {
                 fontSize = 28,
@@ -437,6 +496,306 @@ namespace MLOmega.XR.SecureSurfaceSpike
             _widevine = null;
             _activity = null;
             _surface = null;
+        }
+    }
+
+    public enum SecureAndroidAppAction
+    {
+        ScrollUp,
+        ScrollDown,
+        Keyboard,
+    }
+
+    public sealed class SecureAndroidAppActionHandle : MonoBehaviour,
+        IPointerEnterHandler,
+        IPointerExitHandler,
+        IPointerClickHandler
+    {
+        private Image _image;
+        private CanvasGroup _group;
+        private SecureAndroidAppPointer _pointer;
+        private SecureAndroidAppAction _action;
+
+        public void Configure(
+            Image image,
+            SecureAndroidAppPointer pointer,
+            SecureAndroidAppAction action)
+        {
+            _image = image;
+            _pointer = pointer;
+            _action = action;
+            _group = gameObject.AddComponent<CanvasGroup>();
+            _group.alpha = 0f;
+            _group.interactable = true;
+            _group.blocksRaycasts = true;
+        }
+
+        public void OnPointerEnter(PointerEventData eventData)
+        {
+            if (_image != null)
+                _image.color = new Color(.78f, .84f, .92f, .94f);
+            if (_group != null) _group.alpha = 1f;
+        }
+
+        public void OnPointerExit(PointerEventData eventData)
+        {
+            if (_image != null)
+                _image.color = new Color(.12f, .15f, .19f, .78f);
+            if (_group != null) _group.alpha = 0f;
+        }
+
+        public void OnPointerClick(PointerEventData eventData)
+        {
+            if (_pointer == null) return;
+            if (_action == SecureAndroidAppAction.Keyboard)
+                _pointer.OpenKeyboard();
+            else
+                _pointer.ScrollPage(
+                    _action == SecureAndroidAppAction.ScrollUp ? -1 : 1);
+        }
+    }
+
+    /// <summary>
+    /// Converts the already-proven Atelier gaze/pinch pointer into Android touch
+    /// coordinates for the app hosted on the Shizuku virtual display. Kept in
+    /// this isolated spike so Product, Atelier and Browser Lab remain untouched.
+    /// </summary>
+    public sealed class SecureAndroidAppPointer : MonoBehaviour,
+        IPointerEnterHandler,
+        IPointerExitHandler,
+        IPointerDownHandler,
+        IPointerUpHandler,
+        IPointerClickHandler,
+        IDragHandler
+    {
+        private const string Tag = "[SECURE-ANDROID-POINTER]";
+        private const string Bridge =
+            "com.mlomega.xr.securesurface.SecureWidevinePlayer";
+
+        private RectTransform _contentRect;
+        private Vector2Int _displayPixels;
+        private AndroidJavaClass _bridge;
+        private Camera _camera;
+        private Vector2Int _lastPoint;
+        private Vector2Int _lastRawPoint;
+        private Vector2Int _downRawPoint;
+        private float _rawDragDistance;
+        private float _nextHoverAt;
+        private bool _down;
+        private bool _dragStarted;
+        private bool _actionRunning;
+
+        public void Configure(RectTransform contentRect, Vector2Int displayPixels)
+        {
+            _contentRect = contentRect;
+            _displayPixels = displayPixels;
+            _camera = Camera.main;
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try { _bridge = new AndroidJavaClass(Bridge); }
+            catch (Exception ex)
+            {
+                Debug.LogError(Tag + " bridge unavailable: " + ex.Message);
+            }
+#endif
+        }
+
+        public void OnPointerEnter(PointerEventData eventData) { }
+
+        public void OnPointerExit(PointerEventData eventData)
+        {
+            ReleasePointer();
+        }
+
+        public void OnPointerDown(PointerEventData eventData)
+        {
+            _lastPoint = DisplayPoint(eventData);
+            _lastRawPoint = _lastPoint;
+            _downRawPoint = _lastPoint;
+            _rawDragDistance = 0f;
+            _dragStarted = false;
+            _down = Send("pointerDown", _lastPoint);
+        }
+
+        public void OnDrag(PointerEventData eventData)
+        {
+            if (!_down) return;
+            Vector2Int raw = DisplayPoint(eventData);
+            Vector2Int delta = raw - _lastRawPoint;
+            _lastRawPoint = raw;
+            _rawDragDistance += Mathf.Abs(delta.x) + Mathf.Abs(delta.y);
+            if (!_dragStarted && _rawDragDistance < 14f) return;
+            if (!_dragStarted)
+            {
+                _dragStarted = true;
+                delta = raw - _downRawPoint;
+            }
+            _lastPoint = AmplifiedPoint(_lastPoint, delta);
+            if (!Send("pointerMove", _lastPoint))
+                Debug.LogWarning(Tag + " move injection rejected");
+        }
+
+        public void OnPointerUp(PointerEventData eventData)
+        {
+            if (!_down) return;
+            if (!_dragStarted) _lastPoint = _downRawPoint;
+            Send("pointerUp", _lastPoint);
+            _down = false;
+            _dragStarted = false;
+        }
+
+        // Required by the shared world-space target resolver. Android receives
+        // the actual gesture through down/move/up above, so no second tap here.
+        public void OnPointerClick(PointerEventData eventData) { }
+
+        public void ScrollPage(int direction)
+        {
+            if (!_down) StartCoroutine(ScrollPageRoutine(direction));
+        }
+
+        public void OpenKeyboard()
+        {
+            SendNoCoordinates("openKeyboard");
+        }
+
+        private void Update()
+        {
+            if (_down || _actionRunning || Time.unscaledTime < _nextHoverAt ||
+                _contentRect == null || !_contentRect.gameObject.activeInHierarchy)
+                return;
+            _nextHoverAt = Time.unscaledTime + (1f / 30f);
+            if (_camera == null) _camera = Camera.main;
+            if (_camera == null) return;
+            Ray gaze = _camera.ViewportPointToRay(new Vector3(.5f, .5f, 0f));
+            var plane = new Plane(_contentRect.forward, _contentRect.position);
+            if (!plane.Raycast(gaze, out float distance)) return;
+            Vector3 world = gaze.GetPoint(distance);
+            Vector3 local = _contentRect.InverseTransformPoint(world);
+            if (!_contentRect.rect.Contains(new Vector2(local.x, local.y))) return;
+            Vector2Int point = DisplayPoint(world);
+            if ((point - _lastPoint).sqrMagnitude < 4) return;
+            _lastPoint = point;
+            Send("pointerHover", point);
+        }
+
+        private Vector2Int DisplayPoint(PointerEventData eventData)
+        {
+            if (_contentRect == null || eventData == null)
+                return Vector2Int.zero;
+            return DisplayPoint(eventData.pointerCurrentRaycast.worldPosition);
+        }
+
+        private Vector2Int DisplayPoint(Vector3 world)
+        {
+            if (_contentRect == null) return Vector2Int.zero;
+            Vector3 local = _contentRect.InverseTransformPoint(world);
+            Rect rect = _contentRect.rect;
+            float nx = Mathf.Clamp01(local.x / rect.width + _contentRect.pivot.x);
+            float ny = 1f - Mathf.Clamp01(
+                local.y / rect.height + _contentRect.pivot.y);
+            return new Vector2Int(
+                Mathf.Clamp(
+                    Mathf.RoundToInt(nx * (_displayPixels.x - 1)),
+                    0,
+                    _displayPixels.x - 1),
+                Mathf.Clamp(
+                    Mathf.RoundToInt(ny * (_displayPixels.y - 1)),
+                    0,
+                    _displayPixels.y - 1));
+        }
+
+        private Vector2Int AmplifiedPoint(Vector2Int point, Vector2Int delta) =>
+            new Vector2Int(
+                Mathf.Clamp(
+                    point.x + Mathf.RoundToInt(delta.x * 3.0f),
+                    0,
+                    _displayPixels.x - 1),
+                Mathf.Clamp(
+                    point.y + Mathf.RoundToInt(delta.y * 4.2f),
+                    0,
+                    _displayPixels.y - 1));
+
+        private IEnumerator ScrollPageRoutine(int direction)
+        {
+            _actionRunning = true;
+            Vector2Int start = new Vector2Int(
+                _displayPixels.x / 2,
+                direction < 0 ? _displayPixels.y / 3 : _displayPixels.y * 2 / 3);
+            Vector2Int end = new Vector2Int(
+                start.x,
+                direction < 0 ? _displayPixels.y * 5 / 6 : _displayPixels.y / 6);
+            if (!Send("pointerDown", start))
+            {
+                _actionRunning = false;
+                yield break;
+            }
+            for (int i = 1; i <= 8; i++)
+            {
+                Vector2 point = Vector2.Lerp(start, end, i / 8f);
+                _lastPoint = Vector2Int.RoundToInt(point);
+                Send("pointerMove", _lastPoint);
+                yield return null;
+            }
+            Send("pointerUp", end);
+            _lastPoint = end;
+            _actionRunning = false;
+        }
+
+        private bool Send(string method, Vector2Int point)
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_bridge == null) return false;
+            try
+            {
+                return _bridge.CallStatic<bool>(method, (float)point.x, (float)point.y);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError(Tag + " " + method + " failed: " + ex.Message);
+                return false;
+            }
+#else
+            return true;
+#endif
+        }
+
+        private bool SendNoCoordinates(string method)
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_bridge == null) return false;
+            try { return _bridge.CallStatic<bool>(method); }
+            catch (Exception ex)
+            {
+                Debug.LogError(Tag + " " + method + " failed: " + ex.Message);
+                return false;
+            }
+#else
+            return true;
+#endif
+        }
+
+        private void ReleasePointer()
+        {
+            if (!_down) return;
+            Send("pointerUp", _lastPoint);
+            _down = false;
+            _dragStarted = false;
+        }
+
+        private void OnDisable()
+        {
+            if (_actionRunning)
+            {
+                Send("pointerUp", _lastPoint);
+                _actionRunning = false;
+            }
+            ReleasePointer();
+        }
+
+        private void OnDestroy()
+        {
+            ReleasePointer();
+            _bridge?.Dispose();
+            _bridge = null;
         }
     }
 }
