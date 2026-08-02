@@ -910,6 +910,57 @@ $adb = "C:\Users\wabad\AppData\Local\Android\Sdk\platform-tools\adb.exe"
   /sdcard/Android/data/com.mlomega.xr.worldatelierlab/files/Recordings
 ```
 
+### 8.16 Jalon surface vidéo protégée spatiale
+
+Le 2 août 2026, un spike **strictement isolé** a validé la chaîne suivante sur
+S24 + XREAL One Pro + Eye :
+
+1. décodage Android Media3 d'un DASH Widevine public vers une `Surface`
+   protégée ;
+2. composition de cette surface par `CreateQuadSurfaceLayer(..., true, ...)`
+   du plugin XREAL, sans lecture ni copie des pixels DRM par Unity ;
+3. réactivation du layer dans `Application.onBeforeRender` (XREAL remet son
+   drapeau `active` à zéro à chaque frame) ;
+4. world-lock réel : la cible Unity reste dans le monde et sa pose relative à
+   la caméra est envoyée par `ModifyQuadCompositionLayer` avant chaque rendu ;
+5. intégration au contrôleur de fenêtres Atelier : regard/pinch, déplacement,
+   profondeur, inclinaison, resize et persistance de layout.
+
+Gate matériel : vidéo stable et visible, déplacement de la tête et lever du
+corps sans que la fenêtre suive le regard, poignées et resize fonctionnels.
+Quelques flashs noirs isolés restent visibles ; les logs ne montrent ni
+rebuffer Media3 ni erreur Widevine, mais de rares `NRMetrics DroppedFrame=1`.
+Le gate de faisabilité DRM/spatial est donc vert ; le zéro-flash long reste un
+raffinement de production.
+
+Référence à ne pas écraser :
+
+```text
+apps/xr-mobile/build/android/mlomega-xreal-secure-spatial-window-v3.apk
+taille = 243946949 octets
+sha256 = FB359B38FBDBADB4220F371C2AC30F608B3304AA74B6D37D8E4A9CC0EF8728B9
+package = com.mlomega.xr.securesurfacespike
+```
+
+Build isolé :
+
+```powershell
+$u = "C:\Program Files\Unity\Hub\Editor\6000.0.23f1\Editor\Unity.exe"
+$p = (Resolve-Path "apps\xr-mobile").Path
+$a = @(
+  '-batchmode','-quit','-projectPath',$p,
+  '-executeMethod','MLOmega.XR.Editor.AndroidBuildXreal.BuildSecureSurfaceSpikeApk',
+  '-logFile',(Join-Path $p 'secure-surface-spatial-window-build.log')
+)
+Start-Process -FilePath $u -ArgumentList $a -Wait -PassThru -WindowStyle Hidden
+```
+
+Le test prouve le transport **Widevine protégé** et sa coexistence avec l'UI
+Unity 3D. Il ne prouve pas encore l'authentification ou la certification Netflix.
+La suite doit rester dans ce package isolé : sources DASH/HLS génériques, puis
+virtual display/application vidéo protégée. Ne pas porter vers le Lab ou le
+Produit avant validation de la stabilité, du contrôle et du fournisseur réel.
+
 ## 9. APK produit : travail explicitement restant
 
 Après correction et preuve de l'Atelier :

@@ -327,6 +327,75 @@ namespace MLOmega.XR.Editor
         }
 
         /// <summary>
+        /// Builds an isolated protected-surface composition probe. It owns a
+        /// unique package, scene and output file and therefore cannot overwrite
+        /// Product, Atelier or Browser Lab.
+        /// </summary>
+        [MenuItem("MLOmega/XREAL/5. Build Secure Surface Spike APK")]
+        public static void BuildSecureSurfaceSpikeApk()
+        {
+            EnsureXrealPackage();
+            EnsureArFoundationPackage();
+            EnsurePackageDependency(XrHandsDep, "com.unity.xr.hands");
+            EnsurePackageDependency(
+                XrInteractionDep, "com.unity.xr.interaction.toolkit");
+            SetDefine();
+            ConfigureExternalTools();
+            EnsureS24DisplayCompatibility();
+            EnsureTmpEssentialResources();
+            EnsureXrealRenderPipelineAssets();
+
+            using (var xrealSettings = new XrealBuildSettingsScope(
+                       useTemplateBuiltInPipeline: true))
+            {
+                ConfigurePlayerSettings();
+                PlayerSettings.productName = "MLOmega XREAL Secure Surface Spike";
+                PlayerSettings.SetApplicationIdentifier(
+                    BuildTargetGroup.Android,
+                    "com.mlomega.xr.securesurfacespike");
+                ConfigureXrealSdkSettings();
+                EnableXrealLoader();
+                ValidateArFoundationLoaded();
+                EnsureOfficialXriRigAssets();
+                AndroidBuild.EmbedSmallDeviceModels();
+                WorldCreatorSceneBuilder.BuildSecureSurfaceSpikeScene();
+                ValidateXrealBuildSettings(
+                    expectTemplateBuiltInPipeline: true);
+                if (!File.Exists(
+                        WorldCreatorSceneBuilder.SecureSurfaceScenePath))
+                    throw new Exception(
+                        "[AndroidBuildXreal] Secure-surface scene missing.");
+
+                string outPath = Path.GetFullPath(Path.Combine(
+                    "build",
+                    "android",
+                    "mlomega-xreal-secure-surface-spike.apk"));
+                Directory.CreateDirectory(Path.GetDirectoryName(outPath));
+                BuildReport report = BuildPipeline.BuildPlayer(
+                    new BuildPlayerOptions
+                    {
+                        scenes = new[]
+                        {
+                            WorldCreatorSceneBuilder.SecureSurfaceScenePath,
+                        },
+                        locationPathName = outPath,
+                        target = BuildTarget.Android,
+                        targetGroup = BuildTargetGroup.Android,
+                        options = BuildOptions.None,
+                    });
+                BuildSummary summary = report.summary;
+                if (summary.result != BuildResult.Succeeded)
+                    throw new Exception(
+                        "[AndroidBuildXreal] Secure Surface Spike failed: " +
+                        summary.result + " (" + summary.totalErrors +
+                        " errors) -> " + outPath);
+                Debug.Log(
+                    "[AndroidBuildXreal] Secure Surface Spike APK OK: " +
+                    outPath + " (" + summary.totalSize + " bytes)");
+            }
+        }
+
+        /// <summary>
         /// Hardware diagnostic built from XREAL SDK 3.1's unmodified HelloMR
         /// sample. It contains no MLOmega scene, renderer or interaction code,
         /// so it separates a host/SDK problem from a product regression.
@@ -1507,6 +1576,14 @@ namespace MLOmega.XR.Editor
         {
             string identifier = PlayerSettings.GetApplicationIdentifier(
                 BuildTargetGroup.Android);
+            if (string.Equals(
+                    identifier,
+                    "com.mlomega.xr.securesurfacespike",
+                    StringComparison.Ordinal))
+            {
+                InjectSecureSurfaceWidevineProbe(path);
+                return;
+            }
             if (!string.Equals(
                     identifier,
                     "com.mlomega.xr.worldatelierlab",
@@ -1548,6 +1625,86 @@ namespace MLOmega.XR.Editor
                 "    </queries>\n";
             File.WriteAllText(manifest, xml.Insert(application, queries));
             Debug.Log("[AndroidBuildXreal] XR Lab package/icon queries injected: " + manifest);
+        }
+
+        private static void InjectSecureSurfaceWidevineProbe(string unityLibraryPath)
+        {
+            string template = Path.Combine(
+                Application.dataPath,
+                "Scripts",
+                "Editor",
+                "SecureSurfaceSpike",
+                "SecureWidevinePlayer.java.txt");
+            if (!File.Exists(template))
+                throw new FileNotFoundException(
+                    "Secure Widevine Java bridge template missing.", template);
+
+            string java = Path.Combine(
+                unityLibraryPath,
+                "src",
+                "main",
+                "java",
+                "com",
+                "mlomega",
+                "xr",
+                "securesurface",
+                "SecureWidevinePlayer.java");
+            Directory.CreateDirectory(Path.GetDirectoryName(java));
+            File.Copy(template, java, true);
+
+            string gradle = Path.Combine(unityLibraryPath, "build.gradle");
+            if (!File.Exists(gradle))
+                throw new FileNotFoundException(
+                    "Generated unityLibrary build.gradle missing.", gradle);
+            string text = File.ReadAllText(gradle);
+            const string marker = "// MLOMEGA_SECURE_SURFACE_MEDIA3";
+            if (!text.Contains(marker))
+            {
+                int dependencies = text.IndexOf(
+                    "dependencies {",
+                    StringComparison.Ordinal);
+                if (dependencies < 0)
+                    throw new InvalidDataException(
+                        "Generated unityLibrary build.gradle has no dependencies block: " +
+                        gradle);
+                dependencies += "dependencies {".Length;
+                const string media3 =
+                    "\n    // MLOMEGA_SECURE_SURFACE_MEDIA3\n" +
+                    "    implementation('androidx.media3:media3-exoplayer:1.5.1') {\n" +
+                    "        exclude group: 'androidx.core'\n" +
+                    "        exclude group: 'androidx.annotation'\n" +
+                    "        exclude group: 'androidx.collection'\n" +
+                    "        exclude group: 'androidx.exifinterface'\n" +
+                    "        exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib'\n" +
+                    "        exclude group: 'org.jetbrains', module: 'annotations'\n" +
+                    "    }\n" +
+                    "    implementation('androidx.media3:media3-exoplayer-dash:1.5.1') {\n" +
+                    "        exclude group: 'androidx.core'\n" +
+                    "        exclude group: 'androidx.annotation'\n" +
+                    "        exclude group: 'androidx.collection'\n" +
+                    "        exclude group: 'androidx.exifinterface'\n" +
+                    "        exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib'\n" +
+                    "        exclude group: 'org.jetbrains', module: 'annotations'\n" +
+                    "    }\n";
+                text = text.Insert(dependencies, media3);
+                const string allJars =
+                    "implementation fileTree(dir: 'libs', include: ['*.jar'])";
+                const string spikeJars =
+                    "implementation fileTree(dir: 'libs', include: ['*.jar'], " +
+                    "exclude: ['guava-27.0.1-android.jar', " +
+                    "'failureaccess-1.0.1.jar', " +
+                    "'listenablefuture-9999.0-empty-to-avoid-conflict-with-guava.jar'])";
+                if (!text.Contains(allJars))
+                    throw new InvalidDataException(
+                        "Generated unityLibrary JAR fileTree declaration changed: " +
+                        gradle);
+                text = text.Replace(allJars, spikeJars);
+                File.WriteAllText(gradle, text);
+            }
+
+            Debug.Log(
+                "[AndroidBuildXreal] Isolated Widevine/Media3 probe injected: " +
+                java);
         }
     }
 }

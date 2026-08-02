@@ -1,0 +1,106 @@
+package com.mlomega.xr.securesurface;
+
+import android.app.Activity;
+import android.util.Log;
+import android.view.Surface;
+
+import androidx.media3.common.C;
+import androidx.media3.common.MediaItem;
+import androidx.media3.common.PlaybackException;
+import androidx.media3.common.Player;
+import androidx.media3.common.MimeTypes;
+import androidx.media3.common.util.UnstableApi;
+import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector;
+
+/**
+ * Isolated Widevine player used only by com.mlomega.xr.securesurfacespike.
+ * Product, Atelier and Browser Lab never compile or package this source.
+ */
+@UnstableApi
+public final class SecureWidevinePlayer {
+    private static final String TAG = "MLOmegaSecureSurface";
+    private static volatile String status = "WIDEVINE: initialisation";
+    private static ExoPlayer player;
+
+    private SecureWidevinePlayer() {}
+
+    public static void start(
+            Activity activity,
+            Surface surface,
+            String manifestUri,
+            String licenseUri) {
+        activity.runOnUiThread(() -> {
+            try {
+                releaseInternal();
+                status = "WIDEVINE: creation lecteur";
+
+                DefaultTrackSelector trackSelector = new DefaultTrackSelector(activity);
+                trackSelector.setParameters(
+                        trackSelector.buildUponParameters()
+                                .setPreferredVideoMimeType(MimeTypes.VIDEO_H264));
+                player = new ExoPlayer.Builder(activity)
+                        .setTrackSelector(trackSelector)
+                        .build();
+                player.setVideoSurface(surface);
+                player.setRepeatMode(Player.REPEAT_MODE_ONE);
+                player.addListener(new Player.Listener() {
+                    @Override
+                    public void onPlaybackStateChanged(int state) {
+                        if (state == Player.STATE_BUFFERING) {
+                            status = "WIDEVINE: chargement";
+                        } else if (state == Player.STATE_READY) {
+                            status = "WIDEVINE: PRET / SECURE DECODER";
+                            Log.i(TAG, "Widevine player READY on XREAL protected Surface");
+                        } else if (state == Player.STATE_ENDED) {
+                            status = "WIDEVINE: termine";
+                        }
+                    }
+
+                    @Override
+                    public void onPlayerError(PlaybackException error) {
+                        status = "WIDEVINE ERREUR " + error.errorCode + ": "
+                                + String.valueOf(error.getMessage());
+                        Log.e(TAG, status, error);
+                    }
+                });
+
+                MediaItem.DrmConfiguration drm =
+                        new MediaItem.DrmConfiguration.Builder(C.WIDEVINE_UUID)
+                                .setLicenseUri(licenseUri)
+                                .setForceDefaultLicenseUri(true)
+                                .build();
+                MediaItem mediaItem = new MediaItem.Builder()
+                        .setUri(manifestUri)
+                        .setMimeType("application/dash+xml")
+                        .setDrmConfiguration(drm)
+                        .build();
+
+                player.setMediaItem(mediaItem);
+                player.prepare();
+                player.play();
+                Log.i(TAG, "Widevine request started: " + manifestUri);
+            } catch (Throwable error) {
+                status = "WIDEVINE EXCEPTION: " + error.getClass().getSimpleName()
+                        + ": " + String.valueOf(error.getMessage());
+                Log.e(TAG, status, error);
+            }
+        });
+    }
+
+    public static String getStatus() {
+        return status;
+    }
+
+    public static void release(Activity activity) {
+        activity.runOnUiThread(SecureWidevinePlayer::releaseInternal);
+    }
+
+    private static void releaseInternal() {
+        if (player != null) {
+            player.clearVideoSurface();
+            player.release();
+            player = null;
+        }
+    }
+}

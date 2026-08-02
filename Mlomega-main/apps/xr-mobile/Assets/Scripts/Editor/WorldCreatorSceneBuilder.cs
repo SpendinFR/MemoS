@@ -13,6 +13,8 @@ namespace MLOmega.XR.Editor
     {
         public const string ScenePath = "Assets/Scenes/XrealWorldCreator.unity";
         public const string LabScenePath = "Assets/Scenes/XrealWorldLab.unity";
+        public const string SecureSurfaceScenePath =
+            "Assets/Scenes/XrealSecureSurfaceSpike.unity";
         private const string OfficialRigPrefabPath =
             "Packages/com.xreal.xr/Runtime/Prefabs/" +
             "XR Interaction Hands Setup.prefab";
@@ -183,6 +185,58 @@ namespace MLOmega.XR.Editor
             Debug.Log(
                 "[WorldCreatorSceneBuilder] isolated XR browser Lab ready: " +
                 LabScenePath);
+        }
+
+        /// <summary>
+        /// Builds a separate XREAL scene used only to prove Android protected
+        /// surface composition. The validated Atelier/Lab scenes are build inputs,
+        /// never outputs, of this spike.
+        /// </summary>
+        public static void BuildSecureSurfaceSpikeScene()
+        {
+            BuildScene();
+            var scene = EditorSceneManager.OpenScene(
+                ScenePath,
+                OpenSceneMode.Single);
+            GameObject root = GameObject.Find("MLOmega World Atelier");
+            if (root == null)
+                throw new InvalidOperationException(
+                    "Validated Atelier root missing while creating secure-surface spike.");
+
+            string[] disabledTypes =
+            {
+                "XrealSpatialProvider",
+                "WorldMapDocumentExchange",
+            };
+            foreach (MonoBehaviour behaviour in
+                     root.GetComponents<MonoBehaviour>())
+            {
+                if (behaviour == null) continue;
+                if (Array.IndexOf(disabledTypes, behaviour.GetType().Name) >= 0)
+                    behaviour.enabled = false;
+            }
+
+            Type spikeType = Type.GetType(
+                "MLOmega.XR.SecureSurfaceSpike.XrealSecureSurfaceSpike, " +
+                "MLOmega.XR.SecureSurfaceSpike",
+                false);
+            if (spikeType == null || !typeof(MonoBehaviour).IsAssignableFrom(spikeType))
+                throw new InvalidOperationException(
+                    "Isolated secure-surface spike assembly unavailable.");
+            root.AddComponent(spikeType);
+
+            Directory.CreateDirectory(
+                Path.GetDirectoryName(SecureSurfaceScenePath));
+            if (!EditorSceneManager.SaveScene(
+                    scene,
+                    SecureSurfaceScenePath,
+                    true))
+                throw new InvalidOperationException(
+                    "Unable to save isolated secure-surface scene.");
+            AssetDatabase.SaveAssets();
+            Debug.Log(
+                "[WorldCreatorSceneBuilder] isolated secure-surface spike ready: " +
+                SecureSurfaceScenePath);
         }
 
         private static Shader RequiredShader(string path)
