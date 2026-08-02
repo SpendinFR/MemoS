@@ -769,6 +769,84 @@ Toute expérience d'application web, clavier XR ou multi-fenêtres doit utiliser
 un package Android et un artefact distincts. Elle ne remplace ni cette APK ni
 le builder stable de l'Atelier.
 
+### 8.14 Jalon Browser Lab v27 : fenêtres spatiales, web et clavier XR
+
+Le 2 août 2026, les expériences web ont été isolées dans une troisième APK :
+
+```text
+package = com.mlomega.xr.worldatelierlab
+activité = ai.nreal.activitylife.NRXRActivity
+builder = MLOmega.XR.Editor.AndroidBuildXreal.BuildCreatorLabApk
+artefact courant = apps/xr-mobile/build/android/mlomega-xreal-world-lab-v27.apk
+taille = 239009277 octets
+sha256 = 2A865155C844F5338DF991EB4E2B84DA612D5E50F0C26F3F492E119CE41B87E7
+```
+
+Le Lab repart du véritable Atelier v21 au lieu de réimplémenter ses contrôles.
+Il conserve donc le dock world-locked, le pointeur regard + pinch à 25 FPS, la
+paume, les deux mains, la mémoire des poses, les contrôles de lentilles et le
+cadre optique transparent. Son plugin WebView Android est activé uniquement
+pendant `BuildCreatorLabApk`, puis son état d'import est restauré : les APK
+Produit et Atelier ne récupèrent pas silencieusement ce runtime natif.
+
+Fonctions présentes dans la dernière source :
+
+- fenêtres Google et YouTube spatiales ouvertes depuis le dock avec leurs
+  icônes, coexistence de plusieurs fenêtres et fermeture indépendante ;
+- même enveloppe de fenêtre que Réglages : croix, déplacement, profondeur,
+  inclinaison, resize uniforme, resize hauteur/largeur et poignées extérieures
+  qui apparaissent au regard ;
+- barre web avec retour/avance, URL tronquée proprement, défilement accéléré,
+  volume Android par glissement vertical, commande XR et ouverture explicite
+  du clavier ;
+- pointeur WebView corrigé pour le paysage XREAL, clic, champ éditable, saisie
+  et réouverture du clavier sans toucher le téléphone ;
+- clavier XR flottant regard + pinch, effacement, suppression, espace, entrée
+  et dictée vocale Android ;
+- sauvegarde des fenêtres et de leur taille/pose, choix `Reprendre` ou `Dock`
+  après une fermeture propre ; Réglages n'est volontairement pas restauré ;
+- dock ancré identique à l'Atelier, curseur contrasté sur les pages claires et
+  reflow des contrôles sans débordement lors du resize.
+
+Gate matériel effectivement observé sur S24 + One Pro + Eye : dock, gestes,
+fenêtres web, Google/YouTube, navigation, clic dans la page, clavier, micro,
+scroll, volume, déplacement, profondeur, inclinaison, resize et fermeture sont
+fonctionnels. La v27 compile avec `Build Finished, Result: Success` et ne
+modifie aucun runner local/PRO ni Brain2.
+
+Le seul point rouge volontairement conservé est le bouton `XR` vidéo. Le clic
+est prouvé (`hover=Lab button XR`, puis `XR header activated`) mais TLab termine
+la sonde JavaScript avec `status=3` et un payload vide. Aucun crop n'est donc
+appliqué. Ne pas réutiliser le faux plein écran Android : selon le contrat
+`WebChromeClient.onShowCustomView`, il déplace la vidéo hors de la WebView et a
+déjà produit une surface noire. Reprendre sur le transport du résultat
+`EvaluateJSForResult` ou un cadrage de la texture existante, sans modifier le
+DOM et sans toucher à l'Atelier v21.
+
+Build, installation et lancement de la bonne activité :
+
+```powershell
+$unity = "C:\Program Files\Unity\Hub\Editor\6000.0.23f1\Editor\Unity.exe"
+& $unity -batchmode -quit `
+  -projectPath ".\apps\xr-mobile" `
+  -executeMethod MLOmega.XR.Editor.AndroidBuildXreal.BuildCreatorLabApk `
+  -logFile ".\apps\xr-mobile\world-browser-lab-build.log"
+
+$adb = "C:\Users\wabad\AppData\Local\Android\Sdk\platform-tools\adb.exe"
+& $adb install --no-streaming -r `
+  ".\apps\xr-mobile\build\android\mlomega-xreal-world-lab.apk"
+& $adb shell settings put system dex_on_external_display 0
+& $adb shell am start -n `
+  "com.mlomega.xr.worldatelierlab/ai.nreal.activitylife.NRXRActivity"
+```
+
+Au diagnostic du bouton XR, filtrer sans le bruit de télémétrie XREAL :
+
+```powershell
+& $adb logcat -d -v time |
+  Select-String -Pattern '\[XrLab\]|XR crop|XR header|Lab button XR'
+```
+
 ## 9. APK produit : travail explicitement restant
 
 Après correction et preuve de l'Atelier :

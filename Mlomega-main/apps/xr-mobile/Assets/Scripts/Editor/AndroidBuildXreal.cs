@@ -233,6 +233,100 @@ namespace MLOmega.XR.Editor
         }
 
         /// <summary>
+        /// Experimental browser/keyboard build. It has its own package, scene
+        /// and artifact. The native WebView archive is enabled only during this
+        /// build and restored to disabled afterwards, so Product and Atelier do
+        /// not silently acquire a second Android rendering stack.
+        /// </summary>
+        [MenuItem("MLOmega/XREAL/4. Build Spatial Browser Lab APK")]
+        public static void BuildCreatorLabApk()
+        {
+            const string webViewPlugin =
+                "Assets/ThirdParty/TLabWebView/Plugins/Android/" +
+                "libTLabWebView-release.aar";
+            EnsureXrealPackage();
+            EnsureArFoundationPackage();
+            EnsurePackageDependency(XrHandsDep, "com.unity.xr.hands");
+            EnsurePackageDependency(
+                XrInteractionDep, "com.unity.xr.interaction.toolkit");
+            SetDefine();
+            ConfigureExternalTools();
+            EnsureS24DisplayCompatibility();
+            EnsureTmpEssentialResources();
+            EnsureXrealRenderPipelineAssets();
+
+            var importer = AssetImporter.GetAtPath(webViewPlugin) as PluginImporter;
+            if (importer == null)
+                throw new FileNotFoundException(
+                    "XR Lab WebView plugin missing.", webViewPlugin);
+            bool originalAndroid = importer.GetCompatibleWithPlatform(
+                BuildTarget.Android);
+            try
+            {
+                importer.SetCompatibleWithAnyPlatform(false);
+                importer.SetCompatibleWithPlatform(BuildTarget.Android, true);
+                importer.SaveAndReimport();
+                using (var xrealSettings = new XrealBuildSettingsScope(
+                           useTemplateBuiltInPipeline: true))
+                {
+                    ConfigurePlayerSettings();
+                    PlayerSettings.productName = "MLOmega XR Browser Lab";
+                    PlayerSettings.SetApplicationIdentifier(
+                        BuildTargetGroup.Android,
+                        "com.mlomega.xr.worldatelierlab");
+                    ConfigureXrealSdkSettings();
+                    EnableXrealLoader();
+                    ValidateArFoundationLoaded();
+                    EnsureOfficialXriRigAssets();
+                    AndroidBuild.EmbedSmallDeviceModels();
+                    WorldCreatorSceneBuilder.BuildLaboratoryScene();
+                    ValidateXrealBuildSettings(
+                        expectTemplateBuiltInPipeline: true);
+                    if (!File.Exists(WorldCreatorSceneBuilder.LabScenePath))
+                        throw new Exception(
+                            "[AndroidBuildXreal] World Lab scene missing.");
+
+                    string outPath = Env(
+                        "MLOMEGA_CREATOR_LAB_APK_OUT",
+                        Path.GetFullPath(Path.Combine(
+                            "build",
+                            "android",
+                            "mlomega-xreal-world-lab.apk")));
+                    Directory.CreateDirectory(Path.GetDirectoryName(outPath));
+                    BuildReport report = BuildPipeline.BuildPlayer(
+                        new BuildPlayerOptions
+                        {
+                            scenes = new[] { WorldCreatorSceneBuilder.LabScenePath },
+                            locationPathName = outPath,
+                            target = BuildTarget.Android,
+                            targetGroup = BuildTargetGroup.Android,
+                            options = BuildOptions.None,
+                        });
+                    BuildSummary summary = report.summary;
+                    if (summary.result != BuildResult.Succeeded)
+                        throw new Exception(
+                            "[AndroidBuildXreal] Spatial Browser Lab APK failed: " +
+                            summary.result + " (" + summary.totalErrors +
+                            " errors) -> " + outPath);
+                    Debug.Log(
+                        "[AndroidBuildXreal] Spatial Browser Lab APK OK: " +
+                        outPath + " (" + summary.totalSize + " bytes)");
+                }
+            }
+            finally
+            {
+                importer = AssetImporter.GetAtPath(webViewPlugin) as PluginImporter;
+                if (importer != null)
+                {
+                    importer.SetCompatibleWithPlatform(
+                        BuildTarget.Android,
+                        originalAndroid);
+                    importer.SaveAndReimport();
+                }
+            }
+        }
+
+        /// <summary>
         /// Hardware diagnostic built from XREAL SDK 3.1's unmodified HelloMR
         /// sample. It contains no MLOmega scene, renderer or interaction code,
         /// so it separates a host/SDK problem from a product regression.
@@ -1396,6 +1490,64 @@ namespace MLOmega.XR.Editor
         {
             string v = Environment.GetEnvironmentVariable(key);
             return string.IsNullOrEmpty(v) ? fallback : v;
+        }
+    }
+
+    /// <summary>
+    /// Android 11+ hides installed application metadata unless a package is in
+    /// the manifest queries list. Inject the narrow list only into the generated
+    /// Lab Gradle project: Product and validated Atelier manifests remain byte-for-
+    /// byte unchanged.
+    /// </summary>
+    internal sealed class XrLabManifestPostprocessor : IPostGenerateGradleAndroidProject
+    {
+        public int callbackOrder => 100;
+
+        public void OnPostGenerateGradleAndroidProject(string path)
+        {
+            string identifier = PlayerSettings.GetApplicationIdentifier(
+                BuildTargetGroup.Android);
+            if (!string.Equals(
+                    identifier,
+                    "com.mlomega.xr.worldatelierlab",
+                    StringComparison.Ordinal))
+                return;
+
+            string manifest = Path.Combine(path, "src", "main", "AndroidManifest.xml");
+            if (!File.Exists(manifest))
+            {
+                string[] candidates = Directory.GetFiles(
+                    path,
+                    "AndroidManifest.xml",
+                    SearchOption.AllDirectories);
+                if (candidates.Length == 0)
+                    throw new FileNotFoundException(
+                        "Generated XR Lab AndroidManifest.xml missing.", path);
+                Array.Sort(candidates, (left, right) =>
+                    left.Length.CompareTo(right.Length));
+                manifest = candidates[0];
+            }
+
+            string xml = File.ReadAllText(manifest);
+            if (xml.Contains("com.google.android.youtube")) return;
+            int application = xml.IndexOf("<application", StringComparison.Ordinal);
+            if (application < 0)
+                throw new InvalidDataException(
+                    "Generated XR Lab manifest has no application element: " + manifest);
+            const string queries =
+                "    <queries>\n" +
+                "        <package android:name=\"com.android.settings\" />\n" +
+                "        <package android:name=\"com.android.chrome\" />\n" +
+                "        <package android:name=\"com.google.android.googlequicksearchbox\" />\n" +
+                "        <package android:name=\"com.google.android.youtube\" />\n" +
+                "        <package android:name=\"com.google.android.inputmethod.latin\" />\n" +
+                "        <package android:name=\"com.samsung.android.honeyboard\" />\n" +
+                "        <intent>\n" +
+                "            <action android:name=\"android.speech.RecognitionService\" />\n" +
+                "        </intent>\n" +
+                "    </queries>\n";
+            File.WriteAllText(manifest, xml.Insert(application, queries));
+            Debug.Log("[AndroidBuildXreal] XR Lab package/icon queries injected: " + manifest);
         }
     }
 }

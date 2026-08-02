@@ -321,6 +321,10 @@ namespace MLOmega.XR.UI
                     _eyeGesturePoint,
                     _eyeGestureZoom);
             }
+            else if (pinching && _pinching)
+            {
+                ContinuePointerDrag();
+            }
             else if (!pinching && _pinching)
             {
                 if (_deckPinchClaimed)
@@ -750,6 +754,23 @@ namespace MLOmega.XR.UI
             GameObject next = physicalTarget;
             if (raycastUi)
             {
+                // External Lab content is already intersected in world space.
+                // Prefer that exact result over the S24 screen-space raycaster,
+                // whose coordinates do not match an XR eye render target.
+                if (
+                    next == null &&
+                    _creator != null &&
+                    _creator.TryResolveExternalSpatialTarget(
+                        worldPoint,
+                        out next))
+                {
+                    _pointer.pointerCurrentRaycast = new RaycastResult
+                    {
+                        gameObject = next,
+                        screenPosition = screenPoint,
+                        worldPosition = worldPoint,
+                    };
+                }
                 if (next == null)
                 {
                     _uiHits.Clear();
@@ -785,6 +806,16 @@ namespace MLOmega.XR.UI
                 }
             }
             SetHover(next);
+        }
+
+        private void ContinuePointerDrag()
+        {
+            if (_pointer == null || _pressed == null) return;
+            GameObject drag = ExecuteEvents.GetEventHandler<IDragHandler>(_pressed);
+            if (drag == null) return;
+            _pointer.pointerDrag = drag;
+            _pointer.dragging = true;
+            ExecuteEvents.Execute(drag, _pointer, ExecuteEvents.dragHandler);
         }
 
         private void SetHover(GameObject rawTarget)
@@ -845,9 +876,16 @@ namespace MLOmega.XR.UI
             }
             if (_pointer != null)
             {
+                if (_pointer.dragging && _pointer.pointerDrag != null)
+                    ExecuteEvents.Execute(
+                        _pointer.pointerDrag,
+                        _pointer,
+                        ExecuteEvents.endDragHandler);
                 _pointer.eligibleForClick = false;
                 _pointer.pointerPress = null;
                 _pointer.rawPointerPress = null;
+                _pointer.pointerDrag = null;
+                _pointer.dragging = false;
             }
             _pressed = null;
             _pinching = false;
@@ -903,7 +941,9 @@ namespace MLOmega.XR.UI
             if (dotRenderer != null && unlit != null)
             {
                 dotRenderer.material = new Material(unlit);
-                dotRenderer.material.color = new Color(1f, 1f, 1f, .96f);
+                // White ring + graphite centre stays legible on both bright
+                // web pages and dark XR panels without sampling the scene.
+                dotRenderer.material.color = new Color(.12f, .13f, .16f, .98f);
             }
             _cursorDot = dot.transform;
             SetCursorVisible(false);

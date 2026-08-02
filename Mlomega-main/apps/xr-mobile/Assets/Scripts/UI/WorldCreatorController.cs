@@ -15,7 +15,7 @@ namespace MLOmega.XR.UI
     /// Isolated Atelier UI. The phone is the dense editing surface while the
     /// glasses show the spatial preview. It never pairs, records or opens Memory.
     /// </summary>
-    public sealed class WorldCreatorController : MonoBehaviour
+    public sealed partial class WorldCreatorController : MonoBehaviour
     {
         private static readonly string[] Categories =
         {
@@ -139,6 +139,7 @@ namespace MLOmega.XR.UI
         private Image _settingsResizeHandleRight;
         private Image _settingsDepthHandle;
         private Image _settingsTiltHandle;
+        private Image _settingsFreeResizeHandle;
         private TextMeshProUGUI _settingsCloseHandle;
         private TextMeshProUGUI _settingsTitleLabel;
         private TextMeshProUGUI _settingsFollowLabel;
@@ -189,6 +190,7 @@ namespace MLOmega.XR.UI
         private Vector2 _deckManipulationStartSize;
         private Vector2 _deckManipulationTargetSize;
         private bool _deckManipulationSmoothing;
+        private bool _deckManipulationUsesSize;
         private bool _headFollowWindows;
         private float _nextSettingsTelemetryAt;
         private RectTransform _activeManipulationRect;
@@ -247,6 +249,7 @@ namespace MLOmega.XR.UI
             Depth = 4,
             Minimize = 5,
             Tilt = 6,
+            ResizeFree = 7,
         }
 
         private enum DeckWindowKind
@@ -254,6 +257,7 @@ namespace MLOmega.XR.UI
             None = 0,
             Workspace = 1,
             Settings = 2,
+            External = 3,
         }
 
         private enum TiltGestureAxis
@@ -288,17 +292,31 @@ namespace MLOmega.XR.UI
             Portrait,
             Landscape,
             Tilt,
+            Power,
+            Vr,
+            Keyboard,
         }
 
         public bool IsDeckManipulating =>
             _deckManipulationMode != DeckManipulationMode.None;
+
+        public bool IsLabWorkspaceVisible => !_deckMinimized;
+
+        public void RestoreLabWorkspaceForSession(bool visible)
+        {
+            // Session restore deliberately excludes Settings. Its controls are
+            // transient system UI, not user content.
+            if (_settingsDeck != null) _settingsDeck.gameObject.SetActive(false);
+            SetDeckMinimized(!visible);
+        }
 
         // The pointer may sleep only when every Atelier surface is absent. A
         // closed workspace must not disable the independent settings or dock.
         public bool IsDeckClosed =>
             _deckMinimized &&
             (_settingsDeck == null || !_settingsDeck.gameObject.activeSelf) &&
-            (_windowDock == null || !_windowDock.gameObject.activeSelf);
+            (_windowDock == null || !_windowDock.gameObject.activeSelf) &&
+            !HasVisibleExternalSpatialWindows();
 
         private void Awake()
         {
@@ -1110,10 +1128,10 @@ namespace MLOmega.XR.UI
             float bottom = -halfHeight + 17f;
             LayoutHandle(_deckMoveHandle, new Vector2(-70f, bottom),
                 new Vector2(104f, 5f));
-            LayoutHandle(_deckDepthHandle, new Vector2(38f, bottom),
-                new Vector2(36f, 28f));
-            LayoutHandle(_deckTiltHandle, new Vector2(86f, bottom),
-                new Vector2(36f, 28f));
+            LayoutHandle(_deckDepthHandle, new Vector2(72f, bottom),
+                new Vector2(52f, 34f));
+            LayoutHandle(_deckTiltHandle, new Vector2(136f, bottom),
+                new Vector2(52f, 34f));
             LayoutHandle(_deckResizeHandle,
                 new Vector2(-halfWidth + 20f, -halfHeight + 22f),
                 Vector2.one * 52f);
@@ -1268,6 +1286,10 @@ namespace MLOmega.XR.UI
                     _settingsDeckRect,
                     ref bestDistance,
                     ref worldPoint);
+            hit |= TryProjectExternalWindows(
+                ray,
+                ref bestDistance,
+                ref worldPoint);
             if (!hit) return false;
             screenPoint =
                 RectTransformUtility.WorldToScreenPoint(_camera, worldPoint);
@@ -1326,6 +1348,10 @@ namespace MLOmega.XR.UI
                 worldPoint,
                 ref target,
                 ref smallestArea);
+            ResolveExternalWindowTargets(
+                worldPoint,
+                ref target,
+                ref smallestArea);
             return target != null;
         }
 
@@ -1370,7 +1396,11 @@ namespace MLOmega.XR.UI
             _deckHoverMode = deckHit
                 ? ClassifyDeckManipulationHandle(worldPoint, out _hoverWindow)
                 : DeckManipulationMode.None;
-            if (!deckHit) _hoverWindow = DeckWindowKind.None;
+            if (!deckHit)
+            {
+                _hoverWindow = DeckWindowKind.None;
+                _hoverExternalWindow = null;
+            }
             SetDeckHandleVisuals(_deckHoverMode, _hoverWindow);
         }
 
@@ -1393,6 +1423,8 @@ namespace MLOmega.XR.UI
                     gazeWorldPoint,
                     out DeckWindowKind window);
             if (mode == DeckManipulationMode.None) return false;
+            if (window == DeckWindowKind.External)
+                _activeExternalWindow = _hoverExternalWindow;
             if (mode == DeckManipulationMode.Minimize)
             {
                 CloseWindow(window);
@@ -1423,9 +1455,7 @@ namespace MLOmega.XR.UI
                 .normalized;
             _deckManipulationStartScale = _activeManipulationRect.localScale.x;
             _deckManipulationStartZoom = Mathf.Max(.1f, zoomFactor);
-            string layoutPrefix = window == DeckWindowKind.Settings
-                ? SettingsLayoutPrefix
-                : DeckLayoutPrefix;
+            string layoutPrefix = LayoutPrefixForWindow(window);
             _deckManipulationStartTilt = PlayerPrefs.GetFloat(
                 layoutPrefix + "tilt",
                 0f);
@@ -1439,6 +1469,11 @@ namespace MLOmega.XR.UI
             _deckManipulationTargetTurn = _deckManipulationStartTurn;
             _deckManipulationStartSize = _activeManipulationRect.sizeDelta;
             _deckManipulationTargetSize = _deckManipulationStartSize;
+            _deckManipulationUsesSize =
+                (window == DeckWindowKind.Settings &&
+                 (IsResizeMode(mode) || mode == DeckManipulationMode.ResizeFree)) ||
+                (window == DeckWindowKind.External &&
+                 mode == DeckManipulationMode.ResizeFree);
             _deckManipulationSmoothing = true;
             _tiltGestureAxis = TiltGestureAxis.Undecided;
             SetDeckHandleVisuals(mode, window);
@@ -1449,6 +1484,10 @@ namespace MLOmega.XR.UI
             else if (mode == DeckManipulationMode.Tilt)
                 ShowGestureToast(
                     "INCLINAISON // HAUT-BAS + GAUCHE-DROITE",
+                    new Color(.55f, .78f, 1f));
+            else if (mode == DeckManipulationMode.ResizeFree)
+                ShowGestureToast(
+                    "FORMAT LIBRE // GAUCHE-DROITE LARGEUR + HAUT-BAS HAUTEUR",
                     new Color(.55f, .78f, 1f));
             return true;
         }
@@ -1553,6 +1592,21 @@ namespace MLOmega.XR.UI
                     _deckManipulationTargetTilt,
                     _deckManipulationTargetTurn);
             }
+            else if (
+                _deckManipulationMode == DeckManipulationMode.ResizeFree &&
+                (_activeWindow == DeckWindowKind.External ||
+                 _activeWindow == DeckWindowKind.Settings))
+            {
+                float width = Mathf.Clamp(
+                    _deckManipulationStartSize.x * (1f + delta.x * 1.8f),
+                    _activeWindow == DeckWindowKind.Settings ? 620f : 360f,
+                    _activeWindow == DeckWindowKind.Settings ? 1120f : 1800f);
+                float height = Mathf.Clamp(
+                    _deckManipulationStartSize.y * (1f + delta.y * 1.8f),
+                    _activeWindow == DeckWindowKind.Settings ? 760f : 260f,
+                    _activeWindow == DeckWindowKind.Settings ? 1120f : 1200f);
+                _deckManipulationTargetSize = new Vector2(width, height);
+            }
             else if (IsResizeMode(_deckManipulationMode))
             {
                 float outwardX =
@@ -1575,13 +1629,19 @@ namespace MLOmega.XR.UI
                     if (landscapeMode)
                     {
                         width = Mathf.Clamp(width, 680f, 1120f);
-                        height = Mathf.Clamp(height, 520f, 820f);
+                        height = Mathf.Clamp(
+                            height,
+                            HasOptionalLabSettingsActions() ? 760f : 520f,
+                            HasOptionalLabSettingsActions() ? 960f : 820f);
                         width = Mathf.Max(width, height + 80f);
                     }
                     else
                     {
                         width = Mathf.Clamp(width, 500f, 760f);
-                        height = Mathf.Clamp(height, 700f, 1120f);
+                        height = Mathf.Clamp(
+                            height,
+                            HasOptionalLabSettingsActions() ? 920f : 700f,
+                            1120f);
                         height = Mathf.Max(height, width + 80f);
                     }
                     _deckManipulationTargetSize = new Vector2(width, height);
@@ -1613,16 +1673,22 @@ namespace MLOmega.XR.UI
                     _activeWindow,
                     _deckManipulationTargetPosition,
                     _deckManipulationTargetScale);
-                string prefix = _activeWindow == DeckWindowKind.Settings
-                    ? SettingsLayoutPrefix
-                    : DeckLayoutPrefix;
+                string prefix = LayoutPrefixForWindow(_activeWindow);
                 PlayerPrefs.SetFloat(prefix + "tilt", _deckManipulationTargetTilt);
                 PlayerPrefs.SetFloat(prefix + "turn", _deckManipulationTargetTurn);
                 if (_activeWindow == DeckWindowKind.Settings)
                     SaveSettingsSize(_deckManipulationTargetSize);
+                else if (
+                    _activeWindow == DeckWindowKind.External &&
+                    _deckManipulationUsesSize)
+                {
+                    ApplyExternalWindowSize(_deckManipulationTargetSize, true);
+                    SaveExternalWindowSize(_activeExternalWindow);
+                }
                 PlayerPrefs.Save();
             }
             _deckManipulationMode = DeckManipulationMode.None;
+            _deckManipulationUsesSize = false;
             _tiltGestureAxis = TiltGestureAxis.Undecided;
             _deckHoverMode = DeckManipulationMode.None;
             RevealDeckAffordances(completedWindow);
@@ -1636,6 +1702,7 @@ namespace MLOmega.XR.UI
             out DeckWindowKind window)
         {
             window = DeckWindowKind.None;
+            _hoverExternalWindow = null;
             DeckManipulationMode mode = ClassifyWindowHandle(
                 _spatialDeckRect,
                 !_deckMinimized,
@@ -1649,8 +1716,21 @@ namespace MLOmega.XR.UI
                 _settingsDeckRect,
                 _settingsDeck != null && _settingsDeck.gameObject.activeSelf,
                 worldPoint);
+            if (
+                _settingsDeck != null &&
+                _settingsDeck.gameObject.activeSelf &&
+                IsPointInsideExternalHandle(_settingsFreeResizeHandle, worldPoint))
+                mode = DeckManipulationMode.ResizeFree;
             if (mode != DeckManipulationMode.None)
+            {
                 window = DeckWindowKind.Settings;
+                return mode;
+            }
+            mode = ClassifyExternalWindowHandle(
+                worldPoint,
+                out _hoverExternalWindow);
+            if (mode != DeckManipulationMode.None)
+                window = DeckWindowKind.External;
             return mode;
         }
 
@@ -1782,12 +1862,20 @@ namespace MLOmega.XR.UI
                 DeckManipulationMode.Tilt,
                 DeckWindowKind.Settings);
             SetVisionHandle(
+                _settingsFreeResizeHandle,
+                revealSettings,
+                mode,
+                window,
+                DeckManipulationMode.ResizeFree,
+                DeckWindowKind.Settings);
+            SetVisionHandle(
                 _settingsCloseHandle,
                 revealSettings,
                 mode,
                 window,
                 DeckManipulationMode.Minimize,
                 DeckWindowKind.Settings);
+            SetExternalWindowHandleVisuals(mode, window);
         }
 
         private void SetVisionHandle(
@@ -1805,6 +1893,20 @@ namespace MLOmega.XR.UI
                 _activeWindow == ownWindow;
             handle.gameObject.SetActive(reveal || targeted || engaged);
             if (!handle.gameObject.activeSelf) return;
+            if (ownMode == DeckManipulationMode.ResizeFree)
+            {
+                handle.color = engaged
+                    ? new Color(.48f, .51f, .59f, .98f)
+                    : (targeted
+                        ? new Color(.36f, .38f, .44f, .96f)
+                        : new Color(.22f, .23f, .27f, .88f));
+                Graphic[] freeResizeGraphics =
+                    handle.GetComponentsInChildren<Graphic>(true);
+                for (int i = 0; i < freeResizeGraphics.Length; i++)
+                    if (freeResizeGraphics[i] != handle)
+                        freeResizeGraphics[i].color = Color.white;
+                return;
+            }
             Color color = engaged
                 ? Color.white
                 : (targeted
@@ -1832,6 +1934,8 @@ namespace MLOmega.XR.UI
             float seconds = 4f)
         {
             if (window == DeckWindowKind.None) return;
+            if (window == DeckWindowKind.External)
+                _externalAffordanceWindow = _activeExternalWindow;
             _deckAffordanceRevealWindow = window;
             _deckAffordanceRevealUntil = Time.unscaledTime + seconds;
         }
@@ -1843,6 +1947,20 @@ namespace MLOmega.XR.UI
         public void OpenDeckFromPalm()
         {
             if (_windowDock != null) _windowDock.gameObject.SetActive(false);
+            if (
+                _lastWindow == DeckWindowKind.External &&
+                IsExternalWindowVisible(_lastExternalWindow))
+            {
+                _activeExternalWindow = _lastExternalWindow;
+                PlaceWindowAtCameraLocal(
+                    _activeExternalWindow.Rect,
+                    new Vector3(0f, .04f, 1.08f));
+                RevealExternalWindowAffordances(_activeExternalWindow);
+                ShowGestureToast(
+                    "FENETRE RECENTREE // PAUME",
+                    new Color(.35f, 1f, .94f));
+                return;
+            }
             bool workspaceVisible =
                 !_deckMinimized && _spatialDeckRect != null;
             bool settingsVisible =
@@ -1984,6 +2102,10 @@ namespace MLOmega.XR.UI
                 _activeManipulationRect.sizeDelta = size;
                 LayoutSettingsDeck();
             }
+            else if (
+                _activeWindow == DeckWindowKind.External &&
+                _deckManipulationUsesSize)
+                ApplyExternalWindowSize(size, false);
 
             if (
                 _deckManipulationMode == DeckManipulationMode.None &&
@@ -2241,9 +2363,7 @@ namespace MLOmega.XR.UI
             float scale)
         {
             if (_camera == null) return;
-            string prefix = window == DeckWindowKind.Settings
-                ? SettingsLayoutPrefix
-                : DeckLayoutPrefix;
+            string prefix = LayoutPrefixForWindow(window);
             Vector3 local = _camera.transform.InverseTransformPoint(worldPosition);
             PlayerPrefs.SetFloat(prefix + "x", local.x);
             PlayerPrefs.SetFloat(prefix + "y", local.y);
@@ -2438,6 +2558,10 @@ namespace MLOmega.XR.UI
             ConfigureVisionTiltHandle(_settingsTiltHandle);
             _settingsTiltHandle.raycastTarget = false;
             _settingsTiltHandle.gameObject.SetActive(false);
+            _settingsFreeResizeHandle = MakeVisionFreeResizeHandle(
+                _settingsDeckRect,
+                new Vector2(-324f, -300f));
+            _settingsFreeResizeHandle.gameObject.SetActive(false);
             _settingsCloseHandle = MakeText(
                 _settingsDeckRect, "x", new Vector2(397f, 287f),
                 new Vector2(34f, 34f), 24f,
@@ -2988,7 +3112,8 @@ namespace MLOmega.XR.UI
                     .68f,
                     .82f);
                 float stepX = Mathf.Min(134f, surfaceWidth * .28f);
-                float stepY = surfaceBottom + 92f;
+                float stepY = surfaceBottom +
+                    (HasOptionalLabSettingsActions() ? 230f : 92f);
                 LayoutScaledRoot(_settingsBrightnessControl,
                     new Vector2(-stepX, stepY), stepScale);
                 LayoutScaledRoot(_settingsEcControl,
@@ -3042,7 +3167,7 @@ namespace MLOmega.XR.UI
                 float stepY = Mathf.Lerp(
                     controlsY,
                     surfaceBottom,
-                    .56f);
+                    HasOptionalLabSettingsActions() ? .48f : .56f);
                 LayoutScaledRoot(_settingsBrightnessControl,
                     new Vector2(-stepX, stepY), stepScale);
                 LayoutScaledRoot(_settingsEcControl,
@@ -3054,16 +3179,25 @@ namespace MLOmega.XR.UI
             float lensScale = compact ? .80f : 1f;
             LayoutScaledText(
                 _settingsLensLabel,
-                new Vector2(0f, surfaceBottom + 20f),
+                new Vector2(
+                    0f,
+                    surfaceBottom +
+                    (HasOptionalLabSettingsActions()
+                        ? (compact ? 142f : 114f)
+                        : 20f)),
                 new Vector2(370f, 22f), lensScale);
 
             float bottom = -halfHeight + 17f;
             LayoutHandle(_settingsMoveHandle, new Vector2(-70f, bottom),
                 new Vector2(104f, 5f));
-            LayoutHandle(_settingsDepthHandle, new Vector2(38f, bottom),
-                new Vector2(36f, 28f));
-            LayoutHandle(_settingsTiltHandle, new Vector2(86f, bottom),
-                new Vector2(36f, 28f));
+            LayoutHandle(_settingsDepthHandle, new Vector2(72f, bottom),
+                new Vector2(52f, 34f));
+            LayoutHandle(_settingsTiltHandle, new Vector2(136f, bottom),
+                new Vector2(52f, 34f));
+            LayoutHandle(
+                _settingsFreeResizeHandle,
+                new Vector2(-halfWidth + 96f, bottom),
+                new Vector2(52f, 32f));
             LayoutHandle(_settingsResizeHandle,
                 new Vector2(-halfWidth + 20f, -halfHeight + 22f),
                 Vector2.one * 52f);
@@ -3073,6 +3207,7 @@ namespace MLOmega.XR.UI
             LayoutRect(_settingsCloseHandle,
                 new Vector2(surfaceRight + 14f, surfaceTop + 14f),
                 new Vector2(34f, 34f));
+            LayoutOptionalLabSettingsActions(surfaceWidth, surfaceBottom, compact);
         }
 
         private static void LayoutScaledText(
@@ -3485,6 +3620,7 @@ namespace MLOmega.XR.UI
             Vector2 target = landscape
                 ? new Vector2(840f, 620f)
                 : new Vector2(620f, 840f);
+            target = AdjustOptionalLabSettingsOrientation(target);
             _settingsDeckRect.sizeDelta = target;
             _deckManipulationStartSize = target;
             _deckManipulationTargetSize = target;
@@ -3530,13 +3666,19 @@ namespace MLOmega.XR.UI
             if (landscape)
             {
                 savedWidth = Mathf.Clamp(savedWidth, 680f, 1120f);
-                savedHeight = Mathf.Clamp(savedHeight, 520f, 820f);
+                savedHeight = Mathf.Clamp(
+                    savedHeight,
+                    HasOptionalLabSettingsActions() ? 760f : 520f,
+                    HasOptionalLabSettingsActions() ? 960f : 820f);
                 savedWidth = Mathf.Max(savedWidth, savedHeight + 80f);
             }
             else
             {
                 savedWidth = Mathf.Clamp(savedWidth, 500f, 760f);
-                savedHeight = Mathf.Clamp(savedHeight, 700f, 1120f);
+                savedHeight = Mathf.Clamp(
+                    savedHeight,
+                    HasOptionalLabSettingsActions() ? 920f : 700f,
+                    1120f);
                 savedHeight = Mathf.Max(savedHeight, savedWidth + 80f);
             }
             _settingsDeckRect.sizeDelta = new Vector2(savedWidth, savedHeight);
@@ -3568,6 +3710,7 @@ namespace MLOmega.XR.UI
         {
             DeckWindowKind.Workspace => _spatialDeckRect,
             DeckWindowKind.Settings => _settingsDeckRect,
+            DeckWindowKind.External => _activeExternalWindow?.Rect,
             _ => null,
         };
 
@@ -3590,6 +3733,13 @@ namespace MLOmega.XR.UI
                 SetDeckHandleVisuals(
                     DeckManipulationMode.None,
                     DeckWindowKind.None);
+            }
+            if (window == DeckWindowKind.External && _activeExternalWindow != null)
+            {
+                ExternalSpatialWindowState state = _activeExternalWindow;
+                _lastWindow = DeckWindowKind.External;
+                _lastExternalWindow = state;
+                state.Close?.Invoke();
             }
         }
 
@@ -3648,6 +3798,7 @@ namespace MLOmega.XR.UI
                     _settingsDeckRect.localScale.x);
                 SaveSettingsSize(_settingsDeckRect.sizeDelta);
             }
+            SaveExternalWindowLayouts();
         }
 
         private void RecenterAllWindows()
@@ -3672,6 +3823,7 @@ namespace MLOmega.XR.UI
                 PlaceWindowAtCameraLocal(
                     _windowDockRect,
                     new Vector3(0f, 0f, .82f));
+            RecenterExternalWindows();
             SaveVisibleWindowLayouts();
             ShowGestureToast(
                 "FENÊTRES RECENTRÉES",
@@ -3700,6 +3852,7 @@ namespace MLOmega.XR.UI
                 _settingsDeck.gameObject.SetActive(false);
             if (_windowDock != null)
                 _windowDock.gameObject.SetActive(false);
+            CloseAllExternalWindows();
             SetDeckHandleVisuals(
                 DeckManipulationMode.None,
                 DeckWindowKind.None);
@@ -4051,6 +4204,7 @@ namespace MLOmega.XR.UI
                     : VisionPressed);
             _nextSettingsTelemetryAt = 0f;
             UpdateSettingsTelemetry();
+            RefreshOptionalLabSettingsActions();
         }
 
         private void RefreshSettingsDeckLegacy()
@@ -4124,13 +4278,13 @@ namespace MLOmega.XR.UI
             MakeDockOrbButton(
                 _windowDockRect,
                 VisionIconKind.Workspace,
-                "PUPITRE",
+                "Pupitre",
                 new Vector2(-76f, 15f),
                 () => OpenWindowFromDock(DeckWindowKind.Workspace));
             MakeDockOrbButton(
                 _windowDockRect,
                 VisionIconKind.Settings,
-                "RÉGLAGES",
+                "Reglages",
                 new Vector2(76f, 15f),
                 () => OpenWindowFromDock(DeckWindowKind.Settings));
             go.SetActive(false);
@@ -4192,12 +4346,13 @@ namespace MLOmega.XR.UI
             Vector2 position,
             UnityEngine.Events.UnityAction action)
         {
+            bool workspace = icon == VisionIconKind.Workspace;
             Image rim = MakeImage(
                 parent,
                 "Dock rim " + label,
                 position,
                 new Vector2(112f, 112f),
-                new Color(.94f, .96f, 1f, .16f));
+                Color.clear);
             rim.sprite = GetVisionCircleSprite();
             rim.type = Image.Type.Simple;
             rim.raycastTarget = false;
@@ -4206,7 +4361,7 @@ namespace MLOmega.XR.UI
                 "Dock orb " + label,
                 position,
                 new Vector2(98f, 98f),
-                VisionGlass);
+                workspace ? Color.white : Color.clear);
             hit.sprite = GetVisionCircleSprite();
             hit.type = Image.Type.Simple;
             Button button = hit.gameObject.AddComponent<Button>();
@@ -4215,6 +4370,13 @@ namespace MLOmega.XR.UI
             collider.size = new Vector3(112f, 112f, 18f);
             button.onClick.AddListener(action);
             BuildVisionIcon(hit.transform, icon, Vector2.zero, 1.25f);
+            if (workspace)
+            {
+                Graphic[] iconGraphics = hit.GetComponentsInChildren<Graphic>(true);
+                for (int i = 0; i < iconGraphics.Length; i++)
+                    if (iconGraphics[i] != hit)
+                        iconGraphics[i].color = new Color(.035f, .04f, .05f, 1f);
+            }
             MakeText(
                 parent,
                 label,
@@ -4227,10 +4389,12 @@ namespace MLOmega.XR.UI
                 VisionSpatialControlFeedback>();
             feedback.Configure(
                 hit,
-                VisionGlass,
-                VisionGlassHover,
+                workspace ? Color.white : Color.clear,
+                workspace
+                    ? new Color(.86f, .89f, .94f, 1f)
+                    : new Color(.34f, .36f, .42f, .24f),
                 VisionPressed,
-                VisionText);
+                workspace ? VisionInk : VisionText);
             return button;
         }
 
@@ -4647,6 +4811,27 @@ namespace MLOmega.XR.UI
                     Line(-13f, 7f, 8f, 2.5f, 52f);
                     Line(13f, -7f, 8f, 2.5f, 52f);
                     break;
+                case VisionIconKind.Power:
+                    Dot(0f, -1f, 31f, true);
+                    Line(0f, 10f, 3.4f, 18f);
+                    break;
+                case VisionIconKind.Vr:
+                    TextMeshProUGUI vr = MakeText(
+                        parent, "VR", offset, new Vector2(40f, 26f),
+                        15f * scale, color, FontStyles.Bold);
+                    vr.characterSpacing = 1.2f;
+                    vr.raycastTarget = false;
+                    break;
+                case VisionIconKind.Keyboard:
+                    Line(-16f, 0f, 2.5f, 23f);
+                    Line(16f, 0f, 2.5f, 23f);
+                    Line(0f, 11f, 32f, 2.5f);
+                    Line(0f, -11f, 32f, 2.5f);
+                    for (int row = 0; row < 2; row++)
+                        for (int column = 0; column < 4; column++)
+                            Dot(-11f + column * 7.5f, 5f - row * 8f, 2.8f);
+                    Line(0f, -7f, 18f, 2.5f);
+                    break;
             }
         }
 
@@ -4929,6 +5114,29 @@ namespace MLOmega.XR.UI
                 VisionIconKind.Depth,
                 Vector2.zero,
                 .58f);
+        }
+
+        private static Image MakeVisionFreeResizeHandle(
+            Transform parent,
+            Vector2 position)
+        {
+            Image handle = MakeImage(
+                parent,
+                "Gaze free resize handle",
+                position,
+                new Vector2(52f, 32f),
+                new Color(.22f, .23f, .27f, .88f));
+            handle.raycastTarget = false;
+            TextMeshProUGUI label = MakeText(
+                handle.transform,
+                "H/W",
+                Vector2.zero,
+                new Vector2(46f, 24f),
+                11f,
+                new Color(.92f, .94f, .98f, .95f),
+                FontStyles.Bold);
+            label.raycastTarget = false;
+            return handle;
         }
 
         private static void ConfigureVisionTiltHandle(Image handle)

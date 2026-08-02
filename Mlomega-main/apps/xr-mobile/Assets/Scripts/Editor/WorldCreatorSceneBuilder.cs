@@ -12,6 +12,7 @@ namespace MLOmega.XR.Editor
     public static class WorldCreatorSceneBuilder
     {
         public const string ScenePath = "Assets/Scenes/XrealWorldCreator.unity";
+        public const string LabScenePath = "Assets/Scenes/XrealWorldLab.unity";
         private const string OfficialRigPrefabPath =
             "Packages/com.xreal.xr/Runtime/Prefabs/" +
             "XR Interaction Hands Setup.prefab";
@@ -146,6 +147,42 @@ namespace MLOmega.XR.Editor
             Debug.Log(
                 "[WorldCreatorSceneBuilder] isolated XREAL Atelier ready: " +
                 ScenePath);
+        }
+
+        /// <summary>
+        /// Clone the hardware-validated Atelier scene and add the experimental
+        /// spatial browser shell only to the clone. The stable scene remains a
+        /// byte-for-byte independent build input.
+        /// </summary>
+        [MenuItem("MLOmega/XREAL/Build World Lab Scene")]
+        public static void BuildLaboratoryScene()
+        {
+            BuildScene();
+            var scene = EditorSceneManager.OpenScene(
+                ScenePath,
+                OpenSceneMode.Single);
+            GameObject root = GameObject.Find("MLOmega World Atelier");
+            if (root == null)
+                throw new InvalidOperationException(
+                    "Validated Atelier root missing while creating Lab scene.");
+            Type labType = Type.GetType(
+                "MLOmega.XR.UI.WorldCreatorLabShell, MLOmega.XR.Lab",
+                false);
+            if (
+                labType == null ||
+                !typeof(MonoBehaviour).IsAssignableFrom(labType))
+                throw new InvalidOperationException(
+                    "Isolated MLOmega XR Lab assembly unavailable.");
+            if (root.GetComponent(labType) == null)
+                root.AddComponent(labType);
+            Directory.CreateDirectory(Path.GetDirectoryName(LabScenePath));
+            if (!EditorSceneManager.SaveScene(scene, LabScenePath, true))
+                throw new InvalidOperationException(
+                    "Unable to save isolated World Lab scene.");
+            AssetDatabase.SaveAssets();
+            Debug.Log(
+                "[WorldCreatorSceneBuilder] isolated XR browser Lab ready: " +
+                LabScenePath);
         }
 
         private static Shader RequiredShader(string path)
