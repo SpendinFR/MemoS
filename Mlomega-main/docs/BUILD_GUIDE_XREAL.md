@@ -847,6 +847,51 @@ Au diagnostic du bouton XR, filtrer sans le bruit de télémétrie XREAL :
   Select-String -Pattern '\[XrLab\]|XR crop|XR header|Lab button XR'
 ```
 
+### 8.15 Jalon Browser Lab v28 : enregistrement first-person XREAL
+
+Le 2 août 2026, le Lab a reçu un enregistreur first-person entièrement isolé
+des APK Atelier et Produit. Il s'appuie sur `XREALVideoCapture` du SDK XREAL
+3.1 installé : caméra RGB de l'Eye + hologrammes Unity + micro, encodés en MP4.
+
+Dans `Réglages`, la dernière ligne contient désormais `Mode VR`, `Clavier` et
+`Enregistrer`. Le contrôle REC respecte le même gabarit rond que les autres :
+
+- au repos : anneau caméra et libellé `Enregistrer` ;
+- pendant l'initialisation/finalisation : état ambre explicite ;
+- pendant la capture : bouton rouge pulsant, libellé `REC mm:ss` ;
+- un second pinch sur le même bouton arrête l'enregistrement ;
+- l'arrêt ferme d'abord l'encodeur et le mode vidéo, puis publie le fichier dans
+  `Galerie > Movies > MLOmega`. Quitter le Lab pendant un REC déclenche le même
+  arrêt borné avant `Application.Quit`.
+
+Artefact conservé sans écraser le jalon v27 :
+
+```text
+apps/xr-mobile/build/android/mlomega-xreal-world-lab-v28-rec.apk
+taille = 239012309 octets
+sha256 = CDA5AC4CD7B4640C36B0E65A042B3A799D0946C7D5E4B14576969265E69FA5F9
+```
+
+Gate matériel S24 + One Pro + Eye validé : démarrage à 11:05:07, arrêt par
+pinch à 11:05:20, publication MediaStore à 11:05:21. Le MP4 mesuré fait
+12,169 s, 1920x1080, H.264 avec audio AAC, 14 583 872 octets. Une frame extraite
+montre simultanément le monde réel, la fenêtre Réglages, le bouton REC rouge,
+le curseur et la main : la sortie n'est ni noire ni vide. Le pointeur main
+continuait à tourner lors de l'arrêt, donc aucun verrou fatal de l'Eye n'a été
+observé sur ce test. Refaire néanmoins un test REC plus long avec plusieurs
+manipulations avant de considérer le partage de caméra validé sous charge.
+
+Diagnostic ciblé :
+
+```powershell
+$adb = "C:\Users\wabad\AppData\Local\Android\Sdk\platform-tools\adb.exe"
+& $adb logcat -d -v time |
+  Select-String -Pattern '\[XrLab\]\[REC\]|VideoCapture|StopRecording|published='
+
+& $adb shell ls -lh `
+  /sdcard/Android/data/com.mlomega.xr.worldatelierlab/files/Recordings
+```
+
 ## 9. APK produit : travail explicitement restant
 
 Après correction et preuve de l'Atelier :

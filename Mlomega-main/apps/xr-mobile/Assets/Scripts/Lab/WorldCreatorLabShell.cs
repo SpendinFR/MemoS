@@ -60,6 +60,7 @@ namespace MLOmega.XR.UI
         private string _addressBuffer = string.Empty;
         private bool _uppercase;
         private XrLabVoiceDictation _dictation;
+        private XrLabFirstPersonRecorder _recorder;
         private int _genericWindowSerial;
         private GameObject _resumeOffer;
         private RectTransform _resumeOfferRect;
@@ -90,6 +91,8 @@ namespace MLOmega.XR.UI
             _dictation.Result += OnDictationResult;
             _dictation.Error += OnDictationError;
             _dictation.ListeningChanged += OnDictationListeningChanged;
+            _recorder = gameObject.AddComponent<XrLabFirstPersonRecorder>();
+            _recorder.StateChanged += OnRecordingStateChanged;
 
             // WorldCreatorController constructs the proven dock in Start().
             // Wait for it instead of changing its stable construction path.
@@ -112,7 +115,12 @@ namespace MLOmega.XR.UI
                 SaveSessionAndQuit,
                 ToggleKeyboardFromSettings,
                 () => _keyboardCanvas != null && _keyboardCanvas.gameObject.activeSelf,
-                enabled => Debug.Log("[XrLab] reserved VR mode=" + enabled));
+                enabled => Debug.Log("[XrLab] reserved VR mode=" + enabled),
+                _recorder.Toggle,
+                () => _recorder != null && _recorder.IsRecording,
+                () => _recorder != null && _recorder.IsBusy,
+                () => _recorder == null ? 0f : _recorder.ElapsedSeconds,
+                () => _recorder == null ? string.Empty : _recorder.UiStatus);
             OfferSavedSessionIfAvailable();
             RaiseInteractionCursor();
             Debug.Log(
@@ -405,6 +413,30 @@ namespace MLOmega.XR.UI
 
         private void SaveSessionAndQuit()
         {
+            if (_recorder != null && (_recorder.IsRecording || _recorder.IsBusy))
+            {
+                StartCoroutine(StopRecordingThenQuit());
+                return;
+            }
+            SaveSessionState();
+            _cleanExitSaved = true;
+            Application.Quit();
+        }
+
+        private void OnRecordingStateChanged()
+        {
+            _creator?.RefreshLabSettingsActions();
+        }
+
+        private IEnumerator StopRecordingThenQuit()
+        {
+            _recorder?.RequestStop();
+            float deadline = Time.realtimeSinceStartup + 10f;
+            while (
+                _recorder != null &&
+                (_recorder.IsRecording || _recorder.IsBusy) &&
+                Time.realtimeSinceStartup < deadline)
+                yield return null;
             SaveSessionState();
             _cleanExitSaved = true;
             Application.Quit();

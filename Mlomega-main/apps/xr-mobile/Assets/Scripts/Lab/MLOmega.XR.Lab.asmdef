@@ -6,6 +6,7 @@
         "MLOmega.XR.Reflex",
         "MLOmega.Contracts",
         "TLab.WebView.Runtime",
+        "Unity.XR.XREAL",
         "Unity.TextMeshPro",
         "UnityEngine.UI"
     ],

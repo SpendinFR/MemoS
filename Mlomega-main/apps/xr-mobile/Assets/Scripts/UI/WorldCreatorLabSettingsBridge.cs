@@ -1,7 +1,9 @@
 using System;
+using System.Collections;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
+using MLOmega.XR.UI.Components;
 
 namespace MLOmega.XR.UI
 {
@@ -17,23 +19,41 @@ namespace MLOmega.XR.UI
         private Action _labKeyboardAction;
         private Func<bool> _labKeyboardVisible;
         private Action<bool> _labVrChanged;
+        private Action _labRecordAction;
+        private Func<bool> _labRecording;
+        private Func<bool> _labRecordBusy;
+        private Func<float> _labRecordElapsed;
+        private Func<string> _labRecordStatus;
         private Button _labQuitButton;
         private Button _labVrButton;
         private Button _labKeyboardButton;
+        private Button _labRecordButton;
         private TextMeshProUGUI _labVrLabel;
         private TextMeshProUGUI _labKeyboardLabel;
+        private TextMeshProUGUI _labRecordLabel;
         private Image _labQuitConfirmPanel;
+        private Coroutine _labRecordUiLoop;
 
         public void RegisterLabSettingsActions(
             Action quit,
             Action toggleKeyboard,
             Func<bool> keyboardVisible,
-            Action<bool> vrChanged)
+            Action<bool> vrChanged,
+            Action toggleRecording,
+            Func<bool> recording,
+            Func<bool> recordBusy,
+            Func<float> recordElapsed,
+            Func<string> recordStatus)
         {
             _labQuitAction = quit;
             _labKeyboardAction = toggleKeyboard;
             _labKeyboardVisible = keyboardVisible;
             _labVrChanged = vrChanged;
+            _labRecordAction = toggleRecording;
+            _labRecording = recording;
+            _labRecordBusy = recordBusy;
+            _labRecordElapsed = recordElapsed;
+            _labRecordStatus = recordStatus;
             if (_settingsDeck == null) BuildSettingsDeck();
             if (_settingsDeckRect == null) return;
             BuildOptionalLabSettingsActions();
@@ -49,6 +69,8 @@ namespace MLOmega.XR.UI
             _settingsDeckRect.sizeDelta = size;
             LayoutSettingsDeck();
             RefreshOptionalLabSettingsActions();
+            if (_labRecordUiLoop == null)
+                _labRecordUiLoop = StartCoroutine(RefreshLabRecordUi());
             _settingsHitGraphics.Clear();
             _settingsDeckRect.GetComponentsInChildren(true, _settingsHitGraphics);
         }
@@ -99,6 +121,20 @@ namespace MLOmega.XR.UI
                 },
                 64f);
             _labKeyboardLabel = CaptionFor(_labKeyboardButton);
+
+            _labRecordButton = MakeVisionControlButton(
+                _settingsDeckRect,
+                "LAB RECORD",
+                VisionIconKind.Record,
+                "Enregistrer",
+                Vector2.zero,
+                () =>
+                {
+                    _labRecordAction?.Invoke();
+                    RefreshOptionalLabSettingsActions();
+                },
+                64f);
+            _labRecordLabel = CaptionFor(_labRecordButton);
 
             _labQuitConfirmPanel = MakeImage(
                 _settingsDeckRect,
@@ -192,6 +228,72 @@ namespace MLOmega.XR.UI
                 _labKeyboardLabel.text = keyboard ? "Fermer clavier" : "Clavier";
             SetControlCenterState(_labVrButton, vr, VisionPressed);
             SetControlCenterState(_labKeyboardButton, keyboard, VisionPressed);
+
+            bool recording = _labRecording?.Invoke() == true;
+            bool busy = _labRecordBusy?.Invoke() == true;
+            VisionSpatialControlFeedback recordFeedback =
+                _labRecordButton?.GetComponent<VisionSpatialControlFeedback>();
+            if (recording)
+            {
+                float pulse = .5f + .5f * Mathf.Sin(Time.unscaledTime * 7.5f);
+                Color recordSurface = Color.Lerp(
+                    new Color(.32f, .018f, .028f, .90f),
+                    new Color(.98f, .055f, .075f, 1f),
+                    .28f + pulse * .72f);
+                recordFeedback?.SetSelected(true, recordSurface, Color.white);
+                if (_labRecordLabel != null)
+                {
+                    int totalSeconds = Mathf.Max(
+                        0,
+                        Mathf.FloorToInt(_labRecordElapsed?.Invoke() ?? 0f));
+                    _labRecordLabel.text = string.Format(
+                        "REC {0:00}:{1:00}",
+                        totalSeconds / 60,
+                        totalSeconds % 60);
+                    _labRecordLabel.color = Color.Lerp(
+                        new Color(1f, .32f, .34f, .92f),
+                        Color.white,
+                        pulse * .35f);
+                }
+            }
+            else if (busy)
+            {
+                recordFeedback?.SetSelected(
+                    true,
+                    new Color(.78f, .34f, .06f, .96f),
+                    Color.white);
+                if (_labRecordLabel != null)
+                {
+                    _labRecordLabel.text = _labRecordStatus?.Invoke() ?? "Préparation…";
+                    _labRecordLabel.color = new Color(1f, .76f, .40f, .96f);
+                }
+            }
+            else
+            {
+                recordFeedback?.SetSelected(false, VisionPressed, VisionInk);
+                if (_labRecordLabel != null)
+                {
+                    string status = _labRecordStatus?.Invoke();
+                    _labRecordLabel.text = string.IsNullOrWhiteSpace(status)
+                        ? "Enregistrer"
+                        : status;
+                    _labRecordLabel.color = VisionSecondary;
+                }
+            }
+        }
+
+        public void RefreshLabSettingsActions() =>
+            RefreshOptionalLabSettingsActions();
+
+        private IEnumerator RefreshLabRecordUi()
+        {
+            var interval = new WaitForSecondsRealtime(.16f);
+            while (_labRecordButton != null)
+            {
+                RefreshOptionalLabSettingsActions();
+                yield return interval;
+            }
+            _labRecordUiLoop = null;
         }
 
         private Vector2 AdjustOptionalLabSettingsOrientation(Vector2 target)
@@ -223,8 +325,9 @@ namespace MLOmega.XR.UI
             float rowScale = compact ? .76f : .88f;
             float step = Mathf.Min(104f, surfaceWidth * .22f);
             float y = surfaceBottom + 55f;
-            LayoutScaledButton(_labVrButton, new Vector2(-step * .5f, y), 64f, rowScale);
-            LayoutScaledButton(_labKeyboardButton, new Vector2(step * .5f, y), 64f, rowScale);
+            LayoutScaledButton(_labVrButton, new Vector2(-step, y), 64f, rowScale);
+            LayoutScaledButton(_labKeyboardButton, new Vector2(0f, y), 64f, rowScale);
+            LayoutScaledButton(_labRecordButton, new Vector2(step, y), 64f, rowScale);
 
             if (_labQuitConfirmPanel != null)
                 LayoutSurface(

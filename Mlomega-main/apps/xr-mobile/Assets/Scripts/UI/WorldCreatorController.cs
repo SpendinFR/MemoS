@@ -295,6 +295,7 @@ namespace MLOmega.XR.UI
             Power,
             Vr,
             Keyboard,
+            Record,
         }
 
         public bool IsDeckManipulating =>
@@ -4831,6 +4832,13 @@ namespace MLOmega.XR.UI
                         for (int column = 0; column < 4; column++)
                             Dot(-11f + column * 7.5f, 5f - row * 8f, 2.8f);
                     Line(0f, -7f, 18f, 2.5f);
+                    break;
+                case VisionIconKind.Record:
+                    // Familiar camera-record glyph: a precise ring with a
+                    // solid core. The Lab bridge animates the complete orb
+                    // red while capture is active.
+                    Dot(0f, 1f, 31f, true);
+                    Dot(0f, 1f, 14f);
                     break;
             }
         }
