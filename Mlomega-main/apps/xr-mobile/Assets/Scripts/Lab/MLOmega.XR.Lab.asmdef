@@ -3,6 +3,7 @@
     "rootNamespace": "MLOmega.XR.Lab",
     "references": [
         "MLOmega.XR.UI",
+        "MLOmega.XR.Core",
         "MLOmega.XR.Reflex",
         "MLOmega.Contracts",
         "TLab.WebView.Runtime",

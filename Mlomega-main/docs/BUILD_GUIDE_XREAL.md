@@ -881,6 +881,24 @@ continuait à tourner lors de l'arrêt, donc aucun verrou fatal de l'Eye n'a ét
 observé sur ce test. Refaire néanmoins un test REC plus long avec plusieurs
 manipulations avant de considérer le partage de caméra validé sous charge.
 
+Correctif v29 après ce premier gate : le partage Eye fonctionnait pendant REC,
+mais `StopVideoModeAsync` fermait le flux RGB natif global alors que
+`XrealDeviceAdapter` le croyait encore actif. Les gestes restaient donc sans
+frames après STOP. Le Lab force maintenant, après fermeture confirmée de
+l'encodeur, un nettoyage de l'adapter Eye puis sa réouverture avec quatre
+tentatives bornées. `GestureBridge` reste actif et reprend à la première frame.
+
+```text
+apps/xr-mobile/build/android/mlomega-xreal-world-lab-v29-rec-eye-resume.apk
+taille = 239017457 octets
+sha256 = 5FD3274CC3E7C5776D2CD80BE4EBC588631AF640326C9E3DE2D312BCAB9F1699
+```
+
+Gate v29 réellement validé sur six captures successives : chaque STOP a rendu
+`Eye restart attempt=1 resumed=True`, puis les logs montrent de nouveaux pinch
+sur boutons, dock, navigateur et clavier. La dernière démo validée fait
+42,940867 s, 1920x1080 H.264 + AAC et 51 262 111 octets.
+
 Diagnostic ciblé :
 
 ```powershell

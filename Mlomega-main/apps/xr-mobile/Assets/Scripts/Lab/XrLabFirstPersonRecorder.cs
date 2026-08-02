@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.IO;
 using System.Linq;
+using MLOmega.XR.Core;
 using UnityEngine;
 using Unity.XR.XREAL;
 
@@ -26,6 +27,7 @@ namespace MLOmega.XR.UI
         }
 
         private XREALVideoCapture _capture;
+        private XrSessionController _xrSession;
         private RecorderState _state = RecorderState.Idle;
         private float _recordStartedAt;
         private string _outputPath = string.Empty;
@@ -44,6 +46,11 @@ namespace MLOmega.XR.UI
             : 0f;
         public string UiStatus => _uiStatus;
         public string OutputPath => _outputPath;
+
+        private void Awake()
+        {
+            _xrSession = FindAnyObjectByType<XrSessionController>();
+        }
 
         public void Toggle()
         {
@@ -195,8 +202,39 @@ namespace MLOmega.XR.UI
                 Fail("finalisation refusée");
                 return;
             }
-            SetState(RecorderState.Publishing, "Galerie…");
-            StartCoroutine(PublishToGallery());
+            SetState(RecorderState.Publishing, "Relance gestes…");
+            StartCoroutine(RestoreEyeAndPublish());
+        }
+
+        private IEnumerator RestoreEyeAndPublish()
+        {
+            // XREALVideoCapture and the gesture adapter share the Eye RGB
+            // device successfully while recording. StopVideoMode, however,
+            // closes the native camera globally while XrealDeviceAdapter still
+            // believes its singleton is active. Force a clean local teardown,
+            // wait for the native lease, then reacquire it. GestureBridge stays
+            // alive and consumes the first resumed EyeCaptureSource frame.
+            if (_xrSession == null)
+                _xrSession = FindAnyObjectByType<XrSessionController>();
+            bool resumed = _xrSession == null;
+            if (_xrSession != null)
+            {
+                _xrSession.SetEyeCapturePaused(true);
+                yield return new WaitForSecondsRealtime(.35f);
+                for (int attempt = 1; attempt <= 4; attempt++)
+                {
+                    resumed = _xrSession.SetEyeCapturePaused(false);
+                    Debug.Log(
+                        "[XrLab][REC] Eye restart attempt=" + attempt +
+                        " resumed=" + resumed);
+                    if (resumed) break;
+                    yield return new WaitForSecondsRealtime(.45f);
+                }
+            }
+            SetState(
+                RecorderState.Publishing,
+                resumed ? "Galerie…" : "REC OK · gestes KO");
+            yield return PublishToGallery();
         }
 
         private IEnumerator PublishToGallery()
