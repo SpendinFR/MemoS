@@ -1,6 +1,12 @@
 package com.mlomega.xr.securesurface;
 
+import android.app.ActivityManager;
+import android.app.ActivityOptions;
+import android.app.PendingIntent;
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
+import android.graphics.Rect;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
 import android.os.Binder;
@@ -8,20 +14,27 @@ import android.os.IBinder;
 import android.os.Parcel;
 import android.os.Process;
 import android.os.SystemClock;
+import android.net.Uri;
 import android.util.Log;
 import android.view.InputDevice;
 import android.view.InputEvent;
 import android.view.MotionEvent;
 import android.view.Surface;
+import android.view.SurfaceControl;
+import android.window.TaskOrganizer;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.lang.reflect.Method;
+import java.lang.reflect.Field;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Minimal Shizuku UserService used only by the isolated secure-surface spike.
- * It runs as uid=shell, creates a secure/trusted VirtualDisplay backed directly
- * by the XREAL protected Surface, and launches one public YouTube intent there.
+ * It runs as uid=shell, creates a trusted VirtualDisplay backed directly by the
+ * XREAL protected Surface, and launches packaged Android applications there.
  */
 public final class TrustedDisplayUserService extends Binder {
     static final String DESCRIPTOR =
@@ -32,6 +45,21 @@ public final class TrustedDisplayUserService extends Binder {
     static final int TRANSACTION_POINTER = IBinder.FIRST_CALL_TRANSACTION + 3;
     static final int TRANSACTION_HOVER = IBinder.FIRST_CALL_TRANSACTION + 4;
     static final int TRANSACTION_OPEN_KEYBOARD = IBinder.FIRST_CALL_TRANSACTION + 5;
+    static final int TRANSACTION_LAUNCH_APP = IBinder.FIRST_CALL_TRANSACTION + 6;
+    static final int TRANSACTION_START_SECURE_STEREO_TASK =
+            IBinder.FIRST_CALL_TRANSACTION + 7;
+    static final int TRANSACTION_MAYBE_START_SYSTEM_MIRROR =
+            IBinder.FIRST_CALL_TRANSACTION + 8;
+    static final int TRANSACTION_STOP_SYSTEM_MIRROR =
+            IBinder.FIRST_CALL_TRANSACTION + 9;
+    static final int TRANSACTION_REATTACH_SURFACE =
+            IBinder.FIRST_CALL_TRANSACTION + 10;
+    static final int TRANSACTION_SET_CINEMA_PROJECTION =
+            IBinder.FIRST_CALL_TRANSACTION + 11;
+    static final int TRANSACTION_IS_PLAYBACK_READY =
+            IBinder.FIRST_CALL_TRANSACTION + 12;
+    static final int TRANSACTION_TOGGLE_MEDIA =
+            IBinder.FIRST_CALL_TRANSACTION + 13;
 
     private static final String TAG = "MLOmegaTrustedVD";
     private Context suppliedContext;
@@ -41,6 +69,27 @@ public final class TrustedDisplayUserService extends Binder {
     private Method injectInputEvent;
     private Method setMotionDisplayId;
     private boolean inputReflectionBroken;
+    private TaskOrganizer secureTaskOrganizer;
+    private Surface secureSpatialSurface;
+    private SurfaceControl secureTaskLeash;
+    private SurfaceControl secureLeftMirror;
+    private SurfaceControl secureRightMirror;
+    private String secureTargetPackage;
+    private int secureEyeWidth;
+    private int secureEyeHeight;
+    private int securePhysicalDisplayId = -1;
+    private int secureTaskDisplayId;
+    private int secureTaskWidth;
+    private int secureTaskHeight;
+    private int secureRootTaskId = -1;
+    private IBinder secureRootCookie;
+    private Object secureRootToken;
+    private SurfaceControl secureRootLeash;
+    private CountDownLatch secureRootReady;
+    private int mirroredGlassesDisplayId = -1;
+    private int mirroredVirtualDisplayId = -1;
+    private int originalPanelLayerStack = -1;
+    private int cinemaProjectionPreset;
 
     @SuppressWarnings("unused")
     public TrustedDisplayUserService() {
@@ -117,6 +166,78 @@ public final class TrustedDisplayUserService extends Binder {
                 reply.writeInt(opened ? 1 : 0);
                 return true;
             }
+            if (code == TRANSACTION_LAUNCH_APP) {
+                int displayId = data.readInt();
+                String packageName = data.readString();
+                String uri = data.readString();
+                String result = launchPackagedUri(displayId, packageName, uri);
+                reply.writeNoException();
+                reply.writeString(result);
+                return true;
+            }
+            if (code == TRANSACTION_START_SECURE_STEREO_TASK) {
+                Surface spatialSurface = Surface.CREATOR.createFromParcel(data);
+                int surfaceWidth = data.readInt();
+                int surfaceHeight = data.readInt();
+                String packageName = data.readString();
+                String uri = data.readString();
+                String result = startSecureStereoTask(
+                        spatialSurface,
+                        surfaceWidth,
+                        surfaceHeight,
+                        packageName,
+                        uri);
+                reply.writeNoException();
+                reply.writeString(result);
+                return true;
+            }
+            if (code == TRANSACTION_MAYBE_START_SYSTEM_MIRROR) {
+                int glassesDisplayId = data.readInt();
+                int virtualDisplayId = data.readInt();
+                String packageName = data.readString();
+                boolean force = data.readInt() != 0;
+                String result = maybeStartSystemMirror(
+                        glassesDisplayId,
+                        virtualDisplayId,
+                        packageName,
+                        force);
+                reply.writeNoException();
+                reply.writeString(result);
+                return true;
+            }
+            if (code == TRANSACTION_STOP_SYSTEM_MIRROR) {
+                String result = stopSystemMirror();
+                reply.writeNoException();
+                reply.writeString(result);
+                return true;
+            }
+            if (code == TRANSACTION_REATTACH_SURFACE) {
+                Surface surface = Surface.CREATOR.createFromParcel(data);
+                boolean attached = reattachDisplaySurface(surface);
+                reply.writeNoException();
+                reply.writeInt(attached ? 1 : 0);
+                return true;
+            }
+            if (code == TRANSACTION_SET_CINEMA_PROJECTION) {
+                int preset = data.readInt();
+                String result = applyCinemaProjection(preset);
+                reply.writeNoException();
+                reply.writeString(result);
+                return true;
+            }
+            if (code == TRANSACTION_IS_PLAYBACK_READY) {
+                String packageName = data.readString();
+                boolean ready = isProtectedPlaybackActive(packageName);
+                reply.writeNoException();
+                reply.writeInt(ready ? 1 : 0);
+                return true;
+            }
+            if (code == TRANSACTION_TOGGLE_MEDIA) {
+                String result = toggleMirroredMedia();
+                reply.writeNoException();
+                reply.writeString(result);
+                return true;
+            }
             return super.onTransact(code, data, reply, flags);
         } catch (Throwable error) {
             Log.e(TAG, "transaction " + code + " failed", error);
@@ -165,7 +286,821 @@ public final class TrustedDisplayUserService extends Binder {
         }
     }
 
+    private boolean reattachDisplaySurface(Surface surface) {
+        if (surface == null || !surface.isValid() || virtualDisplay == null) {
+            Log.w(TAG, "reattach rejected surface=" + surface
+                    + " display=" + virtualDisplay);
+            return false;
+        }
+        long identity = Binder.clearCallingIdentity();
+        try {
+            Surface previous = displaySurface;
+            virtualDisplay.setSurface(surface);
+            displaySurface = surface;
+            if (previous != null && previous != surface) {
+                try { previous.release(); } catch (Throwable ignored) {}
+            }
+            Log.i(TAG, "trusted display surface reattached id="
+                    + virtualDisplay.getDisplay().getDisplayId());
+            return true;
+        } catch (Throwable error) {
+            Log.e(TAG, "trusted display surface reattach failed", error);
+            return false;
+        } finally {
+            Binder.restoreCallingIdentity(identity);
+        }
+    }
+
     private String launchYoutube(int displayId, String uri) throws Exception {
+        return launchPackagedUri(
+                displayId,
+                "com.google.android.youtube",
+                uri);
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private String startSecureStereoTask(
+            Surface spatialSurface,
+            int surfaceWidth,
+            int surfaceHeight,
+            String packageName,
+            String uri) throws Exception {
+        if (spatialSurface == null || !spatialSurface.isValid()) {
+            throw new IllegalArgumentException("XREAL spatial surface invalid");
+        }
+        if (packageName == null || packageName.trim().isEmpty()) {
+            throw new IllegalArgumentException("secure target package required");
+        }
+
+        releaseSecureTaskOrganizer();
+        secureSpatialSurface = spatialSurface;
+        secureTargetPackage = packageName;
+        securePhysicalDisplayId = -1;
+        // Keep the legitimate Android task and its input channel on display 0.
+        // Only a protected mirror is parented under XREAL's own protected quad;
+        // XREAL then performs the stereo fusion and world-space pose itself.
+        secureTaskDisplayId = 0;
+        secureTaskWidth = 1080;
+        secureTaskHeight = 607;
+        secureEyeWidth = Math.max(1, surfaceWidth);
+        secureEyeHeight = Math.max(1, surfaceHeight);
+
+        long identity = Binder.clearCallingIdentity();
+        try {
+            secureTaskOrganizer = new TaskOrganizer() {
+                @Override
+                public void onTaskAppeared(
+                        ActivityManager.RunningTaskInfo taskInfo,
+                        SurfaceControl leash) {
+                    handleSecureTaskAppeared(taskInfo, leash);
+                }
+
+                @Override
+                public void onTaskInfoChanged(ActivityManager.RunningTaskInfo taskInfo) {
+                    if (!taskMatchesPackage(taskInfo)) return;
+                    if (secureTaskLeash == null
+                            && taskInfo != null
+                            && taskInfo.taskId == secureRootTaskId
+                            && secureRootLeash != null
+                            && secureRootLeash.isValid()) {
+                        handleSecureTaskAppeared(taskInfo, secureRootLeash);
+                    } else if (secureLeftMirror != null) {
+                        applySecureTaskTransform(
+                                taskInfo, secureLeftMirror, secureRightMirror);
+                    }
+                }
+
+                @Override
+                public void onTaskVanished(ActivityManager.RunningTaskInfo taskInfo) {
+                    if (taskMatchesPackage(taskInfo)) releaseSecureTaskSurfaces();
+                }
+            };
+            List existing = secureTaskOrganizer.registerOrganizer();
+            Log.i(TAG, "secure TaskOrganizer registered existing="
+                    + (existing == null ? -1 : existing.size())
+                    + " uid=" + Process.myUid());
+
+            secureRootCookie = new Binder();
+            secureRootReady = new CountDownLatch(1);
+            createSecureRootTask();
+            if (!secureRootReady.await(3500L, TimeUnit.MILLISECONDS)
+                    || secureRootTaskId < 0 || secureRootToken == null) {
+                throw new IllegalStateException(
+                        "secure child root unavailable display="
+                                + secureTaskDisplayId);
+            }
+            resizeSecureRoot();
+            String output = launchIntoSecureRoot(packageName, uri);
+            return "child_root=" + secureRootTaskId
+                    + ":display=" + securePhysicalDisplayId
+                    + ":task_display=" + secureTaskDisplayId
+                    + ":launch_requested:" + packageName
+                    + ":" + output;
+        } catch (Throwable error) {
+            releaseSecureTaskOrganizer();
+            throw error;
+        } finally {
+            Binder.restoreCallingIdentity(identity);
+        }
+    }
+
+    private void invokeActivityOption(
+            ActivityOptions options,
+            String method,
+            Class<?>[] parameterTypes,
+            Object[] arguments) {
+        try {
+            Method target = ActivityOptions.class.getMethod(method, parameterTypes);
+            target.invoke(options, arguments);
+        } catch (Throwable error) {
+            Log.w(TAG, "ActivityOptions." + method + " unavailable", error);
+        }
+    }
+
+    private boolean taskMatchesPackage(ActivityManager.RunningTaskInfo info) {
+        if (info == null || secureTargetPackage == null) return false;
+        ComponentName top = info.topActivity;
+        ComponentName base = info.baseActivity;
+        return (top != null && secureTargetPackage.equals(top.getPackageName()))
+                || (base != null && secureTargetPackage.equals(base.getPackageName()));
+    }
+
+    private void handleSecureTaskAppeared(
+            ActivityManager.RunningTaskInfo taskInfo,
+            SurfaceControl leash) {
+        String component = taskInfo == null || taskInfo.topActivity == null
+                ? "null" : taskInfo.topActivity.flattenToShortString();
+        Log.i(TAG, "TaskOrganizer appeared task="
+                + (taskInfo == null ? -1 : taskInfo.taskId)
+                + " component=" + component
+                + " leash=" + leash);
+        if (taskContainsLaunchCookie(taskInfo, secureRootCookie)) {
+            secureRootTaskId = taskInfo.taskId;
+            secureRootToken = readTaskToken(taskInfo);
+            secureRootLeash = leash;
+            Log.i(TAG, "secure child root ready task=" + secureRootTaskId
+                    + " display=" + securePhysicalDisplayId
+                    + " token=" + secureRootToken);
+            CountDownLatch ready = secureRootReady;
+            if (ready != null) ready.countDown();
+            return;
+        }
+        if (!taskMatchesPackage(taskInfo) || leash == null || !leash.isValid()) return;
+        try {
+            secureTaskLeash = leash;
+            Method mirrorMethod = SurfaceControl.class.getDeclaredMethod(
+                    "mirrorSurface", SurfaceControl.class);
+            mirrorMethod.setAccessible(true);
+            secureLeftMirror = (SurfaceControl) mirrorMethod.invoke(null, leash);
+            secureRightMirror = null;
+            if (secureLeftMirror == null || !secureLeftMirror.isValid()) {
+                throw new IllegalStateException("secure task mirror invalid");
+            }
+            // Never move the real task leash away from display 0. Android 16
+            // otherwise migrates its input handle to the physical XREAL display
+            // while WindowManager still owns the task on display 0, leaving no
+            // touchable window on either display. Two protected mirrors preserve
+            // the secure composition and keep the original task/input channel
+            // attached to its logical display. XREAL duplicates this one quad
+            // correctly for both eyes, unlike two Android Presentations.
+            applySecureTaskTransform(taskInfo, secureLeftMirror, secureRightMirror);
+            Log.i(TAG, "secure spatial task attached task=" + taskInfo.taskId
+                    + " package=" + secureTargetPackage);
+        } catch (Throwable error) {
+            Log.e(TAG, "secure stereo task attach failed", error);
+            releaseSecureTaskSurfaces();
+        }
+    }
+
+    private boolean taskContainsLaunchCookie(
+            ActivityManager.RunningTaskInfo info,
+            IBinder cookie) {
+        if (info == null || cookie == null) return false;
+        try {
+            Method method = Class.forName("android.app.TaskInfo")
+                    .getDeclaredMethod("containsLaunchCookie", IBinder.class);
+            method.setAccessible(true);
+            return Boolean.TRUE.equals(method.invoke(info, cookie));
+        } catch (Throwable methodError) {
+            try {
+                Field field = Class.forName("android.app.TaskInfo")
+                        .getDeclaredField("launchCookies");
+                field.setAccessible(true);
+                Object value = field.get(info);
+                return value instanceof List && ((List<?>) value).contains(cookie);
+            } catch (Throwable fieldError) {
+                Log.w(TAG, "root launch-cookie inspection failed", fieldError);
+                return false;
+            }
+        }
+    }
+
+    private Object readTaskToken(ActivityManager.RunningTaskInfo info) {
+        if (info == null) return null;
+        try {
+            Field token = Class.forName("android.app.TaskInfo").getField("token");
+            return token.get(info);
+        } catch (Throwable publicError) {
+            try {
+                Field token = Class.forName("android.app.TaskInfo")
+                        .getDeclaredField("token");
+                token.setAccessible(true);
+                return token.get(info);
+            } catch (Throwable error) {
+                Log.e(TAG, "root task token unavailable", error);
+                return null;
+            }
+        }
+    }
+
+    private void createSecureRootTask() throws Exception {
+        try {
+            Method modern = TaskOrganizer.class.getDeclaredMethod(
+                    "createRootTask",
+                    int.class,
+                    int.class,
+                    IBinder.class,
+                    boolean.class);
+            modern.setAccessible(true);
+            modern.invoke(
+                    secureTaskOrganizer,
+                    secureTaskDisplayId,
+                    6,
+                    secureRootCookie,
+                    true);
+            Log.i(TAG, "createRootTask signature=4");
+            return;
+        } catch (NoSuchMethodException unavailable) {
+            Log.i(TAG, "createRootTask signature=4 unavailable; trying 3");
+        }
+        Method legacy = TaskOrganizer.class.getDeclaredMethod(
+                "createRootTask",
+                int.class,
+                int.class,
+                IBinder.class);
+        legacy.setAccessible(true);
+        legacy.invoke(
+                secureTaskOrganizer,
+                secureTaskDisplayId,
+                6,
+                secureRootCookie);
+        Log.i(TAG, "createRootTask signature=3");
+    }
+
+    private String launchIntoSecureRoot(
+            String packageName,
+            String uri) throws Exception {
+        Context context = obtainShellContext();
+        if (context == null) {
+            throw new IllegalStateException("shell context unavailable");
+        }
+        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(uri));
+        intent.setPackage(packageName);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+
+        ActivityOptions options = ActivityOptions.makeBasic();
+        options.setLaunchDisplayId(secureTaskDisplayId);
+        options.setLaunchBounds(new Rect(
+                0, 0, secureTaskWidth, secureTaskHeight));
+        invokeRequiredActivityOption(
+                options,
+                "setLaunchWindowingMode",
+                new Class<?>[] { int.class },
+                new Object[] { 6 });
+        try {
+            Class<?> tokenClass = Class.forName(
+                    "android.window.WindowContainerToken");
+            invokeRequiredActivityOption(
+                    options,
+                    "setLaunchRootTask",
+                    new Class<?>[] { tokenClass },
+                    new Object[] { secureRootToken });
+            Log.i(TAG, "secure launch target=root_token task=" + secureRootTaskId);
+        } catch (NoSuchMethodException unavailable) {
+            invokeRequiredActivityOption(
+                    options,
+                    "setLaunchTaskId",
+                    new Class<?>[] { int.class },
+                    new Object[] { secureRootTaskId });
+            Log.i(TAG, "secure launch target=task_id task=" + secureRootTaskId);
+        }
+        try {
+            invokeRequiredActivityOption(
+                    options,
+                    "setRemoveWithTaskOrganizer",
+                    new Class<?>[] { boolean.class },
+                    new Object[] { true });
+        } catch (NoSuchMethodException unavailable) {
+            Log.i(TAG, "setRemoveWithTaskOrganizer unavailable");
+        }
+
+        PendingIntent pending = PendingIntent.getActivity(
+                context,
+                (int) (SystemClock.uptimeMillis() & 0x7fffffff),
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE,
+                options.toBundle());
+        pending.send(
+                context,
+                0,
+                null,
+                null,
+                null,
+                null,
+                options.toBundle());
+        Log.i(TAG, "secure PendingIntent sent creator="
+                + pending.getCreatorPackage()
+                + " uid=" + pending.getCreatorUid()
+                + " taskDisplay=" + secureTaskDisplayId
+                + " physicalDisplay=" + securePhysicalDisplayId);
+        return "pending_intent_sent:" + pending.getCreatorPackage();
+    }
+
+    private void invokeRequiredActivityOption(
+            ActivityOptions options,
+            String method,
+            Class<?>[] parameterTypes,
+            Object[] arguments) throws Exception {
+        Method target = ActivityOptions.class.getDeclaredMethod(method, parameterTypes);
+        target.setAccessible(true);
+        target.invoke(options, arguments);
+    }
+
+    private void resizeSecureRoot() {
+        try {
+            ProcessBuilder builder = new ProcessBuilder(
+                    "/system/bin/am",
+                    "task",
+                    "resize",
+                    String.valueOf(secureRootTaskId),
+                    "0",
+                    "0",
+                    String.valueOf(secureTaskWidth),
+                    String.valueOf(secureTaskHeight));
+            builder.redirectErrorStream(true);
+            java.lang.Process process = builder.start();
+            int exit = process.waitFor();
+            Log.i(TAG, "secure child root resize exit=" + exit
+                    + " bounds=" + secureTaskWidth + "x" + secureTaskHeight);
+        } catch (Throwable error) {
+            Log.w(TAG, "secure child root resize unavailable", error);
+        }
+    }
+
+    private void applySecureTaskTransform(
+            ActivityManager.RunningTaskInfo taskInfo,
+            SurfaceControl leftLeash,
+            SurfaceControl rightMirror) {
+        if (leftLeash == null || !leftLeash.isValid()
+                || secureSpatialSurface == null || !secureSpatialSurface.isValid()) return;
+        Rect taskBounds = readTaskBounds(taskInfo);
+        int sourceWidth = Math.max(1, taskBounds.width());
+        int sourceHeight = Math.max(1, taskBounds.height());
+        String result = SecureTaskSurfaceProbe.attachMirror(
+                secureSpatialSurface,
+                leftLeash,
+                sourceWidth,
+                sourceHeight,
+                secureEyeWidth,
+                secureEyeHeight);
+        if (result == null || !result.startsWith("spatial_mirror_attached:")) {
+            throw new IllegalStateException("spatial mirror rejected: " + result);
+        }
+        Log.i(TAG, result);
+    }
+
+    private Rect readTaskBounds(ActivityManager.RunningTaskInfo taskInfo) {
+        try {
+            Field configurationField = Class.forName("android.app.TaskInfo")
+                    .getDeclaredField("configuration");
+            configurationField.setAccessible(true);
+            Object configuration = configurationField.get(taskInfo);
+            Field windowConfigurationField = configuration.getClass()
+                    .getDeclaredField("windowConfiguration");
+            windowConfigurationField.setAccessible(true);
+            Object windowConfiguration = windowConfigurationField.get(configuration);
+            Method getBounds = windowConfiguration.getClass().getMethod("getBounds");
+            Rect bounds = (Rect) getBounds.invoke(windowConfiguration);
+            if (bounds != null && !bounds.isEmpty()) return new Rect(bounds);
+        } catch (Throwable error) {
+            Log.w(TAG, "task bounds reflection unavailable; using S24 bounds", error);
+        }
+        return new Rect(0, 0, 1080, 2340);
+    }
+
+    private void releaseSecureTaskSurfaces() {
+        try {
+            SurfaceControl.Transaction transaction = new SurfaceControl.Transaction();
+            if (secureLeftMirror != null && secureLeftMirror.isValid()) {
+                transaction.reparent(secureLeftMirror, null);
+            }
+            if (secureRightMirror != null && secureRightMirror.isValid()) {
+                transaction.reparent(secureRightMirror, null);
+            }
+            transaction.apply();
+        } catch (Throwable error) {
+            Log.w(TAG, "secure task surface release failed", error);
+        }
+        try { SecureTaskSurfaceProbe.releaseMirrorParent(); }
+        catch (Throwable error) {
+            Log.w(TAG, "secure spatial parent release failed", error);
+        }
+        if (secureLeftMirror != null) {
+            try { secureLeftMirror.release(); } catch (Throwable ignored) {}
+        }
+        if (secureRightMirror != null) {
+            try { secureRightMirror.release(); } catch (Throwable ignored) {}
+        }
+        secureTaskLeash = null;
+        secureLeftMirror = null;
+        secureRightMirror = null;
+    }
+
+    private void releaseSecureTaskOrganizer() {
+        releaseSecureTaskSurfaces();
+        if (secureTaskOrganizer != null) {
+            if (secureRootToken != null) {
+                try {
+                    Class<?> tokenClass = Class.forName(
+                            "android.window.WindowContainerToken");
+                    Method method = TaskOrganizer.class.getDeclaredMethod(
+                            "deleteRootTask", tokenClass);
+                    method.setAccessible(true);
+                    method.invoke(secureTaskOrganizer, secureRootToken);
+                } catch (Throwable error) {
+                    Log.w(TAG, "secure child root delete failed", error);
+                }
+            }
+            try { secureTaskOrganizer.unregisterOrganizer(); }
+            catch (Throwable error) {
+                Log.w(TAG, "secure TaskOrganizer unregister failed", error);
+            }
+            secureTaskOrganizer = null;
+        }
+        if (secureSpatialSurface != null) {
+            try { secureSpatialSurface.release(); } catch (Throwable ignored) {}
+        }
+        secureSpatialSurface = null;
+        secureTargetPackage = null;
+        securePhysicalDisplayId = -1;
+        secureTaskDisplayId = 0;
+        secureTaskWidth = 0;
+        secureTaskHeight = 0;
+        secureRootTaskId = -1;
+        secureRootCookie = null;
+        secureRootToken = null;
+        secureRootLeash = null;
+        secureRootReady = null;
+    }
+
+    /**
+     * Overlay-free DRM handoff. The physical XREAL panel is retargeted to the
+     * trusted VirtualDisplay layer stack, so protected buffers stay entirely in
+     * SurfaceFlinger. Navigation remains spatial, commercial playback becomes a
+     * temporary system-owned cinema screen, and stopSystemMirror restores the
+     * exact native panel layer stack captured here.
+     */
+    private String maybeStartSystemMirror(
+            int glassesDisplayId,
+            int virtualDisplayId,
+            String packageName,
+            boolean force) throws Exception {
+        if (glassesDisplayId <= 0) {
+            return "WAIT:no_external_display:" + glassesDisplayId;
+        }
+        if (virtualDisplayId < 0 || virtualDisplay == null) {
+            return "WAIT:no_virtual_display:" + virtualDisplayId;
+        }
+        if (!force && !isProtectedPlaybackActive(packageName)) {
+            return "WAIT:not_playing:" + packageName;
+        }
+        if (mirroredGlassesDisplayId == glassesDisplayId
+                && mirroredVirtualDisplayId == virtualDisplayId
+                && originalPanelLayerStack >= 0) {
+            return "ALREADY:glasses=" + glassesDisplayId
+                    + ":vd=" + virtualDisplayId;
+        }
+
+        long identity = Binder.clearCallingIdentity();
+        try {
+            Class<?> surfaceControl = Class.forName("android.view.SurfaceControl");
+            IBinder panelToken = resolveExternalPanelToken(surfaceControl);
+            if (panelToken == null) return "WAIT:no_external_panel_token";
+
+            Integer virtualLayerStack = readLayerStack(virtualDisplayId);
+            Integer panelLayerStack = readLayerStack(glassesDisplayId);
+            if (virtualLayerStack == null) {
+                return "WAIT:no_vd_layer_stack:" + virtualDisplayId;
+            }
+            if (panelLayerStack == null) {
+                return "WAIT:no_panel_layer_stack:" + glassesDisplayId;
+            }
+            if (originalPanelLayerStack < 0) {
+                originalPanelLayerStack = panelLayerStack;
+            }
+            setPanelLayerStack(panelToken, virtualLayerStack);
+
+            mirroredGlassesDisplayId = glassesDisplayId;
+            mirroredVirtualDisplayId = virtualDisplayId;
+            cinemaProjectionPreset = 0;
+            String projection = applyCinemaProjectionLocked(
+                    panelToken, glassesDisplayId, virtualDisplayId, 0);
+            String result = "STARTED:glasses=" + glassesDisplayId
+                    + ":panelLS=" + originalPanelLayerStack
+                    + ":vd=" + virtualDisplayId
+                    + ":vdLS=" + virtualLayerStack
+                    + ":projection=" + projection
+                    + ":package=" + packageName;
+            Log.w(TAG, "SYSTEM_CINEMA " + result);
+            return result;
+        } finally {
+            Binder.restoreCallingIdentity(identity);
+        }
+    }
+
+    private String stopSystemMirror() {
+        int glassesDisplayId = mirroredGlassesDisplayId;
+        int restoreLayerStack = originalPanelLayerStack;
+        if (glassesDisplayId < 0 || restoreLayerStack < 0) {
+            return "SKIP:not_mirroring";
+        }
+        long identity = Binder.clearCallingIdentity();
+        try {
+            String navigation = returnMirroredAppToBrowse();
+            Class<?> surfaceControl = Class.forName("android.view.SurfaceControl");
+            IBinder panelToken = resolveExternalPanelToken(surfaceControl);
+            if (panelToken == null) return "FAIL:no_external_panel_token";
+            applyCinemaProjectionLocked(
+                    panelToken, glassesDisplayId, mirroredVirtualDisplayId, 0);
+            setPanelLayerStack(panelToken, restoreLayerStack);
+            String result = "RESTORED:glasses=" + glassesDisplayId
+                    + ":layerStack=" + restoreLayerStack
+                    + ":navigation=" + navigation;
+            Log.w(TAG, "SYSTEM_CINEMA " + result);
+            mirroredGlassesDisplayId = -1;
+            mirroredVirtualDisplayId = -1;
+            originalPanelLayerStack = -1;
+            return result;
+        } catch (Throwable error) {
+            Log.e(TAG, "system cinema restore failed", error);
+            return "FAIL:" + error.getClass().getSimpleName()
+                    + ":" + String.valueOf(error.getMessage());
+        } finally {
+            Binder.restoreCallingIdentity(identity);
+        }
+    }
+
+    private String returnMirroredAppToBrowse() {
+        int displayId = mirroredVirtualDisplayId;
+        if (displayId < 0) return "SKIP:no_virtual_display";
+        try {
+            String result = runCommand(
+                    "/system/bin/input",
+                    "-d", String.valueOf(displayId),
+                    "keyevent", "4").trim();
+            // Let Netflix leave PlayerActivity and draw its non-protected browse
+            // screen before XREAL returns to the protected world-space quad.
+            SystemClock.sleep(650L);
+            Log.i(TAG, "cinema app returned to browse display=" + displayId
+                    + " result=" + result);
+            return "OK";
+        } catch (Throwable error) {
+            Log.w(TAG, "cinema browse return failed", error);
+            return "FAIL:" + error.getClass().getSimpleName();
+        }
+    }
+
+    private String toggleMirroredMedia() {
+        try {
+            String result = runCommand(
+                    "/system/bin/input", "keyevent", "85").trim();
+            Log.i(TAG, "cinema media play/pause result=" + result);
+            return "OK";
+        } catch (Throwable error) {
+            Log.w(TAG, "cinema media play/pause failed", error);
+            return "FAIL:" + error.getClass().getSimpleName();
+        }
+    }
+
+    private IBinder resolveExternalPanelToken(Class<?> surfaceControl) {
+        try {
+            long[] physicalIds = (long[]) surfaceControl
+                    .getMethod("getPhysicalDisplayIds")
+                    .invoke(null);
+            if (physicalIds == null || physicalIds.length < 2) return null;
+            long internalId = physicalIds[0];
+            Method getToken = surfaceControl.getMethod(
+                    "getPhysicalDisplayToken", long.class);
+            for (int index = physicalIds.length - 1; index >= 0; index--) {
+                long physicalId = physicalIds[index];
+                if (physicalId == internalId) continue;
+                IBinder token = (IBinder) getToken.invoke(null, physicalId);
+                if (token != null) return token;
+            }
+        } catch (Throwable error) {
+            Log.e(TAG, "external panel token unavailable", error);
+        }
+        return null;
+    }
+
+    private Integer readLayerStack(int logicalDisplayId) {
+        try {
+            Class<?> globalClass = Class.forName(
+                    "android.hardware.display.DisplayManagerGlobal");
+            Object global = globalClass.getMethod("getInstance").invoke(null);
+            Object info = global.getClass()
+                    .getMethod("getDisplayInfo", int.class)
+                    .invoke(global, logicalDisplayId);
+            if (info == null) return null;
+            return info.getClass().getField("layerStack").getInt(info);
+        } catch (Throwable error) {
+            Log.e(TAG, "layerStack unavailable display=" + logicalDisplayId, error);
+            return null;
+        }
+    }
+
+    private void setPanelLayerStack(IBinder panelToken, int layerStack)
+            throws Exception {
+        Class<?> transactionClass = Class.forName(
+                "android.view.SurfaceControl$Transaction");
+        Object transaction = transactionClass.getConstructor().newInstance();
+        try {
+            transactionClass.getMethod(
+                    "setDisplayLayerStack", IBinder.class, int.class)
+                    .invoke(transaction, panelToken, layerStack);
+            transactionClass.getMethod("apply").invoke(transaction);
+        } finally {
+            try { transactionClass.getMethod("close").invoke(transaction); }
+            catch (Throwable ignored) {}
+        }
+    }
+
+    private String applyCinemaProjection(int preset) {
+        int glassesDisplayId = mirroredGlassesDisplayId;
+        int virtualDisplayId = mirroredVirtualDisplayId;
+        if (glassesDisplayId < 0 || virtualDisplayId < 0) {
+            return "SKIP:not_mirroring";
+        }
+        long identity = Binder.clearCallingIdentity();
+        try {
+            Class<?> surfaceControl = Class.forName("android.view.SurfaceControl");
+            IBinder panelToken = resolveExternalPanelToken(surfaceControl);
+            if (panelToken == null) return "FAIL:no_external_panel_token";
+            cinemaProjectionPreset = Math.max(0, Math.min(2, preset));
+            return applyCinemaProjectionLocked(
+                    panelToken,
+                    glassesDisplayId,
+                    virtualDisplayId,
+                    cinemaProjectionPreset);
+        } catch (Throwable error) {
+            Log.e(TAG, "cinema projection failed", error);
+            return "FAIL:" + error.getClass().getSimpleName();
+        } finally {
+            Binder.restoreCallingIdentity(identity);
+        }
+    }
+
+    private String applyCinemaProjectionLocked(
+            IBinder panelToken,
+            int glassesDisplayId,
+            int virtualDisplayId,
+            int preset) throws Exception {
+        int[] source = readDisplaySize(virtualDisplayId);
+        int[] panel = readDisplaySize(glassesDisplayId);
+        int sourceWidth = source[0] > 0 ? source[0] : 1920;
+        int sourceHeight = source[1] > 0 ? source[1] : 1080;
+        int panelWidth = panel[0] > 0 ? panel[0] : 1920;
+        int panelHeight = panel[1] > 0 ? panel[1] : 1080;
+
+        float fit = Math.min(
+                panelWidth / (float) sourceWidth,
+                panelHeight / (float) sourceHeight);
+        float scale = preset == 2 ? 0.70f : (preset == 1 ? 0.85f : 1.0f);
+        int width = Math.max(1, Math.round(sourceWidth * fit * scale));
+        int height = Math.max(1, Math.round(sourceHeight * fit * scale));
+        int left = (panelWidth - width) / 2;
+        int top = (panelHeight - height) / 2;
+        Rect src = new Rect(0, 0, sourceWidth, sourceHeight);
+        Rect dst = new Rect(left, top, left + width, top + height);
+
+        Class<?> transactionClass = Class.forName(
+                "android.view.SurfaceControl$Transaction");
+        Object transaction = transactionClass.getConstructor().newInstance();
+        try {
+            transactionClass.getMethod(
+                    "setDisplayProjection",
+                    IBinder.class,
+                    int.class,
+                    Rect.class,
+                    Rect.class)
+                    .invoke(transaction, panelToken, 0, src, dst);
+            transactionClass.getMethod("apply").invoke(transaction);
+        } finally {
+            try { transactionClass.getMethod("close").invoke(transaction); }
+            catch (Throwable ignored) {}
+        }
+        String result = "OK:preset=" + preset + ":src=" + src + ":dst=" + dst;
+        Log.w(TAG, "CINEMA_PROJECTION " + result);
+        return result;
+    }
+
+    private int[] readDisplaySize(int displayId) {
+        try {
+            Context context = obtainShellContext();
+            DisplayManager manager = context == null ? null
+                    : (DisplayManager) context.getSystemService(Context.DISPLAY_SERVICE);
+            android.view.Display display = manager == null
+                    ? null : manager.getDisplay(displayId);
+            if (display != null) {
+                // XREAL One can expose a 640x480 hardware mode while Android's
+                // actual application surface is 1920x1080. PortalPad's proven
+                // DRM-safe projection path intentionally uses getRealMetrics.
+                android.util.DisplayMetrics metrics =
+                        new android.util.DisplayMetrics();
+                display.getRealMetrics(metrics);
+                if (metrics.widthPixels > 0 && metrics.heightPixels > 0) {
+                    return new int[] {
+                            metrics.widthPixels, metrics.heightPixels};
+                }
+            }
+            android.view.Display.Mode mode = display == null ? null : display.getMode();
+            if (mode != null) {
+                return new int[] {
+                        mode.getPhysicalWidth(), mode.getPhysicalHeight()};
+            }
+        } catch (Throwable error) {
+            Log.w(TAG, "display size unavailable id=" + displayId, error);
+        }
+        return new int[] {-1, -1};
+    }
+
+    private boolean isProtectedPlaybackActive(String packageName) {
+        if (packageName == null || packageName.trim().isEmpty()) return false;
+        String needle = packageName.toLowerCase();
+        try {
+            String sessions = runCommand("/system/bin/dumpsys", "media_session")
+                    .toLowerCase();
+            int offset = 0;
+            while ((offset = sessions.indexOf(needle, offset)) >= 0) {
+                int start = Math.max(0, offset - 1800);
+                int end = Math.min(sessions.length(), offset + 2600);
+                String block = sessions.substring(start, end);
+                if (block.contains("state=3") || block.contains("state=6")
+                        || block.contains("state=buffering")
+                        || block.contains("state=playing")) {
+                    return true;
+                }
+                offset += needle.length();
+            }
+
+            // Netflix may publish its media session a few frames after the
+            // player Activity appears. This fallback performs the handoff as
+            // soon as the real player screen is resumed, never on browse/detail.
+            String activities = runCommand(
+                    "/system/bin/dumpsys", "activity", "activities")
+                    .toLowerCase();
+            for (String line : activities.split("\\n")) {
+                if (!line.contains(needle)) continue;
+                if ((line.contains("resumed") || line.contains("topactivity"))
+                        && (line.contains("player")
+                        || line.contains("playback")
+                        || line.contains("watch"))) {
+                    return true;
+                }
+            }
+        } catch (Throwable error) {
+            Log.w(TAG, "playback probe failed package=" + packageName, error);
+        }
+        return false;
+    }
+
+    private String runCommand(String... command) throws Exception {
+        ProcessBuilder builder = new ProcessBuilder(command);
+        builder.redirectErrorStream(true);
+        java.lang.Process process = builder.start();
+        StringBuilder output = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(process.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.append(line).append('\n');
+            }
+        }
+        process.waitFor();
+        return output.toString();
+    }
+
+    private String launchPackagedUri(
+            int displayId,
+            String packageName,
+            String uri) throws Exception {
+        if (packageName == null || packageName.trim().isEmpty()) {
+            throw new IllegalArgumentException("package name required");
+        }
+        if (uri == null || uri.trim().isEmpty()) {
+            throw new IllegalArgumentException("launch uri required");
+        }
         long identity = Binder.clearCallingIdentity();
         try {
             ProcessBuilder builder = new ProcessBuilder(
@@ -175,7 +1110,7 @@ public final class TrustedDisplayUserService extends Binder {
                     "-f", "0x18000000",
                     "-a", "android.intent.action.VIEW",
                     "-d", uri,
-                    "-p", "com.google.android.youtube");
+                    "-p", packageName);
             builder.redirectErrorStream(true);
             java.lang.Process process = builder.start();
             StringBuilder output = new StringBuilder();
@@ -189,7 +1124,8 @@ public final class TrustedDisplayUserService extends Binder {
             }
             int exit = process.waitFor();
             String result = "exit=" + exit + " " + output;
-            Log.i(TAG, "YouTube launch display=" + displayId + " -> " + result);
+            Log.i(TAG, "app launch package=" + packageName +
+                    " display=" + displayId + " -> " + result);
             return result;
         } finally {
             Binder.restoreCallingIdentity(identity);
@@ -336,6 +1272,8 @@ public final class TrustedDisplayUserService extends Binder {
     }
 
     private void releaseDisplay() {
+        stopSystemMirror();
+        releaseSecureTaskOrganizer();
         if (virtualDisplay != null) {
             try { virtualDisplay.setSurface(null); } catch (Throwable ignored) {}
             try { virtualDisplay.release(); } catch (Throwable ignored) {}

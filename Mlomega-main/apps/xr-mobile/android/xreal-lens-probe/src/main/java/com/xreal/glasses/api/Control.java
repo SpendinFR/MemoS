@@ -11,6 +11,11 @@ public final class Control {
     public native int nativeGetDisplayBrightnessLevel();
     public native int nativeGetDisplayBrightnessLevelCount();
     public native boolean nativeSetDisplayBrightnessLevel(int level);
+    public native int nativeGet2D3DMode();
+    public native boolean nativeSet2D3DMode(int mode);
+    public native int nativeGetDpCurrentEdid();
+    public native boolean nativeSetDpCurrentEdid(int mode);
+    public native boolean nativeSetDpInputMode(int mode);
     public native int nativeGetEcLevel();
     public native int nativeGetEcLevelCount();
     public native boolean nativeSetEcLevel(int level);

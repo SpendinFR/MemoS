@@ -1667,6 +1667,81 @@ namespace MLOmega.XR.Editor
                 "TrustedDisplayUserService.java");
             File.Copy(trustedServiceTemplate, trustedServiceJava, true);
 
+            string taskProbeTemplate = Path.Combine(
+                Application.dataPath,
+                "Scripts",
+                "Editor",
+                "SecureSurfaceSpike",
+                "SecureTaskSurfaceProbe.java.txt");
+            if (!File.Exists(taskProbeTemplate))
+                throw new FileNotFoundException(
+                    "Secure task-surface probe template missing.",
+                    taskProbeTemplate);
+            string taskProbeJava = Path.Combine(
+                Path.GetDirectoryName(java),
+                "SecureTaskSurfaceProbe.java");
+            File.Copy(taskProbeTemplate, taskProbeJava, true);
+
+            string physicalStereoProbeTemplate = Path.Combine(
+                Application.dataPath,
+                "Scripts",
+                "Editor",
+                "SecureSurfaceSpike",
+                "SecurePhysicalStereoProbe.java.txt");
+            if (!File.Exists(physicalStereoProbeTemplate))
+                throw new FileNotFoundException(
+                    "Secure physical stereo probe template missing.",
+                    physicalStereoProbeTemplate);
+            string physicalStereoProbeJava = Path.Combine(
+                Path.GetDirectoryName(java),
+                "SecurePhysicalStereoProbe.java");
+            File.Copy(physicalStereoProbeTemplate, physicalStereoProbeJava, true);
+
+            string nativeProbe = Path.GetFullPath(Path.Combine(
+                Application.dataPath,
+                "..",
+                "..",
+                "..",
+                "scripts",
+                "xreal-compat",
+                "native",
+                "arm64-v8a",
+                "libmlomega_secure_task_probe.so"));
+            if (!File.Exists(nativeProbe))
+                throw new FileNotFoundException(
+                    "Native task-surface probe missing. Run " +
+                    "scripts\\BUILD_XREAL_SECURE_TASK_PROBE.ps1 first.",
+                    nativeProbe);
+            string nativeProbeDestination = Path.Combine(
+                unityLibraryPath,
+                "src",
+                "main",
+                "jniLibs",
+                "arm64-v8a",
+                Path.GetFileName(nativeProbe));
+            Directory.CreateDirectory(Path.GetDirectoryName(nativeProbeDestination));
+            File.Copy(nativeProbe, nativeProbeDestination, true);
+
+            string taskOrganizerStubs = Path.GetFullPath(Path.Combine(
+                Application.dataPath,
+                "..",
+                "..",
+                "..",
+                "scripts",
+                "xreal-compat",
+                "taskorganizer-stubs.jar"));
+            if (!File.Exists(taskOrganizerStubs))
+                throw new FileNotFoundException(
+                    "Compile-only TaskOrganizer stubs missing. Run " +
+                    "scripts\\BUILD_XREAL_TASKORGANIZER_STUBS.ps1 first.",
+                    taskOrganizerStubs);
+            string compileStubs = Path.Combine(
+                unityLibraryPath,
+                "compile-stubs",
+                Path.GetFileName(taskOrganizerStubs));
+            Directory.CreateDirectory(Path.GetDirectoryName(compileStubs));
+            File.Copy(taskOrganizerStubs, compileStubs, true);
+
             string manifest = Path.Combine(
                 unityLibraryPath,
                 "src",
@@ -1677,11 +1752,15 @@ namespace MLOmega.XR.Editor
                 string xml = File.ReadAllText(manifest);
                 const string youtubePackage =
                     "        <package android:name=\"com.google.android.youtube\" />\n";
+                const string netflixPackage =
+                    "        <package android:name=\"com.netflix.mediaclient\" />\n";
                 const string shizukuPackage =
                     "        <package android:name=\"moe.shizuku.privileged.api\" />\n";
                 string missingQueries = string.Empty;
                 if (!xml.Contains("com.google.android.youtube"))
                     missingQueries += youtubePackage;
+                if (!xml.Contains("com.netflix.mediaclient"))
+                    missingQueries += netflixPackage;
                 if (!xml.Contains("moe.shizuku.privileged.api"))
                     missingQueries += shizukuPackage;
                 if (!string.IsNullOrEmpty(missingQueries))
@@ -1768,6 +1847,7 @@ namespace MLOmega.XR.Editor
                 dependencies += "dependencies {".Length;
                 const string media3 =
                     "\n    // MLOMEGA_SECURE_SURFACE_MEDIA3\n" +
+                    "    compileOnly files('compile-stubs/taskorganizer-stubs.jar')\n" +
                     isolatedShizuku +
                     "    implementation('androidx.media3:media3-exoplayer:1.5.1') {\n" +
                     "        exclude group: 'androidx.core'\n" +
@@ -1803,7 +1883,9 @@ namespace MLOmega.XR.Editor
 
             Debug.Log(
                 "[AndroidBuildXreal] Isolated Media3/Shizuku display probe injected: " +
-                java + " + " + trustedServiceJava);
+                java + " + " + trustedServiceJava + " + " + taskProbeJava +
+                " + " + physicalStereoProbeJava + " + " + nativeProbeDestination +
+                " + " + compileStubs);
         }
     }
 }

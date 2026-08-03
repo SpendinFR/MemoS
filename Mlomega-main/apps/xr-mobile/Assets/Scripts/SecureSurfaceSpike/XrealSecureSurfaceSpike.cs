@@ -26,8 +26,7 @@ namespace MLOmega.XR.SecureSurfaceSpike
             "https://storage.googleapis.com/shaka-demo-assets/sintel-widevine/dash.mpd";
         private const string WidevineLicense =
             "https://cwip-shaka-proxy.appspot.com/no_auth";
-        private const string YoutubePublicVideo =
-            "https://www.youtube.com/watch?v=aqz-KE-bpKQ";
+        private const string YoutubeHome = "https://www.youtube.com/";
         private const string WidevineBridge =
             "com.mlomega.xr.securesurface.SecureWidevinePlayer";
 
@@ -74,10 +73,21 @@ namespace MLOmega.XR.SecureSurfaceSpike
             [MarshalAs(UnmanagedType.I1)] bool useSrgb);
 
         [DllImport("XREALXRPlugin", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr CreateProjectionSurfaceLayer(
+            ref QuadCompositionLayer layer,
+            int sourceComponent,
+            [MarshalAs(UnmanagedType.I1)] bool useProtectedContent,
+            [MarshalAs(UnmanagedType.I1)] bool useSrgb);
+
+        [DllImport("XREALXRPlugin", CallingConvention = CallingConvention.Cdecl)]
         private static extern void SetActiveCompositionLayer(int layerId);
 
         [DllImport("XREALXRPlugin", CallingConvention = CallingConvention.Cdecl)]
         private static extern void ModifyQuadCompositionLayer(
+            ref QuadCompositionLayer layer);
+
+        [DllImport("XREALXRPlugin", CallingConvention = CallingConvention.Cdecl)]
+        private static extern void ModifyProjectionCompositionLayer(
             ref QuadCompositionLayer layer);
 
         [DllImport("XREALXRPlugin", CallingConvention = CallingConvention.Cdecl)]
@@ -132,8 +142,8 @@ namespace MLOmega.XR.SecureSurfaceSpike
                 {
                     layerId = LayerId,
                     compositionOrder = 10,
-                    pixelWidth = 1280,
-                    pixelHeight = 720,
+                    pixelWidth = 1920,
+                    pixelHeight = 1080,
                     format = 1,
                     cropEnabled = 0,
                     poseValid = 1,
@@ -151,6 +161,10 @@ namespace MLOmega.XR.SecureSurfaceSpike
 
                 SetPersistentProtect();
                 CreateDisplayLayer();
+                // v14 baseline: the Android application is rendered into the
+                // protected XREAL Quad while Unity retains the world-space
+                // window, controls and session. DRM playback later hands the
+                // physical panel to Android without replacing this path.
                 IntPtr nativeSurface = CreateQuadSurfaceLayer(
                     ref _layer,
                     true,
@@ -181,7 +195,7 @@ namespace MLOmega.XR.SecureSurfaceSpike
                     _layer.pixelWidth,
                     _layer.pixelHeight,
                     240,
-                    YoutubePublicVideo);
+                    YoutubeHome);
                 _status = "YOUTUBE: demarrage application";
                 Debug.Log(Tag + " YouTube app display started on protected XREAL surface");
             }
@@ -189,6 +203,84 @@ namespace MLOmega.XR.SecureSurfaceSpike
             {
                 Fail(ex.GetType().Name + ": " + ex.Message);
             }
+#endif
+        }
+
+        /// <summary>
+        /// Called by the Android cinema bridge after the XREAL panel has returned
+        /// from 2D system-mirror mode to the 3D compositor. The DP switch destroys
+        /// the native protected quad surface, but the trusted VirtualDisplay and
+        /// its Android task remain alive. Recreate only the native quad and bind
+        /// that existing display to it so Netflix returns at the exact browse/
+        /// detail position it had before cinema mode.
+        /// </summary>
+        public void OnCinemaReturned(string ignored)
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            StartCoroutine(ReattachProtectedVideoLayer());
+#endif
+        }
+
+        private IEnumerator ReattachProtectedVideoLayer()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            // NRXRActivity has already been relaunched by Android. Leave one XR
+            // frame boundary for XREALXRPlugin to recreate its display layer.
+            yield return new WaitForSecondsRealtime(0.25f);
+
+            AndroidJavaObject previousSurface = _surface;
+            AndroidJavaObject replacementSurface = null;
+            try
+            {
+                if (_layerCreated)
+                {
+                    RemoveCompositionLayer(LayerId);
+                    _layerCreated = false;
+                }
+
+                UpdateLayerPoseFromWorldWindow();
+                SetPersistentProtect();
+                CreateDisplayLayer();
+                IntPtr nativeSurface = CreateQuadSurfaceLayer(
+                    ref _layer,
+                    true,
+                    false);
+                if (nativeSurface == IntPtr.Zero)
+                    throw new InvalidOperationException(
+                        "cinema return CreateQuadSurfaceLayer returned NULL");
+
+                replacementSurface = new AndroidJavaObject(nativeSurface);
+                bool attached = _widevine != null && _widevine.CallStatic<bool>(
+                    "reattachTrustedSurface",
+                    replacementSurface,
+                    _layer.pixelWidth,
+                    _layer.pixelHeight);
+                if (!attached)
+                {
+                    RemoveCompositionLayer(LayerId);
+                    throw new InvalidOperationException(
+                        "cinema return trusted surface reattach refused");
+                }
+
+                _surface = replacementSurface;
+                replacementSurface = null;
+                _layerCreated = true;
+                SetActiveCompositionLayer(LayerId);
+                _status = "MLOMEGA 3D: application restauree";
+                Debug.Log(Tag + " protected quad recreated after cinema; Android task preserved");
+            }
+            catch (Exception ex)
+            {
+                Fail("cinema return " + ex.GetType().Name + ": " + ex.Message);
+            }
+            finally
+            {
+                replacementSurface?.Dispose();
+                if (!ReferenceEquals(previousSurface, _surface))
+                    previousSurface?.Dispose();
+            }
+#else
+            yield break;
 #endif
         }
 
@@ -222,10 +314,9 @@ namespace MLOmega.XR.SecureSurfaceSpike
             if (_layerCreated && _windowVisible &&
                 _windowRect != null && _windowRect.gameObject.activeInHierarchy)
             {
-                // XREAL surface quads use a view-relative compositor pose. Keep a
-                // Unity world-space target and counter-transform the latest head
-                // pose immediately before submission. This makes protected video
-                // world-locked without ever copying protected pixels into Unity.
+                // Preserve the validated world lock while the navigation window
+                // is active. In cinema mode Android temporarily owns the panel;
+                // this state keeps running and is restored on return.
                 UpdateLayerPoseFromWorldWindow();
                 ModifyQuadCompositionLayer(ref _layer);
                 SetActiveCompositionLayer(LayerId);
@@ -320,14 +411,20 @@ namespace MLOmega.XR.SecureSurfaceSpike
             videoHitSurface.color = Color.clear;
             videoHitSurface.raycastTarget = true;
             var appPointer = video.AddComponent<SecureAndroidAppPointer>();
-            appPointer.Configure(_videoRect, new Vector2Int(1280, 720));
+            appPointer.Configure(_videoRect, new Vector2Int(1920, 1080));
             LayoutVideoArea();
             MakeTopActionHandle(
-                _windowRect, -56f, "▲", SecureAndroidAppAction.ScrollUp, appPointer);
+                _windowRect, -112f, "YT", SecureAndroidAppAction.YouTube, appPointer);
             MakeTopActionHandle(
-                _windowRect, 0f, "▼", SecureAndroidAppAction.ScrollDown, appPointer);
+                _windowRect, -56f, "N", SecureAndroidAppAction.Netflix, appPointer);
             MakeTopActionHandle(
-                _windowRect, 56f, "⌨", SecureAndroidAppAction.Keyboard, appPointer);
+                _windowRect, 0f, "\u25B2", SecureAndroidAppAction.ScrollUp, appPointer);
+            MakeTopActionHandle(
+                _windowRect, 56f, "\u25BC", SecureAndroidAppAction.ScrollDown, appPointer);
+            MakeTopActionHandle(
+                _windowRect, 112f, "\u2328", SecureAndroidAppAction.Keyboard, appPointer);
+            MakeTopActionHandle(
+                _windowRect, 168f, "TV", SecureAndroidAppAction.Cinema, appPointer);
 
             _creator = FindAnyObjectByType<WorldCreatorController>();
             if (_creator != null)
@@ -501,9 +598,12 @@ namespace MLOmega.XR.SecureSurfaceSpike
 
     public enum SecureAndroidAppAction
     {
+        YouTube,
+        Netflix,
         ScrollUp,
         ScrollDown,
         Keyboard,
+        Cinema,
     }
 
     public sealed class SecureAndroidAppActionHandle : MonoBehaviour,
@@ -547,11 +647,25 @@ namespace MLOmega.XR.SecureSurfaceSpike
         public void OnPointerClick(PointerEventData eventData)
         {
             if (_pointer == null) return;
-            if (_action == SecureAndroidAppAction.Keyboard)
-                _pointer.OpenKeyboard();
-            else
-                _pointer.ScrollPage(
-                    _action == SecureAndroidAppAction.ScrollUp ? -1 : 1);
+            switch (_action)
+            {
+                case SecureAndroidAppAction.YouTube:
+                    _pointer.LaunchYouTube();
+                    break;
+                case SecureAndroidAppAction.Netflix:
+                    _pointer.LaunchNetflix();
+                    break;
+                case SecureAndroidAppAction.Keyboard:
+                    _pointer.OpenKeyboard();
+                    break;
+                case SecureAndroidAppAction.Cinema:
+                    _pointer.EnterCinemaMode();
+                    break;
+                default:
+                    _pointer.ScrollPage(
+                        _action == SecureAndroidAppAction.ScrollUp ? -1 : 1);
+                    break;
+            }
         }
     }
 
@@ -622,8 +736,11 @@ namespace MLOmega.XR.SecureSurfaceSpike
             Vector2Int raw = DisplayPoint(eventData);
             Vector2Int delta = raw - _lastRawPoint;
             _lastRawPoint = raw;
-            _rawDragDistance += Mathf.Abs(delta.x) + Mathf.Abs(delta.y);
-            if (!_dragStarted && _rawDragDistance < 14f) return;
+            Vector2Int displacement = raw - _downRawPoint;
+            _rawDragDistance = displacement.magnitude;
+            // Cumulative jitter used to turn a stationary pinch into a scroll.
+            // Require a real displacement from the original down point.
+            if (!_dragStarted && _rawDragDistance < 26f) return;
             if (!_dragStarted)
             {
                 _dragStarted = true;
@@ -655,6 +772,21 @@ namespace MLOmega.XR.SecureSurfaceSpike
         public void OpenKeyboard()
         {
             SendNoCoordinates("openKeyboard");
+        }
+
+        public void EnterCinemaMode()
+        {
+            SendNoCoordinates("enterCinemaMode");
+        }
+
+        public void LaunchYouTube()
+        {
+            LaunchApp("com.google.android.youtube", "https://www.youtube.com/");
+        }
+
+        public void LaunchNetflix()
+        {
+            LaunchApp("com.netflix.mediaclient", "https://www.netflix.com/browse");
         }
 
         private void Update()
@@ -766,6 +898,21 @@ namespace MLOmega.XR.SecureSurfaceSpike
             catch (Exception ex)
             {
                 Debug.LogError(Tag + " " + method + " failed: " + ex.Message);
+                return false;
+            }
+#else
+            return true;
+#endif
+        }
+
+        private bool LaunchApp(string packageName, string uri)
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_bridge == null) return false;
+            try { return _bridge.CallStatic<bool>("launchApp", packageName, uri); }
+            catch (Exception ex)
+            {
+                Debug.LogError(Tag + " launch " + packageName + " failed: " + ex.Message);
                 return false;
             }
 #else

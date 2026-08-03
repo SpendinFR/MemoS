@@ -1065,3 +1065,73 @@ world-lock, transparence optique, clic Atelier, pinch main MediaPipe,
 déplacement et redimensionnement sont verts sur S24 + One Pro + Eye. Restent
 l'optimisation de latence/fluidité, les contrôles réduire/fermer et rappel par
 paume, puis la parité de l'APK produit.
+
+## 12. Jalon cinéma Android protégé validé — v34 (3 août 2026)
+
+La v34 isolée est la référence matérielle **à ne jamais écraser**. Elle a été
+validée sur S24 + XREAL One Pro + Eye avec Netflix réel :
+
+- navigation Netflix dans la fenêtre 3D protégée et world-locked ;
+- passage en cinéma système 2D en 16:9 lorsque la lecture protégée est prête ;
+- lecture/pause, volume, luminosité, électrochromie et taille depuis le dock
+  cinéma regard + pinch ;
+- retour MLOmega vers le compositeur 3D, recréation du quad protégé et retour au
+  menu Netflix au lieu d'une fenêtre noire ;
+- la courte apparition de l'écran du téléphone pendant la transition 2D/3D est
+  connue et acceptée pour ce jalon.
+
+```text
+artifact = apps/xr-mobile/build/android/mlomega-xreal-netflix-hybrid-v34.apk
+package  = com.mlomega.xr.securesurfacespike
+sha256   = 2E53673E585E66F4BB7546F5B465FA590E2B2DA0269892C280272EEEDC8F0C13
+```
+
+Invariants à préserver :
+
+1. le préflight attend la preuve de lecture avant le changement 3D vers 2D ;
+2. la projection cinéma utilise `Display.getRealMetrics()` (1920×1080), jamais
+   le `Display.Mode` XREAL qui peut annoncer 640×480 ;
+3. `cinemaPlaybackArmed` conserve la preuve pendant la transition ;
+4. au retour, `OnCinemaReturned` recrée le quad XREAL puis
+   `reattachTrustedSurface` rattache le VirtualDisplay existant ;
+5. le service revient d'abord à l'activité de navigation du fournisseur avant
+   de rendre sa surface à Unity ;
+6. le dock cinéma doit rester une `Presentation` légère sur le display trusted ;
+7. le bouton `CENTRER` n'apporte rien dans ce mode : l'utilisateur regarde déjà
+   le dock en bas. Le supprimer seulement dans la future intégration Lab, sans
+   modifier ni reconstruire l'APK v34.
+
+Le prochain portage part du **Browser Lab validé**, pas du spike. Le Lab conserve
+ses fenêtres Atelier, gestes, clavier, dictée, REC, restauration de session et
+WebView Google/YouTube. L'icône Netflix ouvre un hôte Android protégé, puis
+réutilise exclusivement le transport cinéma v34 lors de la lecture DRM.
+
+Nettoyage de cycle de vie exigé pour ce portage :
+
+- un simple retour cinéma → MLOmega ne doit pas tuer Netflix ;
+- fermer explicitement la fenêtre Netflix doit libérer sa surface, son
+  VirtualDisplay, son service utilisateur Shizuku et exécuter `am force-stop`
+  uniquement pour le package attaché à cette fenêtre ;
+- quitter le Lab ferme toutes les applications Android qu'il a ouvertes ;
+- conserver les `Shizuku.UserServiceArgs` utilisés au bind et appeler
+  `Shizuku.unbindUserService(args, connection, true)` après le reçu
+  `TRANSACTION_RELEASE`, afin d'éviter les processus `:mlomega_trusted`
+  orphelins ;
+- ne jamais appliquer ce nettoyage aux applications que le Lab n'a pas lancées.
+
+Contrôle des processus après fermeture complète :
+
+```powershell
+$adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
+& $adb shell ps -A | Select-String "mlomega_trusted|netflix|youtube"
+```
+
+Le build reproductible du spike requiert d'abord :
+
+```powershell
+.\scripts\BUILD_XREAL_TASKORGANIZER_STUBS.ps1
+.\scripts\BUILD_XREAL_SECURE_TASK_PROBE.ps1
+```
+
+Ne pas confondre ce jalon avec une autorisation de modifier Product, PhoneOnly,
+Atelier ou les runners Local/PRO : l'intégration reste limitée au package Lab.

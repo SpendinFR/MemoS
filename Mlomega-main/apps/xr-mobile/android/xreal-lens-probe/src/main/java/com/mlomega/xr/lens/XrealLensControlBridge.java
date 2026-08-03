@@ -125,6 +125,67 @@ public final class XrealLensControlBridge {
         }
     }
 
+    /** Returns XREAL's native display mode, or -1 when the service is unavailable. */
+    public static int getDisplayMode() {
+        if (!ensureLoaded()) return -1;
+        try {
+            Control control = Control.getInstance();
+            if (!ensureServiceReady(control)) return -1;
+            int legacyMode = control.nativeGet2D3DMode();
+            if (legacyMode >= 0) return legacyMode;
+            // XREAL One/One Pro are routed as the "Ethernet series" by the
+            // official GlassesControl SDK. Its NRServiceControl.get2D3D()
+            // reads the active DP EDID instead of nativeGet2D3DMode().
+            return control.nativeGetDpCurrentEdid();
+        } catch (Throwable error) {
+            try {
+                // Keep the One-series fallback independent: an unavailable
+                // legacy JNI entry must not hide a valid DP/EDID entry.
+                return Control.getInstance().nativeGetDpCurrentEdid();
+            } catch (Throwable ignored) {
+                return -1;
+            }
+        }
+    }
+
+    /**
+     * Switches the physical glasses DP mode. XREAL's official SDK constants use
+     * 1 for 1920x1080 2D; One-series SDK stereo modes are read back and restored
+     * rather than guessed here.
+     */
+    public static boolean setDisplayMode(int mode) {
+        if (!ensureLoaded()) return false;
+        try {
+            Control control = Control.getInstance();
+            if (!ensureServiceReady(control)) return false;
+            int dpMode = -1;
+            try {
+                dpMode = control.nativeGetDpCurrentEdid();
+            } catch (Throwable ignored) {}
+            if (dpMode >= 0) {
+                if (dpMode == mode) return true;
+                // Mirrors NRServiceControl.set2D3D() from the official
+                // GlassesControl app. Modes 5..8 are stereo EDIDs.
+                boolean accepted = control.nativeSetDpCurrentEdid(mode);
+                if (accepted) {
+                    boolean stereo = mode >= 5 && mode <= 8;
+                    control.nativeSetDpInputMode(stereo ? 1 : 0);
+                }
+                return accepted;
+            }
+
+            if (control.nativeGet2D3DMode() == mode) return true;
+            boolean accepted = control.nativeSet2D3DMode(mode);
+            // A successful request immediately removes the old DP display. Do
+            // not turn that expected transition into a false failure by polling
+            // the disappearing USB service here; the caller waits for the new
+            // physical Display and verifies the mode after re-enumeration.
+            return accepted;
+        } catch (Throwable error) {
+            return false;
+        }
+    }
+
     private static String state(String status, int brightness,
             int brightnessCount, int ec, int ecCount) {
         return status + "|b=" + brightness + "|bc=" + brightnessCount +
