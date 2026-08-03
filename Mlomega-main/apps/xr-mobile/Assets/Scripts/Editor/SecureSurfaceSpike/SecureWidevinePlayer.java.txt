@@ -50,8 +50,9 @@ import com.mlomega.xr.lens.XrealLensControlBridge;
 import rikka.shizuku.Shizuku;
 
 /**
- * Isolated Widevine player used only by com.mlomega.xr.securesurfacespike.
- * Product, Atelier and Browser Lab never compile or package this source.
+ * Protected-display transport shared only by the isolated spike and the
+ * package-gated Browser Lab build. Product, Atelier and PhoneOnly never compile
+ * or package this source.
  */
 @UnstableApi
 public final class SecureWidevinePlayer {
@@ -65,7 +66,9 @@ public final class SecureWidevinePlayer {
     private static int pendingWidth;
     private static int pendingHeight;
     private static int pendingDensityDpi;
+    private static String pendingPackageName;
     private static String pendingVideoUri;
+    private static Shizuku.UserServiceArgs trustedServiceArgs;
     private static int trustedDisplayId = -1;
     private static long pointerDownTime;
     private static CursorPresentation cursorPresentation;
@@ -204,15 +207,39 @@ public final class SecureWidevinePlayer {
             int height,
             int densityDpi,
             String videoUri) {
+        startApplicationDisplay(
+                activity,
+                surface,
+                width,
+                height,
+                densityDpi,
+                "com.google.android.youtube",
+                videoUri);
+    }
+
+    /** Starts one explicitly requested Android application on the validated
+     * trusted display. This avoids launching a hidden YouTube task before a
+     * Netflix-only Lab window. */
+    public static void startApplicationDisplay(
+            Activity activity,
+            Surface surface,
+            int width,
+            int height,
+            int densityDpi,
+            String packageName,
+            String launchUri) {
         activity.runOnUiThread(() -> {
             try {
-                releaseInternal();
+                releaseInternal(true);
                 pendingActivity = activity;
                 pendingSurface = surface;
                 pendingWidth = Math.max(640, width);
                 pendingHeight = Math.max(360, height);
                 pendingDensityDpi = Math.max(160, densityDpi);
-                pendingVideoUri = videoUri;
+                pendingPackageName = packageName == null
+                        ? "com.google.android.youtube"
+                        : packageName.trim();
+                pendingVideoUri = launchUri;
 
                 if (!Shizuku.pingBinder()) {
                     status = "SHIZUKU: service non demarre";
@@ -226,15 +253,15 @@ public final class SecureWidevinePlayer {
                 }
 
                 status = "SHIZUKU: connexion display trusted";
-                Shizuku.UserServiceArgs args = new Shizuku.UserServiceArgs(
+                trustedServiceArgs = new Shizuku.UserServiceArgs(
                         new ComponentName(
                                 activity.getPackageName(),
                                 TrustedDisplayUserService.class.getName()))
                         .daemon(false)
                         .processNameSuffix("mlomega_trusted")
                         .debuggable(false)
-                        .version(10);
-                Shizuku.bindUserService(args, TRUSTED_CONNECTION);
+                        .version(11);
+                Shizuku.bindUserService(trustedServiceArgs, TRUSTED_CONNECTION);
             } catch (Throwable error) {
                 status = "YOUTUBE EXCEPTION: " + error.getClass().getSimpleName()
                         + ": " + String.valueOf(error.getMessage());
@@ -325,15 +352,17 @@ public final class SecureWidevinePlayer {
             reply = Parcel.obtain();
             data.writeInterfaceToken(TrustedDisplayUserService.DESCRIPTOR);
             data.writeInt(displayId);
+            data.writeString(pendingPackageName);
             data.writeString(pendingVideoUri);
             binder.transact(
-                    TrustedDisplayUserService.TRANSACTION_LAUNCH_YOUTUBE,
+                    TrustedDisplayUserService.TRANSACTION_LAUNCH_APP,
                     data,
                     reply,
                     0);
             reply.readException();
             String launch = reply.readString();
-            status = "YOUTUBE: TRUSTED DISPLAY " + displayId;
+            activePackageName = pendingPackageName;
+            status = providerLabel(activePackageName) + ": TRUSTED DISPLAY " + displayId;
             Log.i(TAG, status + " launch=" + launch);
             showCursorPresentation(displayId, 8);
         } catch (Throwable error) {
@@ -494,7 +523,7 @@ public final class SecureWidevinePlayer {
             String launch = reply.readString();
             status = "APP: " + packageName + " DISPLAY " + displayId;
             Log.i(TAG, status + " launch=" + launch);
-            boolean launched = launch != null && launch.startsWith("exit=0");
+            boolean launched = launch != null && launch.contains("exit=0");
             if (launched) {
                 activePackageName = packageName;
                 cinemaProbeGeneration++;
@@ -947,6 +976,10 @@ public final class SecureWidevinePlayer {
     private static String providerLabel(String packageName) {
         if ("com.netflix.mediaclient".equals(packageName)) return "Netflix";
         if ("com.amazon.avod.thirdpartyclient".equals(packageName)) return "Prime Video";
+        if ("com.google.android.youtube".equals(packageName)) return "YouTube";
+        if ("com.android.chrome".equals(packageName)) return "Google";
+        if ("com.spotify.music".equals(packageName)) return "Spotify";
+        if ("com.reddit.frontpage".equals(packageName)) return "Reddit";
         if (packageName != null && packageName.startsWith("com.canal")) return "CANAL+";
         return "video protege";
     }
@@ -1552,10 +1585,18 @@ public final class SecureWidevinePlayer {
     }
 
     public static void release(Activity activity) {
-        activity.runOnUiThread(SecureWidevinePlayer::releaseInternal);
+        activity.runOnUiThread(() -> releaseInternal(false));
+    }
+
+    public static void releaseAndStop(Activity activity) {
+        activity.runOnUiThread(() -> releaseInternal(true));
     }
 
     private static void releaseInternal() {
+        releaseInternal(false);
+    }
+
+    private static void releaseInternal(boolean stopHostedApplication) {
         // Restore the native XREAL panel before the trusted VD disappears. A
         // destroyed layer stack must never remain attached to the glasses.
         if (systemCinemaActive) stopSystemCinema();
@@ -1574,6 +1615,24 @@ public final class SecureWidevinePlayer {
             Parcel reply = Parcel.obtain();
             try {
                 data.writeInterfaceToken(TrustedDisplayUserService.DESCRIPTOR);
+                if (stopHostedApplication && activePackageName != null) {
+                    String stoppedPackage = activePackageName;
+                    data.writeString(activePackageName);
+                    trustedService.transact(
+                            TrustedDisplayUserService.TRANSACTION_STOP_PACKAGE,
+                            data,
+                            reply,
+                            0);
+                    reply.readException();
+                    boolean stopped = reply.readInt() != 0;
+                    Log.i(TAG, "APP_STOP_CLIENT_RECEIPT package=" + stoppedPackage
+                            + " stopped=" + stopped);
+                    data.recycle();
+                    reply.recycle();
+                    data = Parcel.obtain();
+                    reply = Parcel.obtain();
+                    data.writeInterfaceToken(TrustedDisplayUserService.DESCRIPTOR);
+                }
                 trustedService.transact(
                         TrustedDisplayUserService.TRANSACTION_RELEASE,
                         data,
@@ -1586,6 +1645,17 @@ public final class SecureWidevinePlayer {
                 data.recycle();
                 reply.recycle();
             }
+        }
+        if (trustedServiceArgs != null) {
+            try {
+                Shizuku.unbindUserService(
+                        trustedServiceArgs,
+                        TRUSTED_CONNECTION,
+                        true);
+            } catch (Throwable error) {
+                Log.w(TAG, "trusted user service unbind failed", error);
+            }
+            trustedServiceArgs = null;
         }
         trustedService = null;
         trustedServiceBound = false;
@@ -1600,6 +1670,7 @@ public final class SecureWidevinePlayer {
         pointerDownTime = 0L;
         pendingActivity = null;
         pendingSurface = null;
+        pendingPackageName = null;
         pendingVideoUri = null;
     }
 

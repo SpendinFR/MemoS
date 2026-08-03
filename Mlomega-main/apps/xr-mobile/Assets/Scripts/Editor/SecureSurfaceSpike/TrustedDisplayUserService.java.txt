@@ -60,6 +60,8 @@ public final class TrustedDisplayUserService extends Binder {
             IBinder.FIRST_CALL_TRANSACTION + 12;
     static final int TRANSACTION_TOGGLE_MEDIA =
             IBinder.FIRST_CALL_TRANSACTION + 13;
+    static final int TRANSACTION_STOP_PACKAGE =
+            IBinder.FIRST_CALL_TRANSACTION + 14;
 
     private static final String TAG = "MLOmegaTrustedVD";
     private Context suppliedContext;
@@ -236,6 +238,13 @@ public final class TrustedDisplayUserService extends Binder {
                 String result = toggleMirroredMedia();
                 reply.writeNoException();
                 reply.writeString(result);
+                return true;
+            }
+            if (code == TRANSACTION_STOP_PACKAGE) {
+                String packageName = data.readString();
+                boolean stopped = forceStopPackage(packageName);
+                reply.writeNoException();
+                reply.writeInt(stopped ? 1 : 0);
                 return true;
             }
             return super.onTransact(code, data, reply, flags);
@@ -1098,37 +1107,118 @@ public final class TrustedDisplayUserService extends Binder {
         if (packageName == null || packageName.trim().isEmpty()) {
             throw new IllegalArgumentException("package name required");
         }
-        if (uri == null || uri.trim().isEmpty()) {
-            throw new IllegalArgumentException("launch uri required");
-        }
         long identity = Binder.clearCallingIdentity();
         try {
-            ProcessBuilder builder = new ProcessBuilder(
+            // A singleTask/singleInstance activity already alive on display 0
+            // may ignore --display and simply reuse its phone task. Start from
+            // a stopped package so Android must create a fresh task on the
+            // trusted VirtualDisplay. Login/data are preserved by force-stop.
+            forceStopPackage(packageName);
+            SystemClock.sleep(180L);
+            String deepLinkResult = null;
+            if (uri != null && !uri.trim().isEmpty()) {
+                deepLinkResult = runActivityManagerStart(
+                        "/system/bin/am",
+                        "start",
+                        "--display", String.valueOf(displayId),
+                        "-f", "0x18000000",
+                        "-a", "android.intent.action.VIEW",
+                        "-d", uri,
+                        "-p", packageName);
+                if (!activityLaunchFailed(deepLinkResult)) {
+                    Log.i(TAG, "APP_LAUNCH_RECEIPT package=" + packageName
+                            + " display=" + displayId
+                            + " route=deep_link result=" + deepLinkResult);
+                    return "route=deep_link " + deepLinkResult;
+                }
+                Log.w(TAG, "deep-link unsupported; falling back to launcher package="
+                        + packageName + " result=" + deepLinkResult);
+            }
+
+            // Not every Android application declares an ACTION_VIEW handler for
+            // its own web URL. The Google app on the validated S24 is one such
+            // case: its real entry point is SearchActivity. MAIN/LAUNCHER keeps
+            // the transport package-agnostic and also covers Spotify and future
+            // applications without hard-coding their activity class names.
+            String launcherResult = runActivityManagerStart(
                     "/system/bin/am",
                     "start",
                     "--display", String.valueOf(displayId),
                     "-f", "0x18000000",
-                    "-a", "android.intent.action.VIEW",
-                    "-d", uri,
+                    "-a", "android.intent.action.MAIN",
+                    "-c", "android.intent.category.LAUNCHER",
                     "-p", packageName);
-            builder.redirectErrorStream(true);
-            java.lang.Process process = builder.start();
-            StringBuilder output = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    if (output.length() > 0) output.append(' ');
-                    output.append(line);
-                }
+            if (activityLaunchFailed(launcherResult)) {
+                throw new IllegalStateException(
+                        "application launch failed package=" + packageName
+                                + " deepLink=" + deepLinkResult
+                                + " launcher=" + launcherResult);
             }
-            int exit = process.waitFor();
-            String result = "exit=" + exit + " " + output;
-            Log.i(TAG, "app launch package=" + packageName +
-                    " display=" + displayId + " -> " + result);
-            return result;
+            Log.i(TAG, "APP_LAUNCH_RECEIPT package=" + packageName
+                    + " display=" + displayId
+                    + " route=launcher result=" + launcherResult);
+            return "route=launcher " + launcherResult;
         } finally {
             Binder.restoreCallingIdentity(identity);
+        }
+    }
+
+    private String runActivityManagerStart(String... command) throws Exception {
+        ProcessBuilder builder = new ProcessBuilder(command);
+        builder.redirectErrorStream(true);
+        java.lang.Process process = builder.start();
+        StringBuilder output = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(process.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (output.length() > 0) output.append(' ');
+                output.append(line);
+            }
+        }
+        int exit = process.waitFor();
+        return "exit=" + exit + " " + output;
+    }
+
+    private boolean activityLaunchFailed(String result) {
+        if (result == null || result.trim().isEmpty()) return true;
+        String normalized = result.toLowerCase(java.util.Locale.ROOT);
+        return !normalized.startsWith("exit=0")
+                || normalized.contains("error:")
+                || normalized.contains("unable to resolve")
+                || normalized.contains("no activity found")
+                || normalized.contains("does not exist")
+                || normalized.contains("security exception");
+    }
+
+    private boolean forceStopPackage(String packageName) {
+        if (packageName == null ||
+                !packageName.matches("[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_]+)+")) {
+            Log.w(TAG, "refusing invalid force-stop package=" + packageName);
+            return false;
+        }
+        try {
+            ProcessBuilder builder = new ProcessBuilder(
+                    "/system/bin/am", "force-stop", "--user", "0", packageName);
+            builder.redirectErrorStream(true);
+            java.lang.Process process = builder.start();
+            int exit = process.waitFor();
+            String remainingPids = "";
+            for (int attempt = 0; attempt < 6; attempt++) {
+                remainingPids = runCommand(
+                        "/system/bin/pidof", packageName).trim();
+                if (remainingPids.isEmpty()) break;
+                SystemClock.sleep(60L);
+            }
+            boolean stopped = exit == 0 && remainingPids.isEmpty();
+            Log.i(TAG, "APP_STOP_RECEIPT package=" + packageName
+                    + " forceStopExit=" + exit
+                    + " processAbsent=" + remainingPids.isEmpty()
+                    + (remainingPids.isEmpty() ? "" : " pids=" + remainingPids));
+            return stopped;
+        } catch (Throwable error) {
+            Log.e(TAG, "force-stop failed package=" + packageName, error);
+            return false;
         }
     }
 

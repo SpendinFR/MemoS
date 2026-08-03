@@ -5,6 +5,7 @@
         "MLOmega.XR.UI",
         "MLOmega.XR.Core",
         "MLOmega.XR.Reflex",
+        "MLOmega.XR.SecureSurfaceSpike",
         "MLOmega.Contracts",
         "TLab.WebView.Runtime",
         "Unity.XR.XREAL",

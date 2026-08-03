@@ -27,6 +27,7 @@ namespace MLOmega.XR.SecureSurfaceSpike
         private const string WidevineLicense =
             "https://cwip-shaka-proxy.appspot.com/no_auth";
         private const string YoutubeHome = "https://www.youtube.com/";
+        private const string YoutubePackage = "com.google.android.youtube";
         private const string WidevineBridge =
             "com.mlomega.xr.securesurface.SecureWidevinePlayer";
 
@@ -107,6 +108,34 @@ namespace MLOmega.XR.SecureSurfaceSpike
         private readonly Vector3[] _videoCorners = new Vector3[4];
         private string _status = "initialisation XR";
         private float _nextStatusPoll;
+        private string _startupPackageName = YoutubePackage;
+        private string _startupUri = YoutubeHome;
+        private string _startupLabel = "YouTube";
+        private bool _labHosted;
+        private bool _runtimeReleased;
+
+        public event Action Closed;
+        public RectTransform WindowRect => _windowRect;
+        public bool IsWindowVisible =>
+            _windowVisible && _windowRect != null &&
+            _windowRect.gameObject.activeInHierarchy;
+
+        public void ConfigureLabApplication(
+            string packageName,
+            string launchUri,
+            string label)
+        {
+            _labHosted = true;
+            _startupPackageName = string.IsNullOrWhiteSpace(packageName)
+                ? YoutubePackage
+                : packageName.Trim();
+            _startupUri = string.IsNullOrWhiteSpace(launchUri)
+                ? YoutubeHome
+                : launchUri.Trim();
+            _startupLabel = string.IsNullOrWhiteSpace(label)
+                ? _startupPackageName
+                : label.Trim();
+        }
 
         private void OnEnable()
         {
@@ -189,15 +218,17 @@ namespace MLOmega.XR.SecureSurfaceSpike
 
                 _widevine = new AndroidJavaClass(WidevineBridge);
                 _widevine.CallStatic(
-                    "startYoutubeDisplay",
+                    "startApplicationDisplay",
                     _activity,
                     _surface,
                     _layer.pixelWidth,
                     _layer.pixelHeight,
                     240,
-                    YoutubeHome);
-                _status = "YOUTUBE: demarrage application";
-                Debug.Log(Tag + " YouTube app display started on protected XREAL surface");
+                    _startupPackageName,
+                    _startupUri);
+                _status = _startupLabel + ": demarrage application";
+                Debug.Log(Tag + " " + _startupLabel +
+                          " display started on protected XREAL surface");
             }
             catch (Exception ex)
             {
@@ -398,7 +429,7 @@ namespace MLOmega.XR.SecureSurfaceSpike
             header.raycastTarget = true;
             MakeLabel(
                 header.rectTransform,
-                "YouTube  •  application Android spatiale",
+                _startupLabel + "  •  application Android spatiale",
                 new Vector2(-280f, 0f),
                 new Vector2(480f, 42f),
                 22f);
@@ -469,7 +500,49 @@ namespace MLOmega.XR.SecureSurfaceSpike
             _windowVisible = false;
             if (_creator != null && _windowRect != null)
                 _creator.UnregisterExternalSpatialWindow(_windowRect);
-            if (_windowRect != null) _windowRect.gameObject.SetActive(false);
+            if (!_labHosted)
+            {
+                if (_windowRect != null) _windowRect.gameObject.SetActive(false);
+                return;
+            }
+
+            RectTransform closedWindow = _windowRect;
+            _windowRect = null;
+            _videoRect = null;
+            ReleaseHostedApplication();
+            if (closedWindow != null) Destroy(closedWindow.gameObject);
+            Closed?.Invoke();
+            Destroy(this);
+        }
+
+        public void CloseHostedWindow() => CloseSpatialVideoWindow();
+
+        public void ReleaseHostedApplication()
+        {
+            if (_runtimeReleased) return;
+            _runtimeReleased = true;
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                if (_widevine != null && _activity != null)
+                    _widevine.CallStatic("releaseAndStop", _activity);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning(Tag + " hosted app cleanup: " + ex.Message);
+            }
+            if (_layerCreated)
+            {
+                try { RemoveCompositionLayer(LayerId); }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning(Tag + " layer cleanup: " + ex.Message);
+                }
+                _layerCreated = false;
+            }
+#endif
+            _surface?.Dispose();
+            _surface = null;
         }
 
         private static Image MakeImage(
@@ -566,30 +639,11 @@ namespace MLOmega.XR.SecureSurfaceSpike
 
         private void OnDestroy()
         {
-#if UNITY_ANDROID && !UNITY_EDITOR
-            try
-            {
-                if (_widevine != null && _activity != null)
-                    _widevine.CallStatic("release", _activity);
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning(Tag + " Widevine cleanup: " + ex.Message);
-            }
-            if (_layerCreated)
-            {
-                try { RemoveCompositionLayer(LayerId); }
-                catch (Exception ex)
-                {
-                    Debug.LogWarning(Tag + " layer cleanup: " + ex.Message);
-                }
-            }
-#endif
+            ReleaseHostedApplication();
             if (_creator != null && _windowRect != null)
                 _creator.UnregisterExternalSpatialWindow(_windowRect);
             _widevine?.Dispose();
             _activity?.Dispose();
-            _surface?.Dispose();
             _widevine = null;
             _activity = null;
             _surface = null;

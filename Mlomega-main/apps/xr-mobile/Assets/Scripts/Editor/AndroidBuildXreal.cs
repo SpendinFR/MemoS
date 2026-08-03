@@ -1606,7 +1606,6 @@ namespace MLOmega.XR.Editor
             }
 
             string xml = File.ReadAllText(manifest);
-            if (xml.Contains("com.google.android.youtube")) return;
             int application = xml.IndexOf("<application", StringComparison.Ordinal);
             if (application < 0)
                 throw new InvalidDataException(
@@ -1617,6 +1616,11 @@ namespace MLOmega.XR.Editor
                 "        <package android:name=\"com.android.chrome\" />\n" +
                 "        <package android:name=\"com.google.android.googlequicksearchbox\" />\n" +
                 "        <package android:name=\"com.google.android.youtube\" />\n" +
+                "        <package android:name=\"com.netflix.mediaclient\" />\n" +
+                "        <package android:name=\"com.spotify.music\" />\n" +
+                "        <package android:name=\"com.reddit.frontpage\" />\n" +
+                "        <package android:name=\"com.amazon.avod.thirdpartyclient\" />\n" +
+                "        <package android:name=\"moe.shizuku.privileged.api\" />\n" +
                 "        <package android:name=\"com.google.android.inputmethod.latin\" />\n" +
                 "        <package android:name=\"com.samsung.android.honeyboard\" />\n" +
                 "        <intent>\n" +
@@ -1625,6 +1629,10 @@ namespace MLOmega.XR.Editor
                 "    </queries>\n";
             File.WriteAllText(manifest, xml.Insert(application, queries));
             Debug.Log("[AndroidBuildXreal] XR Lab package/icon queries injected: " + manifest);
+            // The Lab reuses the hardware-validated v34 cinema transport. The
+            // postprocessor remains package-gated, so Product/Atelier/PhoneOnly
+            // never acquire Shizuku, Media3 or protected-display code.
+            InjectSecureSurfaceWidevineProbe(path);
         }
 
         private static void InjectSecureSurfaceWidevineProbe(string unityLibraryPath)

@@ -8,15 +8,16 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
 using MLOmega.XR.UI.Components;
+using MLOmega.XR.SecureSurfaceSpike;
 
 namespace MLOmega.XR.UI
 {
     /// <summary>
     /// Experimental spatial-computing shell. This component is added only to
     /// XrealWorldLab.unity and never to the validated Atelier/Product scenes.
-    /// Google and YouTube are URL shortcuts into the internal XR browser: no
-    /// Android activity is launched and the XREAL render surface stays owned by
-    /// Unity.
+    /// The generic browser stays in WebView. Google, YouTube and Netflix use the
+    /// validated Android-app spatial host; Netflix alone hands protected playback
+    /// to the v34 cinema path.
     /// </summary>
     public sealed class WorldCreatorLabShell : MonoBehaviour
     {
@@ -33,6 +34,10 @@ namespace MLOmega.XR.UI
             public BrowserSessionEntry[] windows;
             public bool keyboardVisible;
             public bool workspaceVisible;
+            public bool netflixVisible;
+            public string protectedPackage;
+            public string protectedUri;
+            public string protectedLabel;
         }
 
         private enum KeyboardTarget
@@ -61,6 +66,10 @@ namespace MLOmega.XR.UI
         private bool _uppercase;
         private XrLabVoiceDictation _dictation;
         private XrLabFirstPersonRecorder _recorder;
+        private XrealSecureSurfaceSpike _protectedHost;
+        private string _protectedPackage = string.Empty;
+        private string _protectedUri = string.Empty;
+        private string _protectedLabel = string.Empty;
         private int _genericWindowSerial;
         private GameObject _resumeOffer;
         private RectTransform _resumeOfferRect;
@@ -150,24 +159,25 @@ namespace MLOmega.XR.UI
 
         private void ExtendDock()
         {
-            // Keep the proven Atelier apps on the first row and place the four
-            // experimental apps on a second, calmer row.
-            _dock.sizeDelta = new Vector2(650f, 350f);
+            // Keep the proven Atelier apps on the first row. Android/Web apps
+            // use two balanced rows of four so the dock remains readable while
+            // preserving the validated window/gesture implementation.
+            _dock.sizeDelta = new Vector2(700f, 500f);
             Button[] existing = _dock.GetComponentsInChildren<Button>(true);
             Array.Sort(existing, (left, right) =>
                 ((RectTransform)left.transform).anchoredPosition.x.CompareTo(
                     ((RectTransform)right.transform).anchoredPosition.x));
             if (existing.Length >= 2)
             {
-                MoveExistingDockGroup(existing[0], new Vector2(-90f, 82f));
-                MoveExistingDockGroup(existing[1], new Vector2(90f, 82f));
+                MoveExistingDockGroup(existing[0], new Vector2(-90f, 155f));
+                MoveExistingDockGroup(existing[1], new Vector2(90f, 155f));
                 RestyleExistingDockButton(existing[0], true);
                 RestyleExistingDockButton(existing[1], false);
             }
 
             MakeDockButton(
                 "Navigateur",
-                new Vector2(-225f, -78f),
+                new Vector2(-225f, 0f),
                 "com.android.chrome",
                 "◎",
                 () => OpenBrowser(
@@ -175,19 +185,61 @@ namespace MLOmega.XR.UI
                     "https://www.google.com"));
             MakeDockButton(
                 "Google",
-                new Vector2(-75f, -78f),
-                "com.google.android.googlequicksearchbox",
+                new Vector2(-75f, 0f),
+                "com.android.chrome",
                 "G",
-                () => OpenOrFocusShortcut("Google", "https://www.google.com"));
+                () => OpenOrFocusProtectedApplication(
+                    "com.android.chrome",
+                    "https://www.google.com",
+                    "Google"));
             MakeDockButton(
                 "YouTube",
-                new Vector2(75f, -78f),
+                new Vector2(75f, 0f),
                 "com.google.android.youtube",
                 "▶",
-                () => OpenOrFocusShortcut("YouTube", "https://www.youtube.com"));
+                () => OpenOrFocusProtectedApplication(
+                    "com.google.android.youtube",
+                    "https://www.youtube.com/",
+                    "YouTube"));
+            MakeDockButton(
+                "Netflix",
+                new Vector2(225f, 0f),
+                "com.netflix.mediaclient",
+                "N",
+                () => OpenOrFocusProtectedApplication(
+                    "com.netflix.mediaclient",
+                    "https://www.netflix.com/browse",
+                    "Netflix"));
+            MakeDockButton(
+                "Spotify",
+                new Vector2(-225f, -150f),
+                "com.spotify.music",
+                "S",
+                () => OpenOrFocusProtectedApplication(
+                    "com.spotify.music",
+                    "spotify://",
+                    "Spotify"));
+            MakeDockButton(
+                "Reddit",
+                new Vector2(-75f, -150f),
+                "com.reddit.frontpage",
+                "r/",
+                () => OpenOrFocusProtectedApplication(
+                    "com.reddit.frontpage",
+                    "https://www.reddit.com/",
+                    "Reddit"));
+            MakeDockButton(
+                "Prime Video",
+                new Vector2(75f, -150f),
+                "com.amazon.avod.thirdpartyclient",
+                "P",
+                () => OpenOrFocusProtectedApplication(
+                    "com.amazon.avod.thirdpartyclient",
+                    "https://www.primevideo.com/",
+                    "Prime Video"));
             MakeDockButton(
                 "Clavier",
-                new Vector2(225f, -78f),
+                new Vector2(225f, -150f),
                 "com.samsung.android.honeyboard",
                 "⌨",
                 () => ShowKeyboard(KeyboardTarget.WebContent));
@@ -327,18 +379,6 @@ namespace MLOmega.XR.UI
                 FontStyles.Bold);
         }
 
-        private void OpenOrFocusShortcut(string title, string url)
-        {
-            for (int i = 0; i < _windows.Count; i++)
-            {
-                if (!string.Equals(_windows[i].Title, title, StringComparison.Ordinal))
-                    continue;
-                SetActiveBrowser(_windows[i]);
-                return;
-            }
-            OpenBrowser(title, url);
-        }
-
         private void OpenBrowser(string title, string url)
         {
             // Three simultaneous web surfaces are a deliberate S24 thermal/RAM
@@ -356,6 +396,46 @@ namespace MLOmega.XR.UI
             window.RegisterSpatialWindow();
             SetActiveBrowser(window);
             _creator.DismissWindowDock();
+        }
+
+        private void OpenOrFocusProtectedApplication(
+            string packageName,
+            string uri,
+            string label)
+        {
+            if (_protectedHost != null && _protectedHost.IsWindowVisible &&
+                string.Equals(
+                    _protectedPackage,
+                    packageName,
+                    StringComparison.Ordinal))
+            {
+                _creator?.FocusExternalSpatialWindow(_protectedHost.WindowRect);
+                _creator?.DismissWindowDock();
+                return;
+            }
+
+            if (_protectedHost != null) _protectedHost.CloseHostedWindow();
+            if (_windows.Count >= 3) CloseWindow(_windows[0]);
+            _protectedHost = gameObject.AddComponent<XrealSecureSurfaceSpike>();
+            _protectedPackage = packageName;
+            _protectedUri = uri;
+            _protectedLabel = label;
+            _protectedHost.ConfigureLabApplication(packageName, uri, label);
+            _protectedHost.Closed += OnProtectedApplicationClosed;
+            _creator?.DismissWindowDock();
+            Debug.Log("[XrLab] " + label + " protected host requested.");
+        }
+
+        private void OnProtectedApplicationClosed()
+        {
+            if (_protectedHost != null)
+                _protectedHost.Closed -= OnProtectedApplicationClosed;
+            _protectedHost = null;
+            _protectedPackage = string.Empty;
+            _protectedUri = string.Empty;
+            _protectedLabel = string.Empty;
+            if (_windows.Count == 0) _creator?.OpenWindowDockFromTwoPalms();
+            Debug.Log("[XrLab] protected app host closed and package stopped.");
         }
 
         private void PlaceNewBrowserWindow(XrLabBrowserWindow window, int slot)
@@ -420,6 +500,7 @@ namespace MLOmega.XR.UI
             }
             SaveSessionState();
             _cleanExitSaved = true;
+            _protectedHost?.ReleaseHostedApplication();
             Application.Quit();
         }
 
@@ -439,12 +520,14 @@ namespace MLOmega.XR.UI
                 yield return null;
             SaveSessionState();
             _cleanExitSaved = true;
+            _protectedHost?.ReleaseHostedApplication();
             Application.Quit();
         }
 
         private void OnApplicationQuit()
         {
             if (!_cleanExitSaved) SaveSessionState();
+            _protectedHost?.ReleaseHostedApplication();
         }
 
         private void SaveSessionState()
@@ -465,9 +548,16 @@ namespace MLOmega.XR.UI
                 keyboardVisible =
                     _keyboardCanvas != null && _keyboardCanvas.gameObject.activeSelf,
                 workspaceVisible = _creator?.IsLabWorkspaceVisible == true,
+                netflixVisible =
+                    _protectedHost != null && _protectedHost.IsWindowVisible &&
+                    _protectedPackage == "com.netflix.mediaclient",
+                protectedPackage = _protectedPackage,
+                protectedUri = _protectedUri,
+                protectedLabel = _protectedLabel,
             };
             if (entries.Length == 0 && !state.keyboardVisible &&
-                !state.workspaceVisible)
+                !state.workspaceVisible && !state.netflixVisible &&
+                string.IsNullOrWhiteSpace(state.protectedPackage))
                 PlayerPrefs.DeleteKey(SessionStatePreference);
             else
                 PlayerPrefs.SetString(SessionStatePreference, JsonUtility.ToJson(state));
@@ -483,7 +573,9 @@ namespace MLOmega.XR.UI
             var state = JsonUtility.FromJson<BrowserSessionState>(json);
             if (state == null ||
                 ((state.windows == null || state.windows.Length == 0) &&
-                 !state.keyboardVisible && !state.workspaceVisible))
+                 !state.keyboardVisible && !state.workspaceVisible &&
+                 !state.netflixVisible &&
+                 string.IsNullOrWhiteSpace(state.protectedPackage)))
                 return;
 
             _resumeOffer = new GameObject("XR Lab saved-session choice");
@@ -546,11 +638,54 @@ namespace MLOmega.XR.UI
             {
                 BrowserSessionEntry entry = entries[i];
                 if (entry == null || string.IsNullOrWhiteSpace(entry.url)) continue;
+                if (string.Equals(entry.title, "Google", StringComparison.Ordinal))
+                {
+                    OpenOrFocusProtectedApplication(
+                        "com.android.chrome",
+                        "https://www.google.com",
+                        "Google");
+                    continue;
+                }
+                if (string.Equals(entry.title, "YouTube", StringComparison.Ordinal))
+                {
+                    OpenOrFocusProtectedApplication(
+                        "com.google.android.youtube",
+                        "https://www.youtube.com/",
+                        "YouTube");
+                    continue;
+                }
                 OpenBrowser(
                     string.IsNullOrWhiteSpace(entry.title)
                         ? "Navigateur " + (++_genericWindowSerial)
                         : entry.title,
                     entry.url);
+            }
+            if (!string.IsNullOrWhiteSpace(state?.protectedPackage))
+            {
+                string restoredPackage = state.protectedPackage;
+                // v3 used the Google Discover/search package, whose launcher
+                // escapes to display 0 on the validated S24. Migrate saved
+                // sessions to the real Chrome Android application automatically.
+                if (string.Equals(
+                        restoredPackage,
+                        "com.google.android.googlequicksearchbox",
+                        StringComparison.Ordinal))
+                    restoredPackage = "com.android.chrome";
+                OpenOrFocusProtectedApplication(
+                    restoredPackage,
+                    string.IsNullOrWhiteSpace(state.protectedUri)
+                        ? "https://www.google.com"
+                        : state.protectedUri,
+                    string.IsNullOrWhiteSpace(state.protectedLabel)
+                        ? "Application"
+                        : state.protectedLabel);
+            }
+            else if (state?.netflixVisible == true)
+            {
+                OpenOrFocusProtectedApplication(
+                    "com.netflix.mediaclient",
+                    "https://www.netflix.com/browse",
+                    "Netflix");
             }
             if (state != null && state.keyboardVisible)
                 ShowKeyboard(KeyboardTarget.WebContent);
@@ -565,6 +700,7 @@ namespace MLOmega.XR.UI
             RemoveResumeOffer();
             XrLabBrowserWindow[] windows = _windows.ToArray();
             for (int i = 0; i < windows.Length; i++) CloseWindow(windows[i]);
+            if (_protectedHost != null) _protectedHost.CloseHostedWindow();
             if (_keyboardCanvas != null) _keyboardCanvas.gameObject.SetActive(false);
             _creator?.RestoreLabWorkspaceForSession(false);
             _creator?.OpenWindowDockFromTwoPalms();
