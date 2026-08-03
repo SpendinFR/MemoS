@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Runtime.InteropServices;
+using System.Threading;
 using MLOmega.XR.UI;
 using TMPro;
 using UnityEngine;
@@ -21,7 +22,8 @@ namespace MLOmega.XR.SecureSurfaceSpike
     public sealed class XrealSecureSurfaceSpike : MonoBehaviour
     {
         private const string Tag = "[SECURE-SURFACE-SPIKE]";
-        private const int LayerId = 9107;
+        private const int LegacyLayerId = 9107;
+        private const int FirstMultiLayerId = 9200;
         private const string WidevineManifest =
             "https://storage.googleapis.com/shaka-demo-assets/sintel-widevine/dash.mpd";
         private const string WidevineLicense =
@@ -30,6 +32,9 @@ namespace MLOmega.XR.SecureSurfaceSpike
         private const string YoutubePackage = "com.google.android.youtube";
         private const string WidevineBridge =
             "com.mlomega.xr.securesurface.SecureWidevinePlayer";
+        private const string MultiAppBridge =
+            "com.mlomega.xr.securesurface.MultiAppDisplayBridge";
+        private static int _nextMultiIdentity;
 
         [StructLayout(LayoutKind.Explicit, Size = 96, Pack = 4)]
         private struct QuadCompositionLayer
@@ -113,9 +118,17 @@ namespace MLOmega.XR.SecureSurfaceSpike
         private string _startupLabel = "YouTube";
         private bool _labHosted;
         private bool _runtimeReleased;
+        private bool _useMultiSession;
+        private int _sessionId;
+        private int _layerId = LegacyLayerId;
+        private int _initialSlot;
 
-        public event Action Closed;
+        public event Action<XrealSecureSurfaceSpike> Closed;
+        public event Action<XrealSecureSurfaceSpike> Focused;
         public RectTransform WindowRect => _windowRect;
+        public string HostedPackage => _startupPackageName;
+        public string HostedLabel => _startupLabel;
+        public bool UsesCommercialCinema => !_useMultiSession;
         public bool IsWindowVisible =>
             _windowVisible && _windowRect != null &&
             _windowRect.gameObject.activeInHierarchy;
@@ -123,19 +136,37 @@ namespace MLOmega.XR.SecureSurfaceSpike
         public void ConfigureLabApplication(
             string packageName,
             string launchUri,
-            string label)
+            string label,
+            int initialSlot = 0)
         {
             _labHosted = true;
             _startupPackageName = string.IsNullOrWhiteSpace(packageName)
                 ? YoutubePackage
                 : packageName.Trim();
-            _startupUri = string.IsNullOrWhiteSpace(launchUri)
-                ? YoutubeHome
-                : launchUri.Trim();
+            _startupUri = (launchUri ?? string.Empty).Trim();
             _startupLabel = string.IsNullOrWhiteSpace(label)
                 ? _startupPackageName
                 : label.Trim();
+            _initialSlot = Mathf.Max(0, initialSlot);
+            _useMultiSession = !IsCommercialPackage(_startupPackageName);
+            if (_useMultiSession)
+            {
+                int identity = Interlocked.Increment(ref _nextMultiIdentity);
+                _sessionId = identity;
+                _layerId = FirstMultiLayerId + identity;
+            }
+            else
+            {
+                _sessionId = 0;
+                _layerId = LegacyLayerId;
+            }
         }
+
+        public static bool IsCommercialPackage(string packageName) =>
+            string.Equals(packageName, "com.netflix.mediaclient", StringComparison.Ordinal) ||
+            string.Equals(packageName, "com.amazon.avod.thirdpartyclient", StringComparison.Ordinal) ||
+            (!string.IsNullOrWhiteSpace(packageName) &&
+             packageName.IndexOf("canal", StringComparison.OrdinalIgnoreCase) >= 0);
 
         private void OnEnable()
         {
@@ -169,8 +200,8 @@ namespace MLOmega.XR.SecureSurfaceSpike
             {
                 _layer = new QuadCompositionLayer
                 {
-                    layerId = LayerId,
-                    compositionOrder = 10,
+                    layerId = _layerId,
+                    compositionOrder = _useMultiSession ? 11 + (_sessionId % 8) : 10,
                     pixelWidth = 1920,
                     pixelHeight = 1080,
                     format = 1,
@@ -205,7 +236,7 @@ namespace MLOmega.XR.SecureSurfaceSpike
                 }
 
                 _layerCreated = true;
-                SetActiveCompositionLayer(LayerId);
+                SetActiveCompositionLayer(_layerId);
                 Debug.Log(Tag + " protected XREAL quad created; surface=" + nativeSurface);
 
                 _surface = new AndroidJavaObject(nativeSurface);
@@ -216,16 +247,33 @@ namespace MLOmega.XR.SecureSurfaceSpike
                         "currentActivity");
                 }
 
-                _widevine = new AndroidJavaClass(WidevineBridge);
-                _widevine.CallStatic(
-                    "startApplicationDisplay",
-                    _activity,
-                    _surface,
-                    _layer.pixelWidth,
-                    _layer.pixelHeight,
-                    240,
-                    _startupPackageName,
-                    _startupUri);
+                _widevine = new AndroidJavaClass(
+                    _useMultiSession ? MultiAppBridge : WidevineBridge);
+                if (_useMultiSession)
+                {
+                    _widevine.CallStatic(
+                        "startApplicationDisplay",
+                        _sessionId,
+                        _activity,
+                        _surface,
+                        _layer.pixelWidth,
+                        _layer.pixelHeight,
+                        240,
+                        _startupPackageName,
+                        _startupUri);
+                }
+                else
+                {
+                    _widevine.CallStatic(
+                        "startApplicationDisplay",
+                        _activity,
+                        _surface,
+                        _layer.pixelWidth,
+                        _layer.pixelHeight,
+                        240,
+                        _startupPackageName,
+                        _startupUri);
+                }
                 _status = _startupLabel + ": demarrage application";
                 Debug.Log(Tag + " " + _startupLabel +
                           " display started on protected XREAL surface");
@@ -248,6 +296,7 @@ namespace MLOmega.XR.SecureSurfaceSpike
         public void OnCinemaReturned(string ignored)
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
+            if (_useMultiSession) return;
             StartCoroutine(ReattachProtectedVideoLayer());
 #endif
         }
@@ -265,7 +314,7 @@ namespace MLOmega.XR.SecureSurfaceSpike
             {
                 if (_layerCreated)
                 {
-                    RemoveCompositionLayer(LayerId);
+                    RemoveCompositionLayer(_layerId);
                     _layerCreated = false;
                 }
 
@@ -288,7 +337,7 @@ namespace MLOmega.XR.SecureSurfaceSpike
                     _layer.pixelHeight);
                 if (!attached)
                 {
-                    RemoveCompositionLayer(LayerId);
+                    RemoveCompositionLayer(_layerId);
                     throw new InvalidOperationException(
                         "cinema return trusted surface reattach refused");
                 }
@@ -296,7 +345,7 @@ namespace MLOmega.XR.SecureSurfaceSpike
                 _surface = replacementSurface;
                 replacementSurface = null;
                 _layerCreated = true;
-                SetActiveCompositionLayer(LayerId);
+                SetActiveCompositionLayer(_layerId);
                 _status = "MLOMEGA 3D: application restauree";
                 Debug.Log(Tag + " protected quad recreated after cinema; Android task preserved");
             }
@@ -322,7 +371,9 @@ namespace MLOmega.XR.SecureSurfaceSpike
             _nextStatusPoll = Time.unscaledTime + 0.5f;
             try
             {
-                string value = _widevine.CallStatic<string>("getStatus");
+                string value = _useMultiSession
+                    ? _widevine.CallStatic<string>("getStatus", _sessionId)
+                    : _widevine.CallStatic<string>("getStatus");
                 if (!string.IsNullOrWhiteSpace(value) && value != _status)
                 {
                     _status = value;
@@ -350,7 +401,7 @@ namespace MLOmega.XR.SecureSurfaceSpike
                 // this state keeps running and is restored on return.
                 UpdateLayerPoseFromWorldWindow();
                 ModifyQuadCompositionLayer(ref _layer);
-                SetActiveCompositionLayer(LayerId);
+                SetActiveCompositionLayer(_layerId);
             }
 #endif
         }
@@ -405,8 +456,13 @@ namespace MLOmega.XR.SecureSurfaceSpike
             _windowRect.localScale = Vector3.one * 0.0012f;
 
             Vector3 forward = _xrCamera.transform.forward.normalized;
+            float[] initialOffsets = { 0f, .62f, -.62f };
+            float initialX = initialOffsets[
+                Mathf.Clamp(_initialSlot, 0, initialOffsets.Length - 1)];
             _windowRect.SetPositionAndRotation(
-                _xrCamera.transform.position + forward * 1.45f,
+                _xrCamera.transform.position +
+                forward * (1.45f + Mathf.Abs(initialX) * .10f) +
+                _xrCamera.transform.right * initialX,
                 Quaternion.LookRotation(forward, Vector3.up));
 
             Image frame = MakeImage(
@@ -442,27 +498,31 @@ namespace MLOmega.XR.SecureSurfaceSpike
             videoHitSurface.color = Color.clear;
             videoHitSurface.raycastTarget = true;
             var appPointer = video.AddComponent<SecureAndroidAppPointer>();
-            appPointer.Configure(_videoRect, new Vector2Int(1920, 1080));
+            appPointer.Configure(
+                _videoRect,
+                new Vector2Int(1920, 1080),
+                _useMultiSession,
+                _sessionId,
+                NotifyFocused);
             LayoutVideoArea();
             MakeTopActionHandle(
-                _windowRect, -112f, "YT", SecureAndroidAppAction.YouTube, appPointer);
+                _windowRect, -84f, "\u25B2", SecureAndroidAppAction.ScrollUp, appPointer);
             MakeTopActionHandle(
-                _windowRect, -56f, "N", SecureAndroidAppAction.Netflix, appPointer);
+                _windowRect, -28f, "\u25BC", SecureAndroidAppAction.ScrollDown, appPointer);
             MakeTopActionHandle(
-                _windowRect, 0f, "\u25B2", SecureAndroidAppAction.ScrollUp, appPointer);
-            MakeTopActionHandle(
-                _windowRect, 56f, "\u25BC", SecureAndroidAppAction.ScrollDown, appPointer);
-            MakeTopActionHandle(
-                _windowRect, 112f, "\u2328", SecureAndroidAppAction.Keyboard, appPointer);
-            MakeTopActionHandle(
-                _windowRect, 168f, "TV", SecureAndroidAppAction.Cinema, appPointer);
+                _windowRect, 28f, "\u2328", SecureAndroidAppAction.Keyboard, appPointer);
+            if (!_useMultiSession)
+            {
+                MakeTopActionHandle(
+                    _windowRect, 84f, "TV", SecureAndroidAppAction.Cinema, appPointer);
+            }
 
             _creator = FindAnyObjectByType<WorldCreatorController>();
             if (_creator != null)
             {
                 _creator.RegisterExternalSpatialWindow(
                     _windowRect,
-                    "secure.android.youtube.fullscreen.v2",
+                    "secure.android." + _startupPackageName,
                     CloseSpatialVideoWindow,
                     ApplySpatialWindowSize);
                 _creator.FocusExternalSpatialWindow(_windowRect);
@@ -472,6 +532,13 @@ namespace MLOmega.XR.SecureSurfaceSpike
                 Debug.LogWarning(Tag + " Atelier window controller unavailable");
             }
             _windowVisible = true;
+        }
+
+        private void NotifyFocused()
+        {
+            if (_creator != null && _windowRect != null)
+                _creator.FocusExternalSpatialWindow(_windowRect);
+            Focused?.Invoke(this);
         }
 
         private void ApplySpatialWindowSize(Vector2 requested, bool final)
@@ -511,7 +578,7 @@ namespace MLOmega.XR.SecureSurfaceSpike
             _videoRect = null;
             ReleaseHostedApplication();
             if (closedWindow != null) Destroy(closedWindow.gameObject);
-            Closed?.Invoke();
+            Closed?.Invoke(this);
             Destroy(this);
         }
 
@@ -525,7 +592,13 @@ namespace MLOmega.XR.SecureSurfaceSpike
             try
             {
                 if (_widevine != null && _activity != null)
-                    _widevine.CallStatic("releaseAndStop", _activity);
+                {
+                    if (_useMultiSession)
+                        _widevine.CallStatic(
+                            "releaseAndStop", _activity, _sessionId);
+                    else
+                        _widevine.CallStatic("releaseAndStop", _activity);
+                }
             }
             catch (Exception ex)
             {
@@ -533,7 +606,7 @@ namespace MLOmega.XR.SecureSurfaceSpike
             }
             if (_layerCreated)
             {
-                try { RemoveCompositionLayer(LayerId); }
+                try { RemoveCompositionLayer(_layerId); }
                 catch (Exception ex)
                 {
                     Debug.LogWarning(Tag + " layer cleanup: " + ex.Message);
@@ -543,6 +616,66 @@ namespace MLOmega.XR.SecureSurfaceSpike
 #endif
             _surface?.Dispose();
             _surface = null;
+        }
+
+        public bool SendHostedText(string text)
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_widevine == null || string.IsNullOrEmpty(text)) return false;
+            try
+            {
+                return _useMultiSession
+                    ? _widevine.CallStatic<bool>("inputText", _sessionId, text)
+                    : _widevine.CallStatic<bool>("inputText", text);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning(Tag + " hosted text: " + ex.Message);
+                return false;
+            }
+#else
+            return true;
+#endif
+        }
+
+        public bool SendHostedKey(int keyCode)
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_widevine == null) return false;
+            try
+            {
+                return _useMultiSession
+                    ? _widevine.CallStatic<bool>("inputKey", _sessionId, keyCode)
+                    : _widevine.CallStatic<bool>("inputKey", keyCode);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning(Tag + " hosted key: " + ex.Message);
+                return false;
+            }
+#else
+            return true;
+#endif
+        }
+
+        public bool ClearHostedText()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_widevine == null) return false;
+            try
+            {
+                return _useMultiSession
+                    ? _widevine.CallStatic<bool>("clearText", _sessionId)
+                    : _widevine.CallStatic<bool>("clearText");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning(Tag + " hosted clear: " + ex.Message);
+                return false;
+            }
+#else
+            return true;
+#endif
         }
 
         private static Image MakeImage(
@@ -739,6 +872,8 @@ namespace MLOmega.XR.SecureSurfaceSpike
         private const string Tag = "[SECURE-ANDROID-POINTER]";
         private const string Bridge =
             "com.mlomega.xr.securesurface.SecureWidevinePlayer";
+        private const string MultiBridge =
+            "com.mlomega.xr.securesurface.MultiAppDisplayBridge";
 
         private RectTransform _contentRect;
         private Vector2Int _displayPixels;
@@ -752,14 +887,29 @@ namespace MLOmega.XR.SecureSurfaceSpike
         private bool _down;
         private bool _dragStarted;
         private bool _actionRunning;
+        private bool _multiSession;
+        private int _sessionId;
+        private Action _focused;
 
-        public void Configure(RectTransform contentRect, Vector2Int displayPixels)
+        public void Configure(
+            RectTransform contentRect,
+            Vector2Int displayPixels,
+            bool multiSession,
+            int sessionId,
+            Action focused)
         {
             _contentRect = contentRect;
             _displayPixels = displayPixels;
+            _multiSession = multiSession;
+            _sessionId = sessionId;
+            _focused = focused;
             _camera = Camera.main;
 #if UNITY_ANDROID && !UNITY_EDITOR
-            try { _bridge = new AndroidJavaClass(Bridge); }
+            try
+            {
+                _bridge = new AndroidJavaClass(
+                    _multiSession ? MultiBridge : Bridge);
+            }
             catch (Exception ex)
             {
                 Debug.LogError(Tag + " bridge unavailable: " + ex.Message);
@@ -776,6 +926,7 @@ namespace MLOmega.XR.SecureSurfaceSpike
 
         public void OnPointerDown(PointerEventData eventData)
         {
+            _focused?.Invoke();
             _lastPoint = DisplayPoint(eventData);
             _lastRawPoint = _lastPoint;
             _downRawPoint = _lastPoint;
@@ -825,11 +976,13 @@ namespace MLOmega.XR.SecureSurfaceSpike
 
         public void OpenKeyboard()
         {
+            _focused?.Invoke();
             SendNoCoordinates("openKeyboard");
         }
 
         public void EnterCinemaMode()
         {
+            if (_multiSession) return;
             SendNoCoordinates("enterCinemaMode");
         }
 
@@ -932,7 +1085,11 @@ namespace MLOmega.XR.SecureSurfaceSpike
             if (_bridge == null) return false;
             try
             {
-                return _bridge.CallStatic<bool>(method, (float)point.x, (float)point.y);
+                return _multiSession
+                    ? _bridge.CallStatic<bool>(
+                        method, _sessionId, (float)point.x, (float)point.y)
+                    : _bridge.CallStatic<bool>(
+                        method, (float)point.x, (float)point.y);
             }
             catch (Exception ex)
             {
@@ -948,7 +1105,12 @@ namespace MLOmega.XR.SecureSurfaceSpike
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
             if (_bridge == null) return false;
-            try { return _bridge.CallStatic<bool>(method); }
+            try
+            {
+                return _multiSession
+                    ? _bridge.CallStatic<bool>(method, _sessionId)
+                    : _bridge.CallStatic<bool>(method);
+            }
             catch (Exception ex)
             {
                 Debug.LogError(Tag + " " + method + " failed: " + ex.Message);
@@ -963,6 +1125,7 @@ namespace MLOmega.XR.SecureSurfaceSpike
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
             if (_bridge == null) return false;
+            if (_multiSession) return false;
             try { return _bridge.CallStatic<bool>("launchApp", packageName, uri); }
             catch (Exception ex)
             {

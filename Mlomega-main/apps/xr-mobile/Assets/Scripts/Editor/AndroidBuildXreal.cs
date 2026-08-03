@@ -1675,6 +1675,40 @@ namespace MLOmega.XR.Editor
                 "TrustedDisplayUserService.java");
             File.Copy(trustedServiceTemplate, trustedServiceJava, true);
 
+            for (int slot = 1; slot <= 3; slot++)
+            {
+                string slotFile = "TrustedDisplayUserServiceSlot" + slot + ".java";
+                string slotTemplate = Path.Combine(
+                    Application.dataPath,
+                    "Scripts",
+                    "Editor",
+                    "SecureSurfaceSpike",
+                    slotFile + ".txt");
+                if (!File.Exists(slotTemplate))
+                    throw new FileNotFoundException(
+                        "Dedicated multi-app UserService template missing.",
+                        slotTemplate);
+                File.Copy(
+                    slotTemplate,
+                    Path.Combine(Path.GetDirectoryName(java), slotFile),
+                    true);
+            }
+
+            string multiAppTemplate = Path.Combine(
+                Application.dataPath,
+                "Scripts",
+                "Editor",
+                "SecureSurfaceSpike",
+                "MultiAppDisplayBridge.java.txt");
+            if (!File.Exists(multiAppTemplate))
+                throw new FileNotFoundException(
+                    "Multi-app display bridge template missing.",
+                    multiAppTemplate);
+            string multiAppJava = Path.Combine(
+                Path.GetDirectoryName(java),
+                "MultiAppDisplayBridge.java");
+            File.Copy(multiAppTemplate, multiAppJava, true);
+
             string taskProbeTemplate = Path.Combine(
                 Application.dataPath,
                 "Scripts",

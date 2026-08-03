@@ -29,6 +29,14 @@ namespace MLOmega.XR.UI
         }
 
         [Serializable]
+        private sealed class ProtectedSessionEntry
+        {
+            public string packageName;
+            public string uri;
+            public string label;
+        }
+
+        [Serializable]
         private sealed class BrowserSessionState
         {
             public BrowserSessionEntry[] windows;
@@ -38,12 +46,23 @@ namespace MLOmega.XR.UI
             public string protectedPackage;
             public string protectedUri;
             public string protectedLabel;
+            public ProtectedSessionEntry[] protectedApps;
+        }
+
+        private sealed class ProtectedHostEntry
+        {
+            public XrealSecureSurfaceSpike Host;
+            public string Package;
+            public string Uri;
+            public string Label;
+            public bool Commercial;
         }
 
         private enum KeyboardTarget
         {
             WebContent,
             Address,
+            ProtectedApplication,
         }
 
         private static readonly Color Glass = new Color(.12f, .13f, .16f, .90f);
@@ -66,10 +85,12 @@ namespace MLOmega.XR.UI
         private bool _uppercase;
         private XrLabVoiceDictation _dictation;
         private XrLabFirstPersonRecorder _recorder;
-        private XrealSecureSurfaceSpike _protectedHost;
-        private string _protectedPackage = string.Empty;
-        private string _protectedUri = string.Empty;
-        private string _protectedLabel = string.Empty;
+        private readonly List<ProtectedHostEntry> _protectedHosts =
+            new List<ProtectedHostEntry>();
+        private readonly Dictionary<XrealSecureSurfaceSpike, string>
+            _protectedInputBuffers =
+                new Dictionary<XrealSecureSurfaceSpike, string>();
+        private ProtectedHostEntry _activeProtectedHost;
         private int _genericWindowSerial;
         private GameObject _resumeOffer;
         private RectTransform _resumeOfferRect;
@@ -217,7 +238,7 @@ namespace MLOmega.XR.UI
                 "S",
                 () => OpenOrFocusProtectedApplication(
                     "com.spotify.music",
-                    "spotify://",
+                    string.Empty,
                     "Spotify"));
             MakeDockButton(
                 "Reddit",
@@ -403,39 +424,91 @@ namespace MLOmega.XR.UI
             string uri,
             string label)
         {
-            if (_protectedHost != null && _protectedHost.IsWindowVisible &&
-                string.Equals(
-                    _protectedPackage,
-                    packageName,
-                    StringComparison.Ordinal))
+            ProtectedHostEntry existing = FindProtectedHost(packageName);
+            if (existing?.Host != null && existing.Host.IsWindowVisible)
             {
-                _creator?.FocusExternalSpatialWindow(_protectedHost.WindowRect);
+                SetActiveProtectedHost(existing);
                 _creator?.DismissWindowDock();
                 return;
             }
 
-            if (_protectedHost != null) _protectedHost.CloseHostedWindow();
-            if (_windows.Count >= 3) CloseWindow(_windows[0]);
-            _protectedHost = gameObject.AddComponent<XrealSecureSurfaceSpike>();
-            _protectedPackage = packageName;
-            _protectedUri = uri;
-            _protectedLabel = label;
-            _protectedHost.ConfigureLabApplication(packageName, uri, label);
-            _protectedHost.Closed += OnProtectedApplicationClosed;
+            bool commercial = XrealSecureSurfaceSpike.IsCommercialPackage(packageName);
+            if (commercial)
+            {
+                ProtectedHostEntry previousCinema = _protectedHosts.Find(
+                    entry => entry.Commercial);
+                previousCinema?.Host?.CloseHostedWindow();
+            }
+            else
+            {
+                List<ProtectedHostEntry> ordinary = _protectedHosts.FindAll(
+                    entry => !entry.Commercial);
+                if (ordinary.Count >= 3)
+                    ordinary[0].Host?.CloseHostedWindow();
+            }
+
+            int initialSlot = _protectedHosts.Count;
+            var entry = new ProtectedHostEntry
+            {
+                Host = gameObject.AddComponent<XrealSecureSurfaceSpike>(),
+                Package = packageName,
+                Uri = uri ?? string.Empty,
+                Label = label,
+                Commercial = commercial,
+            };
+            _protectedHosts.Add(entry);
+            entry.Host.ConfigureLabApplication(
+                entry.Package,
+                entry.Uri,
+                entry.Label,
+                initialSlot);
+            entry.Host.Closed += OnProtectedApplicationClosed;
+            entry.Host.Focused += OnProtectedApplicationFocused;
+            _activeProtectedHost = entry;
             _creator?.DismissWindowDock();
-            Debug.Log("[XrLab] " + label + " protected host requested.");
+            RefreshKeyboardPreview();
+            Debug.Log("[XrLab] " + label +
+                      " independent spatial host requested; count=" +
+                      _protectedHosts.Count);
         }
 
-        private void OnProtectedApplicationClosed()
+        private ProtectedHostEntry FindProtectedHost(string packageName) =>
+            _protectedHosts.Find(entry =>
+                string.Equals(entry.Package, packageName, StringComparison.Ordinal));
+
+        private ProtectedHostEntry EntryFor(XrealSecureSurfaceSpike host) =>
+            _protectedHosts.Find(entry => entry.Host == host);
+
+        private void SetActiveProtectedHost(ProtectedHostEntry entry)
         {
-            if (_protectedHost != null)
-                _protectedHost.Closed -= OnProtectedApplicationClosed;
-            _protectedHost = null;
-            _protectedPackage = string.Empty;
-            _protectedUri = string.Empty;
-            _protectedLabel = string.Empty;
-            if (_windows.Count == 0) _creator?.OpenWindowDockFromTwoPalms();
-            Debug.Log("[XrLab] protected app host closed and package stopped.");
+            if (entry?.Host == null) return;
+            _activeProtectedHost = entry;
+            _activeBrowser = null;
+            _keyboardTarget = KeyboardTarget.ProtectedApplication;
+            _creator?.FocusExternalSpatialWindow(entry.Host.WindowRect);
+            RefreshKeyboardPreview();
+        }
+
+        private void OnProtectedApplicationFocused(XrealSecureSurfaceSpike host) =>
+            SetActiveProtectedHost(EntryFor(host));
+
+        private void OnProtectedApplicationClosed(XrealSecureSurfaceSpike host)
+        {
+            ProtectedHostEntry entry = EntryFor(host);
+            if (entry == null) return;
+            host.Closed -= OnProtectedApplicationClosed;
+            host.Focused -= OnProtectedApplicationFocused;
+            _protectedInputBuffers.Remove(host);
+            _protectedHosts.Remove(entry);
+            if (_activeProtectedHost == entry)
+                _activeProtectedHost = _protectedHosts.Count == 0
+                    ? null
+                    : _protectedHosts[_protectedHosts.Count - 1];
+            if (_activeProtectedHost == null && _windows.Count == 0)
+                _creator?.OpenWindowDockFromTwoPalms();
+            RefreshKeyboardPreview();
+            Debug.Log("[XrLab] " + entry.Label +
+                      " host closed; remaining=" + _protectedHosts.Count);
         }
 
         private void PlaceNewBrowserWindow(XrLabBrowserWindow window, int slot)
@@ -458,6 +531,7 @@ namespace MLOmega.XR.UI
         {
             if (window == null) return;
             _activeBrowser = window;
+            _activeProtectedHost = null;
             _keyboardTarget = KeyboardTarget.WebContent;
             for (int i = 0; i < _windows.Count; i++)
                 _windows[i].SetFocused(_windows[i] == window);
@@ -500,7 +574,7 @@ namespace MLOmega.XR.UI
             }
             SaveSessionState();
             _cleanExitSaved = true;
-            _protectedHost?.ReleaseHostedApplication();
+            ReleaseAllProtectedApplications();
             Application.Quit();
         }
 
@@ -520,14 +594,21 @@ namespace MLOmega.XR.UI
                 yield return null;
             SaveSessionState();
             _cleanExitSaved = true;
-            _protectedHost?.ReleaseHostedApplication();
+            ReleaseAllProtectedApplications();
             Application.Quit();
         }
 
         private void OnApplicationQuit()
         {
             if (!_cleanExitSaved) SaveSessionState();
-            _protectedHost?.ReleaseHostedApplication();
+            ReleaseAllProtectedApplications();
+        }
+
+        private void ReleaseAllProtectedApplications()
+        {
+            ProtectedHostEntry[] entries = _protectedHosts.ToArray();
+            for (int i = 0; i < entries.Length; i++)
+                entries[i]?.Host?.ReleaseHostedApplication();
         }
 
         private void SaveSessionState()
@@ -542,22 +623,35 @@ namespace MLOmega.XR.UI
                     url = _windows[i].CurrentUrl,
                 };
             }
+            var protectedEntries = new ProtectedSessionEntry[_protectedHosts.Count];
+            for (int i = 0; i < _protectedHosts.Count; i++)
+            {
+                protectedEntries[i] = new ProtectedSessionEntry
+                {
+                    packageName = _protectedHosts[i].Package,
+                    uri = _protectedHosts[i].Uri,
+                    label = _protectedHosts[i].Label,
+                };
+            }
+            ProtectedHostEntry activeProtected = _activeProtectedHost ??
+                (_protectedHosts.Count == 0 ? null : _protectedHosts[0]);
             var state = new BrowserSessionState
             {
                 windows = entries,
                 keyboardVisible =
                     _keyboardCanvas != null && _keyboardCanvas.gameObject.activeSelf,
                 workspaceVisible = _creator?.IsLabWorkspaceVisible == true,
-                netflixVisible =
-                    _protectedHost != null && _protectedHost.IsWindowVisible &&
-                    _protectedPackage == "com.netflix.mediaclient",
-                protectedPackage = _protectedPackage,
-                protectedUri = _protectedUri,
-                protectedLabel = _protectedLabel,
+                netflixVisible = _protectedHosts.Exists(entry =>
+                    entry.Package == "com.netflix.mediaclient" &&
+                    entry.Host != null && entry.Host.IsWindowVisible),
+                protectedPackage = activeProtected?.Package ?? string.Empty,
+                protectedUri = activeProtected?.Uri ?? string.Empty,
+                protectedLabel = activeProtected?.Label ?? string.Empty,
+                protectedApps = protectedEntries,
             };
             if (entries.Length == 0 && !state.keyboardVisible &&
                 !state.workspaceVisible && !state.netflixVisible &&
-                string.IsNullOrWhiteSpace(state.protectedPackage))
+                protectedEntries.Length == 0)
                 PlayerPrefs.DeleteKey(SessionStatePreference);
             else
                 PlayerPrefs.SetString(SessionStatePreference, JsonUtility.ToJson(state));
@@ -575,7 +669,8 @@ namespace MLOmega.XR.UI
                 ((state.windows == null || state.windows.Length == 0) &&
                  !state.keyboardVisible && !state.workspaceVisible &&
                  !state.netflixVisible &&
-                 string.IsNullOrWhiteSpace(state.protectedPackage)))
+                  string.IsNullOrWhiteSpace(state.protectedPackage) &&
+                  (state.protectedApps == null || state.protectedApps.Length == 0)))
                 return;
 
             _resumeOffer = new GameObject("XR Lab saved-session choice");
@@ -660,19 +755,26 @@ namespace MLOmega.XR.UI
                         : entry.title,
                     entry.url);
             }
-            if (!string.IsNullOrWhiteSpace(state?.protectedPackage))
+            ProtectedSessionEntry[] protectedEntries = state?.protectedApps;
+            if (protectedEntries != null && protectedEntries.Length > 0)
             {
-                string restoredPackage = state.protectedPackage;
-                // v3 used the Google Discover/search package, whose launcher
-                // escapes to display 0 on the validated S24. Migrate saved
-                // sessions to the real Chrome Android application automatically.
-                if (string.Equals(
-                        restoredPackage,
-                        "com.google.android.googlequicksearchbox",
-                        StringComparison.Ordinal))
-                    restoredPackage = "com.android.chrome";
+                for (int i = 0; i < protectedEntries.Length && i < 4; i++)
+                {
+                    ProtectedSessionEntry entry = protectedEntries[i];
+                    if (entry == null || string.IsNullOrWhiteSpace(entry.packageName))
+                        continue;
+                    OpenOrFocusProtectedApplication(
+                        MigrateProtectedPackage(entry.packageName),
+                        entry.uri ?? string.Empty,
+                        string.IsNullOrWhiteSpace(entry.label)
+                            ? "Application"
+                            : entry.label);
+                }
+            }
+            else if (!string.IsNullOrWhiteSpace(state?.protectedPackage))
+            {
                 OpenOrFocusProtectedApplication(
-                    restoredPackage,
+                    MigrateProtectedPackage(state.protectedPackage),
                     string.IsNullOrWhiteSpace(state.protectedUri)
                         ? "https://www.google.com"
                         : state.protectedUri,
@@ -693,6 +795,14 @@ namespace MLOmega.XR.UI
                 state != null && state.workspaceVisible);
         }
 
+        private static string MigrateProtectedPackage(string packageName) =>
+            string.Equals(
+                packageName,
+                "com.google.android.googlequicksearchbox",
+                StringComparison.Ordinal)
+                ? "com.android.chrome"
+                : packageName;
+
         private void StartWithCleanDock()
         {
             PlayerPrefs.DeleteKey(SessionStatePreference);
@@ -700,7 +810,11 @@ namespace MLOmega.XR.UI
             RemoveResumeOffer();
             XrLabBrowserWindow[] windows = _windows.ToArray();
             for (int i = 0; i < windows.Length; i++) CloseWindow(windows[i]);
-            if (_protectedHost != null) _protectedHost.CloseHostedWindow();
+            XrealSecureSurfaceSpike[] protectedHosts = _protectedHosts
+                .ConvertAll(entry => entry.Host)
+                .ToArray();
+            for (int i = 0; i < protectedHosts.Length; i++)
+                protectedHosts[i]?.CloseHostedWindow();
             if (_keyboardCanvas != null) _keyboardCanvas.gameObject.SetActive(false);
             _creator?.RestoreLabWorkspaceForSession(false);
             _creator?.OpenWindowDockFromTwoPalms();
@@ -828,6 +942,8 @@ namespace MLOmega.XR.UI
         private void ShowKeyboard(KeyboardTarget target)
         {
             if (_keyboardCanvas == null || _camera == null) return;
+            if (target == KeyboardTarget.WebContent && _activeProtectedHost != null)
+                target = KeyboardTarget.ProtectedApplication;
             if (_activeBrowser == null && _windows.Count > 0)
                 _activeBrowser = _windows[_windows.Count - 1];
             _keyboardTarget = target;
@@ -851,7 +967,17 @@ namespace MLOmega.XR.UI
                 RefreshKeyboardPreview();
                 return;
             }
-            _activeBrowser?.SendCharacter(key);
+            if (_keyboardTarget == KeyboardTarget.ProtectedApplication)
+            {
+                XrealSecureSurfaceSpike host = _activeProtectedHost?.Host;
+                if (host != null && host.SendHostedText(key.ToString()))
+                {
+                    _protectedInputBuffers[host] = ProtectedInputBuffer(host) + key;
+                    RefreshKeyboardPreview();
+                }
+            }
+            else
+                _activeBrowser?.SendCharacter(key);
         }
 
         private void ReceiveBackspace()
@@ -863,7 +989,20 @@ namespace MLOmega.XR.UI
                 RefreshKeyboardPreview();
                 return;
             }
-            _activeBrowser?.SendKeyCode(67);
+            if (_keyboardTarget == KeyboardTarget.ProtectedApplication)
+            {
+                XrealSecureSurfaceSpike host = _activeProtectedHost?.Host;
+                if (host != null && host.SendHostedKey(67))
+                {
+                    string current = ProtectedInputBuffer(host);
+                    if (current.Length > 0)
+                        _protectedInputBuffers[host] =
+                            current.Substring(0, current.Length - 1);
+                    RefreshKeyboardPreview();
+                }
+            }
+            else
+                _activeBrowser?.SendKeyCode(67);
         }
 
         private void ReceiveClearAll()
@@ -874,7 +1013,17 @@ namespace MLOmega.XR.UI
                 RefreshKeyboardPreview();
                 return;
             }
-            _activeBrowser?.ClearFocusedInput();
+            if (_keyboardTarget == KeyboardTarget.ProtectedApplication)
+            {
+                XrealSecureSurfaceSpike host = _activeProtectedHost?.Host;
+                if (host != null && host.ClearHostedText())
+                {
+                    _protectedInputBuffers[host] = string.Empty;
+                    RefreshKeyboardPreview();
+                }
+            }
+            else
+                _activeBrowser?.ClearFocusedInput();
         }
 
         private void ReceiveEnter()
@@ -887,7 +1036,10 @@ namespace MLOmega.XR.UI
                 RefreshKeyboardPreview();
                 return;
             }
-            _activeBrowser?.SendKeyCode(66);
+            if (_keyboardTarget == KeyboardTarget.ProtectedApplication)
+                _activeProtectedHost?.Host?.SendHostedKey(66);
+            else
+                _activeBrowser?.SendKeyCode(66);
         }
 
         private static string NormalizeAddress(string raw)
@@ -920,6 +1072,13 @@ namespace MLOmega.XR.UI
             if (string.IsNullOrWhiteSpace(text)) return;
             if (_keyboardTarget == KeyboardTarget.Address)
                 _addressBuffer = text.Trim();
+            else if (_keyboardTarget == KeyboardTarget.ProtectedApplication)
+            {
+                XrealSecureSurfaceSpike host = _activeProtectedHost?.Host;
+                if (host != null && host.SendHostedText(text.Trim()))
+                    _protectedInputBuffers[host] =
+                        ProtectedInputBuffer(host) + text.Trim();
+            }
             else
                 _activeBrowser?.SendText(text.Trim());
             _keyboardPreview.text = "Dictée → " + text.Trim();
@@ -948,11 +1107,36 @@ namespace MLOmega.XR.UI
                 _keyboardPreview.text = string.IsNullOrEmpty(_addressBuffer)
                     ? "Adresse ou recherche"
                     : _addressBuffer;
+            else if (_keyboardTarget == KeyboardTarget.ProtectedApplication)
+            {
+                if (_activeProtectedHost == null)
+                {
+                    _keyboardPreview.text = "Choisis une application";
+                }
+                else
+                {
+                    string typed = ProtectedInputBuffer(_activeProtectedHost.Host);
+                    if (typed.Length > 54)
+                        typed = "…" + typed.Substring(typed.Length - 53);
+                    _keyboardPreview.text = string.IsNullOrEmpty(typed)
+                        ? "Saisie → " + _activeProtectedHost.Label +
+                          (_uppercase ? "  •  MAJ" : string.Empty)
+                        : typed + (_uppercase ? "  •  MAJ" : string.Empty);
+                }
+            }
             else
                 _keyboardPreview.text = _activeBrowser == null
                     ? "Ouvre d’abord une fenêtre Web"
                     : "Saisie → " + _activeBrowser.Title +
                       (_uppercase ? "  •  MAJ" : string.Empty);
+        }
+
+        private string ProtectedInputBuffer(XrealSecureSurfaceSpike host)
+        {
+            if (host == null) return string.Empty;
+            return _protectedInputBuffers.TryGetValue(host, out string value)
+                ? value ?? string.Empty
+                : string.Empty;
         }
 
         private static Image MakeImage(

@@ -1135,3 +1135,60 @@ Le build reproductible du spike requiert d'abord :
 
 Ne pas confondre ce jalon avec une autorisation de modifier Product, PhoneOnly,
 Atelier ou les runners Local/PRO : l'intégration reste limitée au package Lab.
+
+## 13. Jalon Browser Lab multi-app validé — v8 (3 août 2026)
+
+La v8 est désormais la meilleure référence matérielle du Browser Lab et ne doit
+pas être écrasée par un essai ultérieur. Elle a été validée sur S24 + XREAL One
+Pro + Eye avec les applications réelles :
+
+- Google, YouTube, Reddit et Spotify dans des fenêtres spatiales indépendantes ;
+- Google et YouTube ouverts simultanément sans remplacement de fenêtre ;
+- curseur regard, pinch, scroll, clavier XR et saisie dans les applications ;
+- Netflix et Prime Video : navigation 3D, passage en cinéma système protégé,
+  lecture réelle, dock cinéma et retour propre au compositeur 3D ;
+- retour Prime vers MLOmega validé sans écran noir ;
+- aucune régression observée sur les poignées, le dock, les gestes Eye/MediaPipe,
+  les fenêtres Atelier ou la restauration de session.
+
+Artefact figé localement (le dossier `build/` reste volontairement ignoré par
+Git) :
+
+```text
+artifact = apps/xr-mobile/build/android/mlomega-xreal-world-lab-multi-v8-spotify-prime.apk
+package  = com.mlomega.xr.worldatelierlab
+size     = 244505579 octets
+sha256   = 51575138D20487854EC7CB9B9546BC317CD1E23E9D7894A431C9BD3DE63BA7BF
+```
+
+Résolution : les surfaces Android spatiales sont créées en 1920×1080 et le mode
+cinéma utilise les métriques physiques 1920×1080. YouTube a proposé et lu le
+profil 1080p pendant le gate matériel. Netflix et Prime conservent néanmoins
+leur adaptation fournisseur : « sortie 1080p » ne signifie pas que leur bitrate
+réseau restera constamment maximal.
+
+Le petit spinner Prime observé au centre lors du tout premier lancement était
+transitoire : la vidéo jouait normalement, puis le spinner a disparu au lancement
+suivant sans modification de code. Ne pas altérer le transport cinéma pour ce
+symptôme cosmétique tant qu'il ne se reproduit pas durablement.
+
+Le lancement multi-app dépend du serveur Shizuku actif. Après un redémarrage du
+S24, le réactiver avant le Lab ; un écran noir simultané sur plusieurs apps peut
+simplement signifier que Shizuku ne tourne plus. Le correctif v8 ne change pas la
+route générique validée : il épingle uniquement les activités officielles
+ambiguës de Spotify (`com.spotify.music/.MainActivity`) et Prime
+(`com.amazon.avod.thirdpartyclient/.LauncherActivity`).
+
+Build reproductible :
+
+```powershell
+$unity = "C:\Program Files\Unity\Hub\Editor\6000.0.23f1\Editor\Unity.exe"
+$project = (Resolve-Path "apps\xr-mobile").Path
+& $unity -batchmode -quit -projectPath $project `
+  -executeMethod MLOmega.XR.Editor.AndroidBuildXreal.BuildCreatorLabApk `
+  -logFile (Join-Path $project "world-browser-lab-build.log")
+```
+
+Périmètre impératif : cette pile reste Lab-only. Ne pas porter ces changements
+dans Product, Atelier, PhoneOnly, Brain2, Local ou PRO sans un chantier et un gate
+de non-régression séparés.

@@ -36,7 +36,7 @@ import java.util.concurrent.TimeUnit;
  * It runs as uid=shell, creates a trusted VirtualDisplay backed directly by the
  * XREAL protected Surface, and launches packaged Android applications there.
  */
-public final class TrustedDisplayUserService extends Binder {
+public class TrustedDisplayUserService extends Binder {
     static final String DESCRIPTOR =
             "com.mlomega.xr.securesurface.ITrustedDisplayUserService";
     static final int TRANSACTION_CREATE = IBinder.FIRST_CALL_TRANSACTION;
@@ -62,6 +62,12 @@ public final class TrustedDisplayUserService extends Binder {
             IBinder.FIRST_CALL_TRANSACTION + 13;
     static final int TRANSACTION_STOP_PACKAGE =
             IBinder.FIRST_CALL_TRANSACTION + 14;
+    static final int TRANSACTION_INPUT_TEXT =
+            IBinder.FIRST_CALL_TRANSACTION + 15;
+    static final int TRANSACTION_INPUT_KEY =
+            IBinder.FIRST_CALL_TRANSACTION + 16;
+    static final int TRANSACTION_CLEAR_TEXT =
+            IBinder.FIRST_CALL_TRANSACTION + 17;
 
     private static final String TAG = "MLOmegaTrustedVD";
     private Context suppliedContext;
@@ -138,6 +144,7 @@ public final class TrustedDisplayUserService extends Binder {
             if (code == TRANSACTION_RELEASE) {
                 releaseDisplay();
                 reply.writeNoException();
+                terminateAfterReply();
                 return true;
             }
             if (code == TRANSACTION_POINTER) {
@@ -245,6 +252,29 @@ public final class TrustedDisplayUserService extends Binder {
                 boolean stopped = forceStopPackage(packageName);
                 reply.writeNoException();
                 reply.writeInt(stopped ? 1 : 0);
+                return true;
+            }
+            if (code == TRANSACTION_INPUT_TEXT) {
+                int displayId = data.readInt();
+                String text = data.readString();
+                boolean inserted = inputText(displayId, text);
+                reply.writeNoException();
+                reply.writeInt(inserted ? 1 : 0);
+                return true;
+            }
+            if (code == TRANSACTION_INPUT_KEY) {
+                int displayId = data.readInt();
+                int keyCode = data.readInt();
+                boolean inserted = inputKey(displayId, keyCode);
+                reply.writeNoException();
+                reply.writeInt(inserted ? 1 : 0);
+                return true;
+            }
+            if (code == TRANSACTION_CLEAR_TEXT) {
+                int displayId = data.readInt();
+                boolean cleared = clearText(displayId);
+                reply.writeNoException();
+                reply.writeInt(cleared ? 1 : 0);
                 return true;
             }
             return super.onTransact(code, data, reply, flags);
@@ -1140,14 +1170,33 @@ public final class TrustedDisplayUserService extends Binder {
             // case: its real entry point is SearchActivity. MAIN/LAUNCHER keeps
             // the transport package-agnostic and also covers Spotify and future
             // applications without hard-coding their activity class names.
-            String launcherResult = runActivityManagerStart(
-                    "/system/bin/am",
-                    "start",
-                    "--display", String.valueOf(displayId),
-                    "-f", "0x18000000",
-                    "-a", "android.intent.action.MAIN",
-                    "-c", "android.intent.category.LAUNCHER",
-                    "-p", packageName);
+            // These two applications expose several MAIN activities on the
+            // validated S24. Android 16 rejects the package-only launcher
+            // intent from a shell UserService, although the APK is installed.
+            // Pin only their official launcher components; every other app
+            // keeps the previously validated generic route unchanged.
+            String explicitLauncher = null;
+            if ("com.spotify.music".equals(packageName)) {
+                explicitLauncher = "com.spotify.music/.MainActivity";
+            } else if ("com.amazon.avod.thirdpartyclient".equals(packageName)) {
+                explicitLauncher =
+                        "com.amazon.avod.thirdpartyclient/.LauncherActivity";
+            }
+            String launcherResult = explicitLauncher == null
+                    ? runActivityManagerStart(
+                            "/system/bin/am",
+                            "start",
+                            "--display", String.valueOf(displayId),
+                            "-f", "0x18000000",
+                            "-a", "android.intent.action.MAIN",
+                            "-c", "android.intent.category.LAUNCHER",
+                            "-p", packageName)
+                    : runActivityManagerStart(
+                            "/system/bin/am",
+                            "start",
+                            "--display", String.valueOf(displayId),
+                            "-f", "0x18000000",
+                            "-n", explicitLauncher);
             if (activityLaunchFailed(launcherResult)) {
                 throw new IllegalStateException(
                         "application launch failed package=" + packageName
@@ -1359,6 +1408,80 @@ public final class TrustedDisplayUserService extends Binder {
             Log.e(TAG, "keyboard/search failed display=" + displayId, error);
             return false;
         }
+    }
+
+    private boolean inputText(int displayId, String text) {
+        if (displayId < 0 || text == null || text.isEmpty()) return false;
+        try {
+            // Android's input command interprets %s as a literal space. Using
+            // ProcessBuilder keeps the text out of a shell and avoids command
+            // injection while still targeting the private VirtualDisplay.
+            String encoded = text.replace("%", "%%").replace(" ", "%s");
+            ProcessBuilder builder = new ProcessBuilder(
+                    "/system/bin/input",
+                    "-d", String.valueOf(displayId),
+                    "text", encoded);
+            builder.redirectErrorStream(true);
+            java.lang.Process process = builder.start();
+            int exit = process.waitFor();
+            Log.i(TAG, "input text display=" + displayId + " exit=" + exit
+                    + " chars=" + text.length());
+            return exit == 0;
+        } catch (Throwable error) {
+            Log.e(TAG, "input text failed display=" + displayId, error);
+            return false;
+        }
+    }
+
+    private boolean inputKey(int displayId, int keyCode) {
+        if (displayId < 0 || keyCode <= 0) return false;
+        try {
+            ProcessBuilder builder = new ProcessBuilder(
+                    "/system/bin/input",
+                    "-d", String.valueOf(displayId),
+                    "keyevent", String.valueOf(keyCode));
+            builder.redirectErrorStream(true);
+            java.lang.Process process = builder.start();
+            int exit = process.waitFor();
+            Log.i(TAG, "input key display=" + displayId + " key=" + keyCode
+                    + " exit=" + exit);
+            return exit == 0;
+        } catch (Throwable error) {
+            Log.e(TAG, "input key failed display=" + displayId, error);
+            return false;
+        }
+    }
+
+    private boolean clearText(int displayId) {
+        if (displayId < 0) return false;
+        try {
+            java.lang.Process selectAll = new ProcessBuilder(
+                    "/system/bin/input",
+                    "-d", String.valueOf(displayId),
+                    "keycombination", "KEYCODE_CTRL_LEFT", "KEYCODE_A")
+                    .redirectErrorStream(true)
+                    .start();
+            if (selectAll.waitFor() != 0) return false;
+            java.lang.Process delete = new ProcessBuilder(
+                    "/system/bin/input",
+                    "-d", String.valueOf(displayId),
+                    "keyevent", "KEYCODE_DEL")
+                    .redirectErrorStream(true)
+                    .start();
+            return delete.waitFor() == 0;
+        } catch (Throwable error) {
+            Log.e(TAG, "clear text failed display=" + displayId, error);
+            return false;
+        }
+    }
+
+    private void terminateAfterReply() {
+        final int pid = Process.myPid();
+        new Thread(() -> {
+            SystemClock.sleep(180L);
+            Log.i(TAG, "USER_SERVICE_EXIT_RECEIPT pid=" + pid);
+            Process.killProcess(pid);
+        }, "mlomega-user-service-exit").start();
     }
 
     private void releaseDisplay() {

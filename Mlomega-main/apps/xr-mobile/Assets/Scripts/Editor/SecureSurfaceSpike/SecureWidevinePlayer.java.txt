@@ -502,6 +502,56 @@ public final class SecureWidevinePlayer {
         }
     }
 
+    public static boolean inputText(String text) {
+        return transactHostedInput(
+                TrustedDisplayUserService.TRANSACTION_INPUT_TEXT,
+                text,
+                0);
+    }
+
+    public static boolean inputKey(int keyCode) {
+        return transactHostedInput(
+                TrustedDisplayUserService.TRANSACTION_INPUT_KEY,
+                null,
+                keyCode);
+    }
+
+    public static boolean clearText() {
+        return transactHostedInput(
+                TrustedDisplayUserService.TRANSACTION_CLEAR_TEXT,
+                null,
+                0);
+    }
+
+    private static boolean transactHostedInput(
+            int transaction,
+            String text,
+            int keyCode) {
+        IBinder binder = trustedService;
+        int displayId = activeInputDisplayId();
+        if (binder == null || !binder.pingBinder() || displayId < 0)
+            return false;
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TrustedDisplayUserService.DESCRIPTOR);
+            data.writeInt(displayId);
+            if (transaction == TrustedDisplayUserService.TRANSACTION_INPUT_TEXT)
+                data.writeString(text);
+            else
+                data.writeInt(keyCode);
+            binder.transact(transaction, data, reply, 0);
+            reply.readException();
+            return reply.readInt() != 0;
+        } catch (Throwable error) {
+            Log.e(TAG, "hosted input failed transaction=" + transaction, error);
+            return false;
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
     public static boolean launchApp(String packageName, String uri) {
         IBinder binder = trustedService;
         int displayId = trustedDisplayId;
