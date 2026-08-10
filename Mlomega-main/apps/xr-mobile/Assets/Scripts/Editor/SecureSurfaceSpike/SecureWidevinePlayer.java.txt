@@ -35,6 +35,9 @@ import android.widget.TextView;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
 import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
@@ -80,6 +83,7 @@ public final class SecureWidevinePlayer {
     private static int physicalDisplayId = -1;
     private static boolean physicalTaskRequested;
     private static volatile boolean systemCinemaActive;
+    private static volatile boolean systemDesktopActive;
     private static volatile boolean cinemaDisplaySwitchPending;
     private static int previousXrealDisplayMode = -1;
     private static volatile String activePackageName = "com.google.android.youtube";
@@ -89,9 +93,13 @@ public final class SecureWidevinePlayer {
     private static CinemaDockPresentation cinemaDockPresentation;
     private static CinemaDockView cinemaDockView;
     private static int cinemaDockDownIndex = -1;
+    private static DesktopDockPresentation desktopDockPresentation;
+    private static DesktopDockView desktopDockView;
+    private static int desktopDockDownIndex = -1;
     private static int cinemaProjectionPreset;
     private static int cinemaBrightnessDirection = 1;
     private static int cinemaEcDirection = 1;
+    private static volatile boolean runtimePreflightOnly;
 
     // PortalPad's Samsung/Android 16 proven flag word. Do not add SECURE here:
     // uid=shell lacks CAPTURE_SECURE_VIDEO_OUTPUT on stock Android. The XREAL
@@ -112,6 +120,10 @@ public final class SecureWidevinePlayer {
             }
             trustedService = binder;
             trustedServiceBound = true;
+            if (runtimePreflightOnly) {
+                finishRuntimePreflight();
+                return;
+            }
             // Validated v14 path: applications first live inside the protected,
             // world-locked Unity window. Commercial playback can later retarget
             // the physical panel without changing this navigation path.
@@ -127,6 +139,95 @@ public final class SecureWidevinePlayer {
     };
 
     private SecureWidevinePlayer() {}
+
+    /**
+     * Starts the shell-side runtime once at Lab boot. Besides proving Shizuku is
+     * alive, constructing the fresh UserService reaps abandoned MLOmega sibling
+     * services and their VirtualDisplays from interrupted/old APK sessions.
+     * No Android application or XREAL display mode is changed here.
+     */
+    public static void prepareRuntime(Activity activity) {
+        if (activity == null) return;
+        activity.runOnUiThread(() -> {
+            try {
+                if (!Shizuku.pingBinder()) {
+                    status = "SHIZUKU: demarrage requis apres reboot";
+                    Log.w(TAG, "RUNTIME_PREFLIGHT " + status);
+                    showShortToast(activity, status);
+                    return;
+                }
+                if (Shizuku.checkSelfPermission()
+                        != PackageManager.PERMISSION_GRANTED) {
+                    status = "SHIZUKU: autorisation requise";
+                    Shizuku.requestPermission(9107);
+                    showShortToast(activity, status);
+                    return;
+                }
+                if (trustedServiceBound || trustedServiceArgs != null) return;
+                pendingActivity = activity;
+                pendingSurface = null;
+                runtimePreflightOnly = true;
+                trustedServiceArgs = new Shizuku.UserServiceArgs(
+                        new ComponentName(
+                                activity.getPackageName(),
+                                TrustedDisplayUserService.class.getName()))
+                        .daemon(false)
+                        .processNameSuffix("mlomega_trusted")
+                        .debuggable(false)
+                        .version(12);
+                Shizuku.bindUserService(trustedServiceArgs, TRUSTED_CONNECTION);
+            } catch (Throwable error) {
+                runtimePreflightOnly = false;
+                status = "PREFLIGHT EXCEPTION: " + error.getClass().getSimpleName();
+                Log.e(TAG, status, error);
+            }
+        });
+    }
+
+    private static void finishRuntimePreflight() {
+        final IBinder binder = trustedService;
+        final Shizuku.UserServiceArgs args = trustedServiceArgs;
+        new Thread(() -> {
+            String receipt = "FAIL:no_service";
+            Parcel data = Parcel.obtain();
+            Parcel reply = Parcel.obtain();
+            try {
+                data.writeInterfaceToken(TrustedDisplayUserService.DESCRIPTOR);
+                binder.transact(
+                        TrustedDisplayUserService.TRANSACTION_RUNTIME_PREFLIGHT,
+                        data,
+                        reply,
+                        0);
+                reply.readException();
+                receipt = reply.readString();
+            } catch (Throwable error) {
+                Log.e(TAG, "runtime preflight transaction failed", error);
+            } finally {
+                data.recycle();
+                reply.recycle();
+            }
+            Log.i(TAG, "RUNTIME_PREFLIGHT " + receipt);
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                try {
+                    if (args != null)
+                        Shizuku.unbindUserService(args, TRUSTED_CONNECTION, true);
+                } catch (Throwable error) {
+                    Log.w(TAG, "runtime preflight unbind failed", error);
+                }
+                trustedService = null;
+                trustedServiceBound = false;
+                trustedServiceArgs = null;
+                runtimePreflightOnly = false;
+            }, 220L);
+        }, "mlomega-runtime-preflight").start();
+    }
+
+    private static void showShortToast(Activity activity, String message) {
+        try {
+            android.widget.Toast.makeText(
+                    activity, message, android.widget.Toast.LENGTH_LONG).show();
+        } catch (Throwable ignored) {}
+    }
 
     public static void start(
             Activity activity,
@@ -195,6 +296,46 @@ public final class SecureWidevinePlayer {
         return status;
     }
 
+    public static boolean resizeApplicationDisplay(
+            int width,
+            int height,
+            int densityDpi) {
+        IBinder binder = trustedService;
+        if (binder == null || !binder.pingBinder() || trustedDisplayId < 0)
+            return false;
+        int safeWidth = Math.max(640, Math.min(1920, width));
+        int safeHeight = Math.max(360, Math.min(1600, height));
+        int safeDpi = Math.max(160, densityDpi);
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TrustedDisplayUserService.DESCRIPTOR);
+            data.writeInt(safeWidth);
+            data.writeInt(safeHeight);
+            data.writeInt(safeDpi);
+            binder.transact(
+                    TrustedDisplayUserService.TRANSACTION_RESIZE_DISPLAY,
+                    data,
+                    reply,
+                    0);
+            reply.readException();
+            boolean resized = reply.readInt() != 0;
+            if (resized) {
+                pendingWidth = safeWidth;
+                pendingHeight = safeHeight;
+                pendingDensityDpi = safeDpi;
+                status = "APP DISPLAY " + safeWidth + "x" + safeHeight;
+            }
+            return resized;
+        } catch (Throwable error) {
+            Log.e(TAG, "app display resize failed", error);
+            return false;
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
     /**
      * Launches the real YouTube Android application on a secure/trusted display
      * created by a minimal Shizuku UserService. Its independent display/focus
@@ -260,7 +401,7 @@ public final class SecureWidevinePlayer {
                         .daemon(false)
                         .processNameSuffix("mlomega_trusted")
                         .debuggable(false)
-                        .version(11);
+                        .version(12);
                 Shizuku.bindUserService(trustedServiceArgs, TRUSTED_CONNECTION);
             } catch (Throwable error) {
                 status = "YOUTUBE EXCEPTION: " + error.getClass().getSimpleName()
@@ -377,6 +518,14 @@ public final class SecureWidevinePlayer {
 
     public static boolean pointerDown(float x, float y) {
         if (systemCinemaActive) {
+            if (systemDesktopActive) {
+                DesktopDockView dock = desktopDockView;
+                desktopDockDownIndex = dock == null ? -1 : dock.hitTest(x, y);
+                if (dock != null) dock.setPressed(desktopDockDownIndex);
+                if (desktopDockDownIndex >= 0) return true;
+                pointerDownTime = SystemClock.uptimeMillis();
+                return sendPointer(0, x, y, pointerDownTime);
+            }
             CinemaDockView dock = cinemaDockView;
             cinemaDockDownIndex = dock == null ? -1 : dock.hitTest(x, y);
             if (dock != null) dock.setPressed(cinemaDockDownIndex);
@@ -404,6 +553,13 @@ public final class SecureWidevinePlayer {
 
     public static boolean pointerMove(float x, float y) {
         if (systemCinemaActive) {
+            if (systemDesktopActive) {
+                DesktopDockView dock = desktopDockView;
+                if (dock != null) dock.updatePointer(x, y);
+                if (desktopDockDownIndex >= 0) return true;
+                return pointerDownTime > 0L &&
+                        sendPointer(2, x, y, pointerDownTime);
+            }
             CinemaDockView dock = cinemaDockView;
             if (dock != null) dock.updatePointer(x, y);
             return cinemaDockDownIndex >= 0;
@@ -415,6 +571,21 @@ public final class SecureWidevinePlayer {
 
     public static boolean pointerUp(float x, float y) {
         if (systemCinemaActive) {
+            if (systemDesktopActive) {
+                DesktopDockView dock = desktopDockView;
+                int released = dock == null ? -1 : dock.hitTest(x, y);
+                int action = released == desktopDockDownIndex ? released : -1;
+                desktopDockDownIndex = -1;
+                if (dock != null) dock.setPressed(-1);
+                if (action >= 0) {
+                    pointerDownTime = 0L;
+                    performDesktopDockAction(action);
+                    return true;
+                }
+                long down = pointerDownTime;
+                pointerDownTime = 0L;
+                return down > 0L && sendPointer(1, x, y, down);
+            }
             CinemaDockView dock = cinemaDockView;
             int released = dock == null ? -1 : dock.hitTest(x, y);
             int action = released == cinemaDockDownIndex ? released : -1;
@@ -435,8 +606,33 @@ public final class SecureWidevinePlayer {
         return sent;
     }
 
+    public static boolean pointerCancel(float x, float y) {
+        if (systemCinemaActive) {
+            if (!systemDesktopActive) return false;
+            desktopDockDownIndex = -1;
+            DesktopDockView dock = desktopDockView;
+            if (dock != null) dock.setPressed(-1);
+            long desktopDown = pointerDownTime;
+            pointerDownTime = 0L;
+            return desktopDown > 0L && sendPointer(3, x, y, desktopDown);
+        }
+        if (cinemaDisplaySwitchPending) return false;
+        long down = pointerDownTime;
+        pointerDownTime = 0L;
+        if (down <= 0L) return false;
+        boolean sent = sendPointer(3, x, y, down);
+        updateCursor(x, y, false);
+        setCursorPresentationVisible(true, false);
+        return sent;
+    }
+
     public static boolean pointerHover(float x, float y) {
         if (systemCinemaActive) {
+            if (systemDesktopActive) {
+                DesktopDockView dock = desktopDockView;
+                if (dock != null) dock.updatePointer(x, y);
+                return true;
+            }
             CinemaDockView dock = cinemaDockView;
             if (dock != null) dock.updatePointer(x, y);
             return true;
@@ -651,6 +847,14 @@ public final class SecureWidevinePlayer {
         }
     }
 
+    public static boolean recenterCinemaProjection() {
+        cinemaProjectionPreset = 0;
+        String result = setCinemaProjection(0);
+        return result != null && (result.startsWith("OK:")
+                || result.startsWith("STARTED:")
+                || result.startsWith("ALREADY:"));
+    }
+
     /** Explicit fallback exposed to the Unity "TV" handle. Automatic entry is
      * attempted after each confirmed pinch while a protected provider is open. */
     public static void enterCinemaMode() {
@@ -659,6 +863,18 @@ public final class SecureWidevinePlayer {
             if (generation != cinemaProbeGeneration) return;
             requestSystemCinema(true);
         }, "mlomega-cinema-force").start();
+    }
+
+    /** Dedicated interactive desktop handoff. It shares only the validated XREAL
+     * display-mode primitive with cinema; it has no playback preflight, no media
+     * controls and never changes Unity's hand/head interaction policy. */
+    public static boolean enterDesktopMode() {
+        final int generation = ++cinemaProbeGeneration;
+        new Thread(() -> {
+            if (generation != cinemaProbeGeneration) return;
+            requestSystemDesktop();
+        }, "mlomega-desktop-force").start();
+        return true;
     }
 
     public static void exitCinemaMode() {
@@ -687,6 +903,107 @@ public final class SecureWidevinePlayer {
                 }, "mlomega-cinema-probe").start(), delays[attempt]);
     }
 
+    /**
+     * Once XREAL accepts the 3D->2D switch, poll the physical panel quickly
+     * instead of falling back to the progressively slower playback probe. The
+     * unavoidable system-mirror transition is therefore kept to the shortest
+     * hardware-ready interval.
+     */
+    private static void scheduleCinemaHandoffAfterDisplaySwitch(
+            final int generation,
+            final int attempt) {
+        if (attempt >= 30 || systemCinemaActive
+                || generation != cinemaProbeGeneration) return;
+        new Handler(Looper.getMainLooper()).postDelayed(() ->
+                new Thread(() -> {
+                    if (systemCinemaActive || generation != cinemaProbeGeneration)
+                        return;
+                    boolean started = requestSystemCinema(false);
+                    if (!started && generation == cinemaProbeGeneration) {
+                        scheduleCinemaHandoffAfterDisplaySwitch(
+                                generation, attempt + 1);
+                    }
+                }, "mlomega-cinema-display-ready").start(), 120L);
+    }
+
+    private static void scheduleDesktopHandoffAfterDisplaySwitch(
+            final int generation,
+            final int attempt) {
+        if (attempt >= 30 || systemCinemaActive
+                || generation != cinemaProbeGeneration) return;
+        new Handler(Looper.getMainLooper()).postDelayed(() ->
+                new Thread(() -> {
+                    if (systemCinemaActive || generation != cinemaProbeGeneration)
+                        return;
+                    boolean started = requestSystemDesktop();
+                    if (!started && generation == cinemaProbeGeneration) {
+                        scheduleDesktopHandoffAfterDisplaySwitch(
+                                generation, attempt + 1);
+                    }
+                }, "mlomega-desktop-display-ready").start(), 120L);
+    }
+
+    private static boolean requestSystemDesktop() {
+        IBinder binder = trustedService;
+        int virtualId = trustedDisplayId;
+        Activity activity = pendingActivity;
+        if (binder == null || !binder.pingBinder()
+                || virtualId < 0 || activity == null) return false;
+        setCursorPresentationVisible(false, true);
+        activity.runOnUiThread(() -> showCinemaPhoneBlackCover(activity));
+        if (!ensureDesktopDisplayMode2D(activity)) {
+            return false;
+        }
+        int glassesId = resolveGlassesDisplayId(activity);
+        if (glassesId < 0) {
+            status = "BUREAU: ecran XREAL introuvable";
+            return false;
+        }
+
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TrustedDisplayUserService.DESCRIPTOR);
+            data.writeInt(glassesId);
+            data.writeInt(virtualId);
+            data.writeString(activePackageName);
+            data.writeInt(1);
+            binder.transact(
+                    TrustedDisplayUserService.TRANSACTION_MAYBE_START_SYSTEM_MIRROR,
+                    data,
+                    reply,
+                    0);
+            reply.readException();
+            String result = reply.readString();
+            Log.i(TAG, "desktop handoff -> " + result);
+            if (result == null || (!result.startsWith("STARTED:")
+                    && !result.startsWith("ALREADY:"))) {
+                status = "BUREAU: " + result;
+                activity.runOnUiThread(() -> showCinemaPhoneOverlay(activity));
+                return false;
+            }
+
+            systemDesktopActive = true;
+            systemCinemaActive = true;
+            cinemaPlaybackArmed = false;
+            cinemaDisplaySwitchPending = false;
+            physicalDisplayId = glassesId;
+            status = "BUREAU SYSTEME: " + providerLabel(activePackageName);
+            setCursorPresentationVisible(false, true);
+            showDesktopDock(virtualId, 8);
+            activity.runOnUiThread(() -> showCinemaPhoneOverlay(activity));
+            return true;
+        } catch (Throwable error) {
+            status = "BUREAU EXCEPTION: " + error.getClass().getSimpleName();
+            Log.e(TAG, "desktop handoff failed", error);
+            activity.runOnUiThread(() -> showCinemaPhoneOverlay(activity));
+            return false;
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
     private static boolean requestSystemCinema(boolean force) {
         IBinder binder = trustedService;
         int virtualId = trustedDisplayId;
@@ -712,11 +1029,15 @@ public final class SecureWidevinePlayer {
         // The protected panel handoff below then replaces that transition card
         // with Netflix while the phone keeps the DRM-safe return control.
         setCursorPresentationVisible(false, true);
-        activity.runOnUiThread(() -> showCinemaPhoneOverlay(activity));
-        if (!ensureCinemaDisplayMode2D(activity)) return false;
+        activity.runOnUiThread(() -> showCinemaPhoneBlackCover(activity));
+        if (!ensureCinemaDisplayMode2D(activity)) {
+            activity.runOnUiThread(() -> showCinemaPhoneOverlay(activity));
+            return false;
+        }
         int glassesId = resolveGlassesDisplayId(activity);
         if (glassesId < 0) {
             status = "CINEMA: ecran XREAL introuvable";
+            activity.runOnUiThread(() -> showCinemaPhoneOverlay(activity));
             return false;
         }
 
@@ -739,6 +1060,7 @@ public final class SecureWidevinePlayer {
             if (result == null || (!result.startsWith("STARTED:")
                     && !result.startsWith("ALREADY:"))) {
                 if (force) status = "CINEMA: " + result;
+                activity.runOnUiThread(() -> showCinemaPhoneOverlay(activity));
                 return false;
             }
 
@@ -751,10 +1073,12 @@ public final class SecureWidevinePlayer {
             // the output as capture. Remove it for the whole DRM handoff.
             setCursorPresentationVisible(false, true);
             showCinemaDock(virtualId, 8);
+            activity.runOnUiThread(() -> showCinemaPhoneOverlay(activity));
             return true;
         } catch (Throwable error) {
             status = "CINEMA EXCEPTION: " + error.getClass().getSimpleName();
             Log.e(TAG, "cinema handoff failed", error);
+            activity.runOnUiThread(() -> showCinemaPhoneOverlay(activity));
             return false;
         } finally {
             data.recycle();
@@ -791,7 +1115,16 @@ public final class SecureWidevinePlayer {
 
     private static void stopSystemCinema() {
         cinemaPlaybackArmed = false;
+        // While the panel is still in 2D it mirrors the phone. Replace the
+        // interactive return card with a neutral black cover before stopping
+        // the system mirror; a delay alone only exposed that phone UI longer.
+        Activity transitionActivity = pendingActivity;
+        if (transitionActivity != null) {
+            transitionActivity.runOnUiThread(
+                    SecureWidevinePlayer::coverCinemaPhoneOverlayForReturn);
+        }
         dismissCinemaDock();
+        dismissDesktopDock();
         IBinder binder = trustedService;
         String result = "SKIP:no_service";
         if (binder != null && binder.pingBinder()) {
@@ -857,26 +1190,68 @@ public final class SecureWidevinePlayer {
             status = "CINEMA: bascule 2D refusee";
         } else {
             status = "CINEMA: passage 1080p 2D";
+            scheduleCinemaHandoffAfterDisplaySwitch(
+                    cinemaProbeGeneration, 0);
+        }
+        return false;
+    }
+
+    private static boolean ensureDesktopDisplayMode2D(Activity activity) {
+        int mode = XrealLensControlBridge.getDisplayMode();
+        if (mode == 1) {
+            cinemaDisplaySwitchPending = false;
+            return hasPhysicalGlassesDisplay2D(activity);
+        }
+        if (cinemaDisplaySwitchPending) return false;
+        if (mode < 0) {
+            status = "BUREAU: mode XREAL illisible";
+            Log.w(TAG, status);
+            return false;
+        }
+        previousXrealDisplayMode = mode;
+        cinemaDisplaySwitchPending = true;
+        setCursorPresentationVisible(false, true);
+        prepareXrealDisplaySwitch();
+        boolean accepted = XrealLensControlBridge.setDisplayMode(1);
+        Log.i(TAG, "desktop 2D requested previous=" + mode
+                + " accepted=" + accepted);
+        if (!accepted) {
+            cinemaDisplaySwitchPending = false;
+            setCursorPresentationVisible(true, false);
+            status = "BUREAU: bascule 2D refusee";
+        } else {
+            status = "BUREAU: passage 1080p 2D";
+            scheduleDesktopHandoffAfterDisplaySwitch(
+                    cinemaProbeGeneration, 0);
         }
         return false;
     }
 
     private static void prepareXrealDisplaySwitch() {
+        // XREAL 3.1 assumes NRFakeActivity is alive. After a long Unity session
+        // One UI may already have destroyed it: prepareDynamicSwitchDP then
+        // throws, but broadcastDynamicSwitchDP is still the operation that lets
+        // the hardware expose its real 1920x1080 2D panel. Never skip that
+        // broadcast because the optional fake-activity move failed.
         try {
             Class<?> app = Class.forName("ai.nreal.activitylife.NRXRApp");
             java.lang.reflect.Method prepare = app.getDeclaredMethod(
                     "prepareDynamicSwitchDP");
             prepare.setAccessible(true);
             prepare.invoke(null);
+            Log.i(TAG, "XREAL dynamic DP fake-activity prepared");
+        } catch (Throwable error) {
+            Log.w(TAG, "XREAL fake-activity DP preparation unavailable", error);
+        }
+        try {
+            Class<?> app = Class.forName("ai.nreal.activitylife.NRXRApp");
             java.lang.reflect.Method broadcast = app.getDeclaredMethod(
                     "broadcastDynamicSwitchDP");
             broadcast.setAccessible(true);
             broadcast.invoke(null);
-            Log.i(TAG, "XREAL dynamic DP switch prepared");
+            Log.i(TAG, "XREAL dynamic DP broadcast sent");
         } catch (Throwable error) {
-            // The hardware switch can still succeed; retain an explicit trace so
-            // a lifecycle failure is distinguishable from a mode failure.
-            Log.w(TAG, "XREAL dynamic DP preparation unavailable", error);
+            Log.w(TAG, "XREAL dynamic DP broadcast unavailable", error);
         }
     }
 
@@ -904,19 +1279,24 @@ public final class SecureWidevinePlayer {
 
     private static void finishCinemaReturn(Activity activity) {
         systemCinemaActive = false;
+        systemDesktopActive = false;
         cinemaPlaybackArmed = false;
         cinemaDisplaySwitchPending = false;
         physicalDisplayId = -1;
         previousXrealDisplayMode = -1;
         status = "MLOMEGA 3D: session restauree";
         if (activity != null) {
-            removeCinemaPhoneOverlay();
-            relaunchXrealActivity(activity);
+            activity.runOnUiThread(() -> relaunchXrealActivity(activity));
             new Handler(Looper.getMainLooper()).postDelayed(
                     () -> {
                         notifyUnityCinemaReturned();
                         setCursorPresentationVisible(true, false);
                     }, 1200L);
+            // Once Unity has recreated the XREAL quad, the physical panel no
+            // longer mirrors display 0. Only then remove the phone-side cover.
+            new Handler(Looper.getMainLooper()).postDelayed(
+                    SecureWidevinePlayer::removeCinemaPhoneOverlay,
+                    2800L);
         }
     }
 
@@ -934,6 +1314,18 @@ public final class SecureWidevinePlayer {
         } catch (Throwable error) {
             Log.e(TAG, "Unity cinema-return notification failed", error);
         }
+    }
+
+    private static void requestCinemaGlassesRecenter() {
+        new Thread(() -> {
+            try {
+                String result =
+                        com.mlomega.xr.lens.XrealLensControlBridge.recenterGlasses();
+                Log.i(TAG, "cinema GlassesControl recenter -> " + result);
+            } catch (Throwable error) {
+                Log.e(TAG, "cinema GlassesControl recenter failed", error);
+            }
+        }, "mlomega-cinema-recenter").start();
     }
 
     private static void relaunchXrealActivity(Activity activity) {
@@ -1085,12 +1477,31 @@ public final class SecureWidevinePlayer {
         cinemaPhoneOverlay = root;
     }
 
+    private static void showCinemaPhoneBlackCover(Activity activity) {
+        removeCinemaPhoneOverlay();
+        FrameLayout root = new FrameLayout(activity);
+        root.setBackgroundColor(Color.BLACK);
+        activity.addContentView(root, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        cinemaPhoneOverlay = root;
+    }
+
     private static void removeCinemaPhoneOverlay() {
         View overlay = cinemaPhoneOverlay;
         cinemaPhoneOverlay = null;
         if (overlay == null) return;
         if (overlay.getParent() instanceof ViewGroup) {
             ((ViewGroup) overlay.getParent()).removeView(overlay);
+        }
+    }
+
+    private static void coverCinemaPhoneOverlayForReturn() {
+        View overlay = cinemaPhoneOverlay;
+        if (overlay == null) return;
+        overlay.setBackgroundColor(Color.BLACK);
+        if (overlay instanceof ViewGroup) {
+            ((ViewGroup) overlay).removeAllViews();
         }
     }
 
@@ -1128,34 +1539,136 @@ public final class SecureWidevinePlayer {
         }
     }
 
-    private static void performCinemaDockAction(int index) {
-        Log.i(TAG, "cinema dock action=" + index);
+    private static void showDesktopDock(int displayId, int retries) {
+        Activity activity = pendingActivity;
+        if (activity == null || !systemDesktopActive) return;
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            if (!systemDesktopActive) return;
+            try {
+                DisplayManager manager = (DisplayManager) activity.getSystemService(
+                        Context.DISPLAY_SERVICE);
+                Display display = manager == null ? null : manager.getDisplay(displayId);
+                if (display == null) {
+                    if (retries > 0) showDesktopDock(displayId, retries - 1);
+                    return;
+                }
+                dismissDesktopDock();
+                desktopDockPresentation = new DesktopDockPresentation(activity, display);
+                desktopDockPresentation.show();
+                desktopDockView = desktopDockPresentation.dock;
+                Log.i(TAG, "desktop dock ready display=" + displayId);
+            } catch (Throwable error) {
+                Log.e(TAG, "desktop dock failed display=" + displayId, error);
+            }
+        }, retries == 8 ? 250L : 180L);
+    }
+
+    private static void dismissDesktopDock() {
+        DesktopDockPresentation presentation = desktopDockPresentation;
+        desktopDockPresentation = null;
+        desktopDockView = null;
+        desktopDockDownIndex = -1;
+        if (presentation != null) {
+            try { presentation.dismiss(); } catch (Throwable ignored) {}
+        }
+    }
+
+    private static void performDesktopDockAction(int index) {
+        Log.i(TAG, "desktop dock action=" + index);
+        if (index >= DesktopDockView.PALETTE_ACTION_BASE) {
+            int encoded = index - DesktopDockView.PALETTE_ACTION_BASE;
+            int owner = encoded / 10;
+            int option = encoded % 10;
+            if (owner == 1) setCinemaVolumeLevel(option);
+            else if (owner == 2) stepCinemaEc(option == 0 ? -1 : 1);
+            else if (owner == 3) stepCinemaBrightness(option == 0 ? -1 : 1);
+            else if (owner == 4) {
+                cinemaProjectionPreset = Math.max(0, Math.min(2, option));
+                new Thread(
+                        () -> setCinemaProjection(cinemaProjectionPreset),
+                        "mlomega-desktop-size").start();
+            }
+            return;
+        }
         switch (index) {
             case 0:
                 exitCinemaMode();
                 break;
             case 1:
-                toggleCinemaPlayback();
+                cycleCinemaVolume();
                 break;
             case 2:
-                cycleCinemaVolume();
+                stepCinemaEc();
                 break;
             case 3:
                 stepCinemaBrightness();
                 break;
             case 4:
+                cinemaProjectionPreset = (cinemaProjectionPreset + 1) % 3;
+                new Thread(
+                        () -> setCinemaProjection(cinemaProjectionPreset),
+                        "mlomega-desktop-size").start();
+                break;
+            case 5:
+                DesktopDockView dock = desktopDockView;
+                if (dock != null) {
+                    dock.startRecenterCountdown(
+                            SecureWidevinePlayer::requestCinemaGlassesRecenter);
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    private static void performCinemaDockAction(int index) {
+        Log.i(TAG, "cinema dock action=" + index);
+        if (index >= CinemaDockView.PALETTE_ACTION_BASE) {
+            int encoded = index - CinemaDockView.PALETTE_ACTION_BASE;
+            int owner = encoded / 10;
+            int option = encoded % 10;
+            if (owner == 3) setCinemaVolumeLevel(option);
+            else if (owner == 4) stepCinemaEc(option == 0 ? -1 : 1);
+            else if (owner == 5) stepCinemaBrightness(option == 0 ? -1 : 1);
+            else if (owner == 6) {
+                cinemaProjectionPreset = Math.max(0, Math.min(2, option));
+                new Thread(
+                        () -> setCinemaProjection(cinemaProjectionPreset),
+                        "mlomega-cinema-size").start();
+            }
+            return;
+        }
+        switch (index) {
+            case 0:
+                exitCinemaMode();
+                break;
+            case 1:
+                seekCinemaBack(10000L);
+                break;
+            case 2:
+                toggleCinemaPlayback();
+                break;
+            case 3:
+                cycleCinemaVolume();
+                break;
+            case 4:
                 stepCinemaEc();
                 break;
             case 5:
+                stepCinemaBrightness();
+                break;
+            case 6:
                 cinemaProjectionPreset = (cinemaProjectionPreset + 1) % 3;
                 new Thread(
                         () -> setCinemaProjection(cinemaProjectionPreset),
                         "mlomega-cinema-size").start();
                 break;
-            case 6:
-                new Thread(
-                        () -> setCinemaProjection(cinemaProjectionPreset),
-                        "mlomega-cinema-center").start();
+            case 7:
+                CinemaDockView dock = cinemaDockView;
+                if (dock != null) {
+                    dock.startRecenterCountdown(
+                            SecureWidevinePlayer::requestCinemaGlassesRecenter);
+                }
                 break;
             default:
                 break;
@@ -1204,9 +1717,60 @@ public final class SecureWidevinePlayer {
         }
     }
 
+    private static void setCinemaVolumeLevel(int option) {
+        Activity activity = pendingActivity;
+        if (activity == null) return;
+        try {
+            AudioManager audio = (AudioManager) activity.getSystemService(
+                    Context.AUDIO_SERVICE);
+            if (audio == null) return;
+            int max = Math.max(1,
+                    audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
+            int clamped = Math.max(0, Math.min(4, option));
+            int target = Math.round(max * (clamped / 4f));
+            audio.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0);
+            status = "CINEMA: volume " + target + "/" + max;
+            CinemaDockView dock = cinemaDockView;
+            if (dock != null) dock.invalidate();
+            DesktopDockView desktop = desktopDockView;
+            if (desktop != null) desktop.invalidate();
+        } catch (Throwable error) {
+            Log.w(TAG, "cinema volume level failed", error);
+        }
+    }
+
+    private static void seekCinemaBack(long milliseconds) {
+        IBinder binder = trustedService;
+        if (binder == null || !binder.pingBinder()) return;
+        new Thread(() -> {
+            Parcel data = Parcel.obtain();
+            Parcel reply = Parcel.obtain();
+            try {
+                data.writeInterfaceToken(TrustedDisplayUserService.DESCRIPTOR);
+                data.writeLong(milliseconds);
+                binder.transact(
+                        TrustedDisplayUserService.TRANSACTION_SEEK_MEDIA_BACK,
+                        data,
+                        reply,
+                        0);
+                reply.readException();
+                status = "CINEMA: retour " + reply.readString();
+            } catch (Throwable error) {
+                Log.e(TAG, "cinema seek back failed", error);
+            } finally {
+                data.recycle();
+                reply.recycle();
+            }
+        }, "mlomega-cinema-seek-back").start();
+    }
+
     private static void stepCinemaBrightness() {
+        stepCinemaBrightness(cinemaBrightnessDirection);
+    }
+
+    private static void stepCinemaBrightness(int direction) {
         String result = XrealLensControlBridge.stepBrightness(
-                cinemaBrightnessDirection);
+                direction);
         int value = parseStateInt(result, "b");
         int count = parseStateInt(result, "bc");
         if (count > 0 && value >= count - 1) cinemaBrightnessDirection = -1;
@@ -1215,7 +1779,11 @@ public final class SecureWidevinePlayer {
     }
 
     private static void stepCinemaEc() {
-        String result = XrealLensControlBridge.stepEc(cinemaEcDirection);
+        stepCinemaEc(cinemaEcDirection);
+    }
+
+    private static void stepCinemaEc(int direction) {
+        String result = XrealLensControlBridge.stepEc(direction);
         int value = parseStateInt(result, "ec");
         int count = parseStateInt(result, "ecc");
         if (count > 0 && value >= count - 1) cinemaEcDirection = -1;
@@ -1233,6 +1801,314 @@ public final class SecureWidevinePlayer {
         if (end < 0) end = value.length();
         try { return Integer.parseInt(value.substring(start, end)); }
         catch (Throwable ignored) { return -1; }
+    }
+
+    /** Desktop controls intentionally live in their own Presentation/View. The
+     * system-mirror transaction is shared with protected cinema because that is
+     * the XREAL panel primitive, but desktop never inherits media controls or an
+     * interaction-mode side effect. */
+    private static final class DesktopDockPresentation extends Presentation {
+        DesktopDockView dock;
+
+        DesktopDockPresentation(Context context, Display display) {
+            super(context, display);
+        }
+
+        @Override
+        protected void onCreate(android.os.Bundle state) {
+            super.onCreate(state);
+            Window window = getWindow();
+            if (window != null) {
+                window.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+                window.setDimAmount(0f);
+                window.setFormat(PixelFormat.TRANSLUCENT);
+                window.addFlags(
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE |
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL |
+                        WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+            }
+            dock = new DesktopDockView(getContext());
+            setContentView(dock);
+        }
+    }
+
+    private static final class DesktopDockView extends View {
+        static final int PALETTE_ACTION_BASE = 2000;
+        private static final int ACTION_COUNT = 6;
+        private static final String[] LABELS = {
+                "MLOMEGA", "SON", "ELECTRO", "LUM", "TAILLE", "CENTRER"};
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF[] actions = new RectF[ACTION_COUNT];
+        private final RectF[] paletteActions = new RectF[5];
+        private final Handler handler = new Handler(Looper.getMainLooper());
+        private float pointerX = -1f;
+        private float pointerY = -1f;
+        private int pressed = -1;
+        private boolean expanded;
+        private int paletteOwner = -1;
+        private int paletteCount;
+        private int recenterCountdown;
+        private float countdownX;
+        private float countdownY;
+        private long dockRevealCandidateSince;
+
+        DesktopDockView(Context context) {
+            super(context);
+            setBackgroundColor(Color.TRANSPARENT);
+            setLayerType(View.LAYER_TYPE_SOFTWARE, null);
+            for (int i = 0; i < actions.length; i++) actions[i] = new RectF();
+            for (int i = 0; i < paletteActions.length; i++)
+                paletteActions[i] = new RectF();
+        }
+
+        void updatePointer(float x, float y) {
+            post(() -> {
+                pointerX = x;
+                pointerY = y;
+                if (recenterCountdown > 0) {
+                    countdownX = x;
+                    countdownY = y;
+                }
+                if (y >= getHeight() * 0.84f) {
+                    long now = SystemClock.uptimeMillis();
+                    if (dockRevealCandidateSince <= 0L)
+                        dockRevealCandidateSince = now;
+                    if (now - dockRevealCandidateSince >= 280L)
+                        expanded = true;
+                } else {
+                    dockRevealCandidateSince = 0L;
+                }
+                if (y < getHeight() * 0.77f && pressed < 0) {
+                    expanded = false;
+                    paletteOwner = -1;
+                }
+                int hovered = actionAt(x, y);
+                if (hovered >= 1 && hovered <= 4) {
+                    paletteOwner = hovered;
+                } else if (!insidePaletteColumn(x, y) && pressed < 0) {
+                    paletteOwner = -1;
+                }
+                invalidate();
+            });
+        }
+
+        int hitTest(float x, float y) {
+            if (!expanded) return -1;
+            for (int i = 0; i < paletteCount; i++)
+                if (paletteActions[i].contains(x, y))
+                    return PALETTE_ACTION_BASE + paletteOwner * 10 + i;
+            return actionAt(x, y);
+        }
+
+        private int actionAt(float x, float y) {
+            for (int i = 0; i < actions.length; i++)
+                if (actions[i].contains(x, y)) return i;
+            return -1;
+        }
+
+        private boolean insidePaletteColumn(float x, float y) {
+            if (paletteOwner < 0 || paletteCount <= 0) return false;
+            RectF first = paletteActions[0];
+            RectF last = paletteActions[paletteCount - 1];
+            return x >= first.left - 18f && x <= first.right + 18f
+                    && y >= first.top - 24f && y <= last.bottom + 24f;
+        }
+
+        void setPressed(int index) {
+            post(() -> {
+                pressed = index;
+                invalidate();
+            });
+        }
+
+        void startRecenterCountdown(Runnable completion) {
+            post(() -> {
+                recenterCountdown = 3;
+                countdownX = pointerX >= 0f ? pointerX : getWidth() * .5f;
+                countdownY = pointerY >= 0f ? pointerY : getHeight() * .5f;
+                invalidate();
+                advanceRecenterCountdown(completion);
+            });
+        }
+
+        private void advanceRecenterCountdown(Runnable completion) {
+            handler.postDelayed(() -> {
+                recenterCountdown--;
+                invalidate();
+                if (recenterCountdown > 0) advanceRecenterCountdown(completion);
+                else if (completion != null) completion.run();
+            }, 1000L);
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            if (!expanded) {
+                for (RectF action : actions) action.setEmpty();
+                for (RectF option : paletteActions) option.setEmpty();
+                paletteCount = 0;
+                // A restrained macOS-like grab indicator makes the hidden dock
+                // discoverable without covering the desktop.
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(Color.argb(155, 210, 222, 236));
+                float cx = getWidth() * .5f;
+                float cy = getHeight() - 17f;
+                canvas.drawRoundRect(cx - 34f, cy - 3f,
+                        cx + 34f, cy + 3f, 3f, 3f, paint);
+                drawDesktopPointer(canvas);
+                drawRecenterCountdown(canvas);
+                return;
+            }
+
+            float width = getWidth();
+            float height = getHeight();
+            float itemWidth = 88f;
+            float gap = 8f;
+            float total = ACTION_COUNT * itemWidth + (ACTION_COUNT - 1) * gap;
+            float left = (width - total) * .5f;
+            float bottom = height - 30f;
+            float top = bottom - 62f;
+
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.argb(178, 10, 15, 24));
+            canvas.drawRoundRect(left - 16f, top - 13f,
+                    left + total + 16f, bottom + 13f, 25f, 25f, paint);
+            paint.setTextAlign(Paint.Align.CENTER);
+            paint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            for (int i = 0; i < ACTION_COUNT; i++) {
+                float x = left + i * (itemWidth + gap);
+                RectF rect = actions[i];
+                rect.set(x, top, x + itemWidth, bottom);
+                boolean hover = rect.contains(pointerX, pointerY);
+                paint.setColor(i == pressed
+                        ? Color.argb(245, 72, 211, 255)
+                        : (hover ? Color.argb(225, 49, 79, 108)
+                        : Color.argb(210, 26, 36, 52)));
+                canvas.drawRoundRect(rect, 20f, 20f, paint);
+                drawDesktopIcon(canvas, i, rect.centerX(), rect.top + 29f);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setTextSize(9.5f);
+                paint.setColor(Color.argb(235, 222, 231, 241));
+                canvas.drawText(LABELS[i], rect.centerX(), rect.bottom - 10f, paint);
+            }
+            drawControlPalette(canvas, top);
+
+            paint.setTextAlign(Paint.Align.RIGHT);
+            paint.setTypeface(android.graphics.Typeface.DEFAULT);
+            paint.setTextSize(15f);
+            paint.setColor(Color.argb(220, 222, 231, 241));
+            String clock = new SimpleDateFormat(
+                    "HH:mm", Locale.getDefault()).format(new Date());
+            canvas.drawText(clock, left + total, top - 22f, paint);
+            drawDesktopPointer(canvas);
+            drawRecenterCountdown(canvas);
+        }
+
+        private void drawDesktopPointer(Canvas canvas) {
+            if (pointerX < 0f || pointerY < 0f) return;
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.argb(225, 5, 10, 16));
+            canvas.drawCircle(pointerX, pointerY, pressed >= 0 ? 7f : 6f, paint);
+            paint.setColor(pressed >= 0
+                    ? Color.rgb(72, 220, 255) : Color.WHITE);
+            canvas.drawCircle(pointerX, pointerY, pressed >= 0 ? 4f : 3f, paint);
+        }
+
+        private void drawControlPalette(Canvas canvas, float dockTop) {
+            paletteCount = paletteOwner == 1 ? 5
+                    : ((paletteOwner == 2 || paletteOwner == 3) ? 2
+                    : (paletteOwner == 4 ? 3 : 0));
+            for (int i = paletteCount; i < paletteActions.length; i++)
+                paletteActions[i].setEmpty();
+            if (paletteCount == 0 || paletteOwner < 0) return;
+            RectF owner = actions[paletteOwner];
+            float itemWidth = paletteOwner == 4 ? 76f : 58f;
+            float itemHeight = 42f;
+            float gap = 6f;
+            float left = owner.centerX() - itemWidth * .5f;
+            float bottom = dockTop - 12f;
+            for (int i = paletteCount - 1; i >= 0; i--) {
+                float top = bottom - itemHeight;
+                RectF option = paletteActions[i];
+                option.set(left, top, left + itemWidth, bottom);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(option.contains(pointerX, pointerY)
+                        ? Color.argb(238, 67, 102, 138)
+                        : Color.argb(225, 18, 28, 42));
+                canvas.drawRoundRect(option, 15f, 15f, paint);
+                paint.setTextAlign(Paint.Align.CENTER);
+                paint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+                paint.setTextSize(paletteOwner == 4 ? 10f : 13f);
+                paint.setColor(Color.WHITE);
+                String label;
+                if (paletteOwner == 1) label = String.valueOf(i * 25);
+                else if (paletteOwner == 4)
+                    label = i == 0 ? "GRAND" : (i == 1 ? "MOYEN" : "PETIT");
+                else label = i == 0 ? "-" : "+";
+                canvas.drawText(label, option.centerX(), option.centerY() + 5f, paint);
+                bottom = top - gap;
+            }
+        }
+
+        private void drawRecenterCountdown(Canvas canvas) {
+            if (recenterCountdown <= 0) return;
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.argb(205, 8, 14, 24));
+            canvas.drawCircle(countdownX, countdownY, 47f, paint);
+            paint.setTextAlign(Paint.Align.CENTER);
+            paint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            paint.setTextSize(52f);
+            paint.setColor(Color.WHITE);
+            canvas.drawText(String.valueOf(recenterCountdown),
+                    countdownX, countdownY + 18f, paint);
+        }
+
+        private void drawDesktopIcon(Canvas canvas, int index, float cx, float cy) {
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(3f);
+            paint.setStrokeCap(Paint.Cap.ROUND);
+            paint.setColor(Color.WHITE);
+            if (index == 0) {
+                canvas.drawLine(cx + 10f, cy, cx - 9f, cy, paint);
+                canvas.drawLine(cx - 9f, cy, cx - 2f, cy - 7f, paint);
+                canvas.drawLine(cx - 9f, cy, cx - 2f, cy + 7f, paint);
+            } else if (index == 1) {
+                canvas.drawRect(cx - 10f, cy - 4f, cx - 5f, cy + 4f, paint);
+                canvas.drawLine(cx - 5f, cy - 4f, cx + 2f, cy - 10f, paint);
+                canvas.drawLine(cx + 2f, cy - 10f, cx + 2f, cy + 10f, paint);
+                canvas.drawLine(cx + 2f, cy + 10f, cx - 5f, cy + 4f, paint);
+                canvas.drawArc(cx - 2f, cy - 8f, cx + 14f, cy + 8f,
+                        -55f, 110f, false, paint);
+            } else if (index == 2) {
+                canvas.drawRoundRect(cx - 15f, cy - 7f, cx - 2f, cy + 6f,
+                        5f, 5f, paint);
+                canvas.drawRoundRect(cx + 2f, cy - 7f, cx + 15f, cy + 6f,
+                        5f, 5f, paint);
+                canvas.drawLine(cx - 2f, cy - 2f, cx + 2f, cy - 2f, paint);
+            } else if (index == 3) {
+                canvas.drawCircle(cx, cy, 6f, paint);
+                for (int ray = 0; ray < 8; ray++) {
+                    double a = ray * Math.PI / 4.0;
+                    canvas.drawLine(cx + (float)Math.cos(a) * 10f,
+                            cy + (float)Math.sin(a) * 10f,
+                            cx + (float)Math.cos(a) * 14f,
+                            cy + (float)Math.sin(a) * 14f, paint);
+                }
+            } else if (index == 4) {
+                canvas.drawLine(cx - 13f, cy - 5f, cx - 13f, cy - 12f, paint);
+                canvas.drawLine(cx - 13f, cy - 12f, cx - 6f, cy - 12f, paint);
+                canvas.drawLine(cx + 13f, cy + 5f, cx + 13f, cy + 12f, paint);
+                canvas.drawLine(cx + 13f, cy + 12f, cx + 6f, cy + 12f, paint);
+            } else {
+                canvas.drawCircle(cx, cy, 11f, paint);
+                canvas.drawLine(cx - 15f, cy, cx - 6f, cy, paint);
+                canvas.drawLine(cx + 6f, cy, cx + 15f, cy, paint);
+                canvas.drawLine(cx, cy - 15f, cx, cy - 6f, paint);
+                canvas.drawLine(cx, cy + 6f, cx, cy + 15f, paint);
+            }
+            paint.setStrokeCap(Paint.Cap.BUTT);
+        }
     }
 
     private static final class CinemaDockPresentation extends Presentation {
@@ -1262,39 +2138,110 @@ public final class SecureWidevinePlayer {
     }
 
     private static final class CinemaDockView extends View {
-        private static final int ACTION_COUNT = 7;
+        static final int PALETTE_ACTION_BASE = 1000;
+        private static final int ACTION_COUNT = 8;
         private static final String[] LABELS = {
-                "MLOMEGA", "LECTURE", "SON", "LUM", "ELECTRO", "TAILLE", "CENTRER"};
+                "MLOMEGA", "-10 S", "LECTURE", "SON", "ELECTRO", "LUM", "TAILLE", "CENTRER"};
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF[] actions = new RectF[ACTION_COUNT];
+        private final RectF[] paletteActions = new RectF[5];
+        private final Handler handler = new Handler(Looper.getMainLooper());
         private float pointerX = -1f;
         private float pointerY = -1f;
         private int pressed = -1;
         private boolean expanded;
+        private int paletteOwner = -1;
+        private int paletteCount;
+        private int recenterCountdown;
+        private float countdownX;
+        private float countdownY;
+        private long dockRevealCandidateSince;
 
         CinemaDockView(Context context) {
             super(context);
             setBackgroundColor(Color.TRANSPARENT);
             setLayerType(View.LAYER_TYPE_SOFTWARE, null);
             for (int i = 0; i < actions.length; i++) actions[i] = new RectF();
+            for (int i = 0; i < paletteActions.length; i++)
+                paletteActions[i] = new RectF();
         }
 
         void updatePointer(float x, float y) {
             post(() -> {
                 pointerX = x;
                 pointerY = y;
-                if (y >= getHeight() * 0.70f) expanded = true;
-                else if (y < getHeight() * 0.58f && pressed < 0) expanded = false;
+                if (recenterCountdown > 0) {
+                    // Follow the user's new look direction during 3..2..1. The
+                    // native recenter therefore uses the intended centre, not
+                    // the lower-right button that started the countdown.
+                    countdownX = x;
+                    countdownY = y;
+                }
+                // Keep cinema controls discreet. The old lower-third trigger was
+                // reached during ordinary viewing; require a deliberate look at
+                // the bottom 16% and retain hysteresis while interacting.
+                if (y >= getHeight() * 0.84f) {
+                    long now = SystemClock.uptimeMillis();
+                    if (dockRevealCandidateSince <= 0L)
+                        dockRevealCandidateSince = now;
+                    if (now - dockRevealCandidateSince >= 420L)
+                        expanded = true;
+                } else {
+                    dockRevealCandidateSince = 0L;
+                }
+                if (y < getHeight() * 0.77f && pressed < 0) {
+                    expanded = false;
+                    paletteOwner = -1;
+                }
+                int hoveredAction = actionAt(x, y);
+                if (hoveredAction >= 3 && hoveredAction <= 6) {
+                    paletteOwner = hoveredAction;
+                } else if (!insidePaletteColumn(x, y) && pressed < 0) {
+                    paletteOwner = -1;
+                }
                 invalidate();
             });
         }
 
         int hitTest(float x, float y) {
             if (!expanded) return -1;
-            for (int i = 0; i < actions.length; i++) {
+            for (int i = 0; i < paletteCount; i++)
+                if (paletteActions[i].contains(x, y))
+                    return PALETTE_ACTION_BASE + paletteOwner * 10 + i;
+            return actionAt(x, y);
+        }
+
+        private int actionAt(float x, float y) {
+            for (int i = 0; i < actions.length; i++)
                 if (actions[i].contains(x, y)) return i;
-            }
             return -1;
+        }
+
+        private boolean insidePaletteColumn(float x, float y) {
+            if (paletteOwner < 0 || paletteCount <= 0) return false;
+            RectF first = paletteActions[0];
+            RectF last = paletteActions[paletteCount - 1];
+            return x >= first.left - 18f && x <= first.right + 18f
+                    && y >= first.top - 24f && y <= last.bottom + 24f;
+        }
+
+        void startRecenterCountdown(Runnable completion) {
+            post(() -> {
+                recenterCountdown = 3;
+                countdownX = pointerX >= 0f ? pointerX : getWidth() * .5f;
+                countdownY = pointerY >= 0f ? pointerY : getHeight() * .5f;
+                invalidate();
+                advanceRecenterCountdown(completion);
+            });
+        }
+
+        private void advanceRecenterCountdown(Runnable completion) {
+            handler.postDelayed(() -> {
+                recenterCountdown--;
+                invalidate();
+                if (recenterCountdown > 0) advanceRecenterCountdown(completion);
+                else if (completion != null) completion.run();
+            }, 1000L);
         }
 
         void setPressed(int index) {
@@ -1310,24 +2257,23 @@ public final class SecureWidevinePlayer {
             float width = getWidth();
             float height = getHeight();
             if (!expanded) {
-                paint.setColor(Color.argb(145, 225, 234, 244));
-                canvas.drawRoundRect(
-                        width * 0.47f,
-                        height - 84f,
-                        width * 0.53f,
-                        height - 76f,
-                        8f,
-                        8f,
-                        paint);
+                // Fully hidden by design: looking at the lower reveal zone is
+                // enough to reopen it; no persistent tab remains over the film.
+                for (RectF action : actions) action.setEmpty();
+                for (RectF option : paletteActions) option.setEmpty();
+                paletteCount = 0;
+                drawRecenterCountdown(canvas);
                 return;
             }
 
-            float itemWidth = 88f;
-            float gap = 8f;
+            float itemWidth = 82f;
+            float gap = 7f;
             float total = ACTION_COUNT * itemWidth + (ACTION_COUNT - 1) * gap;
             float left = (width - total) * 0.5f;
-            float bottom = height - 92f;
-            float top = bottom - 68f;
+            // Keep the controls against the lower optical edge rather than as
+            // a floating block in the film image.
+            float bottom = height - 30f;
+            float top = bottom - 60f;
             paint.setColor(Color.argb(176, 9, 14, 24));
             canvas.drawRoundRect(
                     left - 16f,
@@ -1358,7 +2304,17 @@ public final class SecureWidevinePlayer {
                 paint.setColor(Color.argb(235, 222, 231, 241));
                 canvas.drawText(LABELS[i], rect.centerX(), rect.bottom - 10f, paint);
             }
-            if (pointerY >= top - 18f && pointerY <= bottom + 18f) {
+            drawControlPalette(canvas, top);
+
+            paint.setTextAlign(Paint.Align.RIGHT);
+            paint.setTypeface(android.graphics.Typeface.DEFAULT);
+            paint.setTextSize(15f);
+            paint.setColor(Color.argb(220, 222, 231, 241));
+            String clock = new SimpleDateFormat(
+                    "HH:mm", Locale.getDefault()).format(new Date());
+            canvas.drawText(clock, left + total, top - 22f, paint);
+
+            if (pointerX >= 0f && pointerY >= 0f) {
                 paint.setStyle(Paint.Style.FILL);
                 paint.setColor(Color.argb(225, 5, 10, 16));
                 canvas.drawCircle(pointerX, pointerY, pressed >= 0 ? 7f : 6f, paint);
@@ -1366,6 +2322,60 @@ public final class SecureWidevinePlayer {
                         ? Color.rgb(72, 220, 255)
                         : Color.WHITE);
                 canvas.drawCircle(pointerX, pointerY, pressed >= 0 ? 4f : 3f, paint);
+            }
+            drawRecenterCountdown(canvas);
+        }
+
+        private void drawRecenterCountdown(Canvas canvas) {
+            if (recenterCountdown > 0) {
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(Color.argb(205, 8, 14, 24));
+                canvas.drawCircle(countdownX, countdownY, 47f, paint);
+                paint.setTextAlign(Paint.Align.CENTER);
+                paint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+                paint.setTextSize(52f);
+                paint.setColor(Color.WHITE);
+                canvas.drawText(String.valueOf(recenterCountdown),
+                        countdownX, countdownY + 18f, paint);
+            }
+        }
+
+        private void drawControlPalette(Canvas canvas, float dockTop) {
+            paletteCount = paletteOwner == 3 ? 5
+                    : ((paletteOwner == 4 || paletteOwner == 5) ? 2
+                    : (paletteOwner == 6 ? 3 : 0));
+            for (int i = paletteCount; i < paletteActions.length; i++)
+                paletteActions[i].setEmpty();
+            if (paletteCount == 0 || paletteOwner < 0) return;
+            RectF owner = actions[paletteOwner];
+            float itemWidth = paletteOwner == 6 ? 76f : 58f;
+            float itemHeight = 42f;
+            float gap = 6f;
+            float left = owner.centerX() - itemWidth * .5f;
+            float bottom = dockTop - 12f;
+            for (int i = paletteCount - 1; i >= 0; i--) {
+                float top = bottom - itemHeight;
+                RectF option = paletteActions[i];
+                option.set(left, top, left + itemWidth, bottom);
+                boolean hover = option.contains(pointerX, pointerY);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(hover
+                        ? Color.argb(238, 67, 102, 138)
+                        : Color.argb(225, 18, 28, 42));
+                canvas.drawRoundRect(option, 15f, 15f, paint);
+                paint.setTextAlign(Paint.Align.CENTER);
+                paint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+                paint.setTextSize(paletteOwner == 6 ? 10f : 13f);
+                paint.setColor(Color.WHITE);
+                String label;
+                if (paletteOwner == 3)
+                    label = String.valueOf(i * 25);
+                else if (paletteOwner == 6)
+                    label = i == 0 ? "GRAND" : (i == 1 ? "MOYEN" : "PETIT");
+                else
+                    label = i == 0 ? "−" : "+";
+                canvas.drawText(label, option.centerX(), option.centerY() + 5f, paint);
+                bottom = top - gap;
             }
         }
 
@@ -1380,11 +2390,21 @@ public final class SecureWidevinePlayer {
                     canvas.drawLine(cx - 9f, cy, cx - 2f, cy - 7f, paint);
                     canvas.drawLine(cx - 9f, cy, cx - 2f, cy + 7f, paint);
                     break;
-                case 1: // play/pause
+                case 1: // ten seconds back
+                    canvas.drawArc(cx - 12f, cy - 12f, cx + 12f, cy + 12f,
+                            45f, 285f, false, paint);
+                    canvas.drawLine(cx - 10f, cy - 10f, cx - 15f, cy - 3f, paint);
+                    canvas.drawLine(cx - 10f, cy - 10f, cx - 3f, cy - 8f, paint);
+                    paint.setStyle(Paint.Style.FILL);
+                    paint.setTextAlign(Paint.Align.CENTER);
+                    paint.setTextSize(8f);
+                    canvas.drawText("10", cx, cy + 3f, paint);
+                    break;
+                case 2: // play/pause
                     canvas.drawLine(cx - 6f, cy - 8f, cx - 6f, cy + 8f, paint);
                     canvas.drawLine(cx + 6f, cy - 8f, cx + 6f, cy + 8f, paint);
                     break;
-                case 2: // volume
+                case 3: // volume
                     canvas.drawRect(cx - 10f, cy - 4f, cx - 5f, cy + 4f, paint);
                     canvas.drawLine(cx - 5f, cy - 4f, cx + 2f, cy - 10f, paint);
                     canvas.drawLine(cx + 2f, cy - 10f, cx + 2f, cy + 10f, paint);
@@ -1392,7 +2412,14 @@ public final class SecureWidevinePlayer {
                     canvas.drawArc(cx - 2f, cy - 8f, cx + 14f, cy + 8f,
                             -55f, 110f, false, paint);
                     break;
-                case 3: // brightness
+                case 4: // electrochromic lenses
+                    canvas.drawRoundRect(cx - 15f, cy - 7f, cx - 2f, cy + 6f,
+                            5f, 5f, paint);
+                    canvas.drawRoundRect(cx + 2f, cy - 7f, cx + 15f, cy + 6f,
+                            5f, 5f, paint);
+                    canvas.drawLine(cx - 2f, cy - 2f, cx + 2f, cy - 2f, paint);
+                    break;
+                case 5: // brightness
                     canvas.drawCircle(cx, cy, 6f, paint);
                     for (int ray = 0; ray < 8; ray++) {
                         double a = ray * Math.PI / 4.0;
@@ -1404,14 +2431,7 @@ public final class SecureWidevinePlayer {
                                 paint);
                     }
                     break;
-                case 4: // electrochromic lenses
-                    canvas.drawRoundRect(cx - 15f, cy - 7f, cx - 2f, cy + 6f,
-                            5f, 5f, paint);
-                    canvas.drawRoundRect(cx + 2f, cy - 7f, cx + 15f, cy + 6f,
-                            5f, 5f, paint);
-                    canvas.drawLine(cx - 2f, cy - 2f, cx + 2f, cy - 2f, paint);
-                    break;
-                case 5: // size
+                case 6: // size
                     canvas.drawLine(cx - 13f, cy - 5f, cx - 13f, cy - 12f, paint);
                     canvas.drawLine(cx - 13f, cy - 12f, cx - 6f, cy - 12f, paint);
                     canvas.drawLine(cx + 13f, cy + 5f, cx + 13f, cy + 12f, paint);
@@ -1713,6 +2733,7 @@ public final class SecureWidevinePlayer {
         physicalDisplayId = -1;
         physicalTaskRequested = false;
         systemCinemaActive = false;
+        systemDesktopActive = false;
         cinemaPlaybackArmed = false;
         activePackageName = "com.google.android.youtube";
         cinemaProbeGeneration++;

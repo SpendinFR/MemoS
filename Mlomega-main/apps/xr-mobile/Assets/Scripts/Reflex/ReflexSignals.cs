@@ -52,6 +52,11 @@ namespace MLOmega.XR.Reflex
         OpenPalmMenu = 3,
         SwipeHide = 4,
         FistToggle = 5,
-        TwoPalmMenu = 6
+        TwoPalmMenu = 6,
+        IndexScrollBegin = 7,
+        IndexScrollUpdate = 8,
+        IndexScrollEnd = 9,
+        TwoFingerKeyboard = 10,
+        ThumbUpQuickMenu = 11
     }
 }

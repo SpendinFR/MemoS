@@ -21,7 +21,7 @@ namespace MLOmega.XR.UI
     /// provide hysteresis so a noisy pinch cannot emit repeated clicks. Touch
     /// input remains active as a fallback.
     /// </summary>
-    public sealed class XrealNativeHandPointer :
+    public sealed partial class XrealNativeHandPointer :
         MonoBehaviour,
         IWorldCreatorInteractionSettings
     {
@@ -57,6 +57,7 @@ namespace MLOmega.XR.UI
         private bool _phoneTriggerPressed;
         private bool _eyePinching;
         private bool _deckPinchClaimed;
+        private bool _releasingPointer;
         private Vector2 _eyeGesturePoint = new Vector2(-1f, -1f);
         private float _eyeGestureZoom = 1f;
         private Vector2 _phonePointerViewport = new Vector2(.5f, .5f);
@@ -66,19 +67,32 @@ namespace MLOmega.XR.UI
         private float _nextSubsystemLookupAt;
         private float _nextDeviceStatusAt;
         private XREALSessionSubsystem _trackingSession;
-        private float _trackingBadUntil = -1f;
+        private float _trackingLossBeganAt = -1f;
+        private float _trackingGoodBeganAt = -1f;
+        private bool _trackingWarningVisible;
+        private float _indexScrollTravel;
+        private bool _indexScrollDispatched;
+        private GameObject _indexScrollTarget;
         private string _trackingBadReason = "INITIALISATION";
         private bool _rayVisible;
         private string _trackingStatus = "TRACKING // INITIALISATION";
         private string _glassesTemperatureStatus = "XREAL // TEMP NORMALE";
         private const string RayVisiblePreference =
             "mlomega.atelier.eye_ray_visible.v1";
+        private const string HandLowLightPreference =
+            "mlomega.atelier.hand_low_light.v1";
 
         public bool IsRayVisible => _rayVisible;
         public bool IsGestureStandby =>
             _eyeGestures != null && _eyeGestures.IsInteractionStandby;
+        public bool IsHeadOnlyModeEnabled => _headOnlyEnabled;
+        public bool IsHeadOnlyInteractionActive => _headOnlyInteractionActive;
         public string TrackingStatus => _trackingStatus;
         public string GlassesTemperatureStatus => _glassesTemperatureStatus;
+        public HandLowLightMode CurrentHandLowLightMode =>
+            _eyeGestures != null
+                ? _eyeGestures.LowLightMode
+                : HandLowLightMode.Off;
 
         private void Awake()
         {
@@ -94,6 +108,11 @@ namespace MLOmega.XR.UI
             // A point cursor is enough for precise gaze+pinch selection. Keep the
             // long Eye ray opt-in because it is visually intrusive in OST lenses.
             _rayVisible = PlayerPrefs.GetInt(RayVisiblePreference, 0) == 1;
+            InitializeHeadOnlyMode();
+            _eyeGestures?.SetLowLightMode((HandLowLightMode)Mathf.Clamp(
+                PlayerPrefs.GetInt(HandLowLightPreference, 0),
+                0,
+                2));
             EnsurePointerInfrastructure();
             BuildCursor();
         }
@@ -108,6 +127,22 @@ namespace MLOmega.XR.UI
 
         public void ToggleRayVisible() => SetRayVisible(!_rayVisible);
 
+        public void CycleHandLowLightMode()
+        {
+            if (_eyeGestures == null)
+                _eyeGestures = FindAnyObjectByType<GestureBridge>();
+            if (_eyeGestures == null) return;
+            HandLowLightMode next = _eyeGestures.LowLightMode switch
+            {
+                HandLowLightMode.Off => HandLowLightMode.Light,
+                HandLowLightMode.Light => HandLowLightMode.Strong,
+                _ => HandLowLightMode.Off,
+            };
+            _eyeGestures.SetLowLightMode(next);
+            PlayerPrefs.SetInt(HandLowLightPreference, (int)next);
+            PlayerPrefs.Save();
+        }
+
         public void SetGestureStandby(bool standby)
         {
             if (_eyeGestures == null)
@@ -115,6 +150,7 @@ namespace MLOmega.XR.UI
             if (_eyeGestures == null) return;
             _eyeGestures.SetInteractionStandby(standby);
             _eyePinching = false;
+            ResetIndexScroll();
             if (_deckPinchClaimed && _creator != null)
                 _creator.EndDeckManipulation();
             _deckPinchClaimed = false;
@@ -154,6 +190,8 @@ namespace MLOmega.XR.UI
                     _eyeGestures.Deactivate();
             }
             _eyePinching = false;
+            ResetHeadOnlyDwell(false);
+            ResetIndexScroll();
             if (_deckPinchClaimed && _creator != null)
                 _creator.EndDeckManipulation();
             _deckPinchClaimed = false;
@@ -164,6 +202,7 @@ namespace MLOmega.XR.UI
 
         private void OnDestroy()
         {
+            DestroyHeadOnlyVisuals();
             if (_laser != null && _laser.material != null)
                 Destroy(_laser.material);
             if (_cursor != null)
@@ -178,14 +217,28 @@ namespace MLOmega.XR.UI
         {
             UpdateDeviceStatus();
             EnsurePointerInfrastructure();
+            UpdateHeadMotionMetrics();
             if (_allowPhoneController)
                 EnsurePhoneController();
             else if (_phoneControllerSubscribed)
                 UnsubscribePhoneController();
             // A closed Atelier must be optically empty. The palm callback still
             // runs through GestureBridge and can reopen it without a cursor.
-            if (_creator != null && _creator.IsDeckClosed)
+            // Head-only is an explicit fallback, not a dormant wake mode. Once
+            // enabled its gaze cursor must remain available continuously so a
+            // user whose hand is not visible can still reach every control.
+            if (_headOnlyEnabled && !_headOnlyInteractionActive)
             {
+                UpdateHeadOnlyPassiveActivation();
+                ResetIndexScroll();
+                ReleasePointer(false);
+                SetCursorVisible(false);
+                _hasSmoothedRay = false;
+                return;
+            }
+            if (_creator != null && _creator.IsDeckClosed && !_headOnlyEnabled)
+            {
+                ResetIndexScroll();
                 ReleasePointer(false);
                 SetCursorVisible(false);
                 _hasSmoothedRay = false;
@@ -196,6 +249,7 @@ namespace MLOmega.XR.UI
             if (
                 _eyeGestures != null &&
                 _eyeGestures.IsInteractionStandby &&
+                !_headOnlyEnabled &&
                 (!_allowPhoneController ||
                  (!_phoneTouchActive && !_phoneTriggerPressed)))
             {
@@ -204,9 +258,18 @@ namespace MLOmega.XR.UI
                 _hasSmoothedRay = false;
                 return;
             }
-            bool hasPointer = TryGetHandRay(
-                out Ray handRay,
-                out bool pinching);
+            bool hasPointer;
+            Ray handRay;
+            bool pinching;
+            if (_headOnlyEnabled)
+            {
+                hasPointer = TryGetGazePointer(out handRay, out pinching);
+                pinching = false;
+            }
+            else
+            {
+                hasPointer = TryGetHandRay(out handRay, out pinching);
+            }
             // A subscribed XREALVirtualController exists even while the S24
             // touch surface is idle.  Treating that idle singleton as a live
             // pointer made it permanently win over head gaze, so Eye pinches
@@ -214,13 +277,14 @@ namespace MLOmega.XR.UI
             // looking at.  Phone input still takes priority while it is
             // actively touched/pressed, then gaze resumes automatically.
             if (
+                !_headOnlyEnabled &&
                 _allowPhoneController &&
                 !hasPointer &&
                 (_phoneTouchActive || _phoneTriggerPressed))
                 hasPointer = TryGetPhonePointer(out handRay, out pinching);
-            if (!hasPointer)
+            if (!hasPointer && !_headOnlyEnabled)
                 hasPointer = TryGetGazePointer(out handRay, out pinching);
-            if (!hasPointer && _allowPhoneController)
+            if (!hasPointer && !_headOnlyEnabled && _allowPhoneController)
                 hasPointer = TryGetPhonePointer(out handRay, out pinching);
             if (
                 _camera == null ||
@@ -300,6 +364,12 @@ namespace MLOmega.XR.UI
                 deckHit || (_menu != null && _menu.IsOpen),
                 pinching);
 
+            if (_headOnlyEnabled)
+            {
+                UpdateHeadOnlyDwell(worldHit, screenPoint, deckHit);
+                return;
+            }
+
             if (pinching && !_pinching)
             {
                 Debug.Log(
@@ -367,7 +437,8 @@ namespace MLOmega.XR.UI
             XREALSessionSubsystem session = _trackingSession;
             if (session == null)
             {
-                _trackingStatus = "TRACKING // INDISPONIBLE";
+                UpdateTrackingWarning(true, "INDISPONIBLE");
+                _creator?.ReportSpatialTrackingState(false, "INDISPONIBLE");
                 return;
             }
             bool reasonIsClear =
@@ -395,9 +466,8 @@ namespace MLOmega.XR.UI
                 session.trackingState != TrackingState.Tracking ||
                 !reasonIsClear ||
                 headPoseExplicitlyLost;
-            if (trackingLost)
-            {
-                _trackingBadReason = headPoseExplicitlyLost
+            string rawReason = trackingLost
+                ? (headPoseExplicitlyLost
                     ? "POSE PERDUE"
                     : session.notTrackingReason switch
                     {
@@ -412,10 +482,33 @@ namespace MLOmega.XR.UI
                         NotTrackingReason.CameraUnavailable =>
                             "CAMÉRA INDISPONIBLE",
                         _ => session.trackingState.ToString().ToUpperInvariant(),
-                    };
-                _trackingBadUntil = Time.unscaledTime + 2.25f;
+                    })
+                : "OK";
+            UpdateTrackingWarning(trackingLost, rawReason);
+            _creator?.ReportSpatialTrackingState(!trackingLost, rawReason);
+        }
+
+        private void UpdateTrackingWarning(bool trackingLost, string reason)
+        {
+            float now = Time.unscaledTime;
+            if (trackingLost)
+            {
+                _trackingGoodBeganAt = -1f;
+                if (_trackingLossBeganAt < 0f) _trackingLossBeganAt = now;
+                _trackingBadReason = reason;
+                // Ignore native one-frame relocalisation chatter. The warning is
+                // useful only after a sustained loss, not every brief Look Around.
+                if (now - _trackingLossBeganAt >= 1.15f)
+                    _trackingWarningVisible = true;
             }
-            _trackingStatus = Time.unscaledTime < _trackingBadUntil
+            else
+            {
+                _trackingLossBeganAt = -1f;
+                if (_trackingGoodBeganAt < 0f) _trackingGoodBeganAt = now;
+                if (_trackingWarningVisible && now - _trackingGoodBeganAt >= .65f)
+                    _trackingWarningVisible = false;
+            }
+            _trackingStatus = _trackingWarningVisible
                 ? "TRACKING // " + _trackingBadReason
                 : "TRACKING // OK";
         }
@@ -445,13 +538,15 @@ namespace MLOmega.XR.UI
 
         private void OnEyeGesture(GestureEvent ev)
         {
+            if (_headOnlyEnabled) return;
             if (ev.ScreenPoint.x >= 0f && ev.ScreenPoint.y >= 0f)
                 _eyeGesturePoint = ev.ScreenPoint;
-            if (ev.ZoomFactor > 0f) _eyeGestureZoom = ev.ZoomFactor;
             switch (ev.Kind)
             {
                 case GestureKind.PinchBegin:
                 case GestureKind.PinchUpdate:
+                    if (ev.ZoomFactor > 0f)
+                        _eyeGestureZoom = ev.ZoomFactor;
                     _eyePinching = true;
                     break;
                 case GestureKind.PinchEnd:
@@ -467,6 +562,7 @@ namespace MLOmega.XR.UI
                     break;
                 case GestureKind.FistToggle:
                     _eyePinching = false;
+                    ResetIndexScroll();
                     if (_deckPinchClaimed && _creator != null)
                         _creator.EndDeckManipulation();
                     _deckPinchClaimed = false;
@@ -475,7 +571,67 @@ namespace MLOmega.XR.UI
                         _creator.SetGestureStandby(
                             _eyeGestures.IsInteractionStandby);
                     break;
+                case GestureKind.IndexScrollBegin:
+                    _eyePinching = false;
+                    ReleasePointer(false);
+                    _indexScrollTravel = 0f;
+                    _indexScrollDispatched = false;
+                    // Keep the page selected at the beginning of the stroke.
+                    // During a downward hand movement the head gaze commonly
+                    // leaves the transparent Android hit surface for a frame;
+                    // requiring the live hover at dispatch time used to discard
+                    // precisely that otherwise valid reverse gesture.
+                    _indexScrollTarget = _hover;
+                    break;
+                case GestureKind.IndexScrollUpdate:
+                    if (_indexScrollDispatched) break;
+                    _indexScrollTravel += ev.ZoomFactor;
+                    // The native pose already survived a timed one-index gate.
+                    // A 5.2% frame-height stroke is deliberate while remaining
+                    // comfortably above ordinary landmark jitter. The previous
+                    // 7.5% threshold made the gesture needlessly exaggerated,
+                    // especially near the lower edge of the Eye image.
+                    if (Mathf.Abs(_indexScrollTravel) >= .045f)
+                    {
+                        _indexScrollDispatched = true;
+                        DispatchIndexScroll(Mathf.Sign(_indexScrollTravel));
+                    }
+                    break;
+                case GestureKind.IndexScrollEnd:
+                    ResetIndexScroll();
+                    break;
+                case GestureKind.TwoFingerKeyboard:
+                    _creator?.ToggleLabKeyboardFromGesture();
+                    break;
+                case GestureKind.ThumbUpQuickMenu:
+                    _creator?.ToggleQuickMenuFromThumb();
+                    break;
             }
+        }
+
+        private void DispatchIndexScroll(float direction)
+        {
+            if (Mathf.Abs(direction) < .5f) return;
+            GameObject target = _hover != null ? _hover : _indexScrollTarget;
+            if (target == null) return;
+            EnsurePointerInfrastructure();
+            if (_pointer == null) return;
+            // One decisive event per physical index stroke. Protected Android
+            // windows turn this into their already-proven full swipe routine;
+            // normal Unity ScrollRects consume the same wheel-style event.
+            _pointer.scrollDelta = new Vector2(0f, -direction * 36f);
+            ExecuteEvents.ExecuteHierarchy(
+                target,
+                _pointer,
+                ExecuteEvents.scrollHandler);
+            _pointer.scrollDelta = Vector2.zero;
+        }
+
+        private void ResetIndexScroll()
+        {
+            _indexScrollTravel = 0f;
+            _indexScrollDispatched = false;
+            _indexScrollTarget = null;
         }
 
         private void EnsurePointerInfrastructure()
@@ -646,7 +802,7 @@ namespace MLOmega.XR.UI
                 _camera == null ||
                 _eyeGestures == null ||
                 !_eyeGestures.IsRunning ||
-                _eyeGestures.IsInteractionStandby)
+                (_eyeGestures.IsInteractionStandby && !_headOnlyEnabled))
                 return false;
             ray = _camera.ViewportPointToRay(new Vector3(.5f, .5f, 0f));
             pressing = _eyePinching;
@@ -854,41 +1010,55 @@ namespace MLOmega.XR.UI
 
         private void ReleasePointer(bool allowClick)
         {
-            if (_pointer != null && _pressed != null)
+            // A UI action can switch to head-only/passive mode from inside its
+            // own pointerClick callback. Guard that re-entrant release so the
+            // same button never receives a duplicate pointerUp/click.
+            if (_releasingPointer) return;
+            _releasingPointer = true;
+            try
             {
-                ExecuteEvents.Execute(
-                    _pressed, _pointer, ExecuteEvents.pointerUpHandler);
-                GameObject click =
-                    _hover == null
-                        ? null
-                        : ExecuteEvents.GetEventHandler<IPointerClickHandler>(
-                            _hover);
-                if (
-                    allowClick &&
-                    _pointer.eligibleForClick &&
-                    click == _pressed)
+                if (_pointer != null && _pressed != null)
                 {
                     ExecuteEvents.Execute(
                         _pressed,
                         _pointer,
-                        ExecuteEvents.pointerClickHandler);
+                        ExecuteEvents.pointerUpHandler);
+                    GameObject click =
+                        _hover == null
+                            ? null
+                            : ExecuteEvents.GetEventHandler<IPointerClickHandler>(
+                                _hover);
+                    if (
+                        allowClick &&
+                        _pointer.eligibleForClick &&
+                        click == _pressed)
+                    {
+                        ExecuteEvents.Execute(
+                            _pressed,
+                            _pointer,
+                            ExecuteEvents.pointerClickHandler);
+                    }
                 }
+                if (_pointer != null)
+                {
+                    if (_pointer.dragging && _pointer.pointerDrag != null)
+                        ExecuteEvents.Execute(
+                            _pointer.pointerDrag,
+                            _pointer,
+                            ExecuteEvents.endDragHandler);
+                    _pointer.eligibleForClick = false;
+                    _pointer.pointerPress = null;
+                    _pointer.rawPointerPress = null;
+                    _pointer.pointerDrag = null;
+                    _pointer.dragging = false;
+                }
+                _pressed = null;
+                _pinching = false;
             }
-            if (_pointer != null)
+            finally
             {
-                if (_pointer.dragging && _pointer.pointerDrag != null)
-                    ExecuteEvents.Execute(
-                        _pointer.pointerDrag,
-                        _pointer,
-                        ExecuteEvents.endDragHandler);
-                _pointer.eligibleForClick = false;
-                _pointer.pointerPress = null;
-                _pointer.rawPointerPress = null;
-                _pointer.pointerDrag = null;
-                _pointer.dragging = false;
+                _releasingPointer = false;
             }
-            _pressed = null;
-            _pinching = false;
         }
 
         private void UpdateProductMenu(

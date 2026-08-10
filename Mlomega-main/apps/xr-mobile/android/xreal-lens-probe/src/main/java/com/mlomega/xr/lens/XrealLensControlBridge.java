@@ -125,6 +125,21 @@ public final class XrealLensControlBridge {
         }
     }
 
+    /** Recenters the physical XREAL display through the same initialized
+     *  GlassesControl service used by brightness and electrochromic controls. */
+    public static String recenterGlasses() {
+        if (!ensureLoaded()) return "ERR|load=" + loadError;
+        try {
+            Control control = Control.getInstance();
+            if (!ensureServiceReady(control))
+                return "ERR|init=" + initializationError;
+            boolean nativeResult = control.nativeRecenterGlasses();
+            return nativeResult ? "OK" : "ERR|native=false";
+        } catch (Throwable error) {
+            return "ERR|recenter=" + compact(error);
+        }
+    }
+
     /** Returns XREAL's native display mode, or -1 when the service is unavailable. */
     public static int getDisplayMode() {
         if (!ensureLoaded()) return -1;

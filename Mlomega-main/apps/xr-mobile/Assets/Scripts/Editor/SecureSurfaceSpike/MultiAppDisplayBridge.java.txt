@@ -45,10 +45,10 @@ public final class MultiAppDisplayBridge {
     private static final class Session {
         final int id;
         final Activity activity;
-        final Surface surface;
-        final int width;
-        final int height;
-        final int densityDpi;
+        volatile Surface surface;
+        volatile int width;
+        volatile int height;
+        volatile int densityDpi;
         final String packageName;
         final String launchUri;
         final int serviceSlot;
@@ -151,7 +151,7 @@ public final class MultiAppDisplayBridge {
                         .daemon(false)
                         .processNameSuffix("mlomega_app_slot_" + slot)
                         .debuggable(false)
-                        .version(1);
+                        .version(2);
                 Log.i(TAG, "MULTI_APP_SERVICE_SLOT session=" + sessionId
                         + " slot=" + slot + " component=" + serviceClass);
                 session.status = "connexion display trusted";
@@ -235,6 +235,90 @@ public final class MultiAppDisplayBridge {
         return session == null ? "session absente" : session.status;
     }
 
+    public static boolean resizeApplicationDisplay(
+            int sessionId,
+            int width,
+            int height,
+            int densityDpi) {
+        Session session = SESSIONS.get(sessionId);
+        if (session == null || session.binder == null || session.displayId < 0)
+            return false;
+        int safeWidth = Math.max(640, Math.min(1920, width));
+        int safeHeight = Math.max(360, Math.min(1600, height));
+        int safeDpi = Math.max(160, densityDpi);
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TrustedDisplayUserService.DESCRIPTOR);
+            data.writeInt(safeWidth);
+            data.writeInt(safeHeight);
+            data.writeInt(safeDpi);
+            session.binder.transact(
+                    TrustedDisplayUserService.TRANSACTION_RESIZE_DISPLAY,
+                    data,
+                    reply,
+                    0);
+            reply.readException();
+            boolean resized = reply.readInt() != 0;
+            if (resized) {
+                session.width = safeWidth;
+                session.height = safeHeight;
+                session.densityDpi = safeDpi;
+                session.status = "DISPLAY " + session.displayId + " "
+                        + safeWidth + "x" + safeHeight;
+            }
+            return resized;
+        } catch (Throwable error) {
+            Log.e(TAG, "resize failed session=" + sessionId, error);
+            return false;
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
+    /** Rebinds one existing trusted VirtualDisplay to a replacement XREAL
+     * composition surface. Resizing a VirtualDisplay without replacing the
+     * buffer queue left the two eyes consuming different geometries on One Pro. */
+    public static boolean reattachTrustedSurface(
+            int sessionId,
+            Surface surface,
+            int width,
+            int height) {
+        Session session = SESSIONS.get(sessionId);
+        if (session == null || session.binder == null || session.displayId < 0
+                || surface == null || !surface.isValid()) return false;
+        Parcel data = Parcel.obtain();
+        Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(TrustedDisplayUserService.DESCRIPTOR);
+            surface.writeToParcel(data, 0);
+            session.binder.transact(
+                    TrustedDisplayUserService.TRANSACTION_REATTACH_SURFACE,
+                    data,
+                    reply,
+                    0);
+            reply.readException();
+            boolean attached = reply.readInt() != 0;
+            if (attached) {
+                session.surface = surface;
+                session.width = Math.max(640, width);
+                session.height = Math.max(360, height);
+                session.status = "DISPLAY " + session.displayId + " "
+                        + session.width + "x" + session.height;
+            }
+            Log.i(TAG, "surface reattach session=" + sessionId
+                    + " attached=" + attached + " size=" + width + "x" + height);
+            return attached;
+        } catch (Throwable error) {
+            Log.e(TAG, "surface reattach failed session=" + sessionId, error);
+            return false;
+        } finally {
+            data.recycle();
+            reply.recycle();
+        }
+    }
+
     public static boolean pointerDown(int sessionId, float x, float y) {
         Session session = SESSIONS.get(sessionId);
         if (session == null) return false;
@@ -261,6 +345,17 @@ public final class MultiAppDisplayBridge {
         long down = session.pointerDownTime;
         session.pointerDownTime = 0L;
         boolean sent = sendPointer(session, 1, x, y, down);
+        updateCursor(session, x, y, false);
+        setCursorVisible(session, true, false);
+        return sent;
+    }
+
+    public static boolean pointerCancel(int sessionId, float x, float y) {
+        Session session = SESSIONS.get(sessionId);
+        if (session == null || session.pointerDownTime <= 0L) return false;
+        long down = session.pointerDownTime;
+        session.pointerDownTime = 0L;
+        boolean sent = sendPointer(session, 3, x, y, down);
         updateCursor(session, x, y, false);
         setCursorVisible(session, true, false);
         return sent;

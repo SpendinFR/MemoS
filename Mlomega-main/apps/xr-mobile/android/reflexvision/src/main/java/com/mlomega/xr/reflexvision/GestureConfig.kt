@@ -106,4 +106,27 @@ object GestureConfigFactory {
             numHands = if (numHands < 1) 1 else numHands,
             targetFps = targetFps,
         )
+
+    /**
+     * Dedicated Eye-camera profile. MediaPipe's confidence thresholds are fixed
+     * when the HandLandmarker is created, so Unity selects one explicit profile
+     * when the operator changes the low-light mode. Gesture geometry, debounce
+     * and hysteresis remain unchanged and continue to reject false actions.
+     */
+    @JvmStatic
+    fun forUnityTuned(
+        modelAssetPath: String,
+        numHands: Int,
+        targetFps: Float,
+        minHandDetectionConfidence: Float,
+        minHandPresenceConfidence: Float,
+        minTrackingConfidence: Float,
+    ): GestureConfig = GestureConfig(
+        modelAssetPath = modelAssetPath,
+        numHands = if (numHands < 1) 1 else numHands,
+        targetFps = targetFps,
+        minHandDetectionConfidence = minHandDetectionConfidence.coerceIn(.1f, .9f),
+        minHandPresenceConfidence = minHandPresenceConfidence.coerceIn(.1f, .9f),
+        minTrackingConfidence = minTrackingConfidence.coerceIn(.1f, .9f),
+    )
 }

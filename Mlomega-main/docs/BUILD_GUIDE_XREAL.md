@@ -1192,3 +1192,196 @@ $project = (Resolve-Path "apps\xr-mobile").Path
 Périmètre impératif : cette pile reste Lab-only. Ne pas porter ces changements
 dans Product, Atelier, PhoneOnly, Brain2, Local ou PRO sans un chantier et un gate
 de non-régression séparés.
+
+## 14. Lab nomade, Moonlight 2D et préflight autonome (10 août 2026)
+
+Référence de retour locale à ne jamais écraser :
+
+```text
+artifact = apps/xr-mobile/build/android/mlomega-xreal-world-lab-v16-crop-cinema.VALIDATED.apk
+sha256   = 77A7F5EC6F1996E9DF4A80D90EF62324000A1180DF0D7575934605304AB7B501
+```
+
+La v23 est le candidat validé physiquement après ce correctif. La v16 reste
+l'artefact de retour immuable ; toute évolution suivante doit rester séparée et
+repasser le gate S24 + One Pro + Eye.
+
+### 14.1 Cause mesurée de l'écran noir Moonlight
+
+Moonlight décodait réellement le PC en HEVC 1920x1080, 60 fps, faible latence,
+environ 17 Mbit/s. La mauvaise qualité ne venait donc pas du flux réseau. Le
+handoff XREAL échouait dans `NRXRApp.prepareDynamicSwitchDP()` parce que sa
+`NRFakeActivity` avait déjà été détruite. L'exception empêchait ensuite
+`broadcastDynamicSwitchDP()` d'être appelé : le panneau restait annoncé comme
+640x480/recopie téléphone au lieu de sa surface applicative 1920x1080.
+
+Correctif Lab-only : les deux appels sont indépendants. L'échec optionnel du
+déplacement de la fake activity est logué, mais le broadcast de bascule est
+toujours envoyé. Ne pas remplacer ce chemin par un redimensionnement de la
+fenêtre Moonlight : il ne corrige pas le mode physique du panneau.
+
+Autre cause mesurée : des dizaines de processus Shizuku
+`:mlomega_trusted`/`:mlomega_app_slot_*` et de VirtualDisplays DOZE d'anciens
+essais vivaient encore. Le préflight interne crée un service v12 frais, supprime
+uniquement ces services MLOmega abandonnés, remet les trois clés DeX à `0`, puis
+s'arrête. Ce nettoyage ne doit jamais être placé dans le constructeur normal du
+service : il tuerait les fenêtres multi-app légitimes ouvertes dans la session.
+
+### 14.2 Lancement PC reproductible
+
+Avant de brancher les lunettes :
+
+```powershell
+.\scripts\PREFLIGHT_XREAL_LAB.ps1
+```
+
+ou double-cliquer :
+
+```text
+START_XREAL_LAB.cmd
+```
+
+Le script :
+
+1. joint le S24 par ADB et efface `logcat` ;
+2. ferme l'ancienne activité Lab et ses services Shizuku abandonnés ;
+3. pose `dex_on_external_display=0` dans `system`, `global` et `secure` ;
+4. démarre Shizuku par son script officiel si nécessaire ;
+5. vérifie Tailscale ;
+6. lance directement `NRXRActivity`, jamais l'activité Unity générique.
+
+Pour configurer une seule fois Tailscale comme VPN permanent Android, sans
+lockdown si le tunnel tombe :
+
+```powershell
+.\scripts\PREFLIGHT_XREAL_LAB.ps1 -EnableTailscaleAlwaysOn
+```
+
+Équivalent Shizuku manuel après redémarrage :
+
+```powershell
+$adb = "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
+& $adb shell sh /sdcard/Android/data/moe.shizuku.privileged.api/start.sh
+```
+
+### 14.3 Démarrage sans PC et limite réelle après reboot
+
+Le Lab refait seul au démarrage le nettoyage des VirtualDisplays et la remise à
+zéro de DeX si Shizuku tourne. Un S24 non rooté ne peut toutefois pas redémarrer
+Shizuku silencieusement après un reboot : Android impose de refaire « Démarrer
+via débogage sans fil » dans Shizuku. C'est une limite système, pas un oubli du
+Lab. Autoriser Shizuku et Tailscale en batterie « Non restreinte ».
+
+Séquence nomade après reboot :
+
+1. activer le débogage sans fil ;
+2. ouvrir Shizuku et toucher `Démarrer` (l'appairage n'est normalement fait
+   qu'une fois) ;
+3. vérifier que Tailscale est `Connecté` ;
+4. lancer le Lab puis brancher les lunettes.
+
+Sans reboot, Shizuku déjà actif continue de fonctionner lors du passage
+Wi-Fi -> 4G. Les fonctions locales du Lab restent disponibles hors ligne.
+Moonlight dehors exige que Sunshine tourne sur le PC et que le PC soit joignable
+par son adresse Tailscale ; la fluidité dépend ensuite de la 4G. Ajouter cette
+adresse Tailscale comme hôte dans Moonlight une seule fois. Ne pas utiliser de
+node de sortie pour Netflix/Prime.
+
+### 14.4 Bluetooth
+
+Les écouteurs, claviers, souris et manettes se pairent au Galaxy S24 : les
+lunettes ne sont pas l'hôte Bluetooth. La connexion et la déconnexion restent
+volontairement dans les réglages du S24 : le Lab n'affiche plus d'icône Bluetooth,
+ne demande plus `BLUETOOTH_CONNECT` et ne maintient aucun scanner en arrière-plan.
+
+L'audio est routé par Android. Un clavier, une souris ou une manette connectée au
+S24 est exposé comme périphérique Android ; l'Input System Unity prend en charge
+clavier, souris, joystick et gamepad sur Android. Aucun pont Bluetooth spécifique
+au Lab n'est donc requis. Le mapping exact d'une manette reste à valider selon le
+modèle et son pilote Samsung. Référence :
+https://docs.unity3d.com/Packages/com.unity.inputsystem@1.4/manual/SupportedDevices.html
+
+### 14.5 Session, arrêt et mode sans gestes
+
+- Une sortie explicite sauvegarde les fenêtres, libère les surfaces et force
+  l'arrêt uniquement des applications Android ouvertes par le Lab.
+- Une mise en arrière-plan sauvegarde aussi la session, afin de survivre à une
+  récupération du processus par Android.
+- Après un crash dur, le prochain préflight supprime les services et displays
+  MLOmega abandonnés.
+- En interaction sans gestes, le cercle bleu arme et maintient l'appui. Le cercle
+  orange décide : immobile jusqu'à sa fin = clic relâché ; mouvement de tête =
+  drag. Le bleu seul n'est donc pas encore un clic complet.
+
+### 14.6 Gate matériel du prochain APK
+
+1. Ouvrir le Lab : vérifier le dock et les gestes validés, sans régression paume.
+2. Ouvrir Moonlight en fenêtre 3D puis passer en Bureau 2D : image 16:9 nette,
+   jamais noire, et dock bureau présent.
+3. Revenir à MLOmega puis refaire la bascule deux fois.
+4. Ouvrir Google + YouTube ensemble pour valider que le préflight n'a pas tué
+   les slots multi-app actifs.
+5. Connecter les accessoires Bluetooth depuis le S24, puis tester leur entrée
+   dans le Lab ou Moonlight sans attendre d'icône dans le centre de contrôle.
+6. Quitter proprement, relancer et choisir la restauration de session.
+7. Contrôler les logs : un reçu `RUNTIME_PREFLIGHT OK`, un nombre de
+   `STALE_SERVICE_REAP` fini, `desktop handoff -> STARTED`, et aucune accumulation
+   de nouveaux displays après fermeture.
+
+### 14.7 Consolidation Lab du 10 août 2026
+
+Ce lot reste strictement Lab-only et n'altère ni Product XREAL, ni PhoneOnly, ni
+les runs Local/PRO. Il consolide les fonctions testées pendant la journée :
+
+- Eye + MediaPipe à 25 fps, pinch, paume, deux paumes, pouce, poing, index-scroll
+  et trois profils basse lumière ;
+- interaction sans gestes par regard : armement bleu, clic/drag orange et retour
+  automatique au mode passif ;
+- poignées visionOS, profondeur/inclinaison/resize/aspect/crop, position et taille
+  persistantes, dock réorganisable et menu rapide ;
+- groupe de fenêtres de type Meta Quest, adhésion automatique facultative et
+  disposition multi-rangée ;
+- Google, YouTube, Reddit et Spotify en fenêtres Android spatiales, clavier XR,
+  Netflix/Prime en cinéma protégé et Moonlight en bureau 3D/2D ;
+- enregistrement first-person, restauration de session, arrêt propre, préflight
+  DeX/Shizuku et usage nomade via Tailscale.
+
+Le bug des gestes morts au retour Moonlight est mesuré : le retour Bureau 2D
+relançait `NRXRActivity` deux fois à 700 ms d'intervalle. La première reprise
+redémarrait la caméra Eye ; la seconde la stoppait puis produisait
+`NativeRGBCamera Start Failure`. La correction effectue une seule relance, attend
+le retour stable du compositeur, puis reconstruit explicitement le graphe
+MediaPipe sans modifier les seuils, la cadence ou les gestes validés.
+
+Le dock Moonlight 2D ne propose pas une fausse commande de profondeur. L'API
+privée disponible dans le paquet XREAL expose luminosité, électrochrome, mode
+2D/3D et EDID, mais pas une distance physique d'écran. `TAILLE` agit déjà sur la
+projection SurfaceControl et donne l'effet de distance possible en 2D. La vraie
+profondeur arbitraire demeure celle des fenêtres Unity 3D.
+
+### 14.8 Gate matériel v23 validé le 11 août 2026
+
+Artefact testé :
+
+```text
+apps/xr-mobile/build/android/mlomega-xreal-world-lab-v23-gesture-return.apk
+package = com.mlomega.xr.worldatelierlabv16cropcinema
+size    = 244616735 bytes
+sha256  = 81D7FB5C98D3DD3AF107A3415932BB60B97F6181BE9C6338F2CF758119ACB39B
+```
+
+Validation réelle sur Galaxy S24 + XREAL One Pro + Eye : Moonlight a basculé en
+Bureau 2D, le retour MLOmega 3D a réussi, puis pinch et paume ont de nouveau été
+reconnus sans redémarrer l'application. Les logs établissent le chemin attendu :
+
+```text
+XREAL NRXRActivity relaunched after cinema                 (une seule fois)
+[GestureBridge] external display return: MediaPipe graph restarted
+HandLandmarker ready (GPU/LIVE_STREAM, 25.0 fps)
+[XrealNativeHandPointer] pinch press
+```
+
+Il n'y a plus de seconde relance `NRXRActivity` ni de
+`NativeRGBCamera Start Failure` après le retour 3D. Cette v23 valide donc le
+correctif de reprise Eye/MediaPipe. Ne pas recopier ce correctif dans Product,
+Atelier ou PhoneOnly sans leur propre gate de non-régression.

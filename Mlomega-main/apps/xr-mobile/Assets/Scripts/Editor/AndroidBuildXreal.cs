@@ -270,10 +270,14 @@ namespace MLOmega.XR.Editor
                            useTemplateBuiltInPipeline: true))
                 {
                     ConfigurePlayerSettings();
-                    PlayerSettings.productName = "MLOmega XR Browser Lab";
+                    PlayerSettings.productName = Env(
+                        "MLOMEGA_CREATOR_LAB_PRODUCT_NAME",
+                        "MLOmega XR Browser Lab");
                     PlayerSettings.SetApplicationIdentifier(
                         BuildTargetGroup.Android,
-                        "com.mlomega.xr.worldatelierlab");
+                        Env(
+                            "MLOMEGA_CREATOR_LAB_PACKAGE",
+                            "com.mlomega.xr.worldatelierlab"));
                     ConfigureXrealSdkSettings();
                     EnableXrealLoader();
                     ValidateArFoundationLoaded();
@@ -1584,8 +1588,7 @@ namespace MLOmega.XR.Editor
                 InjectSecureSurfaceWidevineProbe(path);
                 return;
             }
-            if (!string.Equals(
-                    identifier,
+            if (!identifier.StartsWith(
                     "com.mlomega.xr.worldatelierlab",
                     StringComparison.Ordinal))
                 return;
@@ -1620,6 +1623,7 @@ namespace MLOmega.XR.Editor
                 "        <package android:name=\"com.spotify.music\" />\n" +
                 "        <package android:name=\"com.reddit.frontpage\" />\n" +
                 "        <package android:name=\"com.amazon.avod.thirdpartyclient\" />\n" +
+                "        <package android:name=\"com.limelight\" />\n" +
                 "        <package android:name=\"moe.shizuku.privileged.api\" />\n" +
                 "        <package android:name=\"com.google.android.inputmethod.latin\" />\n" +
                 "        <package android:name=\"com.samsung.android.honeyboard\" />\n" +

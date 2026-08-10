@@ -7,8 +7,10 @@ using TLab.WebView;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
+using Unity.XR.XREAL;
 using MLOmega.XR.UI.Components;
 using MLOmega.XR.SecureSurfaceSpike;
+using MLOmega.XR.Reflex;
 
 namespace MLOmega.XR.UI
 {
@@ -58,6 +60,14 @@ namespace MLOmega.XR.UI
             public bool Commercial;
         }
 
+        private sealed class DockReorderEntry
+        {
+            public string Id;
+            public Button Button;
+            public int Slot;
+            public readonly List<RectTransform> Parts = new List<RectTransform>();
+        }
+
         private enum KeyboardTarget
         {
             WebContent,
@@ -95,11 +105,41 @@ namespace MLOmega.XR.UI
         private GameObject _resumeOffer;
         private RectTransform _resumeOfferRect;
         private bool _cleanExitSaved;
+        private readonly List<DockReorderEntry> _dockEntries =
+            new List<DockReorderEntry>();
+        private bool _dockReorderMode;
+        private Image _dockDepthBar;
+        private DockReorderEntry _draggedDockEntry;
+        private Vector2 _dockDragStartLocal;
+        private readonly Dictionary<RectTransform, Vector2> _dockDragPartStarts =
+            new Dictionary<RectTransform, Vector2>();
+        private float _dockDepthDragStartX;
+        private float _dockDepthDragStart;
+        private float _frameHealthStartedAt;
+        private float _frameHealthMaxDelta;
+        private int _frameHealthFrames;
+        private int _frameHealthOver22Ms;
+        private int _frameHealthOver33Ms;
         private const string SessionStatePreference =
             "mlomega.xr.lab.browser_session.v1";
+        private const string DockOrderPreference =
+            "mlomega.xr.lab.dock_order.v1";
 
         private IEnumerator Start()
         {
+            XrealSecureSurfaceSpike.CinemaReturnCompleted -=
+                RestartGesturesAfterCinemaReturn;
+            XrealSecureSurfaceSpike.CinemaReturnCompleted +=
+                RestartGesturesAfterCinemaReturn;
+            ConfigureFramePacing();
+            // Reap interrupted Shizuku displays and re-assert DeX-off before any
+            // Android app window is opened. This is intentionally Lab-only.
+            XrLabAndroidRuntimeBridge.PrepareRuntime();
+            // Lab-only inference copy. MediaPipe resizes again for its model;
+            // 512 px preserves landmark detail while removing most of the
+            // measured 768 px YUV/RGBA CPU cost during Moonlight.
+            FindFirstObjectByType<GestureBridge>()?.SetInferenceLongEdge(512);
+            DisableSensitiveSdkTrackingPopup();
             _camera = Camera.main;
             if (_camera == null)
                 _camera = FindFirstObjectByType<Camera>();
@@ -140,6 +180,7 @@ namespace MLOmega.XR.UI
             }
 
             ExtendDock();
+            BuildDockReorderSystem();
             BuildKeyboard();
             _creator.RegisterLabSettingsActions(
                 SaveSessionAndQuit,
@@ -150,11 +191,86 @@ namespace MLOmega.XR.UI
                 () => _recorder != null && _recorder.IsRecording,
                 () => _recorder != null && _recorder.IsBusy,
                 () => _recorder == null ? 0f : _recorder.ElapsedSeconds,
-                () => _recorder == null ? string.Empty : _recorder.UiStatus);
+                () => _recorder == null ? string.Empty : _recorder.UiStatus,
+                ToggleDockReorderMode,
+                () => _dockReorderMode);
             OfferSavedSessionIfAvailable();
             RaiseInteractionCursor();
             Debug.Log(
                 "[XrLab] spatial browser ready; Android foreground remains Unity.");
+        }
+
+        private static void DisableSensitiveSdkTrackingPopup()
+        {
+            // Keep our debounced tracking gauge, remove only XREAL's intrusive
+            // one-edge "look around" dialog which flashes on brief relocalisation.
+            MonoBehaviour[] behaviours = FindObjectsByType<MonoBehaviour>(
+                FindObjectsInactive.Include,
+                FindObjectsSortMode.None);
+            int disabled = 0;
+            foreach (MonoBehaviour behaviour in behaviours)
+            {
+                if (behaviour == null ||
+                    behaviour.GetType().Name != "XREALSlamStateNotification")
+                    continue;
+                behaviour.enabled = false;
+                disabled++;
+            }
+            Debug.Log("[XrLab] sensitive XREAL tracking popups disabled=" + disabled);
+        }
+
+        private static void ConfigureFramePacing()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            // Android treats targetFrameRate=-1 as its platform default, which
+            // hardware receipts measured falling to ~30 fps while the One Pro
+            // compositor remained at 60 Hz. Keep Unity and XREAL on one explicit
+            // cadence; vSync stays disabled because the XR compositor owns scanout.
+            QualitySettings.vSyncCount = 0;
+            Application.targetFrameRate = 60;
+            try
+            {
+                XREALPlugin.SetTargetFrameRate(60);
+                Debug.Log(
+                    "[XR-FRAME-PACING] unity=" + Application.targetFrameRate +
+                    " xreal=" + XREALPlugin.GetTargetFrameRate());
+            }
+            catch (Exception error)
+            {
+                Debug.LogWarning(
+                    "[XR-FRAME-PACING] XREAL target unavailable: " +
+                    error.Message);
+            }
+#endif
+        }
+
+        private void Update()
+        {
+            // Lightweight device receipt: distinguish Unity pacing hitches from
+            // native XREAL/Android composition artefacts without enabling the
+            // heavyweight Unity profiler on the S24.
+            float now = Time.unscaledTime;
+            if (_frameHealthStartedAt <= 0f) _frameHealthStartedAt = now;
+            float delta = Time.unscaledDeltaTime;
+            _frameHealthFrames++;
+            _frameHealthMaxDelta = Mathf.Max(_frameHealthMaxDelta, delta);
+            if (delta > .022f) _frameHealthOver22Ms++;
+            if (delta > .033f) _frameHealthOver33Ms++;
+            float elapsed = now - _frameHealthStartedAt;
+            if (elapsed < 5f) return;
+            Debug.Log(
+                "[XR-FRAME-HEALTH] fps=" +
+                (_frameHealthFrames / Mathf.Max(.001f, elapsed)).ToString("F1") +
+                " over22=" + _frameHealthOver22Ms +
+                " over33=" + _frameHealthOver33Ms +
+                " maxMs=" + (_frameHealthMaxDelta * 1000f).ToString("F1") +
+                " androidWindows=" + _protectedHosts.Count +
+                " webWindows=" + _windows.Count);
+            _frameHealthStartedAt = now;
+            _frameHealthMaxDelta = 0f;
+            _frameHealthFrames = 0;
+            _frameHealthOver22Ms = 0;
+            _frameHealthOver33Ms = 0;
         }
 
         private static void RaiseInteractionCursor()
@@ -180,33 +296,32 @@ namespace MLOmega.XR.UI
 
         private void ExtendDock()
         {
-            // Keep the proven Atelier apps on the first row. Android/Web apps
-            // use two balanced rows of four so the dock remains readable while
-            // preserving the validated window/gesture implementation.
-            _dock.sizeDelta = new Vector2(700f, 500f);
+            // Explicit 3-4-3 visionOS grid requested for the ten Lab apps.
+            _dock.sizeDelta = new Vector2(720f, 520f);
             Button[] existing = _dock.GetComponentsInChildren<Button>(true);
             Array.Sort(existing, (left, right) =>
                 ((RectTransform)left.transform).anchoredPosition.x.CompareTo(
                     ((RectTransform)right.transform).anchoredPosition.x));
             if (existing.Length >= 2)
             {
-                MoveExistingDockGroup(existing[0], new Vector2(-90f, 155f));
-                MoveExistingDockGroup(existing[1], new Vector2(90f, 155f));
+                MoveExistingDockGroup(existing[0], new Vector2(-150f, 150f));
+                MoveExistingDockGroup(existing[1], new Vector2(0f, 150f));
                 RestyleExistingDockButton(existing[0], true);
                 RestyleExistingDockButton(existing[1], false);
             }
 
             MakeDockButton(
-                "Navigateur",
-                new Vector2(-225f, 0f),
-                "com.android.chrome",
+                "Moonlight",
+                new Vector2(150f, 150f),
+                "com.limelight",
                 "◎",
-                () => OpenBrowser(
-                    "Navigateur " + (++_genericWindowSerial),
-                    "https://www.google.com"));
+                () => OpenOrFocusProtectedApplication(
+                    "com.limelight",
+                    string.Empty,
+                    "PC Moonlight"));
             MakeDockButton(
                 "Google",
-                new Vector2(-75f, 0f),
+                new Vector2(-225f, 0f),
                 "com.android.chrome",
                 "G",
                 () => OpenOrFocusProtectedApplication(
@@ -215,7 +330,7 @@ namespace MLOmega.XR.UI
                     "Google"));
             MakeDockButton(
                 "YouTube",
-                new Vector2(75f, 0f),
+                new Vector2(-75f, 0f),
                 "com.google.android.youtube",
                 "▶",
                 () => OpenOrFocusProtectedApplication(
@@ -224,7 +339,7 @@ namespace MLOmega.XR.UI
                     "YouTube"));
             MakeDockButton(
                 "Netflix",
-                new Vector2(225f, 0f),
+                new Vector2(75f, 0f),
                 "com.netflix.mediaclient",
                 "N",
                 () => OpenOrFocusProtectedApplication(
@@ -233,7 +348,7 @@ namespace MLOmega.XR.UI
                     "Netflix"));
             MakeDockButton(
                 "Spotify",
-                new Vector2(-225f, -150f),
+                new Vector2(225f, 0f),
                 "com.spotify.music",
                 "S",
                 () => OpenOrFocusProtectedApplication(
@@ -242,7 +357,7 @@ namespace MLOmega.XR.UI
                     "Spotify"));
             MakeDockButton(
                 "Reddit",
-                new Vector2(-75f, -150f),
+                new Vector2(-150f, -150f),
                 "com.reddit.frontpage",
                 "r/",
                 () => OpenOrFocusProtectedApplication(
@@ -251,7 +366,7 @@ namespace MLOmega.XR.UI
                     "Reddit"));
             MakeDockButton(
                 "Prime Video",
-                new Vector2(75f, -150f),
+                new Vector2(0f, -150f),
                 "com.amazon.avod.thirdpartyclient",
                 "P",
                 () => OpenOrFocusProtectedApplication(
@@ -260,7 +375,7 @@ namespace MLOmega.XR.UI
                     "Prime Video"));
             MakeDockButton(
                 "Clavier",
-                new Vector2(225f, -150f),
+                new Vector2(150f, -150f),
                 "com.samsung.android.honeyboard",
                 "⌨",
                 () => ShowKeyboard(KeyboardTarget.WebContent));
@@ -400,6 +515,209 @@ namespace MLOmega.XR.UI
                 FontStyles.Bold);
         }
 
+        private static readonly Vector2[] DockSlotPositions =
+        {
+            new Vector2(-150f, 150f),
+            new Vector2(0f, 150f),
+            new Vector2(150f, 150f),
+            new Vector2(-225f, 0f),
+            new Vector2(-75f, 0f),
+            new Vector2(75f, 0f),
+            new Vector2(225f, 0f),
+            new Vector2(-150f, -150f),
+            new Vector2(0f, -150f),
+            new Vector2(150f, -150f),
+        };
+
+        private void BuildDockReorderSystem()
+        {
+            if (_dock == null || _dockEntries.Count > 0) return;
+            Button[] buttons = _dock.GetComponentsInChildren<Button>(true);
+            Array.Sort(buttons, (left, right) =>
+            {
+                Vector2 a = ((RectTransform)left.transform).anchoredPosition;
+                Vector2 b = ((RectTransform)right.transform).anchoredPosition;
+                int row = -a.y.CompareTo(b.y);
+                return row != 0 ? row : a.x.CompareTo(b.x);
+            });
+            for (int i = 0; i < buttons.Length && i < DockSlotPositions.Length; i++)
+            {
+                string id = buttons[i].gameObject.name;
+                _dockEntries.Add(new DockReorderEntry
+                {
+                    Id = id,
+                    Button = buttons[i],
+                    Slot = i,
+                });
+                XrLabDockReorderItem item =
+                    buttons[i].gameObject.AddComponent<XrLabDockReorderItem>();
+                item.Configure(this, id);
+            }
+
+            // Rims and labels are siblings of the clickable orb. Assign every
+            // direct dock child to the nearest orb so they travel as one icon.
+            for (int childIndex = 0; childIndex < _dock.childCount; childIndex++)
+            {
+                RectTransform child = _dock.GetChild(childIndex) as RectTransform;
+                if (child == null) continue;
+                DockReorderEntry nearest = null;
+                float nearestDistance = float.MaxValue;
+                for (int i = 0; i < _dockEntries.Count; i++)
+                {
+                    RectTransform buttonRect =
+                        _dockEntries[i].Button.transform as RectTransform;
+                    float distance = Vector2.Distance(
+                        child.anchoredPosition, buttonRect.anchoredPosition);
+                    if (distance >= nearestDistance) continue;
+                    nearestDistance = distance;
+                    nearest = _dockEntries[i];
+                }
+                if (nearest != null && nearestDistance <= 82f)
+                    nearest.Parts.Add(child);
+            }
+
+            RestoreDockOrder();
+            _dockDepthBar = MakeImage(
+                _dock,
+                "Dock depth edit bar",
+                new Vector2(0f, -246f),
+                new Vector2(180f, 10f),
+                new Color(.78f, .80f, .86f, .76f),
+                false);
+            _dockDepthBar.raycastTarget = true;
+            var collider = _dockDepthBar.gameObject.AddComponent<BoxCollider>();
+            collider.size = new Vector3(220f, 40f, 18f);
+            _dockDepthBar.gameObject.AddComponent<XrLabDockDepthHandle>()
+                .Configure(this);
+            _dockDepthBar.gameObject.SetActive(false);
+            _creator?.RefreshWindowDockHitTargets();
+        }
+
+        private void RestoreDockOrder()
+        {
+            string saved = PlayerPrefs.GetString(DockOrderPreference, string.Empty);
+            if (!string.IsNullOrWhiteSpace(saved))
+            {
+                string[] ids = saved.Split('|');
+                for (int slot = 0; slot < ids.Length; slot++)
+                {
+                    DockReorderEntry entry = _dockEntries.Find(
+                        candidate => candidate.Id == ids[slot]);
+                    if (entry != null) entry.Slot = slot;
+                }
+            }
+            LayoutDockEntries();
+        }
+
+        private void ToggleDockReorderMode()
+        {
+            if (_dockEntries.Count == 0) BuildDockReorderSystem();
+            _dockReorderMode = !_dockReorderMode;
+            if (_dock == null) return;
+            if (!_dock.gameObject.activeSelf)
+                _creator?.OpenWindowDockFromTwoPalms();
+            foreach (DockReorderEntry entry in _dockEntries)
+                if (entry.Button != null)
+                    // Keep the Button raycastable. XrLabDockReorderItem claims
+                    // pointer-down and clears eligibleForClick while editing,
+                    // so apps cannot launch but the hand cursor/drag still work.
+                    entry.Button.interactable = true;
+            if (_dockDepthBar != null)
+                _dockDepthBar.gameObject.SetActive(_dockReorderMode);
+            if (!_dockReorderMode)
+            {
+                LayoutDockEntries();
+                SaveDockOrder();
+            }
+            Debug.Log("[XrLab] dock reorder=" + _dockReorderMode);
+        }
+
+        internal bool BeginDockItemDrag(string id, Vector3 world)
+        {
+            if (!_dockReorderMode || _dock == null) return false;
+            _draggedDockEntry = _dockEntries.Find(entry => entry.Id == id);
+            if (_draggedDockEntry == null) return false;
+            _dockDragStartLocal = _dock.InverseTransformPoint(world);
+            _dockDragPartStarts.Clear();
+            foreach (RectTransform part in _draggedDockEntry.Parts)
+                if (part != null)
+                    _dockDragPartStarts[part] = part.anchoredPosition;
+            return true;
+        }
+
+        internal void DragDockItem(Vector3 world, PointerEventData eventData)
+        {
+            if (_draggedDockEntry == null || _dock == null) return;
+            Vector2 current = _dock.InverseTransformPoint(world);
+            Vector2 delta = current - _dockDragStartLocal;
+            foreach (KeyValuePair<RectTransform, Vector2> pair in _dockDragPartStarts)
+                if (pair.Key != null)
+                    pair.Key.anchoredPosition = pair.Value + delta;
+            if (eventData != null) eventData.eligibleForClick = false;
+        }
+
+        internal void EndDockItemDrag(Vector3 world)
+        {
+            if (_draggedDockEntry == null || _dock == null) return;
+            Vector2 local = _dock.InverseTransformPoint(world);
+            int nearestSlot = 0;
+            float nearestDistance = float.MaxValue;
+            for (int i = 0; i < DockSlotPositions.Length; i++)
+            {
+                float distance = Vector2.Distance(local, DockSlotPositions[i]);
+                if (distance >= nearestDistance) continue;
+                nearestDistance = distance;
+                nearestSlot = i;
+            }
+            DockReorderEntry displaced = _dockEntries.Find(
+                entry => entry != _draggedDockEntry && entry.Slot == nearestSlot);
+            int previousSlot = _draggedDockEntry.Slot;
+            _draggedDockEntry.Slot = nearestSlot;
+            if (displaced != null) displaced.Slot = previousSlot;
+            _draggedDockEntry = null;
+            _dockDragPartStarts.Clear();
+            LayoutDockEntries();
+            SaveDockOrder();
+        }
+
+        private void LayoutDockEntries()
+        {
+            foreach (DockReorderEntry entry in _dockEntries)
+            {
+                if (entry.Button == null) continue;
+                Vector2 target = DockSlotPositions[Mathf.Clamp(
+                    entry.Slot, 0, DockSlotPositions.Length - 1)];
+                RectTransform buttonRect = entry.Button.transform as RectTransform;
+                Vector2 delta = target - buttonRect.anchoredPosition;
+                foreach (RectTransform part in entry.Parts)
+                    if (part != null) part.anchoredPosition += delta;
+            }
+        }
+
+        private void SaveDockOrder()
+        {
+            _dockEntries.Sort((left, right) => left.Slot.CompareTo(right.Slot));
+            PlayerPrefs.SetString(DockOrderPreference,
+                string.Join("|", _dockEntries.ConvertAll(entry => entry.Id)));
+            PlayerPrefs.Save();
+        }
+
+        internal void BeginDockDepthDrag(Vector3 world)
+        {
+            if (!_dockReorderMode || _dock == null) return;
+            _dockDepthDragStartX = _dock.InverseTransformPoint(world).x;
+            _dockDepthDragStart = _creator?.WindowDockDepth ?? 1.08f;
+        }
+
+        internal void DragDockDepth(Vector3 world, PointerEventData eventData)
+        {
+            if (!_dockReorderMode || _dock == null || _creator == null) return;
+            float x = _dock.InverseTransformPoint(world).x;
+            _creator.SetWindowDockDepth(
+                _dockDepthDragStart + (x - _dockDepthDragStartX) * .0018f);
+            if (eventData != null) eventData.eligibleForClick = false;
+        }
+
         private void OpenBrowser(string title, string url)
         {
             // Three simultaneous web surfaces are a deliberate S24 thermal/RAM
@@ -504,8 +822,6 @@ namespace MLOmega.XR.UI
                 _activeProtectedHost = _protectedHosts.Count == 0
                     ? null
                     : _protectedHosts[_protectedHosts.Count - 1];
-            if (_activeProtectedHost == null && _windows.Count == 0)
-                _creator?.OpenWindowDockFromTwoPalms();
             RefreshKeyboardPreview();
             Debug.Log("[XrLab] " + entry.Label +
                       " host closed; remaining=" + _protectedHosts.Count);
@@ -600,8 +916,24 @@ namespace MLOmega.XR.UI
 
         private void OnApplicationQuit()
         {
+            XrealSecureSurfaceSpike.CinemaReturnCompleted -=
+                RestartGesturesAfterCinemaReturn;
             if (!_cleanExitSaved) SaveSessionState();
             ReleaseAllProtectedApplications();
+        }
+
+        private void OnApplicationPause(bool paused)
+        {
+            // Android may reclaim the process without calling OnApplicationQuit.
+            // Persist the shell as soon as it loses foreground; protected apps
+            // are only force-stopped by the explicit quit/close paths.
+            if (paused && !_cleanExitSaved) SaveSessionState();
+        }
+
+        private void RestartGesturesAfterCinemaReturn()
+        {
+            GestureBridge gestures = FindFirstObjectByType<GestureBridge>();
+            gestures?.RestartAfterExternalCameraResume();
         }
 
         private void ReleaseAllProtectedApplications()
@@ -841,10 +1173,6 @@ namespace MLOmega.XR.UI
                     : _windows[_windows.Count - 1];
             _creator?.UnregisterExternalSpatialWindow(window.WindowRect);
             Destroy(window.gameObject);
-            if (_windows.Count == 0 && _dock != null)
-            {
-                _creator?.OpenWindowDockFromTwoPalms();
-            }
         }
 
         private void BuildKeyboard()
@@ -1242,6 +1570,64 @@ namespace MLOmega.XR.UI
         }
     }
 
+    internal sealed class XrLabDockReorderItem : MonoBehaviour,
+        IPointerDownHandler, IDragHandler, IEndDragHandler
+    {
+        private WorldCreatorLabShell _shell;
+        private string _id;
+        private bool _dragging;
+
+        public void Configure(WorldCreatorLabShell shell, string id)
+        {
+            _shell = shell;
+            _id = id;
+        }
+
+        public void OnPointerDown(PointerEventData eventData)
+        {
+            _dragging = _shell != null && _shell.BeginDockItemDrag(
+                _id, eventData.pointerCurrentRaycast.worldPosition);
+            if (_dragging) eventData.eligibleForClick = false;
+        }
+
+        public void OnDrag(PointerEventData eventData)
+        {
+            if (!_dragging) return;
+            _shell.DragDockItem(
+                eventData.pointerCurrentRaycast.worldPosition, eventData);
+        }
+
+        public void OnEndDrag(PointerEventData eventData)
+        {
+            if (!_dragging) return;
+            _dragging = false;
+            _shell.EndDockItemDrag(eventData.pointerCurrentRaycast.worldPosition);
+        }
+    }
+
+    internal sealed class XrLabDockDepthHandle : MonoBehaviour,
+        IPointerEnterHandler, IPointerExitHandler, IPointerDownHandler,
+        IDragHandler, IPointerClickHandler
+    {
+        private WorldCreatorLabShell _shell;
+
+        public void Configure(WorldCreatorLabShell shell) => _shell = shell;
+
+        public void OnPointerEnter(PointerEventData eventData) { }
+        public void OnPointerExit(PointerEventData eventData) { }
+
+        public void OnPointerDown(PointerEventData eventData) =>
+            _shell?.BeginDockDepthDrag(eventData.pointerCurrentRaycast.worldPosition);
+
+        public void OnDrag(PointerEventData eventData) =>
+            _shell?.DragDockDepth(
+                eventData.pointerCurrentRaycast.worldPosition, eventData);
+
+        // Marker used by the shared world-space resolver. Depth is performed by
+        // pointer-down/drag; a stationary release intentionally has no action.
+        public void OnPointerClick(PointerEventData eventData) { }
+    }
+
     public sealed class XrLabWebView : WebView
     {
         private int _targetFps = 15;
@@ -1250,6 +1636,7 @@ namespace MLOmega.XR.UI
         private float _nextWarmInvalidation;
         private int _pageLoadVersion;
         private int _scaleScheduledVersion = -1;
+        private int _xrViewportWidth = 1080;
         private bool _eventPumpFailed;
 #if UNITY_ANDROID && !UNITY_EDITOR
         private AndroidJavaObject _nativeWebView;
@@ -1317,6 +1704,27 @@ namespace MLOmega.XR.UI
                 Debug.LogWarning("[XrLab] WebView redraw failed: " + exception.Message);
             }
 #endif
+        }
+
+        public void SetXrViewportWidth(int pixelWidth)
+        {
+            _xrViewportWidth = Mathf.Clamp(pixelWidth, 640, 1920);
+            if (state == State.Initialized) ApplyXrViewportConstraint();
+        }
+
+        private void ApplyXrViewportConstraint()
+        {
+            int width = _xrViewportWidth;
+            EvaluateJS(
+                "(function(){var w=" + width + ",d=window.devicePixelRatio||1;" +
+                "var m=document.querySelector('meta[name=viewport]');" +
+                "if(!m){m=document.createElement('meta');m.name='viewport';" +
+                "(document.head||document.documentElement).appendChild(m);}" +
+                "m.setAttribute('content','width='+w+',initial-scale='+(1/d)+" +
+                "',minimum-scale=0.1,maximum-scale=10,user-scalable=yes');" +
+                "document.documentElement.style.setProperty('min-width',w+'px','important');" +
+                "if(document.body)document.body.style.setProperty('min-width',w+'px','important');" +
+                "})();");
         }
 
         private void ConfigureNativeWebViewOnce()
@@ -1450,16 +1858,7 @@ namespace MLOmega.XR.UI
             // by density 3 across our 1080-pixel XR surface, and WebView.zoomBy
             // is silently clamped. Replace that page-owned constraint with an
             // XR viewport before applying the native scale.
-            EvaluateJS(
-                "(function(){var w=1080,d=window.devicePixelRatio||1;" +
-                "var m=document.querySelector('meta[name=viewport]');" +
-                "if(!m){m=document.createElement('meta');m.name='viewport';" +
-                "(document.head||document.documentElement).appendChild(m);}" +
-                "m.setAttribute('content','width='+w+',initial-scale='+(1/d)+" +
-                "',minimum-scale=0.1,maximum-scale=10,user-scalable=yes');" +
-                "document.documentElement.style.setProperty('min-width',w+'px','important');" +
-                "if(document.body)document.body.style.setProperty('min-width',w+'px','important');" +
-                "})();");
+            ApplyXrViewportConstraint();
             InstallXrPageBehaviors();
             yield return new WaitForSecondsRealtime(.20f);
             if (version != _pageLoadVersion) yield break;
@@ -1739,14 +2138,23 @@ namespace MLOmega.XR.UI
                 _rect,
                 "lab.browser." + Title,
                 () => _shell.CloseWindow(this),
-                ApplyWindowSize);
+                ApplyWindowSize,
+                ApplyWindowCrop);
+        }
+
+        private void ApplyWindowCrop(Vector4 normalizedInsets, bool final)
+        {
+            // The shared crop viewport clips this already-rendered WebView while
+            // leaving its texture size, DOM layout and pointer coordinate space
+            // untouched. This is intentionally not a browser resize.
+            if (final) _browser?.RequestNativeRedraw();
         }
 
         private void ApplyWindowSize(Vector2 requested, bool final)
         {
             if (_rect == null) return;
             Vector2 size = new Vector2(
-                Mathf.Clamp(requested.x, 620f, 1800f),
+                Mathf.Clamp(requested.x, 620f, 2600f),
                 Mathf.Clamp(requested.y, 360f, 1200f));
             _rect.sizeDelta = size;
             float halfWidth = size.x * .5f;
@@ -1827,13 +2235,28 @@ namespace MLOmega.XR.UI
             // can pause a playing video. The existing 1080-wide texture is only
             // presented larger while DOM isolation hides the rest of the page.
             if (_xrMode) return;
-            int textureWidth = 1080;
-            int textureHeight = Mathf.Clamp(
-                Mathf.RoundToInt(textureWidth * contentSize.y / contentSize.x),
-                360,
-                1080);
+            float contentAspect = contentSize.x / contentSize.y;
+            int textureWidth;
+            int textureHeight;
+            if (contentAspect >= 1f)
+            {
+                // The backing page now grows with the physical XR window instead
+                // of leaving a larger shell around a fixed 1080-wide page.
+                textureWidth = Mathf.Clamp(
+                    Mathf.RoundToInt(contentSize.x), 1080, 1920);
+                textureHeight = Mathf.Clamp(
+                    Mathf.RoundToInt(textureWidth / contentAspect), 240, 1080);
+            }
+            else
+            {
+                textureHeight = Mathf.Clamp(
+                    Mathf.RoundToInt(contentSize.y), 1080, 1600);
+                textureWidth = Mathf.Clamp(
+                    Mathf.RoundToInt(textureHeight * contentAspect), 360, 1920);
+            }
             var resolution = new Vector2Int(textureWidth, textureHeight);
             _browser.Resize(resolution, resolution);
+            _browser.SetXrViewportWidth(textureWidth);
             if (_raw != null)
                 _raw.uvRect = new Rect(
                     2f / textureWidth,
@@ -2355,7 +2778,8 @@ namespace MLOmega.XR.UI
         IPointerDownHandler,
         IPointerUpHandler,
         IPointerClickHandler,
-        IDragHandler
+        IDragHandler,
+        IScrollHandler
     {
         private XrLabBrowserWindow _window;
         private XrLabWebView _browser;
@@ -2426,18 +2850,29 @@ namespace MLOmega.XR.UI
             }
             if (_scrolling)
             {
-                // A short hand displacement must produce a useful page motion
-                // in XR. 4.2x is intentionally faster than the old phone-like
-                // 1.6x mapping while remaining controllable at 25 fps.
-                int scrollY = Mathf.RoundToInt(-delta.y * 4.2f);
-                if (scrollY != 0) _browser.ScrollAt(current, scrollY);
-                _browser.RequestNativeRedraw();
+                // Deliberately no head-driven scrolling. Once a pinched gaze
+                // moves far enough, cancel the tap and wait for release. Page
+                // motion is owned exclusively by the index-only gesture.
             }
             else
             {
                 Send(current, 2);
             }
             _lastWebPoint = current;
+        }
+
+        public void OnScroll(PointerEventData eventData)
+        {
+            if (_browser == null || eventData == null) return;
+            Vector2Int point = WebPoint(eventData);
+            int deltaY = Mathf.Clamp(
+                Mathf.RoundToInt(-eventData.scrollDelta.y * 14f),
+                -520,
+                520);
+            if (deltaY == 0) return;
+            _window?.SelectFromContent();
+            _browser.ScrollAt(point, deltaY);
+            _browser.RequestNativeRedraw();
         }
 
         private long Send(PointerEventData eventData, int action)

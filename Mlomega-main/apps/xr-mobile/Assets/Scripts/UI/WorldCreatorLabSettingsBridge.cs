@@ -24,13 +24,17 @@ namespace MLOmega.XR.UI
         private Func<bool> _labRecordBusy;
         private Func<float> _labRecordElapsed;
         private Func<string> _labRecordStatus;
+        private Action _labDockReorderAction;
+        private Func<bool> _labDockReorderActive;
         private Button _labQuitButton;
         private Button _labVrButton;
         private Button _labKeyboardButton;
         private Button _labRecordButton;
+        private Button _labLowLightButton;
         private TextMeshProUGUI _labVrLabel;
         private TextMeshProUGUI _labKeyboardLabel;
         private TextMeshProUGUI _labRecordLabel;
+        private TextMeshProUGUI _labLowLightLabel;
         private Image _labQuitConfirmPanel;
         private Coroutine _labRecordUiLoop;
 
@@ -43,7 +47,9 @@ namespace MLOmega.XR.UI
             Func<bool> recording,
             Func<bool> recordBusy,
             Func<float> recordElapsed,
-            Func<string> recordStatus)
+            Func<string> recordStatus,
+            Action toggleDockReorder,
+            Func<bool> dockReorderActive)
         {
             _labQuitAction = quit;
             _labKeyboardAction = toggleKeyboard;
@@ -54,6 +60,8 @@ namespace MLOmega.XR.UI
             _labRecordBusy = recordBusy;
             _labRecordElapsed = recordElapsed;
             _labRecordStatus = recordStatus;
+            _labDockReorderAction = toggleDockReorder;
+            _labDockReorderActive = dockReorderActive;
             if (_settingsDeck == null) BuildSettingsDeck();
             if (_settingsDeckRect == null) return;
             BuildOptionalLabSettingsActions();
@@ -69,6 +77,12 @@ namespace MLOmega.XR.UI
             _settingsDeckRect.sizeDelta = size;
             LayoutSettingsDeck();
             RefreshOptionalLabSettingsActions();
+            ResolveInteractionSettings();
+            if (_interactionSettings != null)
+                SetHeadOnlyModeVisualState(
+                    _interactionSettings.IsHeadOnlyModeEnabled,
+                    _interactionSettings.IsHeadOnlyInteractionActive,
+                    false);
             if (_labRecordUiLoop == null)
                 _labRecordUiLoop = StartCoroutine(RefreshLabRecordUi());
             _settingsHitGraphics.Clear();
@@ -135,6 +149,16 @@ namespace MLOmega.XR.UI
                 },
                 64f);
             _labRecordLabel = CaptionFor(_labRecordButton);
+
+            _labLowLightButton = MakeVisionControlButton(
+                _settingsDeckRect,
+                "LAB HAND LOW LIGHT",
+                VisionIconKind.Hand,
+                "Main nuit",
+                Vector2.zero,
+                CycleOptionalLabLowLight,
+                64f);
+            _labLowLightLabel = CaptionFor(_labLowLightButton);
 
             _labQuitConfirmPanel = MakeImage(
                 _settingsDeckRect,
@@ -218,6 +242,102 @@ namespace MLOmega.XR.UI
                 enabled ? new Color(.55f, .78f, 1f) : VisionSecondary);
         }
 
+        public void ToggleLabKeyboardFromGesture()
+        {
+            if (_labKeyboardAction == null) return;
+            _labKeyboardAction.Invoke();
+            RefreshOptionalLabSettingsActions();
+            ShowGestureToast(
+                _labKeyboardVisible?.Invoke() == true
+                    ? "CLAVIER // DEUX DOIGTS"
+                    : "CLAVIER FERME",
+                VisionPressed);
+        }
+
+        private void ToggleLabDockReorder()
+        {
+            _labDockReorderAction?.Invoke();
+            RefreshQuickMenuTelemetry();
+        }
+
+        private bool IsLabDockReorderActive() =>
+            _labDockReorderActive?.Invoke() == true;
+
+        private void CycleOptionalLabLowLight()
+        {
+            ResolveInteractionSettings();
+            _interactionSettings?.CycleHandLowLightMode();
+            RefreshOptionalLabSettingsActions();
+            string mode = _interactionSettings?.CurrentHandLowLightMode switch
+            {
+                HandLowLightMode.Light => "LEGER",
+                HandLowLightMode.Strong => "RENFORCE",
+                _ => "DESACTIVE",
+            };
+            ShowGestureToast("MAIN BASSE LUMIERE // " + mode, VisionPressed);
+        }
+
+#if false // Bluetooth pairing is intentionally owned by Android Settings on the S24.
+        private void ToggleOptionalLabBluetoothPanel()
+        {
+            if (_labBluetoothPanel == null) return;
+            bool visible = !_labBluetoothPanel.gameObject.activeSelf;
+            _labBluetoothPanel.gameObject.SetActive(visible);
+            if (visible)
+            {
+                _labBluetoothPanel.transform.SetAsLastSibling();
+                RefreshOptionalLabBluetoothStatus();
+            }
+        }
+
+        private void RefreshOptionalLabBluetoothStatus()
+        {
+            _nextLabBluetoothRefreshAt = Time.unscaledTime + 2f;
+            string value = _labBluetoothStatus?.Invoke() ??
+                "UNAVAILABLE|Bluetooth non configure";
+            string[] parts = value.Split('|');
+            string state = parts.Length > 0 ? parts[0] : "UNAVAILABLE";
+            string device = parts.Length > 1 ? parts[1] : "Aucun appareil";
+            int battery = -1;
+            string inputs = "Aucune entree externe";
+            foreach (string part in parts)
+            {
+                if (part.StartsWith("battery=", StringComparison.Ordinal) &&
+                    int.TryParse(part.Substring(8), out int parsed))
+                    battery = parsed;
+                else if (part.StartsWith("inputs=", StringComparison.Ordinal))
+                    inputs = part.Substring(7);
+            }
+            bool enabled = state == "ON";
+            bool connected = enabled &&
+                !device.StartsWith("Aucun", StringComparison.OrdinalIgnoreCase);
+            Color color = connected
+                ? new Color(.35f, 1f, .72f, .98f)
+                : (enabled
+                    ? new Color(.42f, .74f, 1f, .98f)
+                    : new Color(.58f, .61f, .68f, .96f));
+            if (_labBluetoothGaugeLabel != null)
+                _labBluetoothGaugeLabel.text = connected
+                    ? (battery >= 0 ? battery + "%" : "OK")
+                    : (enabled ? "ON" : "OFF");
+            if (_labBluetoothRing != null)
+            {
+                _labBluetoothRing.fillAmount = battery >= 0
+                    ? Mathf.Clamp01(battery / 100f)
+                    : (enabled ? 1f : 0f);
+                _labBluetoothRing.color = color;
+            }
+            if (_labBluetoothLabel != null)
+                _labBluetoothLabel.text = connected ? "Ecouteurs" : "Bluetooth";
+            SetControlCenterState(_labBluetoothButton, connected, color);
+            if (_labBluetoothDetail != null)
+                _labBluetoothDetail.text = connected
+                    ? device + (battery >= 0 ? " · " + battery + "%" : "") +
+                      "\n" + inputs
+                    : device + "\n" + inputs + "\nConnexion geree par le S24";
+        }
+
+#endif
         private void RefreshOptionalLabSettingsActions()
         {
             if (_labVrButton == null) return;
@@ -228,6 +348,22 @@ namespace MLOmega.XR.UI
                 _labKeyboardLabel.text = keyboard ? "Fermer clavier" : "Clavier";
             SetControlCenterState(_labVrButton, vr, VisionPressed);
             SetControlCenterState(_labKeyboardButton, keyboard, VisionPressed);
+
+            HandLowLightMode lowLight =
+                _interactionSettings?.CurrentHandLowLightMode ?? HandLowLightMode.Off;
+            if (_labLowLightLabel != null)
+                _labLowLightLabel.text = lowLight switch
+                {
+                    HandLowLightMode.Light => "Main nuit légère",
+                    HandLowLightMode.Strong => "Main nuit renforcée",
+                    _ => "Main nuit désactivée",
+                };
+            SetControlCenterState(
+                _labLowLightButton,
+                lowLight != HandLowLightMode.Off,
+                lowLight == HandLowLightMode.Strong
+                    ? new Color(.72f, .48f, 1f, .98f)
+                    : VisionPressed);
 
             bool recording = _labRecording?.Invoke() == true;
             bool busy = _labRecordBusy?.Invoke() == true;
@@ -325,9 +461,25 @@ namespace MLOmega.XR.UI
             float rowScale = compact ? .76f : .88f;
             float step = Mathf.Min(104f, surfaceWidth * .22f);
             float y = surfaceBottom + 55f;
-            LayoutScaledButton(_labVrButton, new Vector2(-step, y), 64f, rowScale);
-            LayoutScaledButton(_labKeyboardButton, new Vector2(0f, y), 64f, rowScale);
-            LayoutScaledButton(_labRecordButton, new Vector2(step, y), 64f, rowScale);
+            LayoutScaledButton(_labVrButton, new Vector2(-1.5f * step, y), 64f, rowScale);
+            LayoutScaledButton(_labKeyboardButton, new Vector2(-.5f * step, y), 64f, rowScale);
+            LayoutScaledButton(_labRecordButton, new Vector2(.5f * step, y), 64f, rowScale);
+            LayoutScaledButton(_labLowLightButton, new Vector2(1.5f * step, y), 64f, rowScale);
+
+            // Four compact live diagnostics share the dark header on Lab builds.
+            float diagStep = Mathf.Min(156f, surfaceWidth * .22f);
+            if (_settingsDevicePill != null)
+                _settingsDevicePill.rectTransform.anchoredPosition =
+                    new Vector2(-1.5f * diagStep, surfaceTop - 98f);
+            if (_settingsLensPill != null)
+                _settingsLensPill.rectTransform.anchoredPosition =
+                    new Vector2(-.5f * diagStep, surfaceTop - 98f);
+            if (_settingsTrackingPill != null)
+                _settingsTrackingPill.rectTransform.anchoredPosition =
+                    new Vector2(.5f * diagStep, surfaceTop - 98f);
+            if (_settingsAudioPill != null)
+                _settingsAudioPill.rectTransform.anchoredPosition =
+                    new Vector2(1.5f * diagStep, surfaceTop - 98f);
 
             if (_labQuitConfirmPanel != null)
                 LayoutSurface(

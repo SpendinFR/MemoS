@@ -15,6 +15,7 @@ using System.Collections.Generic;
 using System.IO;
 using MLOmega.Contracts.V19;
 using MLOmega.XR.Core;
+using MLOmega.XR.UI;
 using UnityEngine;
 
 namespace MLOmega.XR.Reflex
@@ -77,10 +78,11 @@ namespace MLOmega.XR.Reflex
         public bool IsRunning { get; private set; }
 
         /// <summary>
-        /// Full gesture interaction is suspended, but a 1 fps fist sentinel stays
+        /// Full gesture interaction is suspended, but a 10 fps fist sentinel stays
         /// alive so the same physical gesture can restore it without a controller.
         /// </summary>
         public bool IsInteractionStandby { get; private set; }
+        public HandLowLightMode LowLightMode { get; private set; }
 
         private readonly Queue<Action> _mainThreadQueue = new Queue<Action>();
         private readonly object _queueLock = new object();
@@ -89,7 +91,9 @@ namespace MLOmega.XR.Reflex
         // throttle would drop anyway, so downscale + Bitmap copy only run 10-15x/s.
         private float _readbackAccum;
         private float _readbackPeriod;
-        private const float StandbyFps = 1f;
+        private const float StandbyFps = 10f;
+        private readonly HandLowLightEnhancer _lowLightEnhancer =
+            new HandLowLightEnhancer();
 
 #if UNITY_ANDROID && !UNITY_EDITOR
         private AndroidJavaObject _pipeline;
@@ -97,9 +101,16 @@ namespace MLOmega.XR.Reflex
         private Texture2D _readback;      // reused downscaled ARGB readback target
         private AndroidJavaObject _bitmap; // reused native ARGB_8888 Bitmap
         private int[] _argbBuffer;         // reused packed-ARGB scratch for setPixels
+        private Color32[] _rgbaBuffer;     // reused top-down pixels; no per-frame GC
+        private int[] _sampleX;
+        private int[] _sampleUx;
+        private int[] _sampleY;
+        private int[] _sampleUy;
+        private int _sampleSourceW, _sampleSourceH, _sampleUvW, _sampleUvH;
         private int _bitmapW, _bitmapH;
         private int _submittedFrames;
         private bool _savedDiagnosticFrame;
+        private bool _loggedNativeI420FastPath;
 #endif
 
         private void Awake()
@@ -149,6 +160,17 @@ namespace MLOmega.XR.Reflex
 
 #if UNITY_ANDROID && !UNITY_EDITOR
             long tsMs = envelope != null ? envelope.CaptureMonotonicNs / 1_000_000L : 0L;
+            // XREAL Eye already exposes CPU-readable Y/U/V planes. Feeding those
+            // directly avoids the synchronous GPU ReadPixels fence that used to
+            // interrupt the 60 Hz XR render loop up to 25 times per second.
+            if (_useDedicatedEyePinchPipeline &&
+                _capture != null &&
+                _capture.TryGetCurrentNativeI420(
+                    out Texture2D planeY,
+                    out Texture2D planeU,
+                    out Texture2D planeV) &&
+                TryPushNativeI420(planeY, planeU, planeV, tsMs))
+                return;
             PushDownscaledFrame(texture, tsMs);
 #endif
         }
@@ -187,9 +209,35 @@ namespace MLOmega.XR.Reflex
             if (!IsRunning) return;
             IsRunning = false;
 #if UNITY_ANDROID && !UNITY_EDITOR
-            _pipeline?.Call("stop");
+            try
+            {
+                _pipeline?.Call("stop");
+            }
+            finally
+            {
+                _pipeline?.Dispose();
+                _pipeline = null;
+                _proxy = null;
+            }
             ReleaseBitmap();
 #endif
+        }
+
+        /// <summary>
+        /// Rebuild the native MediaPipe graph after Android temporarily moved the
+        /// XREAL panel to a 2D system display. The XREAL RGB camera may have been
+        /// stopped and started while this component stayed enabled, so OnEnable
+        /// alone cannot recover the native recogniser. Idempotent and deliberately
+        /// preserves the current low-light/standby configuration.
+        /// </summary>
+        public void RestartAfterExternalCameraResume()
+        {
+            bool shouldRun = IsRunning;
+            if (shouldRun) Deactivate();
+            if (shouldRun) Activate();
+            Debug.Log(
+                "[GestureBridge] external display return: MediaPipe graph " +
+                (IsRunning ? "restarted" : "inactive"));
         }
 
         private void UpdateReadbackPeriod()
@@ -207,8 +255,32 @@ namespace MLOmega.XR.Reflex
             Debug.Log(
                 "[GestureBridge] physical gestures " +
                 (IsInteractionStandby
-                    ? "standby (1 fps fist sentinel)"
+                    ? "standby (10 fps fist sentinel)"
                     : $"active ({_targetFps:F0} fps)"));
+        }
+
+        public void SetLowLightMode(HandLowLightMode mode)
+        {
+            HandLowLightMode safe = mode switch
+            {
+                HandLowLightMode.Light => HandLowLightMode.Light,
+                HandLowLightMode.Strong => HandLowLightMode.Strong,
+                _ => HandLowLightMode.Off,
+            };
+            if (LowLightMode == safe) return;
+            LowLightMode = safe;
+            _lowLightEnhancer.Reset();
+            Debug.Log("[GestureBridge] hand low-light=" + safe);
+        }
+
+        /// <summary>
+        /// Lab-only thermal budget for the inference copy. Eye capture,
+        /// recordings and displayed textures remain at native resolution.
+        /// </summary>
+        public void SetInferenceLongEdge(int pixels)
+        {
+            _maxDimension = Mathf.Clamp(pixels, 320, 768);
+            Debug.Log("[GestureBridge] inference long edge=" + _maxDimension);
         }
 
         private void ToggleInteractionStandby() =>
@@ -232,8 +304,30 @@ namespace MLOmega.XR.Reflex
                 : ctx.Call<AndroidJavaObject>("getFilesDir").Call<string>("getAbsolutePath");
             string modelPath = filesDir + "/" + _modelRelativePath;
 
-            var cfg = new AndroidJavaClass("com.mlomega.xr.reflexvision.GestureConfigFactory")
-                .CallStatic<AndroidJavaObject>("forUnity", modelPath, _numHands, _targetFps);
+            float detection = .50f;
+            float presence = .50f;
+            float tracking = .50f;
+            if (_useDedicatedEyePinchPipeline)
+            {
+                // Keep the sensitive Eye profile loaded once. Reconstructing the
+                // GPU HandLandmarker synchronously on every UI mode change froze
+                // the XR app for ~3.2 s on the S24. Geometry + debounce remain the
+                // action gate; low-light modes now change pixels without restart.
+                detection = .35f;
+                presence = .35f;
+                tracking = .42f;
+            }
+
+            using var factory = new AndroidJavaClass(
+                "com.mlomega.xr.reflexvision.GestureConfigFactory");
+            using var cfg = factory.CallStatic<AndroidJavaObject>(
+                "forUnityTuned",
+                modelPath,
+                _numHands,
+                _targetFps,
+                detection,
+                presence,
+                tracking);
             _proxy = new GestureProxy(this);
             string pipelineClass = _useDedicatedEyePinchPipeline
                 ? "com.mlomega.xr.reflexvision.EyePinchPipeline"
@@ -271,33 +365,21 @@ namespace MLOmega.XR.Reflex
                 _readback = new Texture2D(w, h, TextureFormat.RGBA32, false);
             }
             _readback.ReadPixels(new Rect(0, 0, w, h), 0, 0, false);
-            _readback.Apply(false, false);
             RenderTexture.active = previous;
             RenderTexture.ReleaseTemporary(rt);
 
-            EnsureBitmap(w, h);
-            if (_bitmap == null) return;
-
-            // Pack RGBA32 -> Android's packed-int ARGB_8888 (0xAARRGGBB), flipping
-            // vertically because ReadPixels is bottom-up but Bitmap rows are top-down.
-            Color32[] px = _readback.GetPixels32();
-            if (_argbBuffer == null || _argbBuffer.Length != w * h)
-                _argbBuffer = new int[w * h];
+            EnsurePixelBuffers(w, h);
+            Unity.Collections.NativeArray<Color32> raw =
+                _readback.GetRawTextureData<Color32>();
             for (int y = 0; y < h; y++)
             {
                 int srcRow = (h - 1 - y) * w;
                 int dstRow = y * w;
                 for (int x = 0; x < w; x++)
-                {
-                    Color32 c = px[srcRow + x];
-                    _argbBuffer[dstRow + x] =
-                        (c.a << 24) | (c.r << 16) | (c.g << 8) | c.b;
-                }
+                    _rgbaBuffer[dstRow + x] = raw[srcRow + x];
             }
+            SubmitTopDownPixels(w, h, timestampMs);
 
-            _bitmap.Call("setPixels", _argbBuffer, 0, w, 0, 0, w, h);
-            _pipeline.Call("pushFrame", _bitmap, timestampMs);
-            _submittedFrames++;
             if (_deviceDiagnostics && !_savedDiagnosticFrame)
             {
                 _savedDiagnosticFrame = true;
@@ -309,7 +391,167 @@ namespace MLOmega.XR.Reflex
                     $"[GestureBridge] first Eye frame submitted: {w}x{h}, " +
                     $"ts={timestampMs}, diagnostic={path}");
             }
-            else if (_deviceDiagnostics && _submittedFrames % 60 == 0)
+        }
+
+        private bool TryPushNativeI420(
+            Texture2D planeY,
+            Texture2D planeU,
+            Texture2D planeV,
+            long timestampMs)
+        {
+            if (_pipeline == null || planeY == null || planeU == null || planeV == null)
+                return false;
+            int sw = planeY.width;
+            int sh = planeY.height;
+            int uw = planeU.width;
+            int uh = planeU.height;
+            if (sw <= 0 || sh <= 0 || uw <= 0 || uh <= 0 ||
+                planeV.width != uw || planeV.height != uh)
+                return false;
+
+            Unity.Collections.NativeArray<byte> yPlane =
+                planeY.GetRawTextureData<byte>();
+            Unity.Collections.NativeArray<byte> uPlane =
+                planeU.GetRawTextureData<byte>();
+            Unity.Collections.NativeArray<byte> vPlane =
+                planeV.GetRawTextureData<byte>();
+            if (yPlane.Length < sw * sh ||
+                uPlane.Length < uw * uh ||
+                vPlane.Length < uw * uh)
+                return false;
+
+            float scale = (float)_maxDimension / Mathf.Max(sw, sh);
+            int w = Mathf.Max(1, Mathf.RoundToInt(sw * Mathf.Min(1f, scale)));
+            int h = Mathf.Max(1, Mathf.RoundToInt(sh * Mathf.Min(1f, scale)));
+            EnsurePixelBuffers(w, h);
+            EnsureI420SamplingMaps(sw, sh, uw, uh, w, h);
+
+            // Texture rows are bottom-up; Android Bitmap rows are top-down. Use
+            // nearest-neighbour sampling directly from the SDK planes and the
+            // same BGR channel order as the validated Eye conversion shader.
+            // Source lookups are precomputed: divisions/Mathf.Clamp inside this
+            // 25 fps pixel loop were producing visible XR compositor hitches.
+            bool enhance = LowLightMode != HandLowLightMode.Off;
+            for (int y = 0; y < h; y++)
+            {
+                int sy = _sampleY[y];
+                int uy = _sampleUy[y];
+                int dstRow = y * w;
+                for (int x = 0; x < w; x++)
+                {
+                    int sx = _sampleX[x];
+                    int ux = _sampleUx[x];
+                    int luminance = yPlane[sy * sw + sx];
+                    int u = uPlane[uy * uw + ux] - 128;
+                    int v = vPlane[uy * uw + ux] - 128;
+                    int red = ClampByte(luminance + ((359 * v) >> 8));
+                    int green = ClampByte(
+                        luminance - ((88 * u + 183 * v) >> 8));
+                    int blue = ClampByte(luminance + ((454 * u) >> 8));
+                    int destination = dstRow + x;
+                    if (enhance)
+                    {
+                        _rgbaBuffer[destination] = new Color32(
+                            (byte)blue,
+                            (byte)green,
+                            (byte)red,
+                            255);
+                    }
+                    else
+                    {
+                        // Exact packed equivalent of the validated BGR Color32
+                        // path, without its otherwise redundant second pass.
+                        _argbBuffer[destination] = unchecked((int)0xFF000000) |
+                            (blue << 16) | (green << 8) | red;
+                    }
+                }
+            }
+            if (enhance)
+                SubmitTopDownPixels(w, h, timestampMs);
+            else
+                SubmitPackedArgb(w, h, timestampMs);
+            if (!_loggedNativeI420FastPath)
+            {
+                _loggedNativeI420FastPath = true;
+                Debug.Log(
+                    $"[GestureBridge] native I420 fast path: {sw}x{sh} -> {w}x{h}; " +
+                    "GPU ReadPixels bypassed");
+            }
+            return true;
+        }
+
+        private void EnsureI420SamplingMaps(
+            int sourceW,
+            int sourceH,
+            int uvW,
+            int uvH,
+            int outputW,
+            int outputH)
+        {
+            bool valid =
+                _sampleX != null && _sampleX.Length == outputW &&
+                _sampleY != null && _sampleY.Length == outputH &&
+                _sampleSourceW == sourceW && _sampleSourceH == sourceH &&
+                _sampleUvW == uvW && _sampleUvH == uvH;
+            if (valid) return;
+
+            _sampleX = new int[outputW];
+            _sampleUx = new int[outputW];
+            _sampleY = new int[outputH];
+            _sampleUy = new int[outputH];
+            for (int x = 0; x < outputW; x++)
+            {
+                int sourceX = Mathf.Min(sourceW - 1, x * sourceW / outputW);
+                _sampleX[x] = sourceX;
+                _sampleUx[x] = Mathf.Min(uvW - 1, sourceX * uvW / sourceW);
+            }
+            for (int y = 0; y < outputH; y++)
+            {
+                int sourceY = sourceH - 1 -
+                    Mathf.Min(sourceH - 1, y * sourceH / outputH);
+                _sampleY[y] = sourceY;
+                _sampleUy[y] = Mathf.Min(uvH - 1, sourceY * uvH / sourceH);
+            }
+            _sampleSourceW = sourceW;
+            _sampleSourceH = sourceH;
+            _sampleUvW = uvW;
+            _sampleUvH = uvH;
+        }
+
+        private static int ClampByte(int value) =>
+            value < 0 ? 0 : (value > 255 ? 255 : value);
+
+        private void EnsurePixelBuffers(int w, int h)
+        {
+            int length = w * h;
+            if (_rgbaBuffer == null || _rgbaBuffer.Length != length)
+                _rgbaBuffer = new Color32[length];
+            if (_argbBuffer == null || _argbBuffer.Length != length)
+                _argbBuffer = new int[length];
+            EnsureBitmap(w, h);
+        }
+
+        private void SubmitTopDownPixels(int w, int h, long timestampMs)
+        {
+            if (_bitmap == null || _rgbaBuffer == null) return;
+            _lowLightEnhancer.Process(_rgbaBuffer, w, h, LowLightMode);
+            for (int i = 0; i < _rgbaBuffer.Length; i++)
+            {
+                Color32 c = _rgbaBuffer[i];
+                _argbBuffer[i] =
+                    (c.a << 24) | (c.r << 16) | (c.g << 8) | c.b;
+            }
+
+            SubmitPackedArgb(w, h, timestampMs);
+        }
+
+        private void SubmitPackedArgb(int w, int h, long timestampMs)
+        {
+            if (_bitmap == null || _argbBuffer == null) return;
+            _bitmap.Call("setPixels", _argbBuffer, 0, w, 0, 0, w, h);
+            _pipeline.Call("pushFrame", _bitmap, timestampMs);
+            _submittedFrames++;
+            if (_deviceDiagnostics && _submittedFrames % 60 == 0)
             {
                 Debug.Log(
                     $"[GestureBridge] Eye frames submitted={_submittedFrames}, " +
@@ -338,6 +580,13 @@ namespace MLOmega.XR.Reflex
                 _bitmap = null;
             }
             _bitmapW = _bitmapH = 0;
+            _rgbaBuffer = null;
+            _argbBuffer = null;
+            _sampleX = null;
+            _sampleUx = null;
+            _sampleY = null;
+            _sampleUy = null;
+            _sampleSourceW = _sampleSourceH = _sampleUvW = _sampleUvH = 0;
         }
 
         internal void EnqueueMainThread(Action a) { lock (_queueLock) { _mainThreadQueue.Enqueue(a); } }
@@ -385,6 +634,11 @@ namespace MLOmega.XR.Reflex
             "TWO_PALM_MENU" => GestureKind.TwoPalmMenu,
             "SWIPE_HIDE" => GestureKind.SwipeHide,
             "FIST_TOGGLE" => GestureKind.FistToggle,
+            "INDEX_SCROLL_BEGIN" => GestureKind.IndexScrollBegin,
+            "INDEX_SCROLL_UPDATE" => GestureKind.IndexScrollUpdate,
+            "INDEX_SCROLL_END" => GestureKind.IndexScrollEnd,
+            "TWO_FINGER_KEYBOARD" => GestureKind.TwoFingerKeyboard,
+            "THUMB_UP_QUICK_MENU" => GestureKind.ThumbUpQuickMenu,
             _ => GestureKind.PinchUpdate
         };
 

@@ -23,6 +23,21 @@ enum class GestureKind {
     /** Closed fist held long enough to toggle full-rate gesture interaction. */
     FIST_TOGGLE,
 
+    /** Index-only pointing pose acquired; vertical finger scrolling may begin. */
+    INDEX_SCROLL_BEGIN,
+
+    /** Signed normalised vertical index displacement in zoomFactor. */
+    INDEX_SCROLL_UPDATE,
+
+    /** Index-only pointing pose released. */
+    INDEX_SCROLL_END,
+
+    /** Index and middle fingers held up request the XR keyboard. */
+    TWO_FINGER_KEYBOARD,
+
+    /** Thumb-up held long enough requests the compact quick menu. */
+    THUMB_UP_QUICK_MENU,
+
     /** Lateral swipe detected — request to hide the UI. */
     SWIPE_HIDE,
 }

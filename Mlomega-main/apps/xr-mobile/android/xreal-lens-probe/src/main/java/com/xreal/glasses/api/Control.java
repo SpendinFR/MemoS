@@ -19,4 +19,5 @@ public final class Control {
     public native int nativeGetEcLevel();
     public native int nativeGetEcLevelCount();
     public native boolean nativeSetEcLevel(int level);
+    public native boolean nativeRecenterGlasses();
 }

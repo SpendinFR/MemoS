@@ -21,6 +21,8 @@ namespace MLOmega.XR.SecureSurfaceSpike
     /// </summary>
     public sealed class XrealSecureSurfaceSpike : MonoBehaviour
     {
+        public static event Action CinemaReturnCompleted;
+
         private const string Tag = "[SECURE-SURFACE-SPIKE]";
         private const int LegacyLayerId = 9107;
         private const int FirstMultiLayerId = 9200;
@@ -98,6 +100,10 @@ namespace MLOmega.XR.SecureSurfaceSpike
 
         [DllImport("XREALXRPlugin", CallingConvention = CallingConvention.Cdecl)]
         private static extern void RemoveCompositionLayer(int layerId);
+
+        [DllImport("XREALXRPlugin", CallingConvention = CallingConvention.Cdecl)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool RecenterGlasses();
 #endif
 
         private AndroidJavaObject _surface;
@@ -109,6 +115,11 @@ namespace MLOmega.XR.SecureSurfaceSpike
         private WorldCreatorController _creator;
         private RectTransform _windowRect;
         private RectTransform _videoRect;
+        private Vector2 _cropBaseVideoSize;
+        private Vector2 _cropBaseVideoPosition;
+        private Vector4 _manualCropInsets;
+        private SecureAndroidAppPointer _appPointer;
+        private Vector2Int _displayPixels = new Vector2Int(1920, 1080);
         private QuadCompositionLayer _layer;
         private readonly Vector3[] _videoCorners = new Vector3[4];
         private string _status = "initialisation XR";
@@ -121,7 +132,10 @@ namespace MLOmega.XR.SecureSurfaceSpike
         private bool _useMultiSession;
         private int _sessionId;
         private int _layerId = LegacyLayerId;
+        private int _primaryLayerId = LegacyLayerId;
+        private int _alternateLayerId = LegacyLayerId + 1;
         private int _initialSlot;
+        private bool _surfaceTransitionActive;
 
         public event Action<XrealSecureSurfaceSpike> Closed;
         public event Action<XrealSecureSurfaceSpike> Focused;
@@ -160,11 +174,16 @@ namespace MLOmega.XR.SecureSurfaceSpike
                 _sessionId = 0;
                 _layerId = LegacyLayerId;
             }
+            _primaryLayerId = _layerId;
+            _alternateLayerId = _useMultiSession
+                ? _primaryLayerId + 2000
+                : LegacyLayerId + 1;
         }
 
         public static bool IsCommercialPackage(string packageName) =>
             string.Equals(packageName, "com.netflix.mediaclient", StringComparison.Ordinal) ||
             string.Equals(packageName, "com.amazon.avod.thirdpartyclient", StringComparison.Ordinal) ||
+            string.Equals(packageName, "com.limelight", StringComparison.Ordinal) ||
             (!string.IsNullOrWhiteSpace(packageName) &&
              packageName.IndexOf("canal", StringComparison.OrdinalIgnoreCase) >= 0);
 
@@ -198,12 +217,18 @@ namespace MLOmega.XR.SecureSurfaceSpike
 #if UNITY_ANDROID && !UNITY_EDITOR
             try
             {
+                // RegisterExternalSpatialWindow restores the saved shell before
+                // the Android bridge exists. Derive the first buffer geometry
+                // here so a saved portrait never starts as a 1920x1080 Surface.
+                _displayPixels = DesiredDisplayPixelsForWindow();
+                _appPointer?.SetDisplayPixels(_displayPixels);
+                LayoutVideoArea();
                 _layer = new QuadCompositionLayer
                 {
                     layerId = _layerId,
                     compositionOrder = _useMultiSession ? 11 + (_sessionId % 8) : 10,
-                    pixelWidth = 1920,
-                    pixelHeight = 1080,
+                    pixelWidth = _displayPixels.x,
+                    pixelHeight = _displayPixels.y,
                     format = 1,
                     cropEnabled = 0,
                     poseValid = 1,
@@ -217,6 +242,7 @@ namespace MLOmega.XR.SecureSurfaceSpike
                     widthMeters = 1.6f,
                     heightMeters = 0.9f,
                 };
+                ConfigureLayerCrop(ref _layer);
                 UpdateLayerPoseFromWorldWindow();
 
                 SetPersistentProtect();
@@ -301,12 +327,37 @@ namespace MLOmega.XR.SecureSurfaceSpike
 #endif
         }
 
+        public void OnCinemaRecenter(string ignored)
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            try
+            {
+                // Hardware validation proved that the native action recenters
+                // the cinema view, but it must run after the user has moved their
+                // gaze away from the lower-right button. The Android dock owns
+                // that three-second countdown before invoking this callback.
+                bool recentered = RecenterGlasses();
+                Debug.Log(Tag + " cinema native recenter=" + recentered);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning(Tag + " cinema native recenter unavailable: " +
+                                 ex.Message);
+            }
+#endif
+        }
+
         private IEnumerator ReattachProtectedVideoLayer()
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
             // NRXRActivity has already been relaunched by Android. Leave one XR
             // frame boundary for XREALXRPlugin to recreate its display layer.
-            yield return new WaitForSecondsRealtime(0.25f);
+            yield return new WaitForSecondsRealtime(0.40f);
+
+            // The XREAL 2D->3D path recreates its tracking manager and therefore
+            // its origin. Restore the entire visible layout once against the new
+            // camera before placing the protected quad in that coordinate frame.
+            _creator?.RestoreCinemaTransitionLayout();
 
             AndroidJavaObject previousSurface = _surface;
             AndroidJavaObject replacementSurface = null;
@@ -348,6 +399,12 @@ namespace MLOmega.XR.SecureSurfaceSpike
                 SetActiveCompositionLayer(_layerId);
                 _status = "MLOMEGA 3D: application restauree";
                 Debug.Log(Tag + " protected quad recreated after cinema; Android task preserved");
+
+                // The 2D system-panel transition pauses the XREAL RGB camera while
+                // the GestureBridge component itself remains enabled. Rebuild its
+                // native graph once the one and only XR resume is stable, otherwise
+                // MediaPipe keeps waiting on the dead pre-cinema camera stream.
+                CinemaReturnCompleted?.Invoke();
             }
             catch (Exception ex)
             {
@@ -448,6 +505,9 @@ namespace MLOmega.XR.SecureSurfaceSpike
             canvas.sortingOrder = 240;
             root.AddComponent<GraphicRaycaster>();
             _windowRect = root.GetComponent<RectTransform>();
+            _windowRect.anchorMin = _windowRect.anchorMax =
+                new Vector2(0.5f, 0.5f);
+            _windowRect.pivot = new Vector2(0.5f, 0.5f);
             // The Android display itself is the window. Keep the default at
             // 16:9 and leave transient handles to WorldCreatorController.
             // Invisible 36 px interaction gutter around a 1120x630 (16:9)
@@ -497,25 +557,26 @@ namespace MLOmega.XR.SecureSurfaceSpike
             Image videoHitSurface = video.AddComponent<Image>();
             videoHitSurface.color = Color.clear;
             videoHitSurface.raycastTarget = true;
-            var appPointer = video.AddComponent<SecureAndroidAppPointer>();
-            appPointer.Configure(
+            _appPointer = video.AddComponent<SecureAndroidAppPointer>();
+            _appPointer.Configure(
                 _videoRect,
-                new Vector2Int(1920, 1080),
+                _displayPixels,
                 _useMultiSession,
                 _sessionId,
                 NotifyFocused);
             LayoutVideoArea();
             MakeTopActionHandle(
-                _windowRect, -84f, "\u25B2", SecureAndroidAppAction.ScrollUp, appPointer);
+                _windowRect, -62f, SecureAndroidAppAction.ScrollUp, _appPointer);
             MakeTopActionHandle(
-                _windowRect, -28f, "\u25BC", SecureAndroidAppAction.ScrollDown, appPointer);
+                _windowRect, 0f, SecureAndroidAppAction.ScrollDown, _appPointer);
             MakeTopActionHandle(
-                _windowRect, 28f, "\u2328", SecureAndroidAppAction.Keyboard, appPointer);
-            if (!_useMultiSession)
-            {
+                _windowRect, 62f, SecureAndroidAppAction.Keyboard, _appPointer);
+            if (string.Equals(
+                    _startupPackageName,
+                    "com.limelight",
+                    StringComparison.Ordinal))
                 MakeTopActionHandle(
-                    _windowRect, 84f, "TV", SecureAndroidAppAction.Cinema, appPointer);
-            }
+                    _windowRect, 124f, SecureAndroidAppAction.Desktop2D, _appPointer);
 
             _creator = FindAnyObjectByType<WorldCreatorController>();
             if (_creator != null)
@@ -544,9 +605,13 @@ namespace MLOmega.XR.SecureSurfaceSpike
         private void ApplySpatialWindowSize(Vector2 requested, bool final)
         {
             if (_windowRect == null) return;
-            _windowRect.sizeDelta = new Vector2(
-                Mathf.Clamp(requested.x, 620f, 1800f),
-                Mathf.Clamp(requested.y, 420f, 1200f));
+            float width = Mathf.Clamp(requested.x, 620f, 2600f);
+            float height = Mathf.Clamp(requested.y, 420f, 1200f);
+            _windowRect.SetSizeWithCurrentAnchors(
+                RectTransform.Axis.Horizontal, width);
+            _windowRect.SetSizeWithCurrentAnchors(
+                RectTransform.Axis.Vertical, height);
+            if (final) ResizeHostedDisplayForWindow();
             LayoutVideoArea();
             if (final) Debug.Log(Tag + " secure window resized " + _windowRect.sizeDelta);
         }
@@ -554,13 +619,259 @@ namespace MLOmega.XR.SecureSurfaceSpike
         private void LayoutVideoArea()
         {
             if (_windowRect == null || _videoRect == null) return;
-            Vector2 size = _windowRect.sizeDelta;
+            Vector2 size = _windowRect.rect.size;
             _videoRect.anchorMin = _videoRect.anchorMax = new Vector2(0.5f, 0.5f);
             _videoRect.anchoredPosition = Vector2.zero;
-            _videoRect.sizeDelta = new Vector2(
-                Mathf.Max(560f, size.x - 72f),
-                Mathf.Max(315f, size.y - 72f));
+            float availableWidth = Mathf.Max(560f, size.x - 72f);
+            float availableHeight = Mathf.Max(315f, size.y - 72f);
+            float sourceAspect = Mathf.Max(1f, _displayPixels.x) /
+                                 Mathf.Max(1f, _displayPixels.y);
+            float width = availableWidth;
+            float height = width / sourceAspect;
+            if (height > availableHeight)
+            {
+                height = availableHeight;
+                width = height * sourceAspect;
+            }
+            // Native Android sessions are 1920x1080. Aspect-fit keeps every
+            // pixel square in portrait and ultrawide shells; unused optical
+            // space remains transparent rather than stretching the app.
+            _videoRect.sizeDelta = new Vector2(width, height);
+            if (_manualCropInsets.sqrMagnitude <= .000001f)
+            {
+                _cropBaseVideoSize = _videoRect.sizeDelta;
+                _cropBaseVideoPosition = _videoRect.anchoredPosition;
+            }
         }
+
+        private void ApplySpatialWindowCrop(
+            Vector4 normalizedInsets,
+            bool final)
+        {
+            _manualCropInsets = new Vector4(
+                Mathf.Clamp01(normalizedInsets.x),
+                Mathf.Clamp01(normalizedInsets.y),
+                Mathf.Clamp01(normalizedInsets.z),
+                Mathf.Clamp01(normalizedInsets.w));
+            // During the drag only the shared Atelier frame moves. Submitting a
+            // mutable native source rect every frame updated one eye before the
+            // other on One Pro. Commit the compositor crop once on release.
+            if (_videoRect == null || !final) return;
+            if (_cropBaseVideoSize.x < 1f || _cropBaseVideoSize.y < 1f)
+            {
+                _manualCropInsets = Vector4.zero;
+                LayoutVideoArea();
+                _manualCropInsets = normalizedInsets;
+            }
+
+            float visibleX = Mathf.Max(
+                .08f, 1f - _manualCropInsets.x - _manualCropInsets.y);
+            float visibleY = Mathf.Max(
+                .08f, 1f - _manualCropInsets.z - _manualCropInsets.w);
+            _videoRect.sizeDelta = new Vector2(
+                _cropBaseVideoSize.x * visibleX,
+                _cropBaseVideoSize.y * visibleY);
+            _videoRect.anchoredPosition = _cropBaseVideoPosition + new Vector2(
+                (_manualCropInsets.x - _manualCropInsets.y) *
+                    _cropBaseVideoSize.x * .5f,
+                (_manualCropInsets.z - _manualCropInsets.w) *
+                    _cropBaseVideoSize.y * .5f);
+
+            _appPointer?.SetCropInsets(_manualCropInsets);
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_layerCreated)
+                RecreateProtectedSurface(_displayPixels, false, "crop");
+#endif
+            if (final)
+                Debug.Log(Tag + " manual crop=" + _manualCropInsets);
+        }
+
+        private void ResizeHostedDisplayForWindow()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_widevine == null || _windowRect == null ||
+                _surfaceTransitionActive) return;
+            Vector2Int desired = DesiredDisplayPixelsForWindow();
+            if (desired == _displayPixels) return;
+            RecreateProtectedSurface(desired, true, "aspect");
+#endif
+        }
+
+        private Vector2Int DesiredDisplayPixelsForWindow()
+        {
+            if (_windowRect == null) return new Vector2Int(1920, 1080);
+            Vector2 rectSize = _windowRect.rect.size;
+            float width = Mathf.Max(560f, rectSize.x - 72f);
+            float height = Mathf.Max(315f, rectSize.y - 72f);
+            float aspect = width / height;
+            if (aspect >= 1f)
+            {
+                int pixelWidth = 1920;
+                return new Vector2Int(
+                    pixelWidth,
+                    Mathf.Clamp(Mathf.RoundToInt(pixelWidth / aspect), 360, 1080));
+            }
+            int pixelHeight = 1080;
+            return new Vector2Int(
+                Mathf.Clamp(Mathf.RoundToInt(pixelHeight * aspect), 640, 1920),
+                pixelHeight);
+        }
+
+        private void ConfigureLayerCrop(ref QuadCompositionLayer layer)
+        {
+            float visibleX = Mathf.Max(
+                .08f, 1f - _manualCropInsets.x - _manualCropInsets.y);
+            float visibleY = Mathf.Max(
+                .08f, 1f - _manualCropInsets.z - _manualCropInsets.w);
+            layer.cropEnabled = _manualCropInsets.sqrMagnitude > .000001f
+                ? (byte)1
+                : (byte)0;
+            if (layer.cropEnabled != 0)
+            {
+                layer.viewportX = 0f;
+                layer.viewportY = 0f;
+                layer.viewportWidth = 1f;
+                layer.viewportHeight = 1f;
+                layer.sourceX = _manualCropInsets.x;
+                layer.sourceY = _manualCropInsets.w;
+                layer.sourceWidth = visibleX;
+                layer.sourceHeight = visibleY;
+                return;
+            }
+            layer.viewportX = 0f;
+            layer.viewportY = 0f;
+            layer.viewportWidth = 0f;
+            layer.viewportHeight = 0f;
+            layer.sourceX = 0f;
+            layer.sourceY = 0f;
+            layer.sourceWidth = 0f;
+            layer.sourceHeight = 0f;
+        }
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+        private bool ResizeHostedDisplay(Vector2Int pixels)
+        {
+            try
+            {
+                return _useMultiSession
+                    ? _widevine.CallStatic<bool>(
+                        "resizeApplicationDisplay",
+                        _sessionId,
+                        pixels.x,
+                        pixels.y,
+                        240)
+                    : _widevine.CallStatic<bool>(
+                        "resizeApplicationDisplay",
+                        pixels.x,
+                        pixels.y,
+                        240);
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning(Tag + " hosted display resize unavailable: " +
+                                 exception.Message);
+                return false;
+            }
+        }
+
+        private bool RecreateProtectedSurface(
+            Vector2Int desired,
+            bool resizeDisplay,
+            string reason)
+        {
+            if (_surfaceTransitionActive || !_layerCreated || _widevine == null)
+                return false;
+            _surfaceTransitionActive = true;
+            Vector2Int previousPixels = _displayPixels;
+            int previousLayerId = _layerId;
+            AndroidJavaObject previousSurface = _surface;
+            AndroidJavaObject replacementSurface = null;
+            bool displayResized = false;
+            int replacementLayerId = _layerId == _primaryLayerId
+                ? _alternateLayerId
+                : _primaryLayerId;
+            try
+            {
+                // The logical display, native buffer queue and optical quad are
+                // one atomic geometry. Mutating pixelWidth on an existing XREAL
+                // Surface caused the observed portrait/left-right divergence.
+                _displayPixels = desired;
+                LayoutVideoArea();
+                UpdateLayerPoseFromWorldWindow();
+                QuadCompositionLayer replacement = _layer;
+                replacement.layerId = replacementLayerId;
+                replacement.pixelWidth = desired.x;
+                replacement.pixelHeight = desired.y;
+                ConfigureLayerCrop(ref replacement);
+
+                SetPersistentProtect();
+                CreateDisplayLayer();
+                IntPtr nativeSurface = CreateQuadSurfaceLayer(
+                    ref replacement,
+                    true,
+                    false);
+                if (nativeSurface == IntPtr.Zero)
+                    throw new InvalidOperationException(
+                        reason + " replacement surface is NULL");
+                replacementSurface = new AndroidJavaObject(nativeSurface);
+
+                if (resizeDisplay)
+                {
+                    displayResized = ResizeHostedDisplay(desired);
+                    if (!displayResized)
+                        throw new InvalidOperationException(
+                            reason + " VirtualDisplay resize refused");
+                }
+
+                bool attached = _useMultiSession
+                    ? _widevine.CallStatic<bool>(
+                        "reattachTrustedSurface",
+                        _sessionId,
+                        replacementSurface,
+                        desired.x,
+                        desired.y)
+                    : _widevine.CallStatic<bool>(
+                        "reattachTrustedSurface",
+                        replacementSurface,
+                        desired.x,
+                        desired.y);
+                if (!attached)
+                    throw new InvalidOperationException(
+                        reason + " replacement surface reattach refused");
+
+                _layer = replacement;
+                _layerId = replacementLayerId;
+                _surface = replacementSurface;
+                replacementSurface = null;
+                _appPointer?.SetDisplayPixels(desired);
+                SetActiveCompositionLayer(_layerId);
+                RemoveCompositionLayer(previousLayerId);
+                previousSurface?.Dispose();
+                Debug.Log(Tag + " " + reason + " surface swapped " +
+                          desired.x + "x" + desired.y + " layer=" + _layerId);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                if (replacementLayerId != previousLayerId)
+                    RemoveCompositionLayer(replacementLayerId);
+                if (displayResized && previousPixels != desired)
+                    ResizeHostedDisplay(previousPixels);
+                _displayPixels = previousPixels;
+                LayoutVideoArea();
+                UpdateLayerPoseFromWorldWindow();
+                SetActiveCompositionLayer(previousLayerId);
+                Debug.LogError(Tag + " " + reason + " surface swap failed: " +
+                               exception.Message);
+                return false;
+            }
+            finally
+            {
+                replacementSurface?.Dispose();
+                _surfaceTransitionActive = false;
+            }
+        }
+#endif
 
         private void CloseSpatialVideoWindow()
         {
@@ -721,7 +1032,6 @@ namespace MLOmega.XR.SecureSurfaceSpike
         private static void MakeTopActionHandle(
             RectTransform parent,
             float x,
-            string glyph,
             SecureAndroidAppAction action,
             SecureAndroidAppPointer pointer)
         {
@@ -729,19 +1039,54 @@ namespace MLOmega.XR.SecureSurfaceSpike
                 parent,
                 "Android app " + action,
                 Vector2.zero,
-                new Vector2(42f, 28f),
-                new Color(.12f, .15f, .19f, .78f));
+                new Vector2(48f, 34f),
+                new Color(.16f, .17f, .20f, .72f));
+            handle.sprite = WorldCreatorController.GetLabWindowHandleSprite();
+            handle.type = Image.Type.Sliced;
             RectTransform rect = handle.rectTransform;
             rect.anchorMin = rect.anchorMax = new Vector2(.5f, 1f);
-            rect.anchoredPosition = new Vector2(x, -18f);
+            // Same detached visionOS gutter as the shared window controls. The
+            // handle is optically absent until gaze enters its hit target.
+            rect.anchoredPosition = new Vector2(x, 48f);
             handle.raycastTarget = true;
-            TextMeshProUGUI label = MakeLabel(
-                rect,
-                glyph,
-                Vector2.zero,
-                new Vector2(34f, 24f),
-                18f);
-            label.alignment = TextAlignmentOptions.Center;
+            Color ink = new Color(.96f, .97f, 1f, .98f);
+            void Line(float px, float py, float width, float height, float angle = 0f)
+            {
+                Image line = MakeImage(
+                    rect,
+                    "Android action icon",
+                    new Vector2(px, py),
+                    new Vector2(width, height),
+                    ink);
+                line.raycastTarget = false;
+                line.rectTransform.localRotation = Quaternion.Euler(0f, 0f, angle);
+            }
+            if (action == SecureAndroidAppAction.Desktop2D)
+            {
+                Line(0f, 9f, 25f, 2.2f);
+                Line(0f, -1f, 25f, 2.2f);
+                Line(-12f, 4f, 2.2f, 12f);
+                Line(12f, 4f, 2.2f, 12f);
+                Line(-6f, -7f, 7f, 2.2f, -22f);
+                Line(6f, -7f, 7f, 2.2f, 22f);
+            }
+            else if (action == SecureAndroidAppAction.Keyboard)
+            {
+                Line(-13f, 0f, 2f, 19f);
+                Line(13f, 0f, 2f, 19f);
+                Line(0f, 9f, 26f, 2f);
+                Line(0f, -9f, 26f, 2f);
+                for (int row = 0; row < 2; row++)
+                    for (int column = 0; column < 4; column++)
+                        Line(-9f + column * 6f, 4f - row * 7f, 2.6f, 2.6f);
+            }
+            else
+            {
+                float direction = action == SecureAndroidAppAction.ScrollUp ? 1f : -1f;
+                Line(0f, direction * 7f, 14f, 2.4f, 45f * direction);
+                Line(0f, direction * 7f, 14f, 2.4f, -45f * direction);
+                Line(0f, -direction * 2f, 2.4f, 19f);
+            }
             var control = handle.gameObject.AddComponent<SecureAndroidAppActionHandle>();
             control.Configure(handle, pointer, action);
         }
@@ -791,6 +1136,7 @@ namespace MLOmega.XR.SecureSurfaceSpike
         ScrollDown,
         Keyboard,
         Cinema,
+        Desktop2D,
     }
 
     public sealed class SecureAndroidAppActionHandle : MonoBehaviour,
@@ -827,7 +1173,7 @@ namespace MLOmega.XR.SecureSurfaceSpike
         public void OnPointerExit(PointerEventData eventData)
         {
             if (_image != null)
-                _image.color = new Color(.12f, .15f, .19f, .78f);
+                _image.color = new Color(.16f, .17f, .20f, .72f);
             if (_group != null) _group.alpha = 0f;
         }
 
@@ -848,6 +1194,9 @@ namespace MLOmega.XR.SecureSurfaceSpike
                 case SecureAndroidAppAction.Cinema:
                     _pointer.EnterCinemaMode();
                     break;
+                case SecureAndroidAppAction.Desktop2D:
+                    _pointer.EnterDesktopMode();
+                    break;
                 default:
                     _pointer.ScrollPage(
                         _action == SecureAndroidAppAction.ScrollUp ? -1 : 1);
@@ -867,7 +1216,8 @@ namespace MLOmega.XR.SecureSurfaceSpike
         IPointerDownHandler,
         IPointerUpHandler,
         IPointerClickHandler,
-        IDragHandler
+        IDragHandler,
+        IScrollHandler
     {
         private const string Tag = "[SECURE-ANDROID-POINTER]";
         private const string Bridge =
@@ -890,6 +1240,7 @@ namespace MLOmega.XR.SecureSurfaceSpike
         private bool _multiSession;
         private int _sessionId;
         private Action _focused;
+        private Vector4 _cropInsets;
 
         public void Configure(
             RectTransform contentRect,
@@ -917,6 +1268,18 @@ namespace MLOmega.XR.SecureSurfaceSpike
 #endif
         }
 
+        public void SetDisplayPixels(Vector2Int displayPixels)
+        {
+            _displayPixels = new Vector2Int(
+                Mathf.Max(1, displayPixels.x),
+                Mathf.Max(1, displayPixels.y));
+        }
+
+        public void SetCropInsets(Vector4 normalizedInsets)
+        {
+            _cropInsets = normalizedInsets;
+        }
+
         public void OnPointerEnter(PointerEventData eventData) { }
 
         public void OnPointerExit(PointerEventData eventData)
@@ -939,28 +1302,29 @@ namespace MLOmega.XR.SecureSurfaceSpike
         {
             if (!_down) return;
             Vector2Int raw = DisplayPoint(eventData);
-            Vector2Int delta = raw - _lastRawPoint;
             _lastRawPoint = raw;
             Vector2Int displacement = raw - _downRawPoint;
             _rawDragDistance = displacement.magnitude;
-            // Cumulative jitter used to turn a stationary pinch into a scroll.
-            // Require a real displacement from the original down point.
+            // Head motion must never scroll Android content. Once a gaze pinch
+            // moves beyond click tolerance, cancel the native tap. The dedicated
+            // one-index gesture owns all page scrolling.
             if (!_dragStarted && _rawDragDistance < 26f) return;
             if (!_dragStarted)
             {
                 _dragStarted = true;
-                delta = raw - _downRawPoint;
+                Send("pointerCancel", raw);
+                _down = false;
             }
-            _lastPoint = AmplifiedPoint(_lastPoint, delta);
-            if (!Send("pointerMove", _lastPoint))
-                Debug.LogWarning(Tag + " move injection rejected");
         }
 
         public void OnPointerUp(PointerEventData eventData)
         {
             if (!_down) return;
-            if (!_dragStarted) _lastPoint = _downRawPoint;
-            Send("pointerUp", _lastPoint);
+            if (!_dragStarted)
+            {
+                _lastPoint = _downRawPoint;
+                Send("pointerUp", _lastPoint);
+            }
             _down = false;
             _dragStarted = false;
         }
@@ -971,7 +1335,21 @@ namespace MLOmega.XR.SecureSurfaceSpike
 
         public void ScrollPage(int direction)
         {
-            if (!_down) StartCoroutine(ScrollPageRoutine(direction));
+            if (!_down && !_actionRunning)
+                StartCoroutine(ScrollPageRoutine(direction));
+        }
+
+        public void OnScroll(PointerEventData eventData)
+        {
+            if (
+                eventData == null ||
+                Mathf.Abs(eventData.scrollDelta.y) < 10f ||
+                _down ||
+                _actionRunning)
+                return;
+            int direction = eventData.scrollDelta.y < 0f ? 1 : -1;
+            Debug.Log(Tag + " index -> proven page swipe direction=" + direction);
+            ScrollPage(direction);
         }
 
         public void OpenKeyboard()
@@ -983,7 +1361,30 @@ namespace MLOmega.XR.SecureSurfaceSpike
         public void EnterCinemaMode()
         {
             if (_multiSession) return;
+            FindAnyObjectByType<WorldCreatorController>()?.
+                CaptureCinemaTransitionLayout();
+            // A protected 2D cinema handoff has no Unity targets to operate.
+            // Head-only dwell must become passive before the display switch so
+            // watching a film can never synthesize clicks behind the video.
+            foreach (MonoBehaviour behaviour in
+                     FindObjectsByType<MonoBehaviour>(FindObjectsSortMode.None))
+            {
+                if (behaviour is not IWorldCreatorInteractionSettings settings)
+                    continue;
+                settings.EnterHeadOnlyPassiveMode();
+                break;
+            }
             SendNoCoordinates("enterCinemaMode");
+        }
+
+        public void EnterDesktopMode()
+        {
+            if (_multiSession) return;
+            FindAnyObjectByType<WorldCreatorController>()?.
+                CaptureCinemaTransitionLayout();
+            // Desktop remains interactive: unlike DRM cinema, never mutate the
+            // user's physical/head-only gesture mode during the display switch.
+            SendNoCoordinates("enterDesktopMode");
         }
 
         public void LaunchYouTube()
@@ -998,7 +1399,8 @@ namespace MLOmega.XR.SecureSurfaceSpike
 
         private void Update()
         {
-            if (_down || _actionRunning || Time.unscaledTime < _nextHoverAt ||
+            if (_down || _actionRunning ||
+                Time.unscaledTime < _nextHoverAt ||
                 _contentRect == null || !_contentRect.gameObject.activeInHierarchy)
                 return;
             _nextHoverAt = Time.unscaledTime + (1f / 30f);
@@ -1031,6 +1433,10 @@ namespace MLOmega.XR.SecureSurfaceSpike
             float nx = Mathf.Clamp01(local.x / rect.width + _contentRect.pivot.x);
             float ny = 1f - Mathf.Clamp01(
                 local.y / rect.height + _contentRect.pivot.y);
+            nx = _cropInsets.x + nx * Mathf.Max(
+                .01f, 1f - _cropInsets.x - _cropInsets.y);
+            ny = _cropInsets.w + ny * Mathf.Max(
+                .01f, 1f - _cropInsets.z - _cropInsets.w);
             return new Vector2Int(
                 Mathf.Clamp(
                     Mathf.RoundToInt(nx * (_displayPixels.x - 1)),
@@ -1058,7 +1464,7 @@ namespace MLOmega.XR.SecureSurfaceSpike
             _actionRunning = true;
             Vector2Int start = new Vector2Int(
                 _displayPixels.x / 2,
-                direction < 0 ? _displayPixels.y / 3 : _displayPixels.y * 2 / 3);
+                direction < 0 ? _displayPixels.y / 6 : _displayPixels.y * 5 / 6);
             Vector2Int end = new Vector2Int(
                 start.x,
                 direction < 0 ? _displayPixels.y * 5 / 6 : _displayPixels.y / 6);
@@ -1139,10 +1545,12 @@ namespace MLOmega.XR.SecureSurfaceSpike
 
         private void ReleasePointer()
         {
-            if (!_down) return;
-            Send("pointerUp", _lastPoint);
-            _down = false;
-            _dragStarted = false;
+            if (_down)
+            {
+                Send("pointerUp", _lastPoint);
+                _down = false;
+                _dragStarted = false;
+            }
         }
 
         private void OnDisable()
