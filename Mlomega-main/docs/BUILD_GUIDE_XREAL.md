@@ -1385,3 +1385,154 @@ Il n'y a plus de seconde relance `NRXRActivity` ni de
 `NativeRGBCamera Start Failure` après le retour 3D. Cette v23 valide donc le
 correctif de reprise Eye/MediaPipe. Ne pas recopier ce correctif dans Product,
 Atelier ou PhoneOnly sans leur propre gate de non-régression.
+
+## 15. Navigateur VR immersif Unity/XREAL (11 août 2026)
+
+Cette fonction reste strictement Lab-only. Elle ne modifie ni Product XREAL,
+ni Atelier, ni PhoneOnly, ni les runs Memory/Brain2. La v51 est le nouveau
+checkpoint matériel stable du Lab : les sites VR directs déjà fonctionnels ont
+été retestés après l'ajout des commandes et de la sélection anti-publicité,
+sans régression observée.
+
+### 15.1 Artefact stable et gate physique
+
+```text
+artifact = apps/xr-mobile/build/android/mlomega-xreal-world-lab-v51-opaque-vr.apk
+package  = com.mlomega.xr.worldatelierlabv14
+size     = 244848281 bytes
+sha256   = 8B6F5D2BEA8AABCB914795538A6C35C4BA6830A4C1F6136F38A7240798A18A80
+hardware = Galaxy S24 + XREAL One Pro + Eye
+result   = VR180 3840x1920, head tracking, pause/play, seek et sortie validés
+```
+
+Validation réelle : DeoVR a fourni un flux `3840x1920`, projeté en VR180 dans
+le rendu stéréo Unity/XREAL. La rotation de tête explore correctement le dôme ;
+pause/play, navigation dans la timeline, zoom et sortie deux paumes fonctionnent.
+Après les derniers changements, DeoVR et les autres lecteurs à flux direct ont
+été retestés avec succès.
+
+Un lecteur tiers testé ne fournit au WebView qu'un aperçu `720x360 mono` et des
+fragments que Media3 refuse (`3003`). Son lecteur plat continue à jouer, mais il
+n'expose aucune seconde vue : le Lab le laisse donc en grand écran au lieu de
+fabriquer une fausse stéréo. Cette limite d'un site ne constitue pas une
+régression du moteur VR.
+
+### 15.2 Architecture validée
+
+Le chemin fonctionnel est le suivant :
+
+1. `XrWebVrBridge` enveloppe le `WebViewClient` TLab sans consommer les requêtes.
+2. Il conserve en mémoire les candidats HLS, DASH, MP4/WebM et, en dernier
+   recours, les endpoints vidéo opaques ou utilisant un en-tête `Range`.
+3. Cookies, user-agent et en-têtes d'authentification restent en mémoire ; les
+   URL et identifiants sont systématiquement masqués dans les logs.
+4. Android Media3 décode le candidat sélectionné sur une surface adossée à un
+   `HardwareBuffer` partagé, demandée en `3840x1920@30`.
+5. Unity importe directement cette texture GPU. `XrLabWebVrPresenter` l'affiche
+   sur un dôme racine de 24 m et le shader `XrLabWebVr` choisit la moitié SBS
+   correcte pour chaque œil dans la swapchain XREAL.
+6. Le navigateur reste la source de session, mais sa capture passe à 3 fps et
+   son chrome est caché pendant le rendu décodé afin de limiter la chauffe.
+
+Les projections prises en charge sont VR180 SBS, VR360 SBS, VR360 mono,
+dual-fisheye, right/left et top/bottom. L'autodétection utilise d'abord les
+métadonnées Media3 puis les dimensions mesurées. Un flux haute résolution proche
+de 2:1 est traité comme deux yeux carrés VR180 ; le sélecteur manuel reste
+disponible pour les métadonnées absentes ou erronées.
+
+### 15.3 Sélection de flux et protection anti-régression
+
+La liste conserve au plus douze candidats. L'ordre reste volontairement :
+
+1. manifestes HLS/DASH explicites ;
+2. fichiers MP4/WebM ;
+3. endpoints vidéo opaques ;
+4. requêtes `Range` en dernier recours.
+
+Ainsi l'élargissement v51 ne remplace pas le chemin DeoVR validé. Un candidat
+inférieur à `960x540` est rejeté comme aperçu. Un flux court inférieur ou égal à
+120 secondes et au plus Full HD est rejeté comme interstitiel probable ; le
+candidat suivant est essayé sans recharger la page. Si aucun vrai flux n'est
+disponible, le Lab restaure le navigateur au lieu d'entrer dans un faux mode VR.
+
+Le pupitre Atelier historique est explicitement fermé au démarrage du Lab. Les
+listes de raycast ignorent désormais les fenêtres inactives ou minimisées : un
+bouton invisible comme `PRESET` ne peut plus intercepter le regard ou le pinch.
+
+### 15.4 Commandes immersives
+
+- `II` / lecture : pause et reprise Media3 ;
+- timeline fixe : seek à la position visée ;
+- `−`, `1:1`, `+` : zoom de projection ;
+- sélecteurs 180/360 et disposition stéréo : correction manuelle ;
+- `×` ou deux paumes : arrêt du décodeur, libération de la texture et retour au
+  navigateur spatial.
+
+Le geste deux paumes est intercepté seulement lorsqu'un rendu immersif est actif.
+En dehors de ce mode, son comportement normal d'ouverture du dock reste inchangé.
+
+### 15.5 Piège de build corrigé
+
+Le bridge Java est généré pendant le post-process Gradle. L'ancien gate ne
+l'injectait que pour le package exact `com.mlomega.xr.worldatelierlabv15` ; les
+variantes v14 compilaient alors avec une copie périmée de `Library/Bee`. Le build
+était vert, mais pause, seek et rejet de candidat produisaient des
+`AndroidJavaException` sur le S24.
+
+Le gate couvre maintenant le package Lab de base et tout package commençant par
+`com.mlomega.xr.worldatelierlabv`. Avant de distribuer un APK, le log doit contenir :
+
+```text
+[AndroidBuildXreal] Isolated Media3/Shizuku display probe injected: ... XrWebVrBridge.java
+Build Finished, Result: Success.
+[AndroidBuildXreal] Spatial Browser Lab APK OK: ...
+```
+
+Contrôle supplémentaire dans le projet Gradle généré :
+
+```powershell
+$bridge = "apps\xr-mobile\Library\Bee\Android\Prj\IL2CPP\Gradle\unityLibrary\src\main\java\com\mlomega\xr\webvr\XrWebVrBridge.java"
+Select-String $bridge -Pattern `
+  "getUnityPlaybackPositionMs", "toggleUnityPlayback", "rejectLastStream"
+```
+
+Les trois symboles doivent être présents. Ne jamais valider seulement depuis
+l'Éditeur : `Shader.Find`, le Java injecté et la surface Android ne suivent pas
+les mêmes règles dans un APK IL2CPP.
+
+### 15.6 Build reproductible
+
+```powershell
+$env:MLOMEGA_CREATOR_LAB_PACKAGE = "com.mlomega.xr.worldatelierlabv14"
+$env:MLOMEGA_CREATOR_LAB_PRODUCT_NAME = "MLOmega XR Lab v51 Opaque VR Streams"
+$env:MLOMEGA_CREATOR_LAB_APK_OUT = `
+  (Join-Path (Resolve-Path ".").Path `
+    "apps\xr-mobile\build\android\mlomega-xreal-world-lab-v51-opaque-vr.apk")
+$unity = "C:\Program Files\Unity\Hub\Editor\6000.0.23f1\Editor\Unity.exe"
+$project = (Resolve-Path "apps\xr-mobile").Path
+& $unity -batchmode -quit -projectPath $project `
+  -executeMethod MLOmega.XR.Editor.AndroidBuildXreal.BuildCreatorLabApk `
+  -logFile (Join-Path $project "world-lab-v51-opaque-vr.log")
+```
+
+Gate matériel minimal après chaque changement :
+
+1. ouvrir DeoVR et lancer réellement une vidéo VR ;
+2. appuyer sur `VR` et confirmer un décodage haute résolution, jamais un écran
+   plat du navigateur ;
+3. bouger la tête et vérifier la projection 180/360 ;
+4. tester pause, reprise et seek à trois positions ;
+5. sortir avec deux paumes, rouvrir le navigateur, puis refaire un cycle complet ;
+6. confirmer l'absence d'`AndroidJavaException`, de spam de polling et de bouton
+   invisible interceptant le pinch.
+
+Fichiers centraux :
+
+```text
+Assets/Scripts/Editor/XrWebVr/XrWebVrBridge.java.txt
+Assets/Scripts/Lab/XrLabWebVrPresenter.cs
+Assets/Scripts/Lab/XrLabWebVrScript.cs
+Assets/Scripts/Lab/XrLabWebVrStreamTexture.cs
+Assets/Resources/XrLabWebVr.shader
+Assets/Scripts/Lab/WorldCreatorLabShell.cs
+```

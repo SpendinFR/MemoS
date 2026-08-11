@@ -1412,26 +1412,34 @@ namespace MLOmega.XR.UI
         {
             target = null;
             float smallestArea = float.MaxValue;
-            ResolveTargetInGraphics(
-                _deckHitGraphics,
-                worldPoint,
-                ref target,
-                ref smallestArea);
-            ResolveTargetInGraphics(
-                _settingsHitGraphics,
-                worldPoint,
-                ref target,
-                ref smallestArea);
-            ResolveTargetInGraphics(
-                _windowDockHitGraphics,
-                worldPoint,
-                ref target,
-                ref smallestArea);
-            ResolveTargetInGraphics(
-                _quickMenuHitGraphics,
-                worldPoint,
-                ref target,
-                ref smallestArea);
+            // The custom XR resolver works in world coordinates and therefore
+            // cannot rely on CanvasGroup/GraphicRaycaster visibility filtering.
+            // Never let minimized or hidden surfaces keep an invisible click
+            // target (the old PRESET button was the observed offender).
+            if (!_deckMinimized)
+                ResolveTargetInGraphics(
+                    _deckHitGraphics,
+                    worldPoint,
+                    ref target,
+                    ref smallestArea);
+            if (_settingsDeck != null && _settingsDeck.gameObject.activeSelf)
+                ResolveTargetInGraphics(
+                    _settingsHitGraphics,
+                    worldPoint,
+                    ref target,
+                    ref smallestArea);
+            if (_windowDock != null && _windowDock.gameObject.activeSelf)
+                ResolveTargetInGraphics(
+                    _windowDockHitGraphics,
+                    worldPoint,
+                    ref target,
+                    ref smallestArea);
+            if (_quickMenu != null && _quickMenu.gameObject.activeSelf)
+                ResolveTargetInGraphics(
+                    _quickMenuHitGraphics,
+                    worldPoint,
+                    ref target,
+                    ref smallestArea);
             ResolveExternalWindowTargets(
                 worldPoint,
                 ref target,

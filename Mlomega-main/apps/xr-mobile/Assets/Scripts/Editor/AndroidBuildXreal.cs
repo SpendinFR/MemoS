@@ -1641,6 +1641,20 @@ namespace MLOmega.XR.Editor
 
         private static void InjectSecureSurfaceWidevineProbe(string unityLibraryPath)
         {
+            string applicationIdentifier =
+                PlayerSettings.GetApplicationIdentifier(BuildTargetGroup.Android);
+            // Every isolated Lab version uses the same WebVR/Media3 bridge.
+            // Restricting injection to the historical v15 package left v14
+            // builds compiling against a stale Java file in Library/Bee: Unity
+            // rendered VR, but new playback controls failed at runtime with
+            // NoSuchMethod/AndroidJavaException.
+            bool isolatedWebVr = applicationIdentifier.StartsWith(
+                "com.mlomega.xr.worldatelierlabv",
+                StringComparison.Ordinal) ||
+                string.Equals(
+                    applicationIdentifier,
+                    "com.mlomega.xr.worldatelierlab",
+                    StringComparison.Ordinal);
             string template = Path.Combine(
                 Application.dataPath,
                 "Scripts",
@@ -1663,6 +1677,33 @@ namespace MLOmega.XR.Editor
                 "SecureWidevinePlayer.java");
             Directory.CreateDirectory(Path.GetDirectoryName(java));
             File.Copy(template, java, true);
+
+            string webVrJava = null;
+            if (isolatedWebVr)
+            {
+                string webVrTemplate = Path.Combine(
+                    Application.dataPath,
+                    "Scripts",
+                    "Editor",
+                    "XrWebVr",
+                    "XrWebVrBridge.java.txt");
+                if (!File.Exists(webVrTemplate))
+                    throw new FileNotFoundException(
+                        "Isolated Web VR Java bridge template missing.",
+                        webVrTemplate);
+                webVrJava = Path.Combine(
+                    unityLibraryPath,
+                    "src",
+                    "main",
+                    "java",
+                    "com",
+                    "mlomega",
+                    "xr",
+                    "webvr",
+                    "XrWebVrBridge.java");
+                Directory.CreateDirectory(Path.GetDirectoryName(webVrJava));
+                File.Copy(webVrTemplate, webVrJava, true);
+            }
 
             string trustedServiceTemplate = Path.Combine(
                 Application.dataPath,
@@ -1891,7 +1932,7 @@ namespace MLOmega.XR.Editor
                         "Generated unityLibrary build.gradle has no dependencies block: " +
                         gradle);
                 dependencies += "dependencies {".Length;
-                const string media3 =
+                string media3 =
                     "\n    // MLOMEGA_SECURE_SURFACE_MEDIA3\n" +
                     "    compileOnly files('compile-stubs/taskorganizer-stubs.jar')\n" +
                     isolatedShizuku +
@@ -1910,7 +1951,17 @@ namespace MLOmega.XR.Editor
                     "        exclude group: 'androidx.exifinterface'\n" +
                     "        exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib'\n" +
                     "        exclude group: 'org.jetbrains', module: 'annotations'\n" +
-                    "    }\n";
+                    "    }\n" +
+                    (isolatedWebVr
+                        ? "    implementation('androidx.media3:media3-exoplayer-hls:1.5.1') {\n" +
+                          "        exclude group: 'androidx.core'\n" +
+                          "        exclude group: 'androidx.annotation'\n" +
+                          "        exclude group: 'androidx.collection'\n" +
+                          "        exclude group: 'androidx.exifinterface'\n" +
+                          "        exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib'\n" +
+                          "        exclude group: 'org.jetbrains', module: 'annotations'\n" +
+                          "    }\n"
+                        : string.Empty);
                 text = text.Insert(dependencies, media3);
                 const string allJars =
                     "implementation fileTree(dir: 'libs', include: ['*.jar'])";
@@ -1931,7 +1982,8 @@ namespace MLOmega.XR.Editor
                 "[AndroidBuildXreal] Isolated Media3/Shizuku display probe injected: " +
                 java + " + " + trustedServiceJava + " + " + taskProbeJava +
                 " + " + physicalStereoProbeJava + " + " + nativeProbeDestination +
-                " + " + compileStubs);
+                " + " + compileStubs +
+                (webVrJava != null ? " + " + webVrJava : string.Empty));
         }
     }
 }
